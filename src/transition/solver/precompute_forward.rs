@@ -32,8 +32,6 @@ where
     // Internally holds a successors cache
     predicate: Arc<Mutex<PredicateCache<E, M>>>,
     reachable_hash: Arc<Mutex<FxHashMap<(usize, usize), Reachable<E>>>>,
-
-    _marker: std::marker::PhantomData<M>,
 }
 
 impl<E, M> Default for PrecomputeForwardSolver<E, M>
@@ -45,7 +43,6 @@ where
         Self {
             predicate: Arc::new(Mutex::new(PredicateCache::default())),
             reachable_hash: Arc::new(Mutex::new(FxHashMap::default())),
-            _marker: std::marker::PhantomData,
         }
     }
 }
@@ -62,205 +59,111 @@ where
         }
     }
 
-    /// Creates a path from the source up the parent map until no more parents
-    /// are found. This assumes there is only one relation between parent and children.
-    ///
-    /// Returns in the order `[target, ..., source]`.
-    ///
-    /// If the target is not found by the builder, `None` is returned.
-    #[inline]
-    pub(crate) fn path_builder<N, C>(
-        source: &N,
-        target: &N,
-        parents: &FxHashMap<N, (N, C)>,
-    ) -> Option<Vec<N>>
-    where
-        N: Eq + Hash + Copy,
-    {
-        let mut rev = vec![*source];
-        let mut next = source;
-
-        while let Some((parent, _)) = parents.get(next) {
-            // Located the target
-            if *next == *target {
-                rev.reverse();
-                return Some(rev);
-            }
-
-            rev.push(*parent);
-            next = parent;
-        }
-
-        None
-    }
-
     fn reach<'a, 'b, Emmis, Trans>(
         &'b self,
         transition: &'b Transition<'b, Emmis, Trans, E, M>,
         context: &'b RoutingContext<'b, E, M>,
-        (start, end): (CandidateId, CandidateId),
         source: &CandidateId,
-    ) -> Vec<(CandidateId, CandidateEdge)>
+    ) -> Vec<(Reachable<E>, CandidateEdge)>
     where
         Emmis: EmissionStrategy + Send + Sync,
         Trans: TransitionStrategy<E, M> + Send + Sync,
         'b: 'a,
     {
-        let graph_ref = Arc::clone(&transition.candidates.graph);
-        let successors = graph_ref
-            .read()
-            .unwrap()
-            .edges_directed(*source, Direction::Outgoing)
-            .map(|edge| edge.target())
-            .collect::<Vec<CandidateId>>();
+        use rayon::prelude::{IntoParallelIterator, ParallelIterator};
 
-        // #[cold]
-        if *source == start {
-            // No cost to reach a first node.
-            return successors
-                .into_iter()
-                .map(|candidate| (candidate, CandidateEdge::zero()))
-                .collect::<Vec<_>>();
-        }
+        let layer = transition.candidates.next_layer(source);
 
-        // Fast-track to the finish line
-        if successors.contains(&end) {
-            return vec![(end, CandidateEdge::zero())];
-        }
+        layer
+            .into_par_iter()
+            .filter_map(|target| self.get_reachable(context, source, &target))
+            .filter_map(move |reachable| {
+                let path_vec = reachable.path_nodes().collect_vec();
+                let optimal_path = Trip::new_with_map(transition.map, &path_vec);
 
-        let reachable = self
-            .reachable(context, source, successors.as_slice())
-            .unwrap_or_default();
+                let source = context.candidate(&reachable.source)?;
+                let target = context.candidate(&reachable.target)?;
 
-        // Note: `reachable` ~= free, `reach` ~= 0.1ms (some overhead- how?)
-        {
-            let reached = reachable
-                .into_iter()
-                .filter_map(move |reachable| {
-                    let path_vec = reachable.path_nodes().collect_vec();
-                    let optimal_path = Trip::new_with_map(transition.map, &path_vec);
+                let sl = transition.layers.layers.get(source.location.layer_id)?;
+                let tl = transition.layers.layers.get(target.location.layer_id)?;
+                let layer_width = Haversine.distance(sl.origin, tl.origin);
 
-                    let source = context.candidate(&reachable.source)?;
-                    let target = context.candidate(&reachable.target)?;
+                let transition_cost = transition.heuristics.transition(TransitionContext {
+                    map_path: &path_vec,
+                    requested_resolution_method: reachable.resolution_method,
 
-                    let sl = transition.layers.layers.get(source.location.layer_id)?;
-                    let tl = transition.layers.layers.get(target.location.layer_id)?;
-                    let layer_width = Haversine.distance(sl.origin, tl.origin);
+                    source_candidate: &reachable.source,
+                    target_candidate: &reachable.target,
+                    routing_context: context,
 
-                    let transition_cost = transition.heuristics.transition(TransitionContext {
-                        map_path: &path_vec,
-                        requested_resolution_method: reachable.resolution_method,
+                    layer_width,
+                    optimal_path,
+                });
 
-                        source_candidate: &reachable.source,
-                        target_candidate: &reachable.target,
-                        routing_context: context,
+                let transition = (transition_cost as f64 * 0.6) as u32;
+                let emission = (target.emission as f64 * 0.4) as u32;
+                let cost = emission.saturating_add(transition);
 
-                        layer_width,
-                        optimal_path,
-                    });
-
-                    let transition = (transition_cost as f64 * 0.6) as u32;
-                    let emission = (target.emission as f64 * 0.4) as u32;
-                    let cost = emission.saturating_add(transition);
-
-                    Some((reachable, CandidateEdge::new(cost)))
-                })
-                .collect::<Vec<_>>();
-
-            let mut hash = self.reachable_hash.lock().ok().unwrap();
-
-            reached
-                .into_iter()
-                .map(|(reachable, edge)| {
-                    hash.insert(reachable.hash(), reachable.clone());
-                    (reachable.target, edge)
-                })
-                .collect::<Vec<_>>()
-        }
+                Some((reachable, CandidateEdge::new(cost)))
+            })
+            .collect::<Vec<_>>()
     }
 
-    /// Derives which candidates are reachable by the source candidate.
-    ///
-    /// Provides a slice of target candidate IDs, `targets`. The solver
-    /// will use these to procure all candidates which are reachable,
-    /// and the path of routable entries ([`OsmEntryId`]) which are used
-    /// to reach the target.
-    fn reachable<'a>(
+    fn get_reachable<'a>(
         &self,
         ctx: &'a RoutingContext<'a, E, M>,
-        source: &CandidateId,
-        targets: &'a [CandidateId],
-    ) -> Option<Vec<Reachable<E>>> {
-        let source_candidate = ctx.candidate(source)?;
+        source_id: &CandidateId,
+        target_id: &CandidateId,
+    ) -> Option<Reachable<E>> {
+        let source = ctx.candidate(source_id)?;
 
         // Upper-Bounded reachable map containing a Child:Parent relation
         // Note: Parent is OsmEntryId::NULL, which will not be within the map,
         //       indicating the root element.
-        let predicate_map = {
-            self.predicate
-                .lock()
-                .ok()?
-                .query(ctx, source_candidate.edge.target)
-        };
+        let predicate_map = { self.predicate.lock().ok()?.query(ctx, source.edge.target) };
 
-        let reachable = {
-            debug_time!("predicates {source:?} -> reachable");
+        // Get the candidate information of the target found
+        let candidate = ctx.candidate(target_id)?;
 
-            targets
-                .iter()
-                .filter_map(|target| {
-                    // Get the candidate information of the target found
-                    let candidate = ctx.candidate(target)?;
+        // Both candidates are on the same edge
+        'stmt: {
+            if candidate.edge.id.index() == source.edge.id.index() {
+                let common_source = candidate.edge.source == source.edge.source;
+                let common_target = candidate.edge.target == source.edge.target;
 
-                    // Both candidates are on the same edge
-                    'stmt: {
-                        if candidate.edge.id.index() == source_candidate.edge.id.index() {
-                            let common_source =
-                                candidate.edge.source == source_candidate.edge.source;
-                            let common_target =
-                                candidate.edge.target == source_candidate.edge.target;
+                let tracking_forward = common_source && common_target;
 
-                            let tracking_forward = common_source && common_target;
+                let source_percentage = source.percentage(ctx.map)?;
+                let target_percentage = candidate.percentage(ctx.map)?;
 
-                            let source_percentage = source_candidate.percentage(ctx.map)?;
-                            let target_percentage = candidate.percentage(ctx.map)?;
+                return if tracking_forward && source_percentage <= target_percentage {
+                    // We are moving forward, it is simply the distance between the nodes
+                    Some(Reachable::new(*source_id, *target_id, vec![]).distance_only())
+                } else {
+                    // We are going "backwards", behaviour becomes dependent on
+                    // the directionality of the edge. However, to return across the
+                    // node is an independent transition, and is not covered.
+                    break 'stmt;
+                };
+            }
+        }
 
-                            return if tracking_forward && source_percentage <= target_percentage {
-                                // We are moving forward, it is simply the distance between the nodes
-                                Some(Reachable::new(*source, *target, vec![]).distance_only())
-                            } else {
-                                // We are going "backwards", behaviour becomes dependent on
-                                // the directionality of the edge. However, to return across the
-                                // node is an independent transition, and is not covered.
-                                break 'stmt;
-                            };
-                        }
-                    }
+        // Generate the path to this target using the predicate map
+        let path_to_target =
+            Self::path_builder(&candidate.edge.source, &source.edge.target, &predicate_map)?;
 
-                    // Generate the path to this target using the predicate map
-                    let path_to_target = Self::path_builder(
-                        &candidate.edge.source,
-                        &source_candidate.edge.target,
-                        &predicate_map,
-                    )?;
+        let path = path_to_target
+            .windows(2)
+            .filter_map(|pair| {
+                if let [a, b] = pair {
+                    return ctx.edge(a, b);
+                }
 
-                    let path = path_to_target
-                        .windows(2)
-                        .filter_map(|pair| {
-                            if let [a, b] = pair {
-                                return ctx.edge(a, b);
-                            }
+                None
+            })
+            .collect::<Vec<_>>();
 
-                            None
-                        })
-                        .collect::<Vec<_>>();
-
-                    Some(Reachable::new(*source, *target, path))
-                })
-                .collect::<Vec<_>>()
-        };
-
-        Some(reachable)
+        Some(Reachable::new(*source_id, *target_id, path))
     }
 }
 
@@ -304,9 +207,18 @@ where
                 .enumerate()
                 .flat_map(|(index, layer)| {
                     layer.nodes.par_iter().map(|source| {
-                        let found = self.reach(&transition, &context, (start, end), source);
+                        let found = self.reach(&transition, &context, source);
 
-                        (*source, found)
+                        let mut hash = self.reachable_hash.lock().ok().unwrap();
+                        let some = found
+                            .into_iter()
+                            .map(|(reachable, edge)| {
+                                hash.insert(reachable.hash(), reachable.clone());
+                                (reachable.target, edge)
+                            })
+                            .collect::<Vec<_>>();
+
+                        (*source, some)
                     })
                 })
                 .collect::<FxHashMap<CandidateId, Vec<(CandidateId, CandidateEdge)>>>()
@@ -320,6 +232,12 @@ where
                 .map(|source| (*source, CandidateEdge::zero()))
                 .collect_vec(),
         );
+
+        for all in &transition.layers.layers.last() {
+            for node in &all.nodes {
+                pair.insert(*node, vec![(end, CandidateEdge::zero())]);
+            }
+        }
 
         // Note: For every candidate, generate their reachable elements, then run the solver overtop.
         //       This means we can do it in parallel, which is more efficient - however will have to

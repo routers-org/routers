@@ -216,6 +216,94 @@ mod predicate {
     }
 }
 
+// mod reachable {
+//     use crate::transition::*;
+//     use codec::Entry;
+//
+//     use super::*;
+//
+//     #[derive(Debug)]
+//     pub struct ReachableMetadata<E, M>
+//     where
+//         E: Entry,
+//         M: Metadata,
+//     {
+//         /// The successors cache used to back the successors and
+//         /// prevent repeated calculations.
+//         predicates: PredicateCache<E, M>,
+//     }
+//
+//     impl<E, M> Default for ReachableMetadata<E, M>
+//     where
+//         E: Entry,
+//         M: Metadata,
+//     {
+//         fn default() -> Self {
+//             Self {
+//                 predicates: PredicateCache::default(),
+//             }
+//         }
+//     }
+//
+//     /// ...
+//     type Reachables<E> = Vec<Reachable<E>>;
+//
+//     /// ...
+//     pub type ReachableCache<E, M> = CacheMap<E, Reachable<E>, M, ReachableMetadata<E, M>>;
+//
+//     impl <E: CacheKey, M: Metadata> Calculable<E, M, Reachable<E>> for ReachableCache<E, M> {
+//         fn calculate(&mut self, ctx: &RoutingContext<E, M>, key: E) -> Reachables<E> {
+//             // Get the candidate information of the target found
+//             let candidate = ctx.candidate(target)?;
+//
+//             // Both candidates are on the same edge
+//             'stmt: {
+//                 if candidate.edge.id.index() == source_candidate.edge.id.index() {
+//                     let common_source =
+//                         candidate.edge.source == source_candidate.edge.source;
+//                     let common_target =
+//                         candidate.edge.target == source_candidate.edge.target;
+//
+//                     let tracking_forward = common_source && common_target;
+//
+//                     let source_percentage = source_candidate.percentage(ctx.map)?;
+//                     let target_percentage = candidate.percentage(ctx.map)?;
+//
+//                     return if tracking_forward && source_percentage <= target_percentage {
+//                         // We are moving forward, it is simply the distance between the nodes
+//                         Some(Reachable::new(*source, *target, vec![]).distance_only())
+//                     } else {
+//                         // We are going "backwards", behaviour becomes dependent on
+//                         // the directionality of the edge. However, to return across the
+//                         // node is an independent transition, and is not covered.
+//                         break 'stmt;
+//                     };
+//                 }
+//             }
+//
+//             // Generate the path to this target using the predicate map
+//             let path_to_target = Self::path_builder(
+//                 &candidate.edge.source,
+//                 &source_candidate.edge.target,
+//                 &predicate_map,
+//             )?;
+//
+//             let path = path_to_target
+//                 .windows(2)
+//                 .filter_map(|pair| {
+//                     if let [a, b] = pair {
+//                         return ctx.edge(a, b);
+//                     }
+//
+//                     None
+//                 })
+//                 .collect::<Vec<_>>();
+//
+//             Reachable::new(*source, *target, path)
+//         }
+//     }
+// }
+
 /// Iterator wrapper that keeps the Arc alive while yielding `&T`
 struct ArcIter<T> {
     data: Arc<Vec<T>>,

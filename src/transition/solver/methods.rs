@@ -2,6 +2,8 @@ use crate::transition::*;
 use codec::Metadata;
 use codec::primitive::Entry;
 use itertools::Either;
+use rustc_hash::FxHashMap;
+use std::hash::Hash;
 
 #[derive(Debug, Default, Copy, Clone)]
 pub enum ResolutionMethod {
@@ -101,4 +103,32 @@ where
     where
         Emmis: EmissionStrategy + Send + Sync,
         Trans: TransitionStrategy<E, M> + Send + Sync;
+
+    /// Creates a path from the source up the parent map until no more parents
+    /// are found. This assumes there is only one relation between parent and children.
+    ///
+    /// Returns in the order `[target, ..., source]`.
+    ///
+    /// If the target is not found by the builder, `None` is returned.
+    #[inline]
+    fn path_builder<N, C>(source: &N, target: &N, parents: &FxHashMap<N, (N, C)>) -> Option<Vec<N>>
+    where
+        N: Eq + Hash + Copy,
+    {
+        let mut rev = vec![*source];
+        let mut next = source;
+
+        while let Some((parent, _)) = parents.get(next) {
+            // Located the target
+            if *next == *target {
+                rev.reverse();
+                return Some(rev);
+            }
+
+            rev.push(*parent);
+            next = parent;
+        }
+
+        None
+    }
 }

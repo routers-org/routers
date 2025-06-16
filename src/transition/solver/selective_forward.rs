@@ -27,8 +27,6 @@ where
     // Internally holds a successors cache
     predicate: Arc<Mutex<PredicateCache<E, M>>>,
     reachable_hash: RefCell<FxHashMap<(usize, usize), Reachable<E>>>,
-
-    _marker: std::marker::PhantomData<M>,
 }
 
 impl<E, M> Default for SelectiveForwardSolver<E, M>
@@ -40,7 +38,6 @@ where
         Self {
             predicate: Arc::new(Mutex::new(PredicateCache::default())),
             reachable_hash: RefCell::new(FxHashMap::default()),
-            _marker: std::marker::PhantomData,
         }
     }
 }
@@ -57,38 +54,6 @@ where
         }
     }
 
-    /// Creates a path from the source up the parent map until no more parents
-    /// are found. This assumes there is only one relation between parent and children.
-    ///
-    /// Returns in the order `[target, ..., source]`.
-    ///
-    /// If the target is not found by the builder, `None` is returned.
-    #[inline]
-    pub(crate) fn path_builder<N, C>(
-        source: &N,
-        target: &N,
-        parents: &FxHashMap<N, (N, C)>,
-    ) -> Option<Vec<N>>
-    where
-        N: Eq + Hash + Copy,
-    {
-        let mut rev = vec![*source];
-        let mut next = source;
-
-        while let Some((parent, _)) = parents.get(next) {
-            // Located the target
-            if *next == *target {
-                rev.reverse();
-                return Some(rev);
-            }
-
-            rev.push(*parent);
-            next = parent;
-        }
-
-        None
-    }
-
     fn reach<'a, 'b, Emmis, Trans>(
         &'b self,
         transition: &'b Transition<'b, Emmis, Trans, E, M>,
@@ -101,13 +66,7 @@ where
         Trans: TransitionStrategy<E, M> + Send + Sync,
         'b: 'a,
     {
-        let graph_ref = Arc::clone(&transition.candidates.graph);
-        let successors = graph_ref
-            .read()
-            .unwrap()
-            .edges_directed(*source, Direction::Outgoing)
-            .map(|edge| edge.target())
-            .collect::<Vec<CandidateId>>();
+        let successors = transition.candidates.next_layer(source);
 
         // #[cold]
         if *source == start {
