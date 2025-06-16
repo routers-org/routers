@@ -5,7 +5,6 @@ use crate::osm::BlobHeader;
 use crate::osm::BlockItem;
 use crate::osm::blob::item::BlobItem;
 
-use log::trace;
 use prost::Message;
 use std::fs::File;
 use std::io;
@@ -69,7 +68,6 @@ impl BlobIterator {
 
         // Translate to i32 (Big Endian)
         let blob_header_length = u32::from_be_bytes(unsafe { *header_len_buffer }) as usize;
-        trace!("Header length: {blob_header_length}. Buffer: {header_len_buffer:?}");
 
         if self.buf.len() < self.offset as usize + blob_header_length {
             return None;

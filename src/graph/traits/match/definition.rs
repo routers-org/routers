@@ -1,3 +1,4 @@
+use crate::Solver;
 use crate::transition::{MatchError, RoutedPath};
 
 use codec::{Entry, Metadata};
@@ -17,6 +18,7 @@ where
     fn r#match(
         &self,
         runtime: &M::Runtime,
+        solver: impl Solver<E, M>,
         linestring: LineString,
     ) -> Result<RoutedPath<E, M>, MatchError>;
 
@@ -26,6 +28,7 @@ where
     fn snap(
         &self,
         runtime: &M::Runtime,
+        solver: impl Solver<E, M>,
         linestring: LineString,
     ) -> Result<RoutedPath<E, M>, MatchError>;
 }

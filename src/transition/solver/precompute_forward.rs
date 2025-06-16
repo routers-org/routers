@@ -16,22 +16,27 @@ use pathfinding::prelude::*;
 use petgraph::Direction;
 use petgraph::prelude::EdgeRef;
 
+use codec::osm::primitives::TransportMode::Canoe;
+use rayon::iter::IndexedParallelIterator;
+use rayon::iter::ParallelIterator;
+use rayon::prelude::IntoParallelRefIterator;
+
 /// A Upper-Bounded Dijkstra (UBD) algorithm.
 ///
 /// TODO: Docs
-pub struct SelectiveForwardSolver<E, M>
+pub struct PrecomputeForwardSolver<E, M>
 where
     E: Entry,
     M: Metadata,
 {
     // Internally holds a successors cache
     predicate: Arc<Mutex<PredicateCache<E, M>>>,
-    reachable_hash: RefCell<FxHashMap<(usize, usize), Reachable<E>>>,
+    reachable_hash: Arc<Mutex<FxHashMap<(usize, usize), Reachable<E>>>>,
 
     _marker: std::marker::PhantomData<M>,
 }
 
-impl<E, M> Default for SelectiveForwardSolver<E, M>
+impl<E, M> Default for PrecomputeForwardSolver<E, M>
 where
     E: Entry,
     M: Metadata,
@@ -39,13 +44,13 @@ where
     fn default() -> Self {
         Self {
             predicate: Arc::new(Mutex::new(PredicateCache::default())),
-            reachable_hash: RefCell::new(FxHashMap::default()),
+            reachable_hash: Arc::new(Mutex::new(FxHashMap::default())),
             _marker: std::marker::PhantomData,
         }
     }
 }
 
-impl<E, M> SelectiveForwardSolver<E, M>
+impl<E, M> PrecomputeForwardSolver<E, M>
 where
     E: Entry,
     M: Metadata,
@@ -120,7 +125,6 @@ where
 
         // Fast-track to the finish line
         if successors.contains(&end) {
-            debug!("End-Successors: {successors:?}");
             return vec![(end, CandidateEdge::zero())];
         }
 
@@ -130,9 +134,6 @@ where
 
         // Note: `reachable` ~= free, `reach` ~= 0.1ms (some overhead- how?)
         {
-            debug_time!("Format Reachable Elements");
-            let mut hash = self.reachable_hash.borrow_mut();
-
             reachable
                 .into_iter()
                 .filter_map(move |reachable| {
@@ -162,7 +163,13 @@ where
                     let emission = (target.emission as f64 * 0.4) as u32;
                     let cost = emission.saturating_add(transition);
 
-                    hash.insert(reachable.hash(), reachable.clone());
+                    // TODO: Return reachables, collect into hashmap instead of inserting...
+
+                    self.reachable_hash
+                        .lock()
+                        .ok()?
+                        .insert(reachable.hash(), reachable.clone());
+
                     Some((reachable.target, CandidateEdge::new(cost)))
                 })
                 .collect::<Vec<_>>()
@@ -187,8 +194,6 @@ where
         // Note: Parent is OsmEntryId::NULL, which will not be within the map,
         //       indicating the root element.
         let predicate_map = {
-            debug_time!("query predicate for {source:?}");
-
             self.predicate
                 .lock()
                 .ok()?
@@ -256,7 +261,7 @@ where
     }
 }
 
-impl<E, M> Solver<E, M> for SelectiveForwardSolver<E, M>
+impl<E, M> Solver<E, M> for PrecomputeForwardSolver<E, M>
 where
     E: Entry,
     M: Metadata,
@@ -285,6 +290,34 @@ where
         info!("Solving: Start={start:?}. End={end:?}. ");
         let context = transition.context(runtime);
 
+        // Pre-generate KV pair
+        let mut pair = {
+            debug_time!("generate transition graph");
+
+            transition
+                .layers
+                .layers
+                .par_iter()
+                .enumerate()
+                .flat_map(|(index, layer)| {
+                    layer.nodes.par_iter().map(|source| {
+                        let found = self.reach(&transition, &context, (start, end), source);
+
+                        (*source, found)
+                    })
+                })
+                .collect::<FxHashMap<CandidateId, Vec<(CandidateId, CandidateEdge)>>>()
+        };
+
+        pair.insert(
+            start,
+            transition.layers.layers[0]
+                .nodes
+                .iter()
+                .map(|source| (*source, CandidateEdge::zero()))
+                .collect_vec(),
+        );
+
         // Note: For every candidate, generate their reachable elements, then run the solver overtop.
         //       This means we can do it in parallel, which is more efficient - however will have to
         //       compute for *every* candidate, not just the likely ones, which will lead to poor
@@ -297,7 +330,7 @@ where
 
             astar(
                 &start,
-                |source| self.reach(&transition, &context, (start, end), source),
+                |source| pair.get(source).cloned().unwrap_or(vec![]),
                 |_| CandidateEdge::zero(),
                 |node| *node == end,
             )
@@ -311,7 +344,8 @@ where
             .filter_map(|nodes| {
                 if let [a, b] = nodes {
                     self.reachable_hash
-                        .borrow()
+                        .lock()
+                        .ok()?
                         .get(&(a.index(), b.index()))
                         .cloned()
                 } else {

@@ -77,8 +77,13 @@ fn target_benchmark(c: &mut criterion::Criterion) {
             let coordinates: LineString<f64> = LineString::try_from_wkt_str(sc.input_linestring)
                 .expect("Linestring must parse successfully.");
 
+            // Warm up the cache
             let _ = graph
-                .r#match(&runtime, black_box(coordinates.clone()))
+                .r#match(
+                    &runtime,
+                    PrecomputeForwardSolver::default().use_cache(graph.cache.clone()),
+                    black_box(coordinates.clone()),
+                )
                 .expect("Match must complete successfully");
 
             group.bench_function(format!("layer-gen: {}", sc.name), |b| {
@@ -93,8 +98,16 @@ fn target_benchmark(c: &mut criterion::Criterion) {
 
             group.bench_function(format!("match: {}", sc.name), |b| {
                 b.iter(|| {
+                    // Yield the transition layers of each level
+                    // & Collapse the layers into a final vector
+                    let solver = PrecomputeForwardSolver::default();
+
                     let result = graph
-                        .r#match(&runtime, coordinates.clone())
+                        .r#match(
+                            &runtime,
+                            solver.use_cache(graph.cache.clone()),
+                            coordinates.clone(),
+                        )
                         .expect("Match must complete successfully");
 
                     let edges = result

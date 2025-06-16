@@ -203,7 +203,7 @@ mod predicate {
                         })
                         .map(|(a, _, b)| (a, b))
                 })
-                .filter(|p| {
+                .take_while(|p| {
                     // Bounded by the threshold distance (centimeters)
                     (p.total_cost.1 as f64) < threshold
                 })

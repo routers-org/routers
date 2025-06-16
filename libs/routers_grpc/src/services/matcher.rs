@@ -8,7 +8,7 @@ use crate::definition::model::*;
 
 use crate::services::RouteService;
 use codec::{Entry, Metadata};
-use routers::{Match, Path, RoutedPath};
+use routers::{Match, Path, PrecomputeForwardSolver, RoutedPath, SelectiveForwardSolver};
 #[cfg(feature = "telemetry")]
 use tracing::Level;
 
@@ -81,11 +81,13 @@ where
         let map_match = request.into_inner();
         let coordinates = map_match.linestring();
 
+        let solver = PrecomputeForwardSolver::default().use_cache(self.graph.cache.clone());
+
         let runtime = M::runtime(map_match.options.and_then(Option::<M::TripContext>::from));
 
         let result = self
             .graph
-            .r#match(&runtime, coordinates)
+            .r#match(&runtime, solver, coordinates)
             .map_err(|e| e.to_string())
             .map_err(Status::internal)?;
 
@@ -103,11 +105,13 @@ where
         let map_match = request.into_inner();
         let coordinates = map_match.linestring();
 
+        let solver = SelectiveForwardSolver::default().use_cache(self.graph.cache.clone());
+
         let runtime = M::runtime(map_match.options.and_then(Option::<M::TripContext>::from));
 
         let result = self
             .graph
-            .snap(&runtime, coordinates)
+            .snap(&runtime, solver, coordinates)
             .map_err(|e| e.to_string())
             .map_err(Status::internal)?;
 
