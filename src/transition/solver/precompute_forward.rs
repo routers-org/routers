@@ -134,7 +134,7 @@ where
 
         // Note: `reachable` ~= free, `reach` ~= 0.1ms (some overhead- how?)
         {
-            reachable
+            let reached = reachable
                 .into_iter()
                 .filter_map(move |reachable| {
                     let path_vec = reachable.path_nodes().collect_vec();
@@ -163,14 +163,17 @@ where
                     let emission = (target.emission as f64 * 0.4) as u32;
                     let cost = emission.saturating_add(transition);
 
-                    // TODO: Return reachables, collect into hashmap instead of inserting...
+                    Some((reachable, CandidateEdge::new(cost)))
+                })
+                .collect::<Vec<_>>();
 
-                    self.reachable_hash
-                        .lock()
-                        .ok()?
-                        .insert(reachable.hash(), reachable.clone());
+            let mut hash = self.reachable_hash.lock().ok().unwrap();
 
-                    Some((reachable.target, CandidateEdge::new(cost)))
+            reached
+                .into_iter()
+                .map(|(reachable, edge)| {
+                    hash.insert(reachable.hash(), reachable.clone());
+                    (reachable.target, edge)
                 })
                 .collect::<Vec<_>>()
         }
