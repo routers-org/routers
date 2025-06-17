@@ -206,6 +206,8 @@ where
                 .par_iter()
                 .enumerate()
                 .flat_map(|(index, layer)| {
+                    // objectively O(n^2) / O(n) isn't going to scale; we need something more efficient...
+                    // we need a way to do a multicast N:N from all in layer N to all in layer N+1
                     layer.nodes.par_iter().map(|source| {
                         let found = self.reach(&transition, &context, source);
 
