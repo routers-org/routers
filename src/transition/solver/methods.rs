@@ -17,7 +17,7 @@ pub enum ResolutionMethod {
 ///
 /// It requests itself to be resolved in the heuristic-layer by a given
 /// [resolution_method](#field.resolution_method).
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Reachable<E>
 where
     E: Entry,

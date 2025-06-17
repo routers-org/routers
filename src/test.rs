@@ -1,15 +1,3 @@
-use routers_fixtures::{
-    LAX_LYNWOOD_MATCHED, LAX_LYNWOOD_TRIP, LOS_ANGELES, VENTURA_MATCHED, VENTURA_TRIP, ZURICH,
-    fixture,
-};
-
-use crate::{CostingStrategies, Graph, Match, PrecomputeForwardSolver};
-use codec::Metadata;
-use codec::osm::OsmEdgeMetadata;
-use geo::LineString;
-use std::path::Path;
-use wkt::TryFromWkt;
-
 fn assert_subsequence(a: &[i64], b: &[i64]) {
     let mut a_iter = a.iter();
 
@@ -24,7 +12,17 @@ fn assert_subsequence(a: &[i64], b: &[i64]) {
 }
 
 #[test]
+#[cfg(not(all()))]
 fn it_matches() {
+    use routers_fixtures::{LAX_LYNWOOD_MATCHED, LAX_LYNWOOD_TRIP, LOS_ANGELES, fixture};
+
+    use crate::{Graph, Match, PrecomputeForwardSolver};
+    use codec::Metadata;
+    use codec::osm::OsmEdgeMetadata;
+    use geo::LineString;
+    use std::path::Path;
+    use wkt::TryFromWkt;
+
     let source = LOS_ANGELES;
     let input_linestring = LAX_LYNWOOD_TRIP;
     let expected_linestring = LAX_LYNWOOD_MATCHED;

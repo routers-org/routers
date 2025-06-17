@@ -3,8 +3,6 @@ use crate::transition::*;
 use log::{debug, info};
 
 use rustc_hash::FxHashMap;
-use std::cell::RefCell;
-use std::hash::Hash;
 use std::sync::{Arc, Mutex};
 
 use codec::{Entry, Metadata};
@@ -13,11 +11,7 @@ use itertools::Itertools;
 use measure_time::debug_time;
 use pathfinding::num_traits::Zero;
 use pathfinding::prelude::*;
-use petgraph::Direction;
-use petgraph::prelude::EdgeRef;
 
-use codec::osm::primitives::TransportMode::Canoe;
-use rayon::iter::IndexedParallelIterator;
 use rayon::iter::ParallelIterator;
 use rayon::prelude::IntoParallelRefIterator;
 
@@ -31,7 +25,7 @@ where
 {
     // Internally holds a successors cache
     predicate: Arc<Mutex<PredicateCache<E, M>>>,
-    reachable_hash: Arc<Mutex<FxHashMap<(usize, usize), Reachable<E>>>>,
+    reachable_hash: scc::HashMap<(usize, usize), Reachable<E>>,
 }
 
 impl<E, M> Default for PrecomputeForwardSolver<E, M>
@@ -42,7 +36,7 @@ where
     fn default() -> Self {
         Self {
             predicate: Arc::new(Mutex::new(PredicateCache::default())),
-            reachable_hash: Arc::new(Mutex::new(FxHashMap::default())),
+            reachable_hash: scc::HashMap::new(),
         }
     }
 }
@@ -204,18 +198,18 @@ where
                 .layers
                 .layers
                 .par_iter()
-                .enumerate()
-                .flat_map(|(index, layer)| {
+                .flat_map(|layer| {
                     // objectively O(n^2) / O(n) isn't going to scale; we need something more efficient...
                     // we need a way to do a multicast N:N from all in layer N to all in layer N+1
                     layer.nodes.par_iter().map(|source| {
                         let found = self.reach(&transition, &context, source);
 
-                        let mut hash = self.reachable_hash.lock().ok().unwrap();
                         let some = found
                             .into_iter()
                             .map(|(reachable, edge)| {
-                                hash.insert(reachable.hash(), reachable.clone());
+                                self.reachable_hash
+                                    .insert(reachable.hash(), reachable.clone())
+                                    .expect("hash collision, must insert correctly.");
                                 (reachable.target, edge)
                             })
                             .collect::<Vec<_>>();
@@ -235,7 +229,7 @@ where
                 .collect_vec(),
         );
 
-        for all in &transition.layers.layers.last() {
+        if let Some(all) = transition.layers.layers.last() {
             for node in &all.nodes {
                 pair.insert(*node, vec![(end, CandidateEdge::zero())]);
             }
@@ -267,10 +261,8 @@ where
             .filter_map(|nodes| {
                 if let [a, b] = nodes {
                     self.reachable_hash
-                        .lock()
-                        .ok()?
                         .get(&(a.index(), b.index()))
-                        .cloned()
+                        .map(|entry| entry.get().clone())
                 } else {
                     None
                 }

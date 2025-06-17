@@ -4,7 +4,6 @@ use log::{debug, info};
 
 use rustc_hash::FxHashMap;
 use std::cell::RefCell;
-use std::hash::Hash;
 use std::sync::{Arc, Mutex};
 
 use codec::{Entry, Metadata};
@@ -13,8 +12,6 @@ use itertools::Itertools;
 use measure_time::debug_time;
 use pathfinding::num_traits::Zero;
 use pathfinding::prelude::*;
-use petgraph::Direction;
-use petgraph::prelude::EdgeRef;
 
 /// A Upper-Bounded Dijkstra (UBD) algorithm.
 ///
