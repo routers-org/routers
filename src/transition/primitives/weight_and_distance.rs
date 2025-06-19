@@ -1,4 +1,4 @@
-use crate::transition::primitives::CumulativeFraction;
+use crate::transition::primitives::Fraction;
 
 use pathfinding::num_traits::Zero;
 use std::cmp::Ordering;
@@ -7,7 +7,7 @@ use std::ops::Add;
 /// Represents a thin structure storing the weight and distance associated with a candidate
 #[allow(clippy::derived_hash_with_manual_eq)]
 #[derive(Copy, Clone, Hash, Debug)]
-pub struct WeightAndDistance(pub CumulativeFraction, pub u32);
+pub struct WeightAndDistance(pub Fraction, pub u32);
 
 impl WeightAndDistance {
     /// A representation method which allows distinguishment between structures
@@ -16,6 +16,11 @@ impl WeightAndDistance {
     #[inline]
     pub fn repr(&self) -> u32 {
         ((self.0.value() as f64).sqrt() * self.1 as f64) as u32
+    }
+
+    #[inline]
+    pub const fn new(frac: Fraction, weight: u32) -> Self {
+        Self(frac, weight)
     }
 }
 
@@ -49,7 +54,7 @@ impl Add<Self> for WeightAndDistance {
 
 impl Zero for WeightAndDistance {
     fn zero() -> Self {
-        WeightAndDistance(CumulativeFraction::zero(), 0)
+        WeightAndDistance(Fraction::zero(), 0)
     }
 
     fn is_zero(&self) -> bool {

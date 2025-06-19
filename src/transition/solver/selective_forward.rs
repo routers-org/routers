@@ -4,16 +4,14 @@ use log::{debug, info};
 
 use rustc_hash::FxHashMap;
 use std::cell::RefCell;
-use std::hash::Hash;
 use std::sync::{Arc, Mutex};
 
 use codec::{Entry, Metadata};
 use geo::{Distance, Haversine};
 use itertools::Itertools;
+use measure_time::debug_time;
 use pathfinding::num_traits::Zero;
 use pathfinding::prelude::*;
-use petgraph::Direction;
-use petgraph::prelude::EdgeRef;
 
 /// A Upper-Bounded Dijkstra (UBD) algorithm.
 ///
@@ -26,8 +24,6 @@ where
     // Internally holds a successors cache
     predicate: Arc<Mutex<PredicateCache<E, M>>>,
     reachable_hash: RefCell<FxHashMap<(usize, usize), Reachable<E>>>,
-
-    _marker: std::marker::PhantomData<M>,
 }
 
 impl<E, M> Default for SelectiveForwardSolver<E, M>
@@ -39,7 +35,6 @@ where
         Self {
             predicate: Arc::new(Mutex::new(PredicateCache::default())),
             reachable_hash: RefCell::new(FxHashMap::default()),
-            _marker: std::marker::PhantomData,
         }
     }
 }
@@ -56,38 +51,6 @@ where
         }
     }
 
-    /// Creates a path from the source up the parent map until no more parents
-    /// are found. This assumes there is only one relation between parent and children.
-    ///
-    /// Returns in the order `[target, ..., source]`.
-    ///
-    /// If the target is not found by the builder, `None` is returned.
-    #[inline]
-    pub(crate) fn path_builder<N, C>(
-        source: &N,
-        target: &N,
-        parents: &FxHashMap<N, (N, C)>,
-    ) -> Option<Vec<N>>
-    where
-        N: Eq + Hash + Copy,
-    {
-        let mut rev = vec![*source];
-        let mut next = source;
-
-        while let Some((parent, _)) = parents.get(next) {
-            // Located the target
-            if *next == *target {
-                rev.reverse();
-                return Some(rev);
-            }
-
-            rev.push(*parent);
-            next = parent;
-        }
-
-        None
-    }
-
     fn reach<'a, 'b, Emmis, Trans>(
         &'b self,
         transition: &'b Transition<'b, Emmis, Trans, E, M>,
@@ -100,13 +63,7 @@ where
         Trans: TransitionStrategy<E, M> + Send + Sync,
         'b: 'a,
     {
-        let graph_ref = Arc::clone(&transition.candidates.graph);
-        let successors = graph_ref
-            .read()
-            .unwrap()
-            .edges_directed(*source, Direction::Outgoing)
-            .map(|edge| edge.target())
-            .collect::<Vec<CandidateId>>();
+        let successors = transition.candidates.next_layer(source);
 
         // #[cold]
         if *source == start {
@@ -123,54 +80,49 @@ where
             return vec![(end, CandidateEdge::zero())];
         }
 
+        let reachable = self
+            .reachable(context, source, successors.as_slice())
+            .unwrap_or_default();
+
         // Note: `reachable` ~= free, `reach` ~= 0.1ms (some overhead- how?)
+        {
+            debug_time!("Format Reachable Elements");
+            let mut hash = self.reachable_hash.borrow_mut();
 
-        self.reachable(context, source, successors.as_slice())
-            .unwrap_or_default()
-            .into_iter()
-            .filter_map(move |reachable| {
-                let source_layer = context.candidate(&reachable.source)?.location.layer_id;
-                let target_layer = context.candidate(&reachable.target)?.location.layer_id;
+            reachable
+                .into_iter()
+                .filter_map(move |reachable| {
+                    let path_vec = reachable.path_nodes().collect_vec();
+                    let optimal_path = Trip::new_with_map(transition.map, &path_vec);
 
-                let sl = transition.layers.layers.get(source_layer)?;
-                let tl = transition.layers.layers.get(target_layer)?;
+                    let source = context.candidate(&reachable.source)?;
+                    let target = context.candidate(&reachable.target)?;
 
-                let path_vec = reachable.path_nodes().collect_vec();
+                    let sl = transition.layers.layers.get(source.location.layer_id)?;
+                    let tl = transition.layers.layers.get(target.location.layer_id)?;
+                    let layer_width = Haversine.distance(sl.origin, tl.origin);
 
-                let layer_width = Haversine.distance(sl.origin, tl.origin);
-                let optimal_path = Trip::new_with_map(transition.map, &path_vec);
+                    let transition_cost = transition.heuristics.transition(TransitionContext {
+                        map_path: &path_vec,
+                        requested_resolution_method: reachable.resolution_method,
 
-                let transition_cost = transition.heuristics.transition(TransitionContext {
-                    map_path: &path_vec,
-                    requested_resolution_method: reachable.resolution_method,
+                        source_candidate: &reachable.source,
+                        target_candidate: &reachable.target,
+                        routing_context: context,
 
-                    source_candidate: &reachable.source,
-                    target_candidate: &reachable.target,
-                    routing_context: context,
+                        layer_width,
+                        optimal_path,
+                    });
 
-                    layer_width,
-                    optimal_path,
-                });
+                    let transition = (transition_cost as f64 * 0.6) as u32;
+                    let emission = (target.emission as f64 * 0.4) as u32;
+                    let cost = emission.saturating_add(transition);
 
-                let emission_cost = transition
-                    .candidates
-                    .candidate(&reachable.target)
-                    .map_or(u32::MAX, |v| v.emission);
-
-                let transition = (transition_cost as f64 * 0.6) as u32;
-                let emission = (emission_cost as f64 * 0.4) as u32;
-
-                let return_value = (
-                    reachable.target,
-                    CandidateEdge::new(emission.saturating_add(transition)),
-                );
-
-                self.reachable_hash
-                    .borrow_mut()
-                    .insert(reachable.hash(), reachable);
-                Some(return_value)
-            })
-            .collect::<Vec<_>>()
+                    hash.insert(reachable.hash(), reachable.clone());
+                    Some((reachable.target, CandidateEdge::new(cost)))
+                })
+                .collect::<Vec<_>>()
+        }
     }
 
     /// Derives which candidates are reachable by the source candidate.
@@ -191,14 +143,17 @@ where
         // Note: Parent is OsmEntryId::NULL, which will not be within the map,
         //       indicating the root element.
         let predicate_map = {
+            debug_time!("query predicate for {source:?}");
+
             self.predicate
                 .lock()
-                .unwrap()
+                .ok()?
                 .query(ctx, source_candidate.edge.target)
-                .clone()
         };
 
         let reachable = {
+            debug_time!("predicates {source:?} -> reachable");
+
             targets
                 .iter()
                 .filter_map(|target| {
@@ -265,6 +220,7 @@ where
     fn solve<Emmis, Trans>(
         &self,
         mut transition: Transition<Emmis, Trans, E, M>,
+        runtime: &M::Runtime,
     ) -> Result<CollapsedPath<E>, MatchError>
     where
         Emmis: EmissionStrategy + Send + Sync,
@@ -283,7 +239,7 @@ where
         debug!("Weaved all candidate layers.");
 
         info!("Solving: Start={start:?}. End={end:?}. ");
-        let context = transition.context();
+        let context = transition.context(runtime);
 
         // Note: For every candidate, generate their reachable elements, then run the solver overtop.
         //       This means we can do it in parallel, which is more efficient - however will have to
@@ -292,12 +248,16 @@ where
         //
         //       This behaviour can be implemented using the `AllForwardSolver` going forward.
 
-        let Some((path, cost)) = astar(
-            &start,
-            |source| self.reach(&transition, &context, (start, end), source),
-            |_| CandidateEdge::zero(),
-            |node| *node == end,
-        ) else {
+        let Some((path, cost)) = ({
+            debug_time!("Solved transition graph");
+
+            astar(
+                &start,
+                |source| self.reach(&transition, &context, (start, end), source),
+                |_| CandidateEdge::zero(),
+                |node| *node == end,
+            )
+        }) else {
             return Err(MatchError::CollapseFailure(CollapseError::NoPathFound));
         };
 

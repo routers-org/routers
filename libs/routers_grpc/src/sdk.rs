@@ -2,11 +2,14 @@
 //! in order to make the model useful as an SDK.
 
 use crate::r#match::{MatchRequest, MatchResponse, SnapRequest};
-use crate::model::{Coordinate, EdgeIdentifier, EdgeMetadata, NodeIdentifier};
+use crate::model::costing::{BusModel, CarModel, TruckModel, Variation};
+use crate::model::{Coordinate, CostOptions, EdgeIdentifier, EdgeMetadata, NodeIdentifier};
 
-use codec::osm::TraversalConditions;
+use codec::osm::OsmTripConfiguration;
 use codec::osm::meta::OsmEdgeMetadata;
-use codec::osm::speed_limit::SpeedLimitExt;
+use codec::osm::speed_limit::{SpeedLimitConditions, SpeedLimitExt};
+use codec::primitive::context::TripContext;
+use codec::primitive::transport::{TransportMode, TruckCosting, VehicleCosting};
 use codec::{Entry, Node};
 use geo::{Coord, LineString, coord};
 use std::fmt::Error as StdError;
@@ -77,7 +80,7 @@ impl MatchResponse {
     }
 }
 
-type MetadataAndTraversal<'a> = (&'a OsmEdgeMetadata, &'a TraversalConditions);
+type MetadataAndTraversal<'a> = (&'a OsmEdgeMetadata, &'a OsmTripConfiguration);
 
 impl From<MetadataAndTraversal<'_>> for EdgeMetadata {
     fn from((meta, cond): MetadataAndTraversal<'_>) -> Self {
@@ -87,7 +90,7 @@ impl From<MetadataAndTraversal<'_>> for EdgeMetadata {
             speed_limit: meta
                 .speed_limit
                 .as_ref()
-                .map(|v| v.relevant_limits(cond.clone()))
+                .map(|v| v.relevant_limits(cond, SpeedLimitConditions::default()))
                 .and_then(|v| v.first().map(|elem| elem.speed))
                 .and_then(|v| v.in_kmh())
                 .map(|speed| speed.get() as u32),
@@ -115,14 +118,14 @@ where
 }
 
 impl MatchRequest {
-    pub fn linestring(self) -> LineString {
-        Into::<LineString>::into(Coordinates(self.data))
+    pub fn linestring(&self) -> LineString {
+        Into::<LineString>::into(Coordinates(self.data.clone()))
     }
 }
 
 impl SnapRequest {
-    pub fn linestring(self) -> LineString {
-        Into::<LineString>::into(Coordinates(self.data))
+    pub fn linestring(&self) -> LineString {
+        Into::<LineString>::into(Coordinates(self.data.clone()))
     }
 }
 
@@ -133,5 +136,50 @@ impl TryFrom<MatchResponse> for LineString {
         let linestring = value.discretized().ok_or(StdError)?.into();
 
         Ok(linestring)
+    }
+}
+
+impl From<TruckModel> for TruckCosting {
+    fn from(model: TruckModel) -> Self {
+        TruckCosting {
+            vehicle_costing: VehicleCosting {
+                height: model.height,
+                width: model.width,
+            },
+            length: model.length,
+            axle_load: model.axle_load,
+            axle_count: model.axle_count as u8,
+            hazmat_load: model.hazardous_load,
+        }
+    }
+}
+
+impl From<CarModel> for VehicleCosting {
+    fn from(model: CarModel) -> Self {
+        VehicleCosting {
+            height: model.height,
+            width: model.width,
+        }
+    }
+}
+
+impl From<BusModel> for VehicleCosting {
+    fn from(model: BusModel) -> Self {
+        VehicleCosting {
+            height: model.height,
+            width: model.width,
+        }
+    }
+}
+
+impl From<CostOptions> for Option<TripContext> {
+    fn from(value: CostOptions) -> Option<TripContext> {
+        let transport_mode = match value.costing_method?.variation? {
+            Variation::Bus(bus) => TransportMode::Bus(Some(VehicleCosting::from(bus))),
+            Variation::Car(car) => TransportMode::Car(Some(VehicleCosting::from(car))),
+            Variation::Truck(truck) => TransportMode::Truck(Some(TruckCosting::from(truck))),
+        };
+
+        Some(TripContext { transport_mode })
     }
 }

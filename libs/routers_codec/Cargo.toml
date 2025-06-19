@@ -36,6 +36,7 @@ tracing-subscriber = { workspace = true, optional = true }
 strum = { workspace = true }
 itertools = { workspace = true }
 regex = "1.11.1"
+bitflags = "2.9.1"
 
 [dev-dependencies]
 routers_fixtures = { path = "../routers_fixtures" }

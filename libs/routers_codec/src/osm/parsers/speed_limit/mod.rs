@@ -6,14 +6,25 @@ mod test;
 
 use crate::osm::element::Tags;
 use crate::osm::speed_limit::limit::PossiblyConditionalSpeedLimit;
-use crate::osm::{Parser, TraversalConditions};
+use crate::osm::{OsmTripConfiguration, Parser};
+
 pub use collection::SpeedLimitCollection;
+pub use subtypes::SpeedLimitConditions;
 
 pub(super) mod subtypes {
+    use crate::osm::primitives::Directionality;
+    use std::num::NonZeroU8;
+
     pub const LANES: &str = "lanes";
 
     pub const CONDITION_PATTERN: &str = r"\(([^)]+)\)";
     pub const VALUE_PATTERN: &str = r"^\s*(\d+)(?:\s*([^\s(]+))?";
+
+    #[derive(Debug, Default)]
+    pub struct SpeedLimitConditions {
+        pub directionality: Directionality,
+        pub lane: Option<NonZeroU8>,
+    }
 }
 
 pub trait SpeedLimit {
@@ -29,6 +40,7 @@ impl SpeedLimit for Tags {
 pub trait SpeedLimitExt {
     fn relevant_limits(
         &self,
-        traversal_conditions: TraversalConditions,
+        runtime: &OsmTripConfiguration,
+        conditions: SpeedLimitConditions,
     ) -> Vec<PossiblyConditionalSpeedLimit>;
 }

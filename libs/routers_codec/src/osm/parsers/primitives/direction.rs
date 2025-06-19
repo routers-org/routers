@@ -5,40 +5,44 @@ use strum::{AsRefStr, Display, EnumIter, EnumString};
 /// This enum covers the directional and positional indicators used in OSM
 /// to specify direction of travel or side of a way relative to how the way
 /// is drawn in the OSM database.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Display, EnumString, EnumIter, AsRefStr)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Display, EnumString, EnumIter, AsRefStr,
+)]
 #[strum(serialize_all = "snake_case")]
+#[repr(u8)]
 pub enum Directionality {
-    /// Direction in which the OSM way is drawn (from first node to last node).
-    /// Used in tags like `lanes:forward=2` or `oneway=yes` (implicit forward).
-    #[strum(serialize = "forward")]
-    Forward,
-
-    /// Direction opposite to how the OSM way is drawn (from last node to first node).
-    /// Used in tags like `lanes:backward=1` or `oneway=-1` (backward direction).
-    #[strum(serialize = "backward")]
-    Backward,
-
-    /// Left-hand side of the way when looking in the forward direction.
-    /// Used in tags like `cycleway:left=lane` or `parking:lane:left=parallel`.
-    #[strum(serialize = "left")]
-    Left,
-
-    /// Right-hand side of the way when looking in the forward direction.
-    /// Used in tags like `cycleway:right=track` or `sidewalk:right=yes`.
-    #[strum(serialize = "right")]
-    Right,
-
     /// Applies to both directions of travel along a way.
     /// Used for features like center turn lanes that serve traffic in both directions.
     /// Example: `turn:lanes:both_ways=left` for a center left-turn lane.
     #[strum(serialize = "both_ways")]
-    BothWays,
+    #[default]
+    BothWays = 0,
+
+    /// Direction in which the OSM way is drawn (from first node to last node).
+    /// Used in tags like `lanes:forward=2` or `oneway=yes` (implicit forward).
+    #[strum(serialize = "forward")]
+    Forward = 1,
+
+    /// Direction opposite to how the OSM way is drawn (from last node to first node).
+    /// Used in tags like `lanes:backward=1` or `oneway=-1` (backward direction).
+    #[strum(serialize = "backward")]
+    Backward = 2,
 
     /// Explicitly indicates a feature applies to both sides of a way.
     /// Used to disambiguate when the base tag might be ambiguous about sidedness.
     /// Example: `cycleway:both=lane` to indicate bike lanes on both sides.
     #[strum(serialize = "both")]
-    Both,
+    Both = 3,
+
+    /// Left-hand side of the way when looking in the forward direction.
+    /// Used in tags like `cycleway:left=lane` or `parking:lane:left=parallel`.
+    #[strum(serialize = "left")]
+    Left = 4,
+
+    /// Right-hand side of the way when looking in the forward direction.
+    /// Used in tags like `cycleway:right=track` or `sidewalk:right=yes`.
+    #[strum(serialize = "right")]
+    Right = 5,
 }
 
 impl Directionality {

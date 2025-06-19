@@ -6,9 +6,9 @@ use tonic::{Request, Response, Status};
 use crate::definition::r#match::*;
 use crate::definition::model::*;
 
-use crate::services::{RouteService, RuntimeContext};
+use crate::services::RouteService;
 use codec::{Entry, Metadata};
-use routers::{Match, Path, RoutedPath};
+use routers::{Match, Path, PrecomputeForwardSolver, RoutedPath, SelectiveForwardSolver};
 #[cfg(feature = "telemetry")]
 use tracing::Level;
 
@@ -66,12 +66,12 @@ impl<Ctx> Util<Ctx> {
 }
 
 #[tonic::async_trait]
-impl<E, M, Ctx> MatchService for RouteService<E, M, Ctx>
+impl<E, M> MatchService for RouteService<E, M>
 where
     M: Metadata + 'static,
     E: Entry + 'static,
-    Ctx: RuntimeContext + 'static,
-    EdgeMetadata: for<'a> From<(&'a M, &'a Ctx)>,
+    EdgeMetadata: for<'a> From<(&'a M, &'a M::Runtime)>,
+    Option<M::TripContext>: From<CostOptions>,
 {
     #[cfg_attr(feature="telemetry", tracing::instrument(skip_all, level = Level::INFO))]
     async fn r#match(
@@ -81,15 +81,19 @@ where
         let map_match = request.into_inner();
         let coordinates = map_match.linestring();
 
+        let solver = PrecomputeForwardSolver::default().use_cache(self.graph.cache.clone());
+
+        let runtime = M::runtime(map_match.options.and_then(Option::<M::TripContext>::from));
+
         let result = self
             .graph
-            .r#match(coordinates)
+            .r#match(&runtime, solver, coordinates)
             .map_err(|e| e.to_string())
             .map_err(Status::internal)?;
 
         // TODO: Vector to allow trip-splitting in the future.
         Ok(Response::new(MatchResponse {
-            matches: Util::<Ctx>::process(result, Ctx::new()),
+            matches: Util::<M::Runtime>::process(result, runtime),
         }))
     }
 
@@ -101,14 +105,18 @@ where
         let map_match = request.into_inner();
         let coordinates = map_match.linestring();
 
+        let solver = SelectiveForwardSolver::default().use_cache(self.graph.cache.clone());
+
+        let runtime = M::runtime(map_match.options.and_then(Option::<M::TripContext>::from));
+
         let result = self
             .graph
-            .snap(coordinates)
+            .snap(&runtime, solver, coordinates)
             .map_err(|e| e.to_string())
             .map_err(Status::internal)?;
 
         Ok(Response::new(SnapResponse {
-            matches: Util::<Ctx>::process(result, Ctx::new()),
+            matches: Util::<M::Runtime>::process(result, runtime),
         }))
     }
 }

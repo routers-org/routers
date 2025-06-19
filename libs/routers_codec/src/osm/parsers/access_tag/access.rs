@@ -1,10 +1,10 @@
-use crate::osm::primitives::TransportMode;
+use crate::osm::speed_limit::restriction::Restriction;
 use crate::osm::{Parser, TagString, Tags};
-use std::str::FromStr;
+
 use strum::{AsRefStr, Display, EnumIter, EnumString};
 
 /// Top-level access restrictions that apply to all transport modes
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Display, EnumString, EnumIter, AsRefStr)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Display, EnumString, EnumIter, AsRefStr)]
 #[strum(serialize_all = "snake_case")]
 pub enum AccessValue {
     /// Public access, legal right of way
@@ -58,7 +58,7 @@ pub enum PhysicalAccess {
 /// Main parser structure for OSM access tags
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct AccessTag {
-    pub transport_mode: TransportMode,
+    pub restriction: Restriction,
     pub access: AccessValue,
 }
 
@@ -77,11 +77,13 @@ impl AccessTag {
     /// let tag = AccessTag::from_key_value("motor_vehicle", "destination")?;
     /// ```
     pub fn from_key_value(key: &str, value: &str) -> Result<Self, Box<dyn std::error::Error>> {
-        let access_value = AccessValue::try_from(value)?;
+        let access = AccessValue::try_from(value)?;
+        let restriction = Restriction::parse_require_transport_mode(key)
+            .ok_or("Key not found in require transport mode")?;
 
         Ok(AccessTag {
-            transport_mode: TransportMode::from_str(key)?,
-            access: access_value,
+            restriction,
+            access,
         })
     }
 
@@ -91,7 +93,7 @@ impl AccessTag {
 
     #[cfg(test)]
     fn to_key_value(&self) -> (String, String) {
-        (self.transport_mode.to_string(), self.access.to_string())
+        (self.restriction.to_string(), self.access.to_string())
     }
 }
 
@@ -113,6 +115,7 @@ impl Parser for Vec<AccessTag> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::osm::primitives::TransportMode;
     use std::str::FromStr;
 
     #[test]
@@ -136,6 +139,17 @@ mod tests {
 
         let tag = AccessTag::from_key_value("motor_vehicle", "destination").unwrap();
         assert_eq!(tag.access, AccessValue::Destination);
+    }
+
+    #[test]
+    fn test_pure_mode_parsing() {
+        let tag = AccessTag::from_key_value("access", "no").unwrap();
+        assert_eq!(tag.access, AccessValue::No);
+        assert_eq!(tag.restriction.transport_mode, TransportMode::All);
+
+        let tag = AccessTag::from_key_value("access", "yes").unwrap();
+        assert_eq!(tag.access, AccessValue::Yes);
+        assert_eq!(tag.restriction.transport_mode, TransportMode::All);
     }
 
     #[test]

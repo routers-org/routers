@@ -3,9 +3,19 @@ use std::hash::Hash;
 
 pub mod edge;
 pub mod node;
+pub mod transport;
 
+pub use edge::Direction;
 pub use edge::Edge;
 pub use node::Node;
+
+pub mod context {
+    use crate::primitive::transport::TransportMode;
+
+    pub struct TripContext {
+        pub transport_mode: TransportMode,
+    }
+}
 
 pub trait Entry:
     Default + Copy + Clone + PartialEq + Eq + Ord + Hash + Debug + Send + Sync
@@ -18,5 +28,11 @@ pub trait Metadata: Clone + Debug + Send + Sync {
     where
         Self: 'a;
 
+    type Runtime: Debug + Send + Sync;
+    type TripContext;
+
     fn pick(raw: Self::Raw<'_>) -> Self;
+    fn runtime(ctx: Option<Self::TripContext>) -> Self::Runtime;
+
+    fn accessible(&self, access: &Self::Runtime, direction: Direction) -> bool;
 }

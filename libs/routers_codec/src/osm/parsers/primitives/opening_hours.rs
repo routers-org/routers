@@ -72,6 +72,12 @@ impl Display for TimeRange {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct TimeOfWeek {
+    time: Time,
+    weekday: Weekday,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum WeekdayRange {
     Single(Weekday),
     Range(Weekday, Weekday),
@@ -303,7 +309,7 @@ impl OpeningHoursParser {
 
 // Utility functions for working with parsed opening hours
 impl OpeningHours {
-    pub fn is_open_at(&self, weekday: &Weekday, time: &Time) -> bool {
+    pub fn is_open_at(&self, TimeOfWeek { time, weekday }: &TimeOfWeek) -> bool {
         for rule in &self.rules {
             if rule.closed {
                 continue;
@@ -406,9 +412,15 @@ mod tests {
         let hours = OpeningHoursParser::parse("Mo-Fr 09:00-17:00").unwrap();
 
         let monday_noon = Time::new(12, 0).unwrap();
-        assert!(hours.is_open_at(&Weekday::Monday, &monday_noon));
+        assert!(hours.is_open_at(&TimeOfWeek {
+            weekday: Weekday::Monday,
+            time: monday_noon
+        }));
 
         let monday_early = Time::new(8, 0).unwrap();
-        assert!(!hours.is_open_at(&Weekday::Monday, &monday_early));
+        assert!(!hours.is_open_at(&TimeOfWeek {
+            weekday: Weekday::Monday,
+            time: monday_early
+        }));
     }
 }

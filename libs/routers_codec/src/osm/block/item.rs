@@ -5,7 +5,7 @@
 use bytes::Buf;
 use either::Either;
 use flate2::read::ZlibDecoder;
-use log::{trace, warn};
+use log::warn;
 use prost::Message;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use std::io::Read;
@@ -23,11 +23,6 @@ pub enum BlockItem {
 impl BlockItem {
     #[inline]
     pub(crate) fn from_blob_item(blob: &BlobItem, buf: &[u8]) -> Option<Self> {
-        trace!(
-            "Decoding blob: {:?}. Size: {}",
-            blob.range, blob.header.datasize
-        );
-
         BlockItem::from_raw(blob, buf)
     }
 

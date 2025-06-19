@@ -1,7 +1,8 @@
 use crate::osm::element::{TagString, Tags};
 use crate::osm::speed_limit::limit::{SpeedLimitEntry, SpeedLimitVariant};
+use crate::osm::speed_limit::subtypes::SpeedLimitConditions;
 use crate::osm::speed_limit::{PossiblyConditionalSpeedLimit, SpeedLimitExt};
-use crate::osm::{Parser, TraversalConditions};
+use crate::osm::{OsmTripConfiguration, Parser};
 use std::ops::Deref;
 
 #[derive(Debug, Clone)]
@@ -18,7 +19,8 @@ impl Deref for SpeedLimitCollection {
 impl SpeedLimitExt for SpeedLimitCollection {
     fn relevant_limits(
         &self,
-        traversal_conditions: TraversalConditions,
+        runtime: &OsmTripConfiguration,
+        conditions: SpeedLimitConditions,
     ) -> Vec<PossiblyConditionalSpeedLimit> {
         // Must match the conditions if they exist, otherwise blanketed.
         self.0
@@ -28,19 +30,19 @@ impl SpeedLimitExt for SpeedLimitCollection {
                 limit
                     .restriction
                     .transport_mode
-                    .is_none_or(|mode| mode == traversal_conditions.transport_mode)
+                    .is_none_or(|mode| mode == runtime.transport_mode)
             })
             .filter(|limit| {
                 limit
                     .restriction
                     .directionality
-                    .is_none_or(|dir| dir == traversal_conditions.directionality)
+                    .is_none_or(|dir| dir == conditions.directionality)
             })
             .filter_map(|SpeedLimitEntry { limit, .. }| match limit {
                 SpeedLimitVariant::Blanket(blanket) => Some(blanket),
                 SpeedLimitVariant::PerLane(per_lane) => per_lane
                     .0
-                    .get(traversal_conditions.lane?.get() as usize)
+                    .get(conditions.lane?.get() as usize)
                     .cloned()
                     .and_then(|x| x),
             })

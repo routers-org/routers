@@ -6,7 +6,7 @@ use pathfinding::num_traits::{ConstZero, Zero};
 use petgraph::algo::astar;
 use petgraph::graph::EdgeReference;
 use petgraph::prelude::EdgeRef;
-use petgraph::{Directed, Graph};
+use petgraph::{Directed, Direction, Graph};
 use scc::HashMap;
 use std::fmt::Debug;
 use std::sync::{Arc, RwLock};
@@ -47,6 +47,29 @@ impl<E> Candidates<E>
 where
     E: Entry,
 {
+    /// Returns all the candidates within the following layer to the supplied candidate.
+    /// Such as observed in the following diagram, given the candidate exists within
+    /// layer `N`, all candidates in layer `N+1`, to which it is connected, will be returned.
+    ///
+    /// ```text
+    ///             Layer    Layer
+    ///               N       N+1
+    ///
+    ///                __/---+
+    ///               /
+    ///    SOURCE    +-------+
+    ///               \
+    ///                ‾‾\---+
+    /// ```
+    pub fn next_layer(&self, candidate: &CandidateId) -> Vec<CandidateId> {
+        self.graph
+            .read()
+            .unwrap()
+            .edges_directed(*candidate, Direction::Outgoing)
+            .map(|edge| edge.target())
+            .collect()
+    }
+
     pub fn attach_ends(
         &mut self,
         layers: &Layers,

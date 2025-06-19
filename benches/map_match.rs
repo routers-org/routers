@@ -6,6 +6,8 @@ use routers_fixtures::{
 use routers::transition::*;
 use routers::{Graph, Match};
 
+use codec::osm::OsmEdgeMetadata;
+use codec::{Entry, Metadata};
 use criterion::{black_box, criterion_main};
 use geo::LineString;
 use std::path::Path;
@@ -69,13 +71,19 @@ fn target_benchmark(c: &mut criterion::Criterion) {
         let graph = Graph::new(path).expect("Graph must be created");
 
         let costing = CostingStrategies::default();
+        let runtime = OsmEdgeMetadata::runtime(None);
 
         ga.matches.iter().for_each(|sc| {
             let coordinates: LineString<f64> = LineString::try_from_wkt_str(sc.input_linestring)
                 .expect("Linestring must parse successfully.");
 
+            // Warm up the cache
             let _ = graph
-                .r#match(black_box(coordinates.clone()))
+                .r#match(
+                    &runtime,
+                    PrecomputeForwardSolver::default().use_cache(graph.cache.clone()),
+                    black_box(coordinates.clone()),
+                )
                 .expect("Match must complete successfully");
 
             group.bench_function(format!("layer-gen: {}", sc.name), |b| {
@@ -88,25 +96,72 @@ fn target_benchmark(c: &mut criterion::Criterion) {
                 })
             });
 
+            // Always the default solver, used to ensure no regressions to a primary audiance
             group.bench_function(format!("match: {}", sc.name), |b| {
                 b.iter(|| {
-                    let result = graph
-                        .r#match(coordinates.clone())
-                        .expect("Match must complete successfully");
+                    let solver = SelectiveForwardSolver::default().use_cache(graph.cache.clone());
 
-                    let edges = result
-                        .interpolated
-                        .iter()
-                        .map(|element| element.edge.id().identifier)
-                        .collect::<Vec<_>>();
+                    let edges = bench_match(&graph, &runtime, coordinates.clone(), solver);
 
                     assert_subsequence(sc.expected_linestring, &edges);
                 })
             });
+
+            // Benchmarks for specific solvers
+
+            // Benchmark the pre-compute solver
+            group.bench_function(
+                format!("precompute_forward_solver:match: {}", sc.name),
+                |b| {
+                    b.iter(|| {
+                        let solver =
+                            PrecomputeForwardSolver::default().use_cache(graph.cache.clone());
+
+                        let edges = bench_match(&graph, &runtime, coordinates.clone(), solver);
+
+                        assert_subsequence(sc.expected_linestring, &edges);
+                    })
+                },
+            );
+
+            // Benchmark the selective solver
+            group.bench_function(
+                format!("selective_forward_solver:match: {}", sc.name),
+                |b| {
+                    b.iter(|| {
+                        let solver =
+                            SelectiveForwardSolver::default().use_cache(graph.cache.clone());
+
+                        let edges = bench_match(&graph, &runtime, coordinates.clone(), solver);
+
+                        assert_subsequence(sc.expected_linestring, &edges);
+                    })
+                },
+            );
         });
     });
 
+    group.measurement_time(std::time::Duration::from_secs(20));
+    group.sample_size(100);
+
     group.finish();
+}
+
+fn bench_match<E: Entry, M: Metadata>(
+    graph: &Graph<E, M>,
+    runtime: &M::Runtime,
+    coordinates: LineString<f64>,
+    solver: impl Solver<E, M>,
+) -> Vec<i64> {
+    let result = graph
+        .r#match(&runtime, solver, coordinates.clone())
+        .expect("Match must complete successfully");
+
+    result
+        .interpolated
+        .iter()
+        .map(|element| element.edge.id().identifier())
+        .collect::<Vec<_>>()
 }
 
 criterion::criterion_group!(targeted_benches, target_benchmark);

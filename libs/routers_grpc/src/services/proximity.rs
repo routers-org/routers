@@ -1,6 +1,6 @@
 use crate::definition::model::*;
 use crate::definition::scan::*;
-use crate::services::{RouteService, RuntimeContext};
+use crate::services::RouteService;
 
 use routers::Scan;
 
@@ -16,11 +16,10 @@ use codec::{Entry, Metadata};
 use tracing::Level;
 
 #[tonic::async_trait]
-impl<E, M, Ctx> ScanService for RouteService<E, M, Ctx>
+impl<E, M> ScanService for RouteService<E, M>
 where
     M: Metadata + 'static,
     E: Entry + 'static,
-    Ctx: RuntimeContext + 'static,
 {
     #[cfg_attr(feature="telemetry", tracing::instrument(skip_all, err(level = Level::INFO)))]
     async fn point(
@@ -74,30 +73,12 @@ where
             request.search_radius
         );
 
-        let all_valids = self
-            .graph
-            .scan_nodes(&point, request.search_radius)
-            .map(|p| p.position.wkt_string())
-            .collect::<Vec<_>>()
-            .join(", ");
-
-        println!("All Valid Nodes: GEOMETRYCOLLECTION ({})", all_valids);
-
         let mut nearest_points = self
             .graph
             .scan_nodes_projected(&point, request.search_radius)
             .collect::<Vec<_>>();
 
         debug!("Found {} points", nearest_points.len());
-
-        println!(
-            "Nearest points: GEOMETRYCOLLECTION ({})",
-            nearest_points
-                .iter()
-                .map(|(p, ..)| p.wkt_string())
-                .collect::<Vec<_>>()
-                .join(", ")
-        );
 
         // Get the closest of the discovered points
         nearest_points.sort_by(|(a, _), (b, _)| {

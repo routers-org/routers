@@ -9,3 +9,10 @@ where
     pub source: E,
     pub target: E,
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Ord, Eq, Hash)]
+#[repr(u8)]
+pub enum Direction {
+    Outgoing = 0,
+    Incoming = 1,
+}

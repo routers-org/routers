@@ -94,14 +94,14 @@ pub trait Calculable<K: CacheKey, M: Metadata, V> {
 }
 
 mod successor {
+    use super::*;
     use crate::transition::*;
+
     use geo::Haversine;
     use petgraph::Direction;
 
-    use super::*;
-
     /// The weights, given as output from the [`SuccessorsCache::calculate`] function.
-    type SuccessorWeights<E> = Vec<(E, WeightAndDistance)>;
+    type SuccessorWeights<E> = Vec<(E, DirectionAwareEdgeId<E>, WeightAndDistance)>;
 
     /// The cache map definition for the successors.
     ///
@@ -113,36 +113,25 @@ mod successor {
         #[inline]
         fn calculate(&mut self, ctx: &RoutingContext<E, M>, key: E) -> SuccessorWeights<E> {
             // Calc. once
-            let source = ctx.map.get_position(&key).unwrap();
+            let source = unsafe { ctx.map.get_position(&key).unwrap_unchecked() };
 
             ctx.map
                 .graph
                 .edges_directed(key, Direction::Outgoing)
-                .map(|(_, next, (w, _))| {
-                    (
-                        next,
-                        if key != next {
-                            let target = ctx.map.get_position(&next).unwrap();
+                .map(|(_, next, (w, edge))| {
+                    const METER_TO_CM: f64 = 100.0;
 
-                            // In centimeters (1m = 100cm)
-                            WeightAndDistance(
-                                CumulativeFraction {
-                                    numerator: *w,
-                                    denominator: 1,
-                                },
-                                (Haversine.distance(source, target) * 100f64) as u32,
-                            )
-                        } else {
-                            // Total accrued distance
-                            WeightAndDistance(
-                                CumulativeFraction {
-                                    numerator: *w,
-                                    denominator: 1,
-                                },
-                                0,
-                            )
-                        },
-                    )
+                    let position = unsafe { ctx.map.get_position(&next).unwrap_unchecked() };
+
+                    // In centimeters (1m = 100cm)
+                    let distance = Haversine.distance(source, position);
+                    (next, (distance * METER_TO_CM) as u32, *w, *edge)
+                })
+                .map(|(next, distance, weight, edge)| {
+                    // Stores the weight and distance (in cm) to the candidate
+                    let fraction = WeightAndDistance::new(Fraction::mul(weight), distance);
+
+                    (next, edge, fraction)
                 })
                 .collect::<Vec<_>>()
         }
@@ -204,6 +193,22 @@ mod predicate {
             Dijkstra
                 .reach(&key, move |node| {
                     ArcIter::new(self.metadata.successors.query(ctx, *node))
+                        .filter(|(_, edge, _)| {
+                            // Only traverse paths which can be accessed by
+                            // the specific runtime routing conditions available
+                            let meta = ctx.map.meta(edge);
+                            let direction = edge.direction();
+
+                            // TODO: Does not uphold invariant.
+                            //       => Idempotency
+                            //       The accessibility check is not considered in the key,
+                            //       and so may taint other queries by pre-filtering accessible
+                            //       paths, which may be accessible with a different runtime
+                            //       configuration.
+
+                            meta.accessible(ctx.runtime, direction)
+                        })
+                        .map(|(a, _, b)| (a, b))
                 })
                 .take_while(|p| {
                     // Bounded by the threshold distance (centimeters)

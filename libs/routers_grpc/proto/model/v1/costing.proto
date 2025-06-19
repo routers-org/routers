@@ -1,7 +1,36 @@
 syntax = "proto3";
 package model.v1;
 
-enum Costing {
-  COSTING_UNSPECIFIED = 0;
-  COSTING_CAR = 1;
+message CostOptions {
+  // The vehicle costing method to use for map matching.
+  model.v1.Costing costing_method = 5;
+}
+
+message Costing {
+  message CarModel {
+    float height = 1;
+    float width = 2;
+  }
+
+  message TruckModel {
+    float height = 1;
+    float width = 2;
+    float length = 3;
+
+    float axle_load = 4;
+    uint32 axle_count = 5;
+
+    bool hazardous_load = 6;
+  }
+
+  message BusModel {
+    float height = 1;
+    float width = 2;
+  }
+
+  oneof variation {
+    CarModel car = 1;
+    BusModel bus = 2;
+    TruckModel truck = 3;
+  }
 }

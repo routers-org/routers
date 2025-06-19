@@ -19,8 +19,8 @@ message MatchRequest {
   // The maximum distance (in m) between coordinates before a new route is started.
   optional double breakage_distance = 4;
 
-  // The vehicle costing method to use for map matching.
-  model.v1.Costing costing_method = 5;
+  // Configurable options to dictate the costing functions
+  model.v1.CostOptions options = 5;
 }
 
 message MatchResponse {
@@ -40,8 +40,8 @@ message SnapRequest {
   // The maximum distance (in m) between coordinates before a new route is started.
   optional double breakage_distance = 4;
 
-  // The vehicle costing method to use for map matching.
-  model.v1.Costing costing_method = 5;
+  // Configurable options to dictate the costing functions
+  model.v1.CostOptions options = 5;
 }
 
 message SnapResponse {

@@ -22,13 +22,14 @@ type NodeId = usize;
 ///
 /// ```rust
 /// use geo::LineString;
+/// use codec::Metadata;
 /// use codec::osm::element::Tags;
-/// use codec::osm::OsmEntryId;
+/// use codec::osm::{OsmEdgeMetadata, OsmEntryId};
 /// use routers::{Graph, Transition};
 /// use routers::transition::{CostingStrategies, SelectiveForwardSolver};
 ///
 /// // An example function to find the interpolated path of a trip.
-/// fn match_trip(map: &Graph<OsmEntryId, Tags>, route: LineString) -> Option<LineString> {
+/// fn match_trip(map: &Graph<OsmEntryId, OsmEdgeMetadata>, route: LineString) -> Option<LineString> {
 ///     // Use the default costing strategies
 ///     let costing = CostingStrategies::default();
 ///
@@ -39,10 +40,15 @@ type NodeId = usize;
 ///     // For example, let's choose the selective-forward solver.
 ///     let solver = SelectiveForwardSolver::default();
 ///
-///     // Now.. we simply solve the transition graph using the solver
-///     let solution = transition.solve(solver).ok()?;
+///     // Create our runtime conditions.
+///     // These allow us to make on-the-fly changes to costing, such as
+///     // our transport mode (Car, Bus, ..) or otherwise.
+///     let runtime = OsmEdgeMetadata::runtime();
 ///
-///     // Now we can return the interpolated path, just like that!
+///     // Now.. we simply solve the transition graph using the solver
+///     let solution = transition.solve(solver, runtime).ok()?;
+///
+///     // Then, we can return the interpolated path, just like that!
 ///     Some(solution.interpolated(map))
 /// }
 /// ```
@@ -97,17 +103,25 @@ where
     }
 
     /// Converts the transition graph into a [`RoutingContext`].
-    pub fn context(&self) -> RoutingContext<E, M> {
+    pub fn context<'b>(&'a self, runtime: &'b M::Runtime) -> RoutingContext<'b, E, M>
+    where
+        'a: 'b,
+    {
         RoutingContext {
             candidates: &self.candidates,
             map: self.map,
+            runtime,
         }
     }
 
     /// Solves the transition graph, using the provided [`Solver`].
-    pub fn solve(self, solver: impl Solver<E, M>) -> Result<CollapsedPath<E>, MatchError> {
+    pub fn solve(
+        self,
+        solver: impl Solver<E, M>,
+        runtime: &M::Runtime,
+    ) -> Result<CollapsedPath<E>, MatchError> {
         // Indirection to call.
-        solver.solve(self)
+        solver.solve(self, runtime)
     }
 
     /// Collapses the Hidden Markov Model (See [HMM]) into a

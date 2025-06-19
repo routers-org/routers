@@ -3,10 +3,10 @@ use crate::graph::Weight;
 use crate::transition::RoutingContext;
 
 use codec::primitive::Node;
+use codec::primitive::edge::Direction;
 use codec::{Entry, Metadata};
 use geo::{Distance, Haversine, LineLocatePoint, LineString, Point};
 use pathfinding::num_traits::Zero;
-use petgraph::Direction;
 use rstar::AABB;
 use std::cmp::Ordering;
 use std::fmt::Debug;
@@ -57,6 +57,11 @@ where
             direction: Direction::Incoming,
             ..self
         }
+    }
+
+    #[inline]
+    pub const fn direction(&self) -> Direction {
+        self.direction
     }
 }
 

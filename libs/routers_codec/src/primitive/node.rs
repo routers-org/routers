@@ -1,7 +1,8 @@
-use crate::Entry;
 use geo::{Destination, Distance, Euclidean, Geodesic, Point};
 use rstar::{AABB, Envelope};
 use std::fmt::Debug;
+
+use crate::Entry;
 
 /// The standardised node primitive containing a generic
 /// identifier which must implement [Entry], and contain

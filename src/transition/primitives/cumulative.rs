@@ -6,14 +6,14 @@ use std::ops::Add;
 /// It supports the [`Add`] trait wherein the combination of numerator
 /// and denominator is supported.
 ///
-/// The fractional value can be derived by the [`CumulativeFraction::value`] function.
+/// The fractional value can be derived by the [`Fraction::value`] function.
 #[derive(Copy, Clone, Hash, Debug)]
-pub struct CumulativeFraction {
+pub struct Fraction {
     pub numerator: Weight,
     pub denominator: u32,
 }
 
-impl CumulativeFraction {
+impl Fraction {
     /// Returns the fractional value (num / denom) of the cumulative fraction.
     pub(crate) fn value(&self) -> Weight {
         if self.denominator == 0 {
@@ -22,11 +22,19 @@ impl CumulativeFraction {
 
         self.numerator / self.denominator
     }
+
+    #[inline]
+    pub(crate) const fn mul(numerator: Weight) -> Self {
+        Fraction {
+            numerator,
+            denominator: 1,
+        }
+    }
 }
 
-impl Zero for CumulativeFraction {
+impl Zero for Fraction {
     fn zero() -> Self {
-        CumulativeFraction {
+        Fraction {
             numerator: 0,
             denominator: 0,
         }
@@ -37,11 +45,11 @@ impl Zero for CumulativeFraction {
     }
 }
 
-impl Add<CumulativeFraction> for CumulativeFraction {
-    type Output = CumulativeFraction;
+impl Add<Fraction> for Fraction {
+    type Output = Fraction;
 
-    fn add(self, rhs: CumulativeFraction) -> Self::Output {
-        CumulativeFraction {
+    fn add(self, rhs: Fraction) -> Self::Output {
+        Fraction {
             numerator: self.numerator + rhs.numerator,
             denominator: self.denominator + rhs.denominator,
         }

@@ -1,6 +1,6 @@
 use crate::osm::element::TagString;
 use crate::osm::primitives::*;
-use crate::osm::speed_limit::restriction::Restriction;
+use crate::osm::speed_limit::restriction::{Restriction, RestrictionOptionals};
 use crate::osm::speed_limit::subtypes;
 
 /// Defines a speed limit which may contain a conditional element.
@@ -110,7 +110,7 @@ pub enum SpeedLimitVariant {
 
 #[derive(Clone, Debug)]
 pub struct SpeedLimitEntry {
-    pub restriction: Restriction,
+    pub restriction: RestrictionOptionals,
     pub limit: SpeedLimitVariant,
 }
 

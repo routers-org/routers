@@ -34,7 +34,7 @@ where
     pub(crate) index: RTree<Node<E>>,
     pub(crate) index_edge: RTree<FatEdge<E>>,
 
-    pub(crate) cache: Arc<Mutex<PredicateCache<E, M>>>,
+    pub cache: Arc<Mutex<PredicateCache<E, M>>>,
 }
 
 impl<E, M> Debug for Graph<E, M>
@@ -62,6 +62,12 @@ where
 
     pub fn size(&self) -> usize {
         self.hash.len()
+    }
+
+    /// Safety: Assumes the edge exist
+    pub fn meta(&self, edge: &DirectionAwareEdgeId<E>) -> &M {
+        let index = edge.index();
+        unsafe { self.meta.get(&index).unwrap_unchecked() }
     }
 
     #[inline]
