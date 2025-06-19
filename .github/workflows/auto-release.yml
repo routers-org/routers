@@ -1,0 +1,156 @@
+name: Auto Release
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    types: [closed]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Job 1: Create release PR when changes are pushed to main
+  create-release-pr:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install git-cliff
+        uses: taiki-e/install-action@v2
+        with:
+          tool: git-cliff
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Generate changelog and determine next version
+        id: changelog
+        run: |
+          # Get the next version using git-cliff
+          NEXT_VERSION=$(git-cliff --bumped-version)
+          echo "next_version=$NEXT_VERSION" >> $GITHUB_OUTPUT
+          
+          # Generate unreleased changelog for PR body
+          git-cliff --unreleased --strip header > UNRELEASED.md
+          
+          # Generate full changelog with new version
+          git-cliff --tag $NEXT_VERSION > CHANGELOG.md
+
+      - name: Update Cargo.toml version
+        run: |
+          sed -i 's/^version = ".*"/version = "${{ steps.changelog.outputs.next_version }}"/' Cargo.toml
+
+      - name: Cargo check (dry run)
+        run: cargo check
+
+      - name: Dry run crates.io publish
+        run: |
+          cargo publish --dry-run
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+      - name: Create release branch
+        run: |
+          BRANCH_NAME="release/v${{ steps.changelog.outputs.next_version }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -b $BRANCH_NAME
+          git add Cargo.toml CHANGELOG.md
+          git commit -m "chore: release v${{ steps.changelog.outputs.next_version }}"
+          git push origin $BRANCH_NAME
+          echo "branch_name=$BRANCH_NAME" >> $GITHUB_ENV
+
+      - name: Create Pull Request
+        uses: peter-evans/create-pull-request@v5
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          branch: release/v${{ steps.changelog.outputs.next_version }}
+          title: "🚀 Release v${{ steps.changelog.outputs.next_version }}"
+          body: |
+            ## Release v${{ steps.changelog.outputs.next_version }}
+            
+            This PR contains:
+            - ✅ Updated version in Cargo.toml
+            - ✅ Generated changelog with git-cliff
+            - ✅ Dry-run crates.io publish passed
+            
+            ### Changes in this release:
+            
+            ```
+            $(cat UNRELEASED.md)
+            ```
+            
+            **Merging this PR will:**
+            1. Create a git tag v${{ steps.changelog.outputs.next_version }}
+            2. Publish to crates.io
+            3. Create a GitHub release
+            
+            ---
+            *This PR was created automatically by the release workflow*
+          labels: |
+            release
+            automated
+
+  # Job 2: Finalize release when release PR is merged
+  finalize-release:
+    if: |
+      github.event_name == 'pull_request' && 
+      github.event.action == 'closed' && 
+      github.event.pull_request.merged == true &&
+      startsWith(github.event.pull_request.head.ref, 'release/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Get version from Cargo.toml
+        id: get_version
+        run: |
+          VERSION=$(grep '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Create Git Tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "v${{ steps.get_version.outputs.version }}" -m "Release v${{ steps.get_version.outputs.version }}"
+          git push origin "v${{ steps.get_version.outputs.version }}"
+
+      - name: Publish to crates.io
+        run: cargo publish
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: v${{ steps.get_version.outputs.version }}
+          name: Release v${{ steps.get_version.outputs.version }}
+          body_path: CHANGELOG.md
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Cleanup release branch
+        run: |
+          git push origin --delete ${{ github.event.pull_request.head.ref }}
+        continue-on-error: true
