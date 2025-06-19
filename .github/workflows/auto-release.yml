@@ -13,7 +13,7 @@ env:
 jobs:
   # Job 1: Detect changed crates and create release PRs
   detect-and-release:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -24,6 +24,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
+          lfs: false
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -34,9 +35,6 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
-
-      - name: Install cargo-workspaces
-        run: cargo install cargo-workspaces
 
       - name: Detect changed crates
         id: detect-changes
@@ -52,68 +50,43 @@ jobs:
           
           for crate_toml in $CRATES; do
             CRATE_DIR=$(dirname "$crate_toml")
-            CRATE_NAME=$(cargo metadata --no-deps --manifest-path "$crate_toml" --format-version 1 | jq -r '.packages[0].name')
+            CRATE_NAME=$(
+              cargo metadata --format-version 1 --no-deps | jq -r \
+                 --arg path "$(realpath $crate_toml)" \
+                 '.packages[] | select(.manifest_path | startswith($path)) | .name'
+            )
           
             # Check if there are changes in this crate since last tag
             if [ -z "$LAST_TAG" ] || git diff --name-only "$LAST_TAG"..HEAD | grep -q "^${CRATE_DIR#./}"; then
               echo "Changes detected in crate: $CRATE_NAME at $CRATE_DIR"
           
-              # Create git-cliff config for this specific crate
-              cat > "$CRATE_DIR/cliff.toml" << 'EOF'
-          [changelog]
-          header = """
-          # Changelog
-          All notable changes to this project will be documented in this file.
-          """
-          body = """
-          {% if version %}\
-              ## [{{ version | trim_start_matches(pat="v") }}] - {{ timestamp | date(format="%Y-%m-%d") }}
-          {% else %}\
-              ## [unreleased]
-          {% endif %}\
-          {% for group, commits in commits | group_by(attribute="group") %}
-              ### {{ group | striptags | trim | upper_first }}
-              {% for commit in commits %}
-                  - {% if commit.scope %}**{{commit.scope}}**: {% endif %}{{ commit.message | upper_first }}\
-              {% endfor %}
-          {% endfor %}\n
-          """
-          trim = true
-          
-          [git]
-          conventional_commits = true
-          filter_unconventional = true
-          commit_parsers = [
-              { message = "^feat", group = "Features" },
-              { message = "^fix", group = "Bug Fixes" },
-              { message = "^doc", group = "Documentation" },
-              { message = "^perf", group = "Performance" },
-              { message = "^refactor", group = "Refactor" },
-              { message = "^style", group = "Styling" },
-              { message = "^test", group = "Testing" },
-              { message = "^chore\\(release\\): prepare for", skip = true },
-              { message = "^chore", group = "Miscellaneous Tasks" },
-              { body = ".*security", group = "Security" },
-          ]
-          tag_pattern = "${CRATE_NAME}-v[0-9]*"
-          EOF
-          
               # Get next version for this crate
               cd "$CRATE_DIR"
-              NEXT_VERSION=$(git-cliff --bumped-version 2>/dev/null || echo "0.1.0")
-              cd - > /dev/null
+              CLIFF_VERSION=$(git-cliff --bumped-version 2>/dev/null)
+              SUGGESTED_NEXT_VERSION="${CLIFF_VERSION##*-v}"
+              NEXT_VERSION="${SUGGESTED_NEXT_VERSION:-0.1.0}"
           
+              cd - > /dev/null
               CHANGED_CRATES+=("{\"name\":\"$CRATE_NAME\",\"path\":\"$CRATE_DIR\",\"version\":\"$NEXT_VERSION\"}")
             fi
           done
           
           # Create JSON matrix for parallel processing
           if [ ${#CHANGED_CRATES[@]} -gt 0 ]; then
-            MATRIX_JSON=$(printf '%s\n' "${CHANGED_CRATES[@]}" | jq -s '{"include": .}')
+            # Debug: log the raw crate objects
+            echo "DEBUG: Raw crate objects:"
+            printf '%s\n' "${CHANGED_CRATES[@]}"
+          
+            # Create the matrix JSON by combining all crate objects into an array
+            printf '%s\n' "${CHANGED_CRATES[@]}" | jq -s . > /tmp/crates.json
+          
+            MATRIX_JSON=$(jq -c '{"include": .}' /tmp/crates.json)
+            echo "$MATRIX_JSON"
+          
             echo "matrix=$MATRIX_JSON" >> $GITHUB_OUTPUT
             echo "Found ${#CHANGED_CRATES[@]} crates with changes"
           else
-            echo "matrix={\"include\":[]}" >> $GITHUB_OUTPUT
+            echo 'matrix={"include":[]}' >> $GITHUB_OUTPUT
             echo "No crates with changes found"
           fi
 
@@ -125,6 +98,7 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
+      issues: write
     strategy:
       matrix: ${{ fromJson(needs.detect-and-release.outputs.matrix) }}
       fail-fast: false
@@ -132,6 +106,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
+          lfs: false
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -147,8 +122,8 @@ jobs:
         working-directory: ${{ matrix.path }}
         run: |
           # Generate changelog
-          git-cliff --tag "${{ matrix.name }}-v${{ matrix.version }}" > CHANGELOG.md
-          git-cliff --unreleased --strip header > UNRELEASED.md
+          git-cliff --unreleased --bump --tag "${{ matrix.name }}-v${{ matrix.version }}" --prepend CHANGELOG.md
+          git-cliff --unreleased --strip all > UNRELEASED.md
           
           # Update Cargo.toml version
           sed -i 's/^version = ".*"/version = "${{ matrix.version }}"/' Cargo.toml
@@ -159,47 +134,60 @@ jobs:
 
       - name: Dry run crates.io publish
         working-directory: ${{ matrix.path }}
-        run: cargo publish --dry-run
+        run: cargo publish --dry-run --allow-dirty
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
       - name: Create release branch and commit
         run: |
+          # Set branch name
           BRANCH_NAME="release/${{ matrix.name }}-v${{ matrix.version }}"
+          
+          # Configure Bot User
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git checkout -b "$BRANCH_NAME"
+          
+          # Add modifications
           git add "${{ matrix.path }}/Cargo.toml" "${{ matrix.path }}/CHANGELOG.md"
           git commit -m "chore(${{ matrix.name }}): release v${{ matrix.version }}"
-          git push origin "$BRANCH_NAME"
+          echo "Added modifications to toml and changelog"
+
+      - name: Generate Changelog Message
+        id: changelog_message
+        run: |
+          # Generate Changelog Output
+          echo "content<<EOF" >> $GITHUB_OUTPUT
+          cat ${{ matrix.path }}/UNRELEASED.md >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+          
+          # Remove UNRELEASED file after we've generated the changelog
+          rm ${{ matrix.path }}/UNRELEASED.md
 
       - name: Create Pull Request
         uses: peter-evans/create-pull-request@v5
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: 'chore(release): prepare for v${{ matrix.version }} of ${{ matrix.name }}'
+          base: ${{ github.event.repository.default_branch || 'main' }}
+          delete-branch: 'false' # Don't delete version branches
           branch: release/${{ matrix.name }}-v${{ matrix.version }}
-          title: "🚀 Release ${{ matrix.name }} v${{ matrix.version }}"
+          title: "Release `v${{ matrix.version }}` of `${{ matrix.name }}`"
           body: |
-            ## Release ${{ matrix.name }} v${{ matrix.version }}
+            ## Release Broker
+            This PR brokers the release for `v${{ matrix.version }}` of `${{ matrix.name }}`.
             
+            ${{ steps.changelog_message.outputs.content }}
+            
+            ---
             This PR contains:
             - ✅ Updated version in `${{ matrix.path }}/Cargo.toml`
             - ✅ Generated changelog with git-cliff
             - ✅ Dry-run crates.io publish passed
             
-            ### Changes in this release:
-            
-            ```
-            $(cat ${{ matrix.path }}/UNRELEASED.md)
-            ```
-            
             **Merging this PR will:**
             1. Create a git tag `${{ matrix.name }}-v${{ matrix.version }}`
             2. Publish `${{ matrix.name }}` to crates.io
             3. Create a GitHub release
-            
-            ---
-            *This PR was created automatically by the release workflow*
           labels: |
             release
             automated
@@ -220,6 +208,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
+          lfs: false
           fetch-depth: 0
 
       - name: Install Rust toolchain
@@ -255,6 +244,7 @@ jobs:
           git push origin "${{ steps.extract_info.outputs.tag_name }}"
 
       - name: Publish to crates.io
+        if: false
         working-directory: ${{ steps.find_crate.outputs.crate_dir }}
         run: cargo publish
         env:
