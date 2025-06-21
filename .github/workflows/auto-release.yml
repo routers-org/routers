@@ -1,9 +1,6 @@
 name: Auto Release Monorepo
 
 on:
-  push:
-    branches:
-      - main
   pull_request:
     types: [closed]
 
@@ -13,7 +10,10 @@ env:
 jobs:
   # Job 1: Detect changed crates and create release PRs
   detect-and-release:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.actor != 'github-actions[bot]'
+    if: |
+      github.event.pull_request.merged == true &&
+      github.event.pull_request.base.ref == 'main' &&
+      !startsWith(github.event.pull_request.head.ref, 'release/')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -167,6 +167,7 @@ jobs:
         uses: peter-evans/create-pull-request@v5
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
+          author: 'GitHub <noreply@github.com>'
           commit-message: 'chore(release): prepare for v${{ matrix.version }} of ${{ matrix.name }}'
           base: ${{ github.event.repository.default_branch || 'main' }}
           delete-branch: 'false' # Don't delete version branches
