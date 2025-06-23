@@ -1,7 +1,7 @@
 use crate::graph::{Graph, Weight};
 use crate::graph::{Route, Scan};
 
-use codec::{Entry, Metadata, Node};
+use routers_codec::{Entry, Metadata, Node};
 
 use geo::Point;
 use log::debug;

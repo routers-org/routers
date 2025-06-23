@@ -1,6 +1,6 @@
 use crate::transition::RoutingContext;
-use codec::{Entry, Metadata};
 use geo::Distance;
+use routers_codec::{Entry, Metadata};
 use rustc_hash::FxHashMap;
 use std::fmt::Debug;
 use std::sync::Arc;
@@ -140,7 +140,7 @@ mod successor {
 
 mod predicate {
     use crate::transition::*;
-    use codec::Entry;
+    use routers_codec::Entry;
 
     use super::*;
 

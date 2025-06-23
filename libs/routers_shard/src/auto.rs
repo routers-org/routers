@@ -1,6 +1,6 @@
 use crate::error::ShardError;
 use geo::Coord;
-use routers_codec::osm::Way;
+use routers_routers_codec::osm::Way;
 use scc::HashIndex;
 use std::hash::Hash;
 

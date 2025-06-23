@@ -6,8 +6,8 @@ use crate::definition::model::*;
 use crate::definition::optimise::*;
 
 use crate::services::RouteService;
-use codec::{Entry, Metadata};
 use routers::Route;
+use routers_codec::{Entry, Metadata};
 #[cfg(feature = "telemetry")]
 use tracing::Level;
 

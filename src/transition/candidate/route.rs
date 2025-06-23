@@ -1,5 +1,5 @@
 use crate::transition::candidate::*;
-use codec::{Entry, Metadata};
+use routers_codec::{Entry, Metadata};
 use std::ops::Deref;
 
 use crate::Graph;

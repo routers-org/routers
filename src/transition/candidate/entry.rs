@@ -2,11 +2,11 @@ use crate::Graph;
 use crate::graph::Weight;
 use crate::transition::RoutingContext;
 
-use codec::primitive::Node;
-use codec::primitive::edge::Direction;
-use codec::{Entry, Metadata};
 use geo::{Distance, Haversine, LineLocatePoint, LineString, Point};
 use pathfinding::num_traits::Zero;
+use routers_codec::primitive::Node;
+use routers_codec::primitive::edge::Direction;
+use routers_codec::{Entry, Metadata};
 use rstar::AABB;
 use std::cmp::Ordering;
 use std::fmt::Debug;

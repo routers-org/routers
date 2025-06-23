@@ -1,5 +1,5 @@
-use codec::Entry;
-use codec::primitive::Node;
+use routers_codec::Entry;
+use routers_codec::primitive::Node;
 
 use crate::FatEdge;
 use geo::Point;

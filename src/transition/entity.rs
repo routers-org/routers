@@ -1,9 +1,9 @@
 use crate::graph::Graph;
 use crate::transition::*;
 
-use codec::Metadata;
-use codec::primitive::Entry;
 use geo::LineString;
+use routers_codec::Metadata;
+use routers_codec::primitive::Entry;
 
 type LayerId = usize;
 type NodeId = usize;
@@ -22,9 +22,9 @@ type NodeId = usize;
 ///
 /// ```rust
 /// use geo::LineString;
-/// use codec::Metadata;
-/// use codec::osm::element::Tags;
-/// use codec::osm::{OsmEdgeMetadata, OsmEntryId};
+/// use routers_codec::Metadata;
+/// use routers_codec::osm::element::Tags;
+/// use routers_codec::osm::{OsmEdgeMetadata, OsmEntryId};
 /// use routers::{Graph, Transition};
 /// use routers::transition::{CostingStrategies, SelectiveForwardSolver};
 ///

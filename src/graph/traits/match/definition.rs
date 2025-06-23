@@ -1,8 +1,8 @@
 use crate::Solver;
 use crate::transition::{MatchError, RoutedPath};
 
-use codec::{Entry, Metadata};
 use geo::LineString;
+use routers_codec::{Entry, Metadata};
 
 pub trait Match<E, M>
 where

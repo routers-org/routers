@@ -1,7 +1,7 @@
 use crate::transition::candidate::{Candidate, CandidateId};
 use crate::transition::{ResolutionMethod, RoutingContext, Strategy, Trip, VirtualTail};
-use codec::{Entry, Metadata};
 use geo::{Distance, Haversine};
+use routers_codec::{Entry, Metadata};
 
 pub trait TransitionStrategy<E, M>: for<'a> Strategy<TransitionContext<'a, E, M>> {}
 impl<T, E, M> TransitionStrategy<E, M> for T where T: for<'a> Strategy<TransitionContext<'a, E, M>> {}

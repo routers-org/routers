@@ -8,7 +8,7 @@ use wkt::ToWkt;
 use crate::coord::point::FeatureKey;
 use crate::error::GeoError;
 #[cfg(feature = "tile")]
-use crate::{codec::mvt::Value, geo::TileItem};
+use crate::{geo::TileItem, routers_codec::mvt::Value};
 
 #[derive(PartialEq, Clone)]
 pub enum Classification {

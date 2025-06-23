@@ -65,7 +65,7 @@ pub mod emission {
 
 pub mod transition {
     use crate::transition::*;
-    use codec::{Entry, Metadata};
+    use routers_codec::{Entry, Metadata};
 
     /// Calculates the transition cost between two candidates.
     ///
@@ -179,7 +179,7 @@ pub mod transition {
 pub mod costing {
     use super::{DefaultEmissionCost, DefaultTransitionCost};
     use crate::transition::*;
-    use codec::{Entry, Metadata};
+    use routers_codec::{Entry, Metadata};
     use std::marker::PhantomData;
 
     pub struct CostingStrategies<Emmis, Trans, E, M>

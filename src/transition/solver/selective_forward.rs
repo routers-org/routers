@@ -1,4 +1,5 @@
 use crate::transition::*;
+use routers_codec::{Entry, Metadata};
 
 use log::{debug, info};
 
@@ -6,7 +7,6 @@ use rustc_hash::FxHashMap;
 use std::cell::RefCell;
 use std::sync::{Arc, Mutex};
 
-use codec::{Entry, Metadata};
 use geo::{Distance, Haversine};
 use itertools::Itertools;
 use measure_time::debug_time;

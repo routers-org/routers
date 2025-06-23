@@ -2,8 +2,8 @@ use crate::FatEdge;
 use crate::graph::Graph;
 use crate::graph::Scan;
 
-use codec::primitive::Node;
-use codec::{Entry, Metadata};
+use routers_codec::primitive::Node;
+use routers_codec::{Entry, Metadata};
 
 use geo::{Destination, Geodesic, Haversine, InterpolatableLine, Line, LineLocatePoint, Point};
 use rstar::AABB;

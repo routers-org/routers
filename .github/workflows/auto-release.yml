@@ -126,7 +126,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Generate changelog and update version
+      - name: Generate Changelog
         working-directory: ${{ matrix.path }}
         run: |
           # Define tag and changelog files
@@ -142,9 +142,17 @@ jobs:
           
           # Create unreleased (this version)
           git-cliff --unreleased --strip all > UNRELEASED.md
-          
+
+      - name: Update Crate Version
+        working-directory: ${{ matrix.path }}
+        run: |
           # Update Cargo.toml version
           sed -i 's/^version = ".*"/version = "${{ matrix.version }}"/' Cargo.toml
+
+      - name: Update Workspace Version
+        run: |
+          # Update Cargo.toml version
+          sed -i 's/^${{ matrix.name }} = ".*"/${{ matrix.name }} = "${{ matrix.version }}"/' Cargo.toml
 
       - name: Cargo check for this crate
         working-directory: ${{ matrix.path }}
@@ -155,7 +163,7 @@ jobs:
         working-directory: ${{ matrix.path }}
         run: |
           PUBLISHABLE=$(cargo metadata --format-version 1 --no-deps | jq -e '.packages[0].publish != false')
-          echo "publishable=$PUBLISHABLE"
+          echo "publishable=$PUBLISHABLE" >> $GITHUB_OUTPUT
 
       - name: Dry run crates.io publish
         working-directory: ${{ matrix.path }}
@@ -281,7 +289,15 @@ jobs:
           git tag -f -a "${{ steps.extract_info.outputs.tag_name }}" -m "Release ${{ steps.extract_info.outputs.crate_name }} v${{ steps.extract_info.outputs.version }}"
           git push origin "${{ steps.extract_info.outputs.tag_name }}"
 
+      - name: Check Publishable
+        id: check_publish
+        working-directory: ${{ matrix.path }}
+        run: |
+          PUBLISHABLE=$(cargo metadata --format-version 1 --no-deps | jq -e '.packages[0].publish != false')
+          echo "publishable=$PUBLISHABLE" >> $GITHUB_OUTPUT
+
       - name: Publish to crates.io
+        if: steps.check_publish.outputs.publishable == 'true'
         working-directory: ${{ steps.find_crate.outputs.crate_dir }}
         run: cargo publish
         env:

@@ -2,9 +2,9 @@ use crate::Graph;
 use crate::Match;
 use crate::transition::*;
 
-use codec::{Entry, Metadata};
 use geo::LineString;
 use log::info;
+use routers_codec::{Entry, Metadata};
 
 impl<E, M> Match<E, M> for Graph<E, M>
 where

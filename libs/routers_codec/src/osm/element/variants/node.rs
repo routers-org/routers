@@ -14,9 +14,9 @@ impl Node<OsmEntryId> {
     /// iterator from `DenseNodes` with their contextual `PrimitiveBlock`.
     ///
     /// ```rust
-    ///  use routers_codec::osm::element::{item::Element};
-    ///  use routers_codec::osm::PrimitiveBlock;
-    ///  use routers_codec::primitive::Node;
+    ///  use routers_routers_codec::osm::element::{item::Element};
+    ///  use routers_routers_codec::osm::PrimitiveBlock;
+    ///  use routers_routers_codec::primitive::Node;
     ///
     ///  let block: PrimitiveBlock = unimplemented!();
     ///  if let Element::DenseNodes(nodes) = block {

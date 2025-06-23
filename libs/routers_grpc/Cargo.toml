@@ -9,8 +9,8 @@ path = "src/lib.rs"
 bench = false
 
 [dependencies]
-routers = { path = "../.." }
-codec = { path = "../routers_codec", package = "routers_codec" }
+routers = { workspace = true }
+routers_codec = { workspace = true }
 
 # Protobuf Handling
 prost = { version = "0.13.3" }

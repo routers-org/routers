@@ -1,9 +1,9 @@
 use crate::transition::Trip;
-use codec::osm::OsmEntryId;
+use routers_codec::osm::OsmEntryId;
 
 use approx::assert_relative_eq;
-use codec::primitive::Node;
 use geo::wkt;
+use routers_codec::primitive::Node;
 
 const SHARED_DISTANCE: f64 = 900.0;
 

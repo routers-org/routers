@@ -1,7 +1,7 @@
 use crate::Graph;
-use codec::primitive::Node;
-use codec::{Entry, Metadata};
 use geo::{Bearing, Distance, Haversine, LineString};
+use routers_codec::primitive::Node;
+use routers_codec::{Entry, Metadata};
 
 /// Utilities to calculate metadata of a trip.
 /// A trip is composed of a collection of [`Node`] entries.
@@ -63,8 +63,8 @@ where
     ///
     /// ### Example
     /// ```rust
-    ///  use codec::osm::element::variants::{OsmEntryId};
-    ///  use codec::primitive::Node;
+    ///  use routers_codec::osm::element::variants::{OsmEntryId};
+    ///  use routers_codec::primitive::Node;
     ///  use routers::transition::Trip;
     ///  use geo::Point;
     ///
@@ -121,8 +121,8 @@ where
     /// # Example
     /// ```
     /// use geo::Point;
-    /// use codec::osm::OsmEntryId;
-    /// use codec::primitive::Node;
+    /// use routers_codec::osm::OsmEntryId;
+    /// use routers_codec::primitive::Node;
     /// use routers::transition::Trip;
     ///
     /// let positions = vec![
@@ -161,8 +161,8 @@ where
     ///
     /// ### Example
     /// ```rust
-    ///  use codec::osm::element::variants::{OsmEntryId};
-    ///  use codec::primitive::Node;
+    ///  use routers_codec::osm::element::variants::{OsmEntryId};
+    ///  use routers_codec::primitive::Node;
     ///  use routers::transition::Trip;
     ///  use geo::Point;
     ///

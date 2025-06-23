@@ -6,8 +6,9 @@ use routers_fixtures::{
 use routers::transition::*;
 use routers::{Graph, Match};
 
-use codec::osm::OsmEdgeMetadata;
-use codec::{Entry, Metadata};
+use routers_codec::osm::OsmEdgeMetadata;
+use routers_codec::{Entry, Metadata};
+
 use criterion::{black_box, criterion_main};
 use geo::LineString;
 use std::path::Path;
@@ -154,7 +155,7 @@ fn bench_match<E: Entry, M: Metadata>(
     solver: impl Solver<E, M>,
 ) -> Vec<i64> {
     let result = graph
-        .r#match(&runtime, solver, coordinates.clone())
+        .r#match(runtime, solver, coordinates.clone())
         .expect("Match must complete successfully");
 
     result

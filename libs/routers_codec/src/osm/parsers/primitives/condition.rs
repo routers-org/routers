@@ -311,7 +311,7 @@ impl Condition {
     ///
     /// # Examples
     /// ```
-    /// use routers_codec::osm::primitives::Condition;
+    /// use routers_routers_codec::osm::primitives::Condition;
     ///
     /// let condition = Condition::parse("Tu-Fr 00:00-24:00")?;
     /// let condition = Condition::parse("weight < 7.5")?;

@@ -1,5 +1,5 @@
 use crate::transition::*;
-use codec::{Entry, Metadata};
+use routers_codec::{Entry, Metadata};
 use std::f64::consts::E;
 
 const PRECISION: f64 = 1_000.0f64;

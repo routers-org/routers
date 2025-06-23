@@ -1,16 +1,16 @@
 use crate::graph::item::{Graph, GraphStructure};
+use crate::{DirectionAwareEdgeId, Edge, FatEdge, PredicateCache};
 
-use codec::osm::OsmEntryId;
-use codec::osm::element::ProcessedElement;
-use codec::osm::{Parallel, ProcessedElementIterator};
-use codec::{Metadata, Node};
+use routers_codec::osm::OsmEntryId;
+use routers_codec::osm::element::ProcessedElement;
+use routers_codec::osm::meta::OsmEdgeMetadata;
+use routers_codec::osm::{Parallel, ProcessedElementIterator};
+use routers_codec::{Metadata, Node};
 
 use log::{debug, info};
 use rstar::RTree;
 use rustc_hash::FxHashMap;
 
-use crate::{DirectionAwareEdgeId, Edge, FatEdge, PredicateCache};
-use codec::osm::meta::OsmEdgeMetadata;
 use std::error::Error;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};

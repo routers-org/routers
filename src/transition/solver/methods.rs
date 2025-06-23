@@ -1,7 +1,7 @@
 use crate::transition::*;
-use codec::Metadata;
-use codec::primitive::Entry;
 use itertools::Either;
+use routers_codec::Metadata;
+use routers_codec::primitive::Entry;
 use rustc_hash::FxHashMap;
 use std::hash::Hash;
 

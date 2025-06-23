@@ -9,3 +9,8 @@ pub mod trace;
 
 #[cfg(feature = "telemetry")]
 pub use trace::*;
+
+#[doc(hidden)]
+pub mod codec {
+    pub use routers_codec::*;
+}
