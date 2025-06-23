@@ -5,12 +5,12 @@ use log::{debug, info};
 use rustc_hash::FxHashMap;
 use std::sync::{Arc, Mutex};
 
-use codec::{Entry, Metadata};
 use geo::{Distance, Haversine};
 use itertools::Itertools;
 use measure_time::debug_time;
 use pathfinding::num_traits::Zero;
 use pathfinding::prelude::*;
+use routers_codec::{Entry, Metadata};
 
 use rayon::iter::ParallelIterator;
 use rayon::prelude::IntoParallelRefIterator;

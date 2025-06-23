@@ -5,13 +5,13 @@ use crate::r#match::{MatchRequest, MatchResponse, SnapRequest};
 use crate::model::costing::{BusModel, CarModel, TruckModel, Variation};
 use crate::model::{Coordinate, CostOptions, EdgeIdentifier, EdgeMetadata, NodeIdentifier};
 
-use codec::osm::OsmTripConfiguration;
-use codec::osm::meta::OsmEdgeMetadata;
-use codec::osm::speed_limit::{SpeedLimitConditions, SpeedLimitExt};
-use codec::primitive::context::TripContext;
-use codec::primitive::transport::{TransportMode, TruckCosting, VehicleCosting};
-use codec::{Entry, Node};
 use geo::{Coord, LineString, coord};
+use routers_codec::osm::OsmTripConfiguration;
+use routers_codec::osm::meta::OsmEdgeMetadata;
+use routers_codec::osm::speed_limit::{SpeedLimitConditions, SpeedLimitExt};
+use routers_codec::primitive::context::TripContext;
+use routers_codec::primitive::transport::{TransportMode, TruckCosting, VehicleCosting};
+use routers_codec::{Entry, Node};
 use std::fmt::Error as StdError;
 use std::ops::Deref;
 

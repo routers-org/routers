@@ -1,5 +1,5 @@
 use crate::{DirectionAwareEdgeId, FatEdge, PredicateCache};
-use codec::primitive::{Entry, Metadata, Node};
+use routers_codec::primitive::{Entry, Metadata, Node};
 
 use geo::Point;
 use petgraph::prelude::DiGraphMap;

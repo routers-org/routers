@@ -9,8 +9,27 @@ members = [
 [workspace.lints.rust]
 unsafe_code = "forbid"
 
+[patch.crates-io]
+routers = { path = "." }
+routers_codec = { path = "libs/routers_codec" }
+routers_geo = { path = "libs/routers_geo" }
+routers_grpc = { path = "libs/routers_grpc" }
+routers_shard = { path = "libs/routers_shard" }
+routers_tiles = { path = "libs/routers_tiles" }
+routers_fixtures = { path = "libs/routers_fixtures" }
+
 # === Workspace Deps ===
 [workspace.dependencies]
+
+# Members
+routers_codec = { version = "0.1.0" }
+routers_geo = "0.1.0"
+routers_grpc = "0.1.0"
+routers_shard = "0.1.0"
+routers_tiles = "0.1.0"
+routers_fixtures = "0.1.0"
+routers = "0.2.0"
+
 # Optimisation Crates
 rayon = "1.10.0"
 scc = "2.3.4"
@@ -95,7 +114,8 @@ bench = false
 [dependencies]
 # Algorithm
 rstar = { workspace = true }
-codec = { path = "libs/routers_codec", package = "routers_codec", version = "0.1.0" }
+routers_codec = { workspace = true }
+
 petgraph = { version = "0.8.2", features = ["serde-1", "graphmap", "rayon"] }
 
 # Root-Specific Crates
@@ -128,8 +148,7 @@ thiserror = "2.0.12"
 [dev-dependencies]
 wkt = { workspace = true }
 criterion = { workspace = true }
-
-routers_fixtures = { path = "libs/routers_fixtures" }
+routers_fixtures = { workspace = true }
 
 [[bench]]
 name = "map_match"

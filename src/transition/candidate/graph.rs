@@ -1,12 +1,12 @@
 use crate::transition::*;
 
 use crate::EndAttachError::{EndsAlreadyAttached, LayerMissing, WriteLockFailed};
-use codec::Entry;
 use pathfinding::num_traits::{ConstZero, Zero};
 use petgraph::algo::astar;
 use petgraph::graph::EdgeReference;
 use petgraph::prelude::EdgeRef;
 use petgraph::{Directed, Direction, Graph};
+use routers_codec::Entry;
 use scc::HashMap;
 use std::fmt::Debug;
 use std::sync::{Arc, RwLock};

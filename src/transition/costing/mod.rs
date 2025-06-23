@@ -32,7 +32,7 @@
 //! which implement [`Strategy<TransitionContext>`].
 //!
 //!```rust
-//! use codec::Entry;
+//! use routers_codec::Entry;
 //! use routers::route::transition::{Strategy, TransitionContext};
 //!
 //! struct MyTransitionStrategy;

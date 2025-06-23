@@ -44,7 +44,7 @@ impl Ord for SmallestHolder {
 /// Struct returned by [`dijkstra_reach`].
 pub struct DijkstraReachable<FN, E>
 where
-    E: codec::Entry,
+    E: routers_codec::Entry,
 {
     to_see: BinaryHeap<SmallestHolder>,
     seen: FxHashSet<usize>,
@@ -56,7 +56,7 @@ where
 #[derive(Debug, Hash, PartialEq, Eq, Clone)]
 pub struct DijkstraReachableItem<E>
 where
-    E: codec::Entry,
+    E: routers_codec::Entry,
 {
     /// The node that was reached by [`dijkstra_reach`].
     pub node: E,
@@ -71,7 +71,7 @@ impl<FN, IN, E> Iterator for DijkstraReachable<FN, E>
 where
     FN: FnMut(&E) -> IN,
     IN: Iterator<Item = (E, Cost)>,
-    E: codec::Entry,
+    E: routers_codec::Entry,
 {
     type Item = DijkstraReachableItem<E>;
 
@@ -134,7 +134,7 @@ impl Dijkstra {
     /// an iterator of successors associated with their move cost.
     pub fn reach<FN, IN, E>(&self, start: &E, successors: FN) -> DijkstraReachable<FN, E>
     where
-        E: codec::Entry,
+        E: routers_codec::Entry,
         FN: FnMut(&E) -> IN,
         IN: Iterator<Item = (E, Cost)>,
     {

@@ -32,8 +32,8 @@ pub trait Parallel {
     /// ```rust
     /// use std::path::PathBuf;
     /// use routers_fixtures::{fixture_path, DISTRICT_OF_COLUMBIA};
-    /// use routers_codec::osm::element::item::ProcessedElement;
-    /// use routers_codec::osm::{Parallel, ProcessedElementIterator};
+    /// use routers_routers_codec::osm::element::item::ProcessedElement;
+    /// use routers_routers_codec::osm::{Parallel, ProcessedElementIterator};
     ///
     /// let path = fixture_path(DISTRICT_OF_COLUMBIA);
     /// let nodes = ProcessedElementIterator::new(path)
@@ -71,8 +71,8 @@ pub trait Parallel {
     /// use std::collections::BTreeMap;
     /// use std::path::PathBuf;
     /// use routers_fixtures::{fixture_path, DISTRICT_OF_COLUMBIA};
-    /// use routers_codec::osm::element::item::ProcessedElement;
-    /// use routers_codec::osm::{Parallel, ProcessedElementIterator};
+    /// use routers_routers_codec::osm::element::item::ProcessedElement;
+    /// use routers_routers_codec::osm::{Parallel, ProcessedElementIterator};
     ///
     /// let path = fixture_path(DISTRICT_OF_COLUMBIA);
     /// let nodes = ProcessedElementIterator::new(path)

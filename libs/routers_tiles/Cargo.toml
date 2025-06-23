@@ -8,7 +8,7 @@ edition = "2024"
 bigtable_rs = { version = "0.2.17", optional = true }
 
 geo = "0.30.0"
-routers_geo = { path = "../routers_geo" }
+routers_geo = { workspace = true }
 
 # Server dependencies
 axum = { version = "0.8.4", features = ["query"] }

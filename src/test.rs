@@ -17,9 +17,9 @@ fn it_matches() {
     use routers_fixtures::{LAX_LYNWOOD_MATCHED, LAX_LYNWOOD_TRIP, LOS_ANGELES, fixture};
 
     use crate::{Graph, Match, PrecomputeForwardSolver};
-    use codec::Metadata;
-    use codec::osm::OsmEdgeMetadata;
     use geo::LineString;
+    use routers_codec::Metadata;
+    use routers_codec::osm::OsmEdgeMetadata;
     use std::path::Path;
     use wkt::TryFromWkt;
 

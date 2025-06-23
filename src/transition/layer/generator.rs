@@ -1,12 +1,12 @@
 use crate::transition::*;
 use crate::{Graph, Scan};
 
-use codec::{Entry, Metadata};
 use geo::{Distance, Haversine, Point};
 use itertools::Itertools;
 use measure_time::debug_time;
 use rayon::iter::{IndexedParallelIterator, ParallelIterator};
 use rayon::prelude::{FromParallelIterator, IntoParallelIterator};
+use routers_codec::{Entry, Metadata};
 
 #[derive(Default)]
 pub struct Layers {

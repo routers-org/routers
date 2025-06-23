@@ -68,7 +68,7 @@ impl AccessTag {
     /// # Examples
     /// ```
     /// use std::str::FromStr;
-    /// use routers_codec::osm::access_tag::AccessTag;
+    /// use routers_routers_codec::osm::access_tag::AccessTag;
     ///
     /// // Parse "bicycle=no"
     /// let tag = AccessTag::from_key_value("bicycle", "no")?;
