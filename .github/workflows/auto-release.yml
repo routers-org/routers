@@ -5,6 +5,7 @@ on:
     types: [closed]
 
 env:
+  PROTOC_VERSION: 3.20.3
   CARGO_TERM_COLOR: always
 
 jobs:
@@ -116,6 +117,11 @@ jobs:
         uses: taiki-e/install-action@v2
         with:
           tool: git-cliff
+
+      - name: install protoc
+        uses: taiki-e/install-action@v2
+        with:
+          tool: protoc@${{ env.PROTOC_VERSION }}
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -229,6 +235,11 @@ jobs:
         uses: taiki-e/install-action@v2
         with:
           tool: git-cliff
+
+      - name: install protoc
+        uses: taiki-e/install-action@v2
+        with:
+          tool: protoc@${{ env.PROTOC_VERSION }}
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
