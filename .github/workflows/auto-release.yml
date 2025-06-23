@@ -126,7 +126,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Generate changelog and update version
+      - name: Generate Changelog
         working-directory: ${{ matrix.path }}
         run: |
           # Define tag and changelog files
@@ -142,9 +142,17 @@ jobs:
           
           # Create unreleased (this version)
           git-cliff --unreleased --strip all > UNRELEASED.md
-          
+
+      - name: Update Crate Version
+        working-directory: ${{ matrix.path }}
+        run: |
           # Update Cargo.toml version
           sed -i 's/^version = ".*"/version = "${{ matrix.version }}"/' Cargo.toml
+
+      - name: Update Workspace Version
+        run: |
+          # Update Cargo.toml version
+          sed -i 's/^${{ matrix.name }} = ".*"/${{ matrix.name }} = "${{ matrix.version }}"/' Cargo.toml
 
       - name: Cargo check for this crate
         working-directory: ${{ matrix.path }}
