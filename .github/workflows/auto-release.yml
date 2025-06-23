@@ -123,8 +123,18 @@ jobs:
       - name: Generate changelog and update version
         working-directory: ${{ matrix.path }}
         run: |
+          # Define tag and changelog files
+          TAG="${{ matrix.name }}-v${{ matrix.version }}"
+          CHANGELOG_FILE=CHANGELOG.md
+          
           # Generate changelog
-          git-cliff --unreleased --bump --tag "${{ matrix.name }}-v${{ matrix.version }}" --prepend CHANGELOG.md
+          if [ -f "$CHANGELOG_FILE" ]; then
+            git-cliff --unreleased --bump --tag "$TAG" --prepend "$CHANGELOG_FILE"
+          else
+            git-cliff --unreleased --bump --tag "$TAG" > "$CHANGELOG_FILE"
+          fi
+          
+          # Create unreleased (this version)
           git-cliff --unreleased --strip all > UNRELEASED.md
           
           # Update Cargo.toml version
