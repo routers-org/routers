@@ -281,7 +281,8 @@ jobs:
         run: |
           # This is naive sed check, and will not check for registries (OK for this use-case)
           PUBLISHABLE=$(grep -Eq '^\s*publish\s*=\s*false' Cargo.toml && echo false || echo true)
-          echo "publishable=$PUBLISHABLE" >> $GITHUB_OUTPUT
+          echo "PUBLISHABLE is: ${PUBLISHABLE}"
+          echo "publishable=${PUBLISHABLE}" >> "$GITHUB_OUTPUT"
 
       - name: Publish to `crates.io`
         if: steps.check_publish.outputs.publishable == 'true'
