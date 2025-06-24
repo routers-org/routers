@@ -3,8 +3,8 @@ name = "routers_codec"
 version = "0.1.2"
 edition = "2024"
 include = ["docs/**", "build.rs", "proto/**", "src/**", "benches/**"]
-description = "Codec primitives for routers"
-license = "MIT"
+description = "Encoding and Decoding Primitives for Routers"
+license = "GPL-3"
 repository = "https://github.com/routers-org/routers"
 
 [lib]
@@ -41,7 +41,7 @@ regex = "1.11.1"
 bitflags = "2.9.1"
 
 [dev-dependencies]
-routers_fixtures = { path = "../routers_fixtures" }
+routers_fixtures = { workspace = true }
 
 test-log = { workspace = true }
 criterion = { workspace = true }

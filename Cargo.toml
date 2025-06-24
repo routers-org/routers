@@ -20,15 +20,16 @@ routers_fixtures = { path = "libs/routers_fixtures" }
 
 # === Workspace Deps ===
 [workspace.dependencies]
+# Private Members
+routers_shard = { path = "libs/routers_shard", version = "0.1.0" }
+routers_tiles = { path = "libs/routers_tiles", version = "0.1.0" }
 
 # Members
-routers_codec = "0.1.1"
+routers_codec = "0.1.2"
 routers_geo = "0.1.0"
 routers_grpc = "0.1.0"
-routers_shard = "0.1.0"
-routers_tiles = "0.1.0"
 routers_fixtures = "0.1.0"
-routers = "0.2.0"
+routers = "0.2.1"
 
 # Optimisation Crates
 rayon = "1.10.0"

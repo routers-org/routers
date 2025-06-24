@@ -1,7 +1,3 @@
 [profile.profiling]
 inherits = "release"
 debug = true
-
-# .cargo/config.toml
-[patch.crates-io]
-routers_fixtures = { path = "libs/routers_fixtures" }
