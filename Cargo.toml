@@ -78,6 +78,11 @@ criterion = { version = "2.10.1", features = [
 # Utilities
 strum = { version = "0.27.1", features = ["phf", "derive"] }
 
+# Schema
+prost = "0.13.5"
+prost-types = "0.13.5"
+bytes = { version = "1.10.1", features = ["default"] }
+
 # === Profiles ===
 [profile.release]
 opt-level = 3

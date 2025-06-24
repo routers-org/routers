@@ -3,6 +3,9 @@ name = "routers_shard"
 version = "0.1.0"
 edition = "2024"
 
+# Currently Private
+publish = false
+
 [dependencies]
 
 [lints]
