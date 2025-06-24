@@ -158,20 +158,6 @@ jobs:
         working-directory: ${{ matrix.path }}
         run: cargo check
 
-      - name: Check Publishable
-        id: check_publish
-        working-directory: ${{ matrix.path }}
-        run: |
-          PUBLISHABLE=$(cargo metadata --format-version 1 --no-deps | jq -e '.packages[0].publish != false')
-          echo "publishable=$PUBLISHABLE" >> $GITHUB_OUTPUT
-
-      - name: Dry run crates.io publish
-        working-directory: ${{ matrix.path }}
-        if: false # steps.check_publish.outputs.publishable == 'true'
-        run: cargo publish --dry-run --allow-dirty
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-
       - name: Create release branch and commit
         run: |
           # Set branch name
@@ -293,10 +279,11 @@ jobs:
         id: check_publish
         working-directory: ${{ matrix.path }}
         run: |
-          PUBLISHABLE=$(cargo metadata --format-version 1 --no-deps | jq -e '.packages[0].publish != false')
+          # This is naive sed check, and will not check for registries (OK for this use-case)
+          PUBLISHABLE=$(grep -Eq '^\s*publish\s*=\s*false' Cargo.toml && echo false || echo true)
           echo "publishable=$PUBLISHABLE" >> $GITHUB_OUTPUT
 
-      - name: Publish to crates.io
+      - name: Publish to `crates.io`
         if: steps.check_publish.outputs.publishable == 'true'
         working-directory: ${{ steps.find_crate.outputs.crate_dir }}
         run: cargo publish
