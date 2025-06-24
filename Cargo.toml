@@ -28,7 +28,7 @@ routers_grpc = "0.1.0"
 routers_shard = "0.1.0"
 routers_tiles = "0.1.0"
 routers_fixtures = "0.1.0"
-routers = "0.2.0"
+routers = "0.1.0"
 
 # Optimisation Crates
 rayon = "1.10.0"
@@ -105,7 +105,7 @@ opt-level = 3
 name = "routers"
 description = "Rust-Based Routing Tooling for System-Agnostic Maps."
 readme = "README.md"
-version = "0.2.0"
+version = "0.1.0"
 edition = "2024"
 license = "GPL-3.0-or-later"
 include = ["src/**/*", "readme.md"]

@@ -1,0 +1,484 @@
+# Changelog
+
+All notable changes to this project will be documented in this file.
+
+## [routers-v0.1.0] - 2025-06-24
+
+### 🚀 Features
+
+- Add `Route` rpc
+- Generic datasource
+- Refactor queryable to tilequery
+- *(cache)* Generic cache map implementation with predicates and successors
+- *(cache)* Generic cache map implementation with predicates and successors
+- *(buf)* Use new buf url
+- *(restr.)* Corrected fixture locations using crate-based directory resolution
+- *(workspace)* Restructure server into discrete services
+- *(server)* Arc reciever
+- *(server)* Re-enable tracing, rename to `grpc` as it is more descriptive
+- *(codec)* Enable tests for member crate
+- *(structure)* Restructure routers to split responsibility into individual traits and separate concrete graph implementation
+- *(bench)* Benchmarks verified against edges, edge vec implementation and initial sdk buildout
+- *(match)* Remove cache from match trait, implementation-specific (i.e. on graph struct.)
+- *(proto)* Split into route segment, add generic entry to services and abstract match/snap common functionality
+- *(api)* Translate internal structure to protobuf repr
+- *(grpc)* Add builder to sdk and types, move pick method to metadata trait and simplify service translation
+- *(impl)* Introduce for edge metadata
+- GNU GPL v3 Licensing
+- *(config)* Add more options to the runtime config
+- *(solver)* Add optional precomute: solver slower but easier to verify
+- *(release)* Enables auto-release brokerage action
+- *(release)* Adapt to allow release for monorepo structure
+
+### 🔐 Security
+
+- *(patch)* Use `dotenvy` as maintained variant of `dotenv`
+
+### 💼 Other
+
+- Cleanup query and brakepoint
+- Rectify projection logic
+- Remove redundant imports
+- Cleanup codec tests
+- Locked item behind features to reduce compile size
+- Remove dependency for bigquery
+- Bump
+- Types
+- See without relation
+- Testing
+- Refactoring how each segment is structured
+- Move solver into isolated segment
+- Proposed different solution metrics
+- Reworking heuristics
+- Correct tracking of reachables
+- Improvements in flyweight handling
+- *(all)* Resolve clippy warnings
+- *(layer-gen)* Reduce contention, trade for memory pressure
+- *(layer-gen)* Remove logs
+- *(layer-gen)* Remove logs & unused imports
+- *(layer-gen)* Investigate performance change in using u64
+- *(edge-tree)* Trade compute for memory cost
+- Simplify solver trait, move heuristic over
+- General clippy maintainance
+- Update dependencies and structures so imports resolve
+- Look for build failure reason
+- *(workflow)* Tests using cargo `nextest`
+- Remove nextest install
+- *(deps)* Require no dangling dependencies
+- *(node)* Abstract map protoc. over codec::Entry impl
+- *(proto)* Re-define edge information
+- *(trait)* Rename Scan to Proximity
+- *(api)* Decide on verb-service and verb-trait nomenclature
+- *(proto)* Final sweep
+- *(model)* Working toward new internal routing response model
+- *(metadata)* Add metadata trait into relevant definitions and structures
+- *(speed-limit)* Parser structure
+- *(speed-limit)* Stabilise structures and formalise solution tests
+- *(primitives)* Removing dsb
+- *(probe)* Verify perf. due to higher searchable zone
+- *(transition)* Remove unecessary cases, add stub runtime
+- *(direction)* Split into owning filter operations
+- *(cache)* Gather inputs, no run
+- *(cache)* Just return true
+- *(cache)* Try non-functional approach
+- *(pr)* Add benches for each solver, add invariant warning in cache
+- *(workflow)* Disable Dry-Run
+
+### 🐛 Bug Fixes
+
+- Length issues
+- Import errors
+- *(tests)* Enforce conformance
+- *(cargo)* Remove smallvec dep
+- *(ci)* Don't checkout LFS files for buf or format
+- *(graph)* Imports, layout and corrections for edge use
+- *(proto)* Update imports
+- *(proto)* Add naming, reorder proto
+- Builds, includes, proto fmt
+- *(workflow)* Run benches for all workspace members
+- *(codec)* Use mimalloc
+- *(codec)* Mialloc in child crate, default propagate vertical.
+- *(benchmark)* Resolve clippy warnings in benchmarks
+- *(benchmark)* Corrected path
+- *(tests)* Repair testing framework
+- *(workflow)* Faster tests, better circumstances
+- *(server)* Update paths
+- *(workflow)* Cache with nextest
+- *(clippy)* Resolve lint warnings
+- *(clippy)* Use rustup instead of actions-rs
+- *(clippy)* Don't run clippy&fmt on test
+- *(cargo)* Same profile for dev & test
+- *(cargo)* Probe usingtest instead of nextest
+- *(tiles)* Implement required functionality for operational server example
+- *(tiles)* Fix import deps.
+- *(tiles)* Allow publishing by using fqn for fixture crate
+- *(tiles)* Use local path
+- *(tiles)* Give it a readme
+- *(routers)* Local path dep
+- *(routers)* Re-organise imports
+- *(tests)* Update parameters to use osm by default
+- *(routers)* Update imports and make corresponding modifications
+- *(telemetry)* Dependency chain
+- *(readme)* Urls
+- *(osm)* Do not risk regression behaviour
+- *(osm)* Clippy lints, enable member type in debug but keep disabled for release perf.
+- *(bench)* Result constrainted outside contract
+- *(bench)* Change calling args
+- *(clippy)* Clippy lints on benchmarks
+- *(proto)* Format proto files
+- *(codec)* Simplify export path for osm entry id
+- *(simpl)* Simplify path definitions, docs and remove Arc<..> wrapper
+- *(transform)* Add transformer from collapsed to routed path
+- *(bench)* Interpolated not discretized
+- *(docs)* Document and format
+- *(clippy)* Resolve lint failures
+- *(clippy)* Convert to Display impl for Condition
+- *(tests)* Resolve failing cases
+- *(srv)* Provide ctx to make filter runtime-passable
+- *(tests)* Correct test invariant
+- Give action issue-write permission
+- *(osm)* Restore pedestrian road class
+- *(cfg)* Simplify restriction patterns and take into account edge direction
+- *(filter)* Remove tmp.
+- *(filter)* Repr directionality as u8
+- *(filter)* Remove tmp.
+- *(filter)* Remove other properties to probe benchmarker
+- *(map-op)* Assume sorted
+- *(workflow)* Better cliff toml, experimentally verified auto-release
+- *(workflow)* Allow new versions when non-release branch merged
+- *(workflow)* Better formatting and release notes diff
+- *(workflow)* Allow workflow to create or prepend changelog
+- *(workflow)* Include Protoc 
+- *(workflow)* Disable Publish on Private Packages
+- *(workflow)* Publish-ability Step
+- *(workflow)* Pipe `publishable` status to action output
+- *(imports)* Normalize `codec` -> `routers_codec`
+- *(workflow)* Update crate and workspace versioning
+- *(imports)* Move prost and types to workspace-known version
+- *(workflow)* Do not try publish, correct publish check before conformative
+- *(shard)* Make pkg private until ready
+
+### 📚 Documentation
+
+- Document and restructure
+- Document parallel trait
+- Document geo utils, and projection move
+- High-level routing doc template
+- Tiler start
+- Documentation for default emission calculation
+- *(proto)* Match service rpcs
+
+### 🧪 Testing
+
+- *(filter)* Remove filter to probe performance regression
+- *(filter)* Re-add filter with unchecked fetch
+- *(filter)* Without sort, const restr
+- *(filter)* Reorder filters
+
+### ⚙️ General Changes
+
+- Partial map, basic and amalgamated
+- Restructured, with codec format
+- Optimised path buffering
+- Partial block iterator
+- Primitive and header block renderer
+- Read in parallel
+- Parallel iterative test
+- Create generic parallel iter
+- Modular iter
+- Element iterator template
+- Iterative node count
+- Accurate, fast node counting
+- Add file header comments
+- Add latlng
+- Correct offset calculation
+- Add minimal-footprint processed option
+- Naive graph generation using parallel reducer
+- Create raw and processed iterators
+- Re-introduce validation tests
+- Graph generation
+- Optimise rtree generation
+- Add road filtering
+- Partial routing implementation
+- Routable with rounding errors
+- Routable network
+- Distance-heuristic routing
+- Implement tracing, with error logging
+- Cleanup, mvt proto, err macro
+- Fix macro import
+- Mvt-informed start point
+- Update imports
+- Workable implementation
+- Generic repo and query
+- Index passthrough
+- Operational tile layer
+- Concurrent tiles
+- Independent tracing
+- Ctx dep tracing
+- Hide trace behind tracing
+- Remove non-dependent
+- Basic clustering mechansism
+- Valid cluster conversions
+- Correct cluster orientation
+- Cluster key const
+- Remove comment from set
+- Implement deserialisation for `UtcDate`
+- Update doc
+- Moved examples and changed crate type
+- Specify lib path
+- Update crate type again
+- Update manifest
+- Feature gate items
+- Add proto3 optional flag
+- Bump version
+- Support old `protoc` in doc.rs
+- Bump version
+- Update build for old and new protoc
+- Bump version
+- Bump version
+- Version bump, expose doc features
+- Utilize bytes::Bytes instead of std::String
+- Adding benchmarking
+- Low-level-iter rework [wip]
+- Lended iterator variant
+- Effective shared iteration [wip-inefficient]
+- As parallel
+- Minor updates
+- Down to `3.8ms` std testing (high-mem usage though)
+- Update CI
+- Without pre-build
+- Change import
+- Tests failure
+- Update target
+- Allow small `.pbf`
+- Fix impl
+- Use an iterative approach instead [wip]
+- Re-introduce lower-level parallel iter
+- Optimise through inlining
+- Using `unsafe`
+- Upgrade cache registry
+- Build w/ release
+- Benchmark sample size
+- Re-include target benchmark
+- Error before run
+- Finding nearest edges
+- As a di-graph usize
+- Ported direct map impl
+- Snapped coordinate api
+- Geo rust ratio product
+- Remove comment
+- Add benchmark comments
+- Optional tracing, route client example
+- Benchmark update
+- Try nightly
+- Nightly toolchain instead
+- Try fix from online
+- Ask for comment
+- Update benchmark versioning
+- Cleanup route handling interface
+- Compile-time constraints
+- Simplify ingestion pipeline
+- Schema for mapmatch func
+- Add proto definition
+- HMM schematic identified
+- Sensible collapse iterator
+- Map matching logic refine
+- Compile-ready
+- Add debug information
+- Build flags for compilation
+- Correct distance function
+- Address compile errors
+- Refining route matching
+- More logs
+- [wip: unoptimised] correct routing
+- Minor optimisation techniques
+- Re-organise files
+- Buf proto structure w/ config and lint
+- Update structure and provide token
+- Update target
+- Add `cors` for grpc-web, format proto
+- Re-enable trace publishing
+- Reduce breaking to package level
+- Revert to file-level
+- Cleanup
+- Format and add format CI lint
+- Remove tmp
+- Workflow name
+- Install formatter in CI
+- Add `clippy` and fix lints
+- Re-format
+- No `--check` for clippy
+- Update deps and corresponding code
+- Use `mimalloc` for shorter-terminated allocations
+- Try codspeed
+- Cherrypick for another PR
+- Cleanup
+- Use `mimalloc` over `libc`
+- Benchmark on merge
+- Make it optional
+- Mimalloc as default
+- Shift from const sized to const defined [wip]
+- Generic implementations
+- Deprecate and archive internal `LatLng`
+- Format code
+- Clippy-all
+- Bump version number
+- Move to async runtime with tokio
+- Improved benchmarking + total ingestion benchmarks
+- Merge continually to reduce waiting and duplicate additions, increases contention
+- Move back to `sync` runtime
+- Naive soln. map match
+- Transitive partial fwd look
+- Enable unidirectional roadways
+- Revert to distance-heuristic again
+- Pub pair
+- Correct map matching + removed contension
+- Simplify graph
+- Formalised tp description
+- Consider roundabout direction
+- Consider emission probability
+- Cleanup
+- Remove commented code
+- Implement neater APIs to hold onto assoc. information for rev. lookup
+- Refactor match response proto
+- Format proto file
+- Repair benchmarks
+- Remove shared lock
+- Generic costing methods & wip transition restructure
+- Update costing docs
+- Improved candidate selection
+- Rationalisable routing nomenclature
+- Route progressively
+- Isolation attempt
+- Emission cost blowout removed
+- Improved cost blowout maintainance
+- Remove repeated cond.
+- Logic revisit
+- Reduce proclivity to small-segment ratio influencing factors
+- Logically correct-bound
+- Ignore todo list
+- Address clippy concerns
+- Remove unused tests
+- Bump version
+- Add template match
+- Test the matching for ventura hwy
+- Restructure bench & include relevant files
+- Add resources via lfs
+- Dont compare temp
+- Include large files
+- Ignore wkt files
+- Update deps
+- Correct & sourced directionality applicator
+- Direction aware & cached
+- Save entries to make debugging easier
+- Fix proto typo
+- Format & check
+- Update hyperparameters to minimise within set filter distance
+- Updated angular complexity calculation
+- Wip: handling nearby transitions
+- Update deps, wip resol. method
+- Redo docs
+- Regression probing
+- Restore mimalloc default
+- Correct domestic/residential routing heuristics
+- Remove comments
+- Revert change to unify route decision costs
+- Allow considering weight and distance in reach functions
+- Optimise through FxHashing
+- Carry-over distance calculation (x3 reduction in calculation)
+- Iterator parrying
+- Remove dist. calc from default emission cost
+- Address clippy warnings
+- Attempt indirection to prevent unecessary allocation
+- Having a go at vendoring the dijkstra impl
+- Segmentation of concepts
+- *(benchmarks)* Implement layer generation benchmarking
+- *(benchmarks)* Remove erroneous import
+- *(benches)* Do not parse during bench segment
+- *(layer-gen)* Restore changes with regressionary impact
+- *(layer-gen)* Remove comments
+- *(graph)* Remove need for locking on entry hashmap
+- *(graph)* Bump criterion
+- *(graph)* Try codspeed runner
+- *(graph)* Try codspeed runner (upstream)
+- *(graph)* Try codspeed runner (upstream)
+- *(layer-gen)* Reduce allocations by using Line over LineString
+- *(layer-gen)* Use FxHasher instead of default (builtin)
+- *(workflow)* Add rust cache layer to benchmark
+- *(workflow)* Reduce workflow tasks
+- *(layer-gen)* Combine filter functions to reduce iter overhead
+- *(layer-gen)* Use FxHasher for graph
+- *(layer-gen)* Ignore node variant, use single preallocated vector
+- *(layer-gen)* Filter and map simultaneously to reduce memory chaining
+- *(workflow)* No lfs in buf
+- *(no-op)* Trigger CI
+- *(benchmark)* Compute once beforehand to preload cache
+- *(benchmark)* Create generator outside of testing regieme
+- *(emission)* Simplify to probe performance
+- *(emission)* Assign sentinel, revert to i64, update imports
+- *(emission)* Reintroduce parallel gen
+- *(emission)* Remove edge-distinct scan, upgrade to fat-edge reference propagation
+- *(scan)* Document scan functions
+- *(collapse)* Document Collapse structure
+- *(candidate)* Document candidate::entry module
+- *(costing)* Document function definitions
+- *(layer)* Document structures and functions
+- *(cache)* Document caching behaviour
+- *(primitives)* Document cumulative and w&d
+- *(cache)* Simplify vectoring
+- *(transition)* Tidy and finish function/struct documentation
+- Move buf yml
+- Update package deps
+- *(workflow)* Specify server directory
+- *(proto)* Move proto up a directory
+- Change readme name
+- Update benchmark structure
+- *(workflow)* Terminal ansii colours
+- *(codec)* Fix lints
+- *(codec)* Move `osm` into separate module to isolate import
+- *(codec)* Resolve clippy warnings
+- *(readme)* Add status badges
+- *(workflow)* Add audit
+- *(workflow)* Update audit workflow schedule
+- *(tracer)* Use updated init fns
+- Tracer working
+- *(bench)* Probe for flaky behaviour
+- *(split)* Split as terminator
+- *(tests)* Add furthers tests
+- *(tests)* Test transport and direction
+- *(primitives)* Require From<&M> to elide dsb
+- *(modules)* Reorganise modules
+- *(modules)* Isolate access tag and road classification, preferring the classified road type in graph creation & weighting
+- *(inline)* Inline and const weighting fn
+- *(dep)* Revert upgrade petgraph back to 0.8.2
+- *(dep)* Force upd. lockfile
+- Apply to config
+- *(dep)* Update deps.
+- *(docs)* Fill in doc comments
+- Settle on petgraph 0.8.2, restore road classes bar pedestrian
+- *(access)* Derive accessablility checks
+- *(cond)* Flip conditions
+- *(direction)* Use edge dynamic direction
+- *(filter)* Represent as u8; bitpacks restriction to 16bit
+- *(filter)* Reintroduce functionality which didnt not impact performance
+- *(access)* Rename from LandAccess to Access
+- *(access)* Restore builder parser (not performance breaking
+- *(default)* Use breaking default from 2c36a0
+- *(proto)* Re-define costing heuristics
+- *(cfg)* Staged configurations with adapters
+- *(simplify)* Statements and rename
+- *(transport-mode)* Make const lookup with bitflags
+- *(transport-mode)* Reduce, reduce, reduce
+- *(?)* Try running function with no side effects
+- *(?)* Remove paralell
+- *(?)* Verify w/ blackbox
+- *(?)* Perf. known, probing retaliation
+- *(cache)* Move filter up a layer to preserve successor purity
+- *(trace)* Remove trace-log
+- *(cache)* Unilateral filter fn
+- *(hash)* Apply at the end
+- *(precomp)* Simplify functionality
+- *(test)* Use release mode in tests
+- *(test)* Concurrent hashmap
+
+RoutersOrg - 2025
