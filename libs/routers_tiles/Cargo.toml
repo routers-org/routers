@@ -13,7 +13,7 @@ routers_geo = { workspace = true }
 # Server dependencies
 axum = { version = "0.8.4", features = ["query"] }
 serde_qs = "0.15.0"
-prost = { version = "0.13.5" }
+prost = { workspace = true }
 
 fast_hilbert = { version = "2.0.1" }
 chrono = "0.4.41"

@@ -13,8 +13,8 @@ routers = { workspace = true }
 routers_codec = { workspace = true }
 
 # Protobuf Handling
-prost = { version = "0.13.3" }
-prost-types = "0.13.4"
+prost = { workspace = true }
+prost-types = { workspace = true }
 derive_builder = "0.20.2"
 
 # gRPC Server Dependencies
