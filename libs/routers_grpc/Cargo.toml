@@ -2,6 +2,8 @@
 name = "routers_grpc"
 version = "0.1.0"
 edition = "2024"
+license = "GPL-3"
+description = "gRPC Endpoints for Routers"
 
 [lib]
 name = "routers_grpc"
@@ -50,7 +52,7 @@ tonic-web = { version = "0.13.1" }
 dotenv = { workspace = true }
 
 # Workspace Crates
-routers_fixtures = { path = "../routers_fixtures" }
+routers_fixtures = { workspace = true }
 
 [build-dependencies]
 tonic-build = { version = "0.13.1", features = ["prost"] }
