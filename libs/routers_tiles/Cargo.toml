@@ -2,7 +2,7 @@
 name = "routers_tiles"
 version = "0.1.0"
 edition = "2024"
-license = "GPL-3"
+license = "GPL-3.0-or-later"
 description = "Utilities to create tiles"
 
 [dependencies]
@@ -35,7 +35,7 @@ dotenv = { workspace = true }
 tower-http = { workspace = true }
 
 [build-dependencies]
-prost-build = { version = "0.13.3" }
+prost-build = { workspace = true }
 
 [features]
 default = ["bigtable"]
