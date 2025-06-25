@@ -4,7 +4,7 @@ version = "0.1.2"
 edition = "2024"
 include = ["docs/**", "build.rs", "proto/**", "src/**", "benches/**"]
 description = "Encoding and Decoding Primitives for Routers"
-license = "GPL-3"
+license = "GPL-3.0-or-later"
 repository = "https://github.com/routers-org/routers"
 
 [lib]
