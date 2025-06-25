@@ -50,7 +50,7 @@ criterion = { workspace = true }
 osmpbf = { version = "0.3.5", features = ["zlib-ng"], default-features = false }
 
 [build-dependencies]
-prost-build = { version = "0.13.5" }
+prost-build = { workspace = true }
 
 [[bench]]
 name = "codec_sweep"
