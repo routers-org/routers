@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.2] - 2025-07-06
+
+### 🐛 Bug Fixes
+
+- *(lint)* Update to 1.88 clippy lints
+
+### ⚙️ Miscellaneous Tasks
+
+- Bump codspeed to v3
+
+RoutersOrg - 2025
 ## [0.2.1] - 2025-06-24
 
 ### 🚀 Features
