@@ -226,19 +226,11 @@ where
         Emmis: EmissionStrategy + Send + Sync,
         Trans: TransitionStrategy<E, M> + Send + Sync,
     {
-        let (start, end) = {
-            // Compute cost ~= free
-            transition
-                .candidates
-                .attach_ends(&transition.layers)
-                .map_err(MatchError::EndAttachFailure)?
-        };
-
         debug!("Attached Ends");
         transition.candidates.weave(&transition.layers);
         debug!("Weaved all candidate layers.");
 
-        info!("Solving: Start={start:?}. End={end:?}. ");
+        info!("Solving. ");
         let context = transition.context(runtime);
 
         // Note: For every candidate, generate their reachable elements, then run the solver overtop.
@@ -248,39 +240,7 @@ where
         //
         //       This behaviour can be implemented using the `AllForwardSolver` going forward.
 
-        let Some((path, cost)) = ({
-            debug_time!("Solved transition graph");
-
-            astar(
-                &start,
-                |source| self.reach(&transition, &context, (start, end), source),
-                |_| CandidateEdge::zero(),
-                |node| *node == end,
-            )
-        }) else {
-            return Err(MatchError::CollapseFailure(CollapseError::NoPathFound));
-        };
-
-        info!("Total cost of solve: {}", cost.weight);
-        let reached = path
-            .windows(2)
-            .filter_map(|nodes| {
-                if let [a, b] = nodes {
-                    self.reachable_hash
-                        .borrow()
-                        .get(&(a.index(), b.index()))
-                        .cloned()
-                } else {
-                    None
-                }
-            })
-            .collect::<Vec<_>>();
-
-        Ok(CollapsedPath::new(
-            cost.weight,
-            reached,
-            path,
-            transition.candidates,
-        ))
+        // call collapse
+        unimplemented!();
     }
 }

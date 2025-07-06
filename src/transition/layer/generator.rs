@@ -1,5 +1,6 @@
 use crate::transition::*;
 use crate::{Graph, Scan};
+use std::ops::Deref;
 
 use geo::{Distance, Haversine, Point};
 use itertools::Itertools;
@@ -30,6 +31,14 @@ impl FromParallelIterator<Layer> for Layers {
     {
         let layers = layers.into_par_iter().collect::<Vec<Layer>>();
         Self { layers }
+    }
+}
+
+impl Deref for Layers {
+    type Target = Vec<Layer>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.layers
     }
 }
 

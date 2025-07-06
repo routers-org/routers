@@ -27,7 +27,8 @@ where
     /// Candidate flyweight
     pub(crate) lookup: HashMap<CandidateId, Candidate<E>>,
 
-    ends: Option<(CandidateId, CandidateId)>,
+    pub(in crate::transition) source: CandidateId,
+    pub(in crate::transition) target: CandidateId,
 }
 
 impl<E> Debug for Candidates<E>
@@ -70,103 +71,6 @@ where
             .collect()
     }
 
-    pub fn attach_ends(
-        &mut self,
-        layers: &Layers,
-    ) -> Result<(CandidateId, CandidateId), EndAttachError> {
-        if self.ends.is_some() {
-            return Err(EndsAlreadyAttached);
-        }
-
-        let mut graph = self.graph.write().map_err(|_| WriteLockFailed)?;
-
-        let source = graph.add_node(CandidateRef::butt());
-        let target = graph.add_node(CandidateRef::butt());
-
-        // We need to bind the first and last layers to a singular
-        // source and target value so we can route toward this given
-        // target, from our own source.
-        //
-        //                   Layer     Layer
-        //                     0         N
-        //
-        //               __/---+   ...   +---\__
-        //              /                       \
-        //   SOURCE    +-------+   ...   +-------+  TARGET
-        //              \                       /
-        //               ‾‾\---+   ...   +---/‾‾
-        //
-        // So, we need to attach each entry within the first/initial layer
-        // to this source, and every entry within the last/final layer to
-        // the target.
-
-        // Attach the initial layer
-        layers
-            .first()
-            .ok_or(LayerMissing)?
-            .nodes
-            .iter()
-            .for_each(|node| {
-                graph.add_edge(source, *node, CandidateEdge::zero());
-            });
-
-        // Attach to the final layer
-        layers
-            .last()
-            .ok_or(LayerMissing)?
-            .nodes
-            .iter()
-            .for_each(|node| {
-                graph.add_edge(*node, target, CandidateEdge::zero());
-            });
-
-        drop(graph);
-        let ends = (source, target);
-        self.ends = Some(ends);
-        Ok(ends)
-    }
-
-    /// Collapses transition layers, `layers`, into a single vector of
-    /// the finalised points. This is useful for solvers which will
-    /// mutate the candidates, and require an external method to solve
-    /// based on the calculated edge weights. Iterative solvers which
-    /// do not produce a candidate solution do not require this function.
-    ///
-    /// Takes an owned value to indicate the structure is [terminal].
-    ///
-    /// [terminal]: Cannot be used again
-    pub fn collapse(self) -> Result<CollapsedPath<E>, CollapseError> {
-        let (source, target) = self.ends.ok_or(CollapseError::NoEnds)?;
-
-        // There should be exclusive read-access by the time collapse is called.
-        // This will block access to any other client using this candidate structure,
-        // however this function
-        let graph = self
-            .graph
-            .read()
-            .map_err(|_| CollapseError::ReadLockFailed)?;
-
-        let cost_fn = |e: EdgeReference<CandidateEdge>| {
-            // Decaying Transition Cost
-            let transition_cost = e.weight().weight;
-
-            // Loosely-Decaying Emission Cost
-            let emission_cost = graph
-                .node_weight(e.target())
-                .map_or(u32::MAX, |v| v.weight());
-
-            transition_cost + emission_cost
-        };
-
-        let zero = |_| u32::ZERO;
-
-        let (cost, route) = astar(&*graph, source, |node| node == target, cost_fn, zero)
-            .ok_or(CollapseError::NoPathFound)?;
-
-        drop(graph);
-        Ok(CollapsedPath::new(cost, vec![], route, self))
-    }
-
     /// TODO: Provide docs
     pub fn edge(&self, a: &CandidateId, b: &CandidateId) -> Option<CandidateEdge> {
         let reader = self.graph.read().ok()?;
@@ -205,13 +109,71 @@ where
     E: Entry,
 {
     fn default() -> Self {
-        let graph = Arc::new(RwLock::new(Graph::new()));
+        let mut graph = Graph::new();
+
+        let source = graph.add_node(CandidateRef::butt());
+        let target = graph.add_node(CandidateRef::butt());
+
+        let graph = Arc::new(RwLock::new(graph));
         let lookup = HashMap::default();
 
         Candidates {
             graph,
             lookup,
-            ends: None,
+
+            source,
+            target,
         }
+    }
+}
+
+pub struct Bridge {
+    start: CandidateId,
+    terminus: CandidateId,
+}
+
+pub struct LayeredBridge<'a> {
+    bridge: Bridge,
+
+    entering_layer: &'a Layer,
+    departing_layer: &'a Layer,
+}
+
+impl Bridge {
+    pub fn new(start: CandidateId, terminus: CandidateId) -> Self {
+        Bridge { start, terminus }
+    }
+
+    pub fn layered<'a>(self, entering: &'a Layer, departing: &'a Layer) -> LayeredBridge<'a> {
+        LayeredBridge {
+            bridge: self,
+            entering_layer: entering,
+            departing_layer: departing,
+        }
+    }
+}
+
+impl<'a> LayeredBridge<'a> {
+    pub fn handle<FnSuccessor: FnMut(&CandidateId) -> Vec<(CandidateId, CandidateEdge)>>(
+        &'a self,
+        node: &CandidateId,
+        mut successors: FnSuccessor,
+    ) -> Vec<(CandidateId, CandidateEdge)> {
+        // If the node is the same as the bridge's start, it's free to go to the entering layer.
+        if *node == self.bridge.start {
+            return self
+                .entering_layer
+                .nodes
+                .iter()
+                .map(|node| (*node, CandidateEdge::zero()))
+                .collect();
+        }
+
+        // If the node is within the departing layer, it's free to leave (go to the terminus).
+        if self.departing_layer.nodes.contains(node) {
+            return vec![(self.bridge.terminus, CandidateEdge::zero())];
+        }
+
+        successors(node)
     }
 }

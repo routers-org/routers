@@ -2,6 +2,10 @@ use crate::graph::Graph;
 use crate::transition::*;
 
 use geo::LineString;
+use itertools::Itertools;
+use pathfinding::num_traits::ConstZero;
+use petgraph::data::DataMap;
+use petgraph::prelude::EdgeRef;
 use routers_codec::Metadata;
 use routers_codec::primitive::Entry;
 
@@ -134,10 +138,93 @@ where
     /// not be re-used.
     ///
     /// [HMM]: https://en.wikipedia.org/wiki/Hidden_Markov_model
-    pub(crate) fn collapse(self) -> Result<CollapsedPath<E>, MatchError> {
-        // Use the candidates to collapse the graph into a single route.
-        self.candidates
-            .collapse()
-            .map_err(MatchError::CollapseFailure)
+    ///
+    ///
+    ///       /// Collapses transition layers, `layers`, into a single vector of
+    //         /// the finalised points. This is useful for solvers which will
+    //         /// mutate the candidates, and require an external method to solve
+    //         /// based on the calculated edge weights. Iterative solvers which
+    //         /// do not produce a candidate solution do not require this function.
+    //         ///
+    //         /// Takes an owned value to indicate the structure is [terminal].
+    //         ///
+    //         /// [terminal]: Cannot be used again
+    pub(crate) fn collapse(
+        self,
+        lookup: &scc::HashMap<(usize, usize), Reachable<E>>,
+    ) -> Result<CollapsedPath<E>, MatchError> {
+        // There should be exclusive read-access by the time collapse is called.
+        // This will block access to any other client using this candidate structure,
+        // however this function
+        let graph = self
+            .candidates
+            .graph
+            .read()
+            .map_err(|_| MatchError::CollapseFailure(CollapseError::ReadLockFailed))?;
+
+        // Calculates the combination of emission and transition costs.
+        let cost_fn = |target: &CandidateRef, edge: &CandidateEdge| {
+            // Decaying Transition Cost
+            let transition_cost = edge.weight;
+
+            // Loosely-Decaying Emission Cost
+            let emission_cost = target.weight();
+
+            let transition = (transition_cost as f64 * 0.6) as u32;
+            let emission = (emission_cost as f64 * 0.4) as u32;
+            let cost = emission.saturating_add(transition);
+
+            cost
+        };
+
+        let successors = |candidate: &CandidateId| {
+            let next = self.candidates.next_layer(candidate);
+
+            next.into_iter()
+                .filter_map(|next_candidate| {
+                    Some((
+                        next_candidate,
+                        self.candidates.edge(candidate, &next_candidate)?,
+                    ))
+                })
+                .collect::<Vec<_>>()
+        };
+
+        let bridge = Bridge::new(self.candidates.source, self.candidates.target)
+            .layered(self.layers.first().unwrap(), self.layers.last().unwrap());
+
+        let Some((route, cost)) = pathfinding::directed::astar::astar(
+            &self.candidates.source,
+            |&node| {
+                return vec![];
+                // bridge
+                //     .handle(node, successors)
+                //     .into_iter()
+                //     .filter_map(|(candidate, cost)| {
+                //         Some((candidate, cost_fn(graph.node_weight(candidate)?, &cost)))
+                //     })
+            },
+            |_| u32::ZERO,
+            |&node| self.candidates.target == node,
+        ) else {
+            return Err(MatchError::CollapseFailure(CollapseError::NoPathFound));
+        };
+
+        drop(graph);
+
+        let reached = route
+            .windows(2)
+            .filter_map(|nodes| {
+                if let [a, b] = nodes {
+                    lookup
+                        .get(&(a.index(), b.index()))
+                        .map(|entry| entry.get().clone())
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+
+        Ok(CollapsedPath::new(cost, reached, route, self.candidates))
     }
 }

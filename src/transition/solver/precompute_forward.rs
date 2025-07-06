@@ -175,19 +175,7 @@ where
         Emmis: EmissionStrategy + Send + Sync,
         Trans: TransitionStrategy<E, M> + Send + Sync,
     {
-        let (start, end) = {
-            // Compute cost ~= free
-            transition
-                .candidates
-                .attach_ends(&transition.layers)
-                .map_err(MatchError::EndAttachFailure)?
-        };
-
-        debug!("Attached Ends");
-        transition.candidates.weave(&transition.layers);
-        debug!("Weaved all candidate layers.");
-
-        info!("Solving: Start={start:?}. End={end:?}. ");
+        info!("Solving. ");
         let context = transition.context(runtime);
 
         // Pre-generate KV pair
@@ -220,21 +208,6 @@ where
                 .collect::<FxHashMap<CandidateId, Vec<(CandidateId, CandidateEdge)>>>()
         };
 
-        pair.insert(
-            start,
-            transition.layers.layers[0]
-                .nodes
-                .iter()
-                .map(|source| (*source, CandidateEdge::zero()))
-                .collect_vec(),
-        );
-
-        if let Some(all) = transition.layers.layers.last() {
-            for node in &all.nodes {
-                pair.insert(*node, vec![(end, CandidateEdge::zero())]);
-            }
-        }
-
         // Note: For every candidate, generate their reachable elements, then run the solver overtop.
         //       This means we can do it in parallel, which is more efficient - however will have to
         //       compute for *every* candidate, not just the likely ones, which will lead to poor
@@ -242,38 +215,30 @@ where
         //
         //       This behaviour can be implemented using the `AllForwardSolver` going forward.
 
-        let Some((path, cost)) = ({
-            debug_time!("Solved transition graph");
+        // call collapse...
+        unimplemented!();
 
-            astar(
-                &start,
-                |source| pair.get(source).cloned().unwrap_or(vec![]),
-                |_| CandidateEdge::zero(),
-                |node| *node == end,
-            )
-        }) else {
-            return Err(MatchError::CollapseFailure(CollapseError::NoPathFound));
-        };
-
-        info!("Total cost of solve: {}", cost.weight);
-        let reached = path
-            .windows(2)
-            .filter_map(|nodes| {
-                if let [a, b] = nodes {
-                    self.reachable_hash
-                        .get(&(a.index(), b.index()))
-                        .map(|entry| entry.get().clone())
-                } else {
-                    None
-                }
-            })
-            .collect::<Vec<_>>();
-
-        Ok(CollapsedPath::new(
-            cost.weight,
-            reached,
-            path,
-            transition.candidates,
-        ))
+        // We should generate the layers first. Over which we
+        // should paralellise a .window function which is tasked
+        // with creating the K shortest paths between two consecutive
+        // candidates...
+        //
+        // With this, we can perform a bidirectional modified reach
+        // dijkstra algorithm to perform the search to reduce the
+        // search space consumed, prevent traversing largely unplausable
+        // candidates, etc.
+        //
+        // This solver (in its current form) should be preserved
+        // and rebranded as a slower but methodical solver which checks
+        // every possible pathing sequence as it precomputes all paths.
+        //
+        // Therefore, we will ideally search far less space, and in the final
+        // dijkstra path through the trajectory graph we can reveal the optimal
+        // matchings of the trajectory.
+        //
+        // If this is true, we can hot-cache (bin heap) the candidates and paths between
+        // such that if the service is hit with a consecutive request with similar
+        // starting parameters it only has to compute the final layer's candidates
+        // and the final window entry, all others would have a cache hit!
     }
 }

@@ -366,4 +366,9 @@ impl CandidateEdge {
     pub fn new(weight: u32) -> Self {
         Self { weight }
     }
+
+    pub const fn zero_static() -> &'static Self {
+        const ZERO_EDGE: CandidateEdge = CandidateEdge { weight: 0 };
+        &ZERO_EDGE
+    }
 }
