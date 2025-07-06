@@ -11,7 +11,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .protoc_arg("--experimental_allow_proto3_optional")
         .compile_protos(&protos, &includes)
     {
-        eprintln!("Failed to build. {}", e);
+        eprintln!("Failed to build. {e}");
         cfg.compile_protos(&protos, &includes)?
     }
 

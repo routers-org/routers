@@ -161,7 +161,7 @@ impl<T: Into<geo::Point> + Clone> TryFrom<Vec<(u32, T)>> for Cluster<T> {
                 match Clustered::try_from(group) {
                     Ok(cluster) => clustered.push(cluster),
                     Err(error) => {
-                        error!("Failed to cluster, {:?}", error)
+                        error!("Failed to cluster, {error:?}")
                     }
                 }
             } else {

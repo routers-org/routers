@@ -68,9 +68,9 @@ impl SpeedValue {
 impl fmt::Display for SpeedValue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            SpeedValue::Kmh(speed) => write!(f, "{}", speed),
-            SpeedValue::Mph(speed) => write!(f, "{} mph", speed),
-            SpeedValue::Knots(speed) => write!(f, "{} knots", speed),
+            SpeedValue::Kmh(speed) => write!(f, "{speed}"),
+            SpeedValue::Mph(speed) => write!(f, "{speed} mph"),
+            SpeedValue::Knots(speed) => write!(f, "{speed} knots"),
             SpeedValue::None => write!(f, "none"),
             SpeedValue::Variable => write!(f, "variable"),
             SpeedValue::Inherited => write!(f, "inherited"),

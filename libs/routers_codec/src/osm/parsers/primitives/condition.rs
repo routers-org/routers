@@ -247,7 +247,7 @@ impl FromStr for ComparisonOperator {
             "=" => Ok(ComparisonOperator::Equal),
             "<=" => Ok(ComparisonOperator::LessThanOrEqual),
             ">=" => Ok(ComparisonOperator::GreaterThanOrEqual),
-            _ => Err(format!("Unknown comparison operator: {}", s)),
+            _ => Err(format!("Unknown comparison operator: {s}")),
         }
     }
 }
@@ -262,21 +262,21 @@ impl Display for Condition {
                     write!(f, "{}", td.opening_hours)
                 }
             }
-            ConditionType::Season(season) => write!(f, "{}", season),
-            ConditionType::RoadCondition(road) => write!(f, "{}", road),
+            ConditionType::Season(season) => write!(f, "{season}"),
+            ConditionType::RoadCondition(road) => write!(f, "{road}"),
             ConditionType::VehicleProperty(vp) => {
                 let unit_str = vp.unit.as_deref().unwrap_or("");
                 write!(f, "{}{}{}{}", vp.property, vp.operator, vp.value, unit_str)
             }
             ConditionType::VehicleUsage(vu) => match vu {
                 VehicleUsageCondition::Occupants { operator, count } => {
-                    write!(f, "occupants{}{}", operator, count)
+                    write!(f, "occupants{operator}{count}")
                 }
                 VehicleUsageCondition::Hazmat => write!(f, "hazmat"),
-                VehicleUsageCondition::Load(load) => write!(f, "{}", load),
+                VehicleUsageCondition::Load(load) => write!(f, "{load}"),
             },
-            ConditionType::UserGroup(ug) => write!(f, "{}", ug),
-            ConditionType::Purpose(purpose) => write!(f, "{}", purpose),
+            ConditionType::UserGroup(ug) => write!(f, "{ug}"),
+            ConditionType::Purpose(purpose) => write!(f, "{purpose}"),
             ConditionType::StayDuration(sd) => {
                 write!(
                     f,
@@ -297,7 +297,7 @@ impl Display for Condition {
                     }
                 )
             }
-            ConditionType::Raw(raw) => write!(f, "{}", raw),
+            ConditionType::Raw(raw) => write!(f, "{raw}"),
         }
     }
 }
@@ -311,7 +311,7 @@ impl Condition {
     ///
     /// # Examples
     /// ```
-    /// use routers_routers_codec::osm::primitives::Condition;
+    /// use routers_codec::osm::primitives::Condition;
     ///
     /// let condition = Condition::parse("Tu-Fr 00:00-24:00")?;
     /// let condition = Condition::parse("weight < 7.5")?;

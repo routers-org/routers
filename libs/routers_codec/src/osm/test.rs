@@ -27,7 +27,7 @@ fn iterate_blobs_each() {
 
     match total_data_size {
         Ok(size) => {
-            println!("Got Size: {:?}", size)
+            println!("Got Size: {size:?}")
         }
         Err(err) => {
             error!(

@@ -88,10 +88,10 @@ impl Display for WeekdayRange {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
             WeekdayRange::Single(weekday) => {
-                write!(f, "{}", weekday)
+                write!(f, "{weekday}")
             }
             WeekdayRange::Range(start, end) => {
-                write!(f, "{}-{}", start, end)
+                write!(f, "{start}-{end}")
             }
             WeekdayRange::List(weekdays) => {
                 write!(
@@ -114,12 +114,11 @@ pub struct OpeningRule {
 impl Display for OpeningRule {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         if let Some(weekday) = &self.weekdays {
-            write!(f, "{}", weekday)?;
+            write!(f, "{weekday}")?;
         }
 
         let times = self.times.iter().map(|s| s.to_string()).join(",");
-
-        write!(f, "{}", times)
+        write!(f, "{times}")
     }
 }
 
@@ -133,7 +132,7 @@ impl Display for OpeningHours {
         write!(
             f,
             "{}",
-            self.rules.iter().map(|rule| format!("{}", rule)).join(";")
+            self.rules.iter().map(|rule| rule.to_string()).join(";")
         )
     }
 }

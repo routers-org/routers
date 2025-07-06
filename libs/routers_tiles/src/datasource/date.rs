@@ -33,7 +33,7 @@ impl<'de> Deserialize<'de> for UtcDate {
             Err(err) => Err(err),
             Ok(date) => match NaiveDate::parse_from_str(&date, REQUEST_FORMAT) {
                 Err(err) => {
-                    error!("{}", err);
+                    error!("{err}");
                     Err(de::Error::custom(err.to_string()))
                 }
                 Ok(date) => Ok(UtcDate(Utc.from_utc_datetime(&NaiveDateTime::from(date)))),

@@ -11,7 +11,7 @@ impl Debug for ShardError {
             f,
             "{}",
             match self {
-                ShardError::IOError(e) => format!("IOError: {}", e),
+                ShardError::IOError(e) => format!("IOError: {e}"),
             }
         )
     }

@@ -24,7 +24,7 @@ where
         let params: T = config.deserialize_str(query).map_err(|err| {
             (
                 StatusCode::BAD_REQUEST,
-                format!("Failed to deserialize query string: {}", err),
+                format!("Failed to deserialize query string: {err}"),
             )
         })?;
 

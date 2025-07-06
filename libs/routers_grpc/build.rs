@@ -39,7 +39,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .include_file("_includes.rs")
         .compile_protos(&routers, &includes)
     {
-        eprintln!("Failed to build. {}", e);
+        eprintln!("Failed to build. {e}");
         tonic_build::configure()
             .file_descriptor_set_path(out_dir.join("routers_descriptor.bin"))
             .message_attribute(".", "#[derive(::derive_builder::Builder)] #[builder(setter(into, strip_option), default)]")

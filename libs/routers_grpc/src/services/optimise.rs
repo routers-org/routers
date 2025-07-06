@@ -30,7 +30,7 @@ where
                 Err(Status::invalid_argument("Missing Start Coordinate")),
                 |v| Ok(coord! { x: v.longitude, y: v.latitude }),
             )
-            .map_err(|err| Status::internal(format!("{:?}", err)))?;
+            .map_err(|err| Status::internal(format!("{err:?}")))?;
 
         let end = routing
             .end
@@ -38,7 +38,7 @@ where
                 Err(Status::invalid_argument("Missing End Coordinate")),
                 |v| Ok(coord! { x: v.longitude, y: v.latitude }),
             )
-            .map_err(|err| Status::internal(format!("{:?}", err)))?;
+            .map_err(|err| Status::internal(format!("{err:?}")))?;
 
         self.graph.route_points(Point(start), Point(end)).map_or(
             Err(Status::internal("Could not route")),
