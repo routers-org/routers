@@ -3,7 +3,17 @@ package model.v1;
 
 message CostOptions {
   // The vehicle costing method to use for map matching.
-  model.v1.Costing costing_method = 5;
+  model.v1.Costing costing_method = 1;
+
+  // The optimised solver to be used for map matching.
+  model.v1.OptimiseFor optimise_for = 2;
+}
+
+// Allow the service to optimise based on the requested parameters.
+enum OptimiseFor {
+    OptimiseFor_Speed = 0;
+    OptimiseFor_Parallelism = 1;
+    OptimiseFor_Consistency = 2;
 }
 
 message Costing {

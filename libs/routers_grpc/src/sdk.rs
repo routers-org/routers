@@ -3,9 +3,12 @@
 
 use crate::r#match::{MatchRequest, MatchResponse, SnapRequest};
 use crate::model::costing::{BusModel, CarModel, TruckModel, Variation};
-use crate::model::{Coordinate, CostOptions, EdgeIdentifier, EdgeMetadata, NodeIdentifier};
+use crate::model::{
+    Coordinate, CostOptions, EdgeIdentifier, EdgeMetadata, NodeIdentifier, OptimiseFor,
+};
 
 use geo::{Coord, LineString, coord};
+use routers::SolverVariant;
 use routers_codec::osm::OsmTripConfiguration;
 use routers_codec::osm::meta::OsmEdgeMetadata;
 use routers_codec::osm::speed_limit::{SpeedLimitConditions, SpeedLimitExt};
@@ -181,5 +184,11 @@ impl From<CostOptions> for Option<TripContext> {
         };
 
         Some(TripContext { transport_mode })
+    }
+}
+
+impl From<Option<CostOptions>> for OptimiseFor {
+    fn from(value: Option<CostOptions>) -> Self {
+        OptimiseFor::try_from(value.unwrap_or_default().optimise_for).unwrap_or_default()
     }
 }
