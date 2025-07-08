@@ -81,7 +81,7 @@ fn target_benchmark(c: &mut criterion::Criterion) {
             let _ = graph
                 .r#match(
                     &runtime,
-                    PrecomputeForwardSolver::default().use_cache(graph.cache.clone()),
+                    SolverVariant::Precompute,
                     black_box(coordinates.clone()),
                 )
                 .expect("Match must complete successfully");
@@ -99,9 +99,8 @@ fn target_benchmark(c: &mut criterion::Criterion) {
             // Always the default solver, used to ensure no regressions to a primary audiance
             group.bench_function(format!("match: {}", sc.name), |b| {
                 b.iter(|| {
-                    let solver = SelectiveForwardSolver::default().use_cache(graph.cache.clone());
-
-                    let edges = bench_match(&graph, &runtime, coordinates.clone(), solver);
+                    let edges =
+                        bench_match(&graph, &runtime, coordinates.clone(), SolverVariant::Fast);
 
                     assert_subsequence(sc.expected_linestring, &edges);
                 })
@@ -114,10 +113,12 @@ fn target_benchmark(c: &mut criterion::Criterion) {
                 format!("precompute_forward_solver:match: {}", sc.name),
                 |b| {
                     b.iter(|| {
-                        let solver =
-                            PrecomputeForwardSolver::default().use_cache(graph.cache.clone());
-
-                        let edges = bench_match(&graph, &runtime, coordinates.clone(), solver);
+                        let edges = bench_match(
+                            &graph,
+                            &runtime,
+                            coordinates.clone(),
+                            SolverVariant::Precompute,
+                        );
 
                         assert_subsequence(sc.expected_linestring, &edges);
                     })
@@ -129,10 +130,12 @@ fn target_benchmark(c: &mut criterion::Criterion) {
                 format!("selective_forward_solver:match: {}", sc.name),
                 |b| {
                     b.iter(|| {
-                        let solver =
-                            SelectiveForwardSolver::default().use_cache(graph.cache.clone());
-
-                        let edges = bench_match(&graph, &runtime, coordinates.clone(), solver);
+                        let edges = bench_match(
+                            &graph,
+                            &runtime,
+                            coordinates.clone(),
+                            SolverVariant::Selective,
+                        );
 
                         assert_subsequence(sc.expected_linestring, &edges);
                     })
@@ -151,7 +154,7 @@ fn bench_match<E: Entry, M: Metadata>(
     graph: &Graph<E, M>,
     runtime: &M::Runtime,
     coordinates: LineString<f64>,
-    solver: impl Solver<E, M>,
+    solver: impl Into<SolverVariant>,
 ) -> Vec<i64> {
     let result = graph
         .r#match(runtime, solver, coordinates.clone())

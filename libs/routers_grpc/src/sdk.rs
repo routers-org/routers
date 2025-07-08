@@ -14,7 +14,7 @@ use routers_codec::osm::meta::OsmEdgeMetadata;
 use routers_codec::osm::speed_limit::{SpeedLimitConditions, SpeedLimitExt};
 use routers_codec::primitive::context::TripContext;
 use routers_codec::primitive::transport::{TransportMode, TruckCosting, VehicleCosting};
-use routers_codec::{Entry, Node};
+use routers_codec::{Entry, Metadata, Node};
 use std::fmt::Error as StdError;
 use std::ops::Deref;
 
@@ -190,5 +190,33 @@ impl From<CostOptions> for Option<TripContext> {
 impl From<Option<CostOptions>> for OptimiseFor {
     fn from(value: Option<CostOptions>) -> Self {
         OptimiseFor::try_from(value.unwrap_or_default().optimise_for).unwrap_or_default()
+    }
+}
+
+impl From<OptimiseFor> for SolverVariant {
+    fn from(value: OptimiseFor) -> Self {
+        match value {
+            OptimiseFor::Consistency => SolverVariant::Selective,
+            OptimiseFor::Parallelism => SolverVariant::Precompute,
+            OptimiseFor::Speed => SolverVariant::Fast,
+        }
+    }
+}
+
+impl SnapRequest {
+    pub fn trip_context<M: Metadata>(self) -> Option<M::TripContext>
+    where
+        Option<M::TripContext>: From<CostOptions>,
+    {
+        self.options.and_then(Option::<M::TripContext>::from)
+    }
+}
+
+impl MatchRequest {
+    pub fn trip_context<M: Metadata>(self) -> Option<M::TripContext>
+    where
+        Option<M::TripContext>: From<CostOptions>,
+    {
+        self.options.and_then(Option::<M::TripContext>::from)
     }
 }

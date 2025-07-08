@@ -15,11 +15,13 @@ where
     fn r#match(
         &self,
         runtime: &M::Runtime,
-        solver: impl Solver<E, M>,
+        solver: impl Into<SolverVariant>,
         linestring: LineString,
     ) -> Result<RoutedPath<E, M>, MatchError> {
         info!("Finding matched route for {} positions", linestring.0.len());
         let costing = CostingStrategies::default();
+
+        let solver = solver.into().instance(self.cache.clone());
 
         // Create our hidden markov model solver
         let transition = Transition::new(self, linestring, costing);
@@ -33,7 +35,7 @@ where
     fn snap(
         &self,
         _runtime: &M::Runtime,
-        _solver: impl Solver<E, M>,
+        _solver: impl Into<SolverVariant>,
         _linestring: LineString,
     ) -> Result<RoutedPath<E, M>, MatchError> {
         unimplemented!()

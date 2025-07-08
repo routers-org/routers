@@ -35,7 +35,7 @@ pub enum SolverVariant {
 }
 
 impl SolverVariant {
-    pub fn instance<E: Entry, M: Metadata>(
+    pub(crate) fn instance<E: Entry, M: Metadata>(
         self,
         cache: Arc<Mutex<PredicateCache<E, M>>>,
     ) -> SolverImpl<E, M> {
