@@ -1,6 +1,6 @@
 use crate::transition::*;
 
-use log::{debug, info};
+use log::info;
 
 use rustc_hash::FxHashMap;
 use std::sync::{Arc, Mutex};
@@ -8,7 +8,6 @@ use std::sync::{Arc, Mutex};
 use geo::{Distance, Haversine};
 use itertools::Itertools;
 use measure_time::debug_time;
-use pathfinding::num_traits::Zero;
 use pathfinding::prelude::*;
 use routers_codec::{Entry, Metadata};
 
@@ -168,7 +167,7 @@ where
 {
     fn solve<Emmis, Trans>(
         &self,
-        mut transition: Transition<Emmis, Trans, E, M>,
+        transition: Transition<Emmis, Trans, E, M>,
         runtime: &M::Runtime,
     ) -> Result<CollapsedPath<E>, MatchError>
     where
@@ -179,7 +178,7 @@ where
         let context = transition.context(runtime);
 
         // Pre-generate KV pair
-        let mut pair = {
+        let _pair = {
             debug_time!("generate transition graph");
 
             transition

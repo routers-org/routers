@@ -11,7 +11,6 @@ use geo::{Distance, Haversine};
 use itertools::Itertools;
 use measure_time::debug_time;
 use pathfinding::num_traits::Zero;
-use pathfinding::prelude::*;
 
 /// A Upper-Bounded Dijkstra (UBD) algorithm.
 ///
@@ -231,7 +230,7 @@ where
         debug!("Weaved all candidate layers.");
 
         info!("Solving. ");
-        let context = transition.context(runtime);
+        let _context = transition.context(runtime);
 
         // Note: For every candidate, generate their reachable elements, then run the solver overtop.
         //       This means we can do it in parallel, which is more efficient - however will have to

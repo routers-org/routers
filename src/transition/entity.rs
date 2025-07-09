@@ -4,7 +4,6 @@ use crate::transition::*;
 use geo::LineString;
 use itertools::Itertools;
 use pathfinding::num_traits::ConstZero;
-use petgraph::data::DataMap;
 use petgraph::prelude::EdgeRef;
 use routers_codec::Metadata;
 use routers_codec::primitive::Entry;
@@ -172,9 +171,8 @@ where
 
             let transition = (transition_cost as f64 * 0.6) as u32;
             let emission = (emission_cost as f64 * 0.4) as u32;
-            let cost = emission.saturating_add(transition);
 
-            cost
+            emission.saturating_add(transition)
         };
 
         let successors = |candidate: &CandidateId| {
@@ -195,14 +193,13 @@ where
 
         let Some((route, cost)) = pathfinding::directed::astar::astar(
             &self.candidates.source,
-            |&node| {
-                return vec![];
-                // bridge
-                //     .handle(node, successors)
-                //     .into_iter()
-                //     .filter_map(|(candidate, cost)| {
-                //         Some((candidate, cost_fn(graph.node_weight(candidate)?, &cost)))
-                //     })
+            |node| {
+                bridge
+                    .handle(node, successors)
+                    .into_iter()
+                    .filter_map(|(candidate, cost)| {
+                        Some((candidate, cost_fn(graph.node_weight(candidate)?, &cost)))
+                    })
             },
             |_| u32::ZERO,
             |&node| self.candidates.target == node,

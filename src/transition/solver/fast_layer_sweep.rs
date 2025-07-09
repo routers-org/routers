@@ -1,19 +1,16 @@
 use crate::transition::*;
 
-use log::{debug, info};
+use log::info;
 
-use rustc_hash::FxHashMap;
 use std::sync::{Arc, Mutex};
 
 use geo::{Distance, Haversine};
 use itertools::Itertools;
-use measure_time::debug_time;
-use pathfinding::num_traits::Zero;
 use pathfinding::prelude::*;
 use routers_codec::{Entry, Metadata};
 
 use rayon::iter::ParallelIterator;
-use rayon::prelude::{IntoParallelRefIterator, ParallelSlice};
+use rayon::prelude::ParallelSlice;
 
 /// A Upper-Bounded Dijkstra (UBD) algorithm.
 ///
@@ -68,7 +65,7 @@ where
 {
     fn solve<Emmis, Trans>(
         &self,
-        mut transition: Transition<Emmis, Trans, E, M>,
+        transition: Transition<Emmis, Trans, E, M>,
         runtime: &M::Runtime,
     ) -> Result<CollapsedPath<E>, MatchError>
     where

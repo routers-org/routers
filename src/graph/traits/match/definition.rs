@@ -1,5 +1,5 @@
+use crate::SolverVariant;
 use crate::transition::{MatchError, RoutedPath};
-use crate::{Solver, SolverVariant};
 
 use geo::LineString;
 use routers_codec::{Entry, Metadata};
