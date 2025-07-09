@@ -2,9 +2,7 @@ use crate::graph::Graph;
 use crate::transition::*;
 
 use geo::LineString;
-use itertools::Itertools;
 use pathfinding::num_traits::ConstZero;
-use petgraph::prelude::EdgeRef;
 use routers_codec::Metadata;
 use routers_codec::primitive::Entry;
 

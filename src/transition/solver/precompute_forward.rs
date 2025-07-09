@@ -8,7 +8,6 @@ use std::sync::{Arc, Mutex};
 use geo::{Distance, Haversine};
 use itertools::Itertools;
 use measure_time::debug_time;
-use pathfinding::prelude::*;
 use routers_codec::{Entry, Metadata};
 
 use rayon::iter::ParallelIterator;

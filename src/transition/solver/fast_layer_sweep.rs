@@ -6,7 +6,6 @@ use std::sync::{Arc, Mutex};
 
 use geo::{Distance, Haversine};
 use itertools::Itertools;
-use pathfinding::prelude::*;
 use routers_codec::{Entry, Metadata};
 
 use rayon::iter::ParallelIterator;
@@ -50,11 +49,10 @@ where
         }
     }
 
-    fn optimality(&self, a: &Layer, b: &Layer) -> Vec<Reachable<E>> {
+    fn optimality(&self, _a: &Layer, _b: &Layer) -> Vec<Reachable<E>> {
         // Find K optimal paths between layer A and layer B.
         // => Create a virtual node that represents the entry and terminus of A and B.
-
-        vec![]
+        todo!()
     }
 }
 
