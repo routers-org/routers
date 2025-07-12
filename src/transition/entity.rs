@@ -151,8 +151,6 @@ where
         self,
         lookup: &scc::HashMap<(usize, usize), Reachable<E>>,
     ) -> Result<CollapsedPath<E>, MatchError> {
-        panic!("end");
-
         // Calculates the combination of emission and transition costs.
         let cost_fn = |target: &CandidateRef, edge: &CandidateEdge| {
             // Decaying Transition Cost

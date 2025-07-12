@@ -64,7 +64,7 @@ where
 
         let successors = |&node: &E| {
             let mut cache = SuccessorsCache::default();
-            // let mut cache = self.successors.lock().unwrap();
+            // let mut cache = .successors.lock().unwrap();
             ArcIter::new(cache.query(ctx, node))
                 .filter(|(_, edge, _)| {
                     // Only traverse paths which can be accessed by
@@ -183,7 +183,7 @@ where
             .filter_map(|reachable| transition.resolve(&context, reachable))
             .collect::<Vec<_>>();
 
-        panic!("solve midway");
+        // TODO: panic!("solve midway");
 
         // Add all the costs into the graph, adding appropriate
         // connecting edges and respective weights.
