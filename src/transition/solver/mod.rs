@@ -6,7 +6,6 @@ pub mod methods;
 pub mod precompute_forward;
 #[doc(hidden)]
 pub mod selective_forward;
-mod util;
 
 #[doc(inline)]
 pub use fast_layer_sweep::*;

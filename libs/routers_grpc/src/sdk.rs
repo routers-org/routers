@@ -196,6 +196,7 @@ impl From<Option<CostOptions>> for OptimiseFor {
 impl From<OptimiseFor> for SolverVariant {
     fn from(value: OptimiseFor) -> Self {
         match value {
+            OptimiseFor::Unspecified => SolverVariant::Fast,
             OptimiseFor::Consistency => SolverVariant::Selective,
             OptimiseFor::Parallelism => SolverVariant::Precompute,
             OptimiseFor::Speed => SolverVariant::Fast,

@@ -11,9 +11,10 @@ message CostOptions {
 
 // Allow the service to optimise based on the requested parameters.
 enum OptimiseFor {
-    OptimiseFor_Speed = 0;
-    OptimiseFor_Parallelism = 1;
-    OptimiseFor_Consistency = 2;
+  OPTIMISE_FOR_UNSPECIFIED = 0;
+  OPTIMISE_FOR_SPEED = 1;
+  OPTIMISE_FOR_PARALLELISM = 2;
+  OPTIMISE_FOR_CONSISTENCY = 3;
 }
 
 message Costing {

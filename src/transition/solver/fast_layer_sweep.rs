@@ -1,10 +1,7 @@
 use crate::transition::*;
 
-use log::{debug, info};
+use std::sync::{Arc, Mutex};
 
-use std::sync::{Arc, Mutex, RwLock};
-
-use geo::{Distance, Haversine};
 use itertools::Itertools;
 use measure_time::{debug_time, info_time};
 use pathfinding::num_traits::Zero;
@@ -12,7 +9,6 @@ use routers_codec::{Entry, Metadata};
 
 use rayon::iter::ParallelIterator;
 use rayon::prelude::ParallelSlice;
-use routers_codec::osm::primitives::TransportMode::Canoe;
 use scc::HashMap;
 
 /// A Upper-Bounded Dijkstra (UBD) algorithm.
@@ -66,7 +62,7 @@ where
 
         const NUM_SHORTEST_PATHS: usize = 1;
 
-        let mut successors = |&node: &E| {
+        let successors = |&node: &E| {
             // let mut cache = self.successors.lock().unwrap();
 
             ArcIter::new(SuccessorsCache::default().query(ctx, node))
@@ -81,8 +77,6 @@ where
                 .map(|(a, _, b)| (a, b))
                 .filter(|(_, weight)| weight.1 < 20_000)
         };
-
-        let bridge = Bridge::new(E::start_id(), E::end_id()).layered(a, b);
 
         let start_candidates = a
             .nodes
@@ -124,7 +118,7 @@ where
 
         shortest
             .into_iter()
-            .filter_map(|(nodes, weight)| {
+            .filter_map(|(nodes, _)| {
                 debug_assert_eq!(*nodes.first().unwrap(), E::start_id());
                 debug_assert_eq!(*nodes.last().unwrap(), E::end_id());
 
