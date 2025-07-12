@@ -15,7 +15,6 @@ pub use methods::*;
 pub use precompute_forward::*;
 #[doc(inline)]
 pub use selective_forward::*;
-use std::sync::{Arc, Mutex};
 
 use crate::{
     CollapsedPath, EmissionStrategy, MatchError, PredicateCache, Transition, TransitionStrategy,
@@ -37,7 +36,7 @@ pub enum SolverVariant {
 impl SolverVariant {
     pub(crate) fn instance<E: Entry, M: Metadata>(
         self,
-        cache: Arc<Mutex<PredicateCache<E, M>>>,
+        cache: PredicateCache<E, M>,
     ) -> SolverImpl<E, M> {
         match self {
             SolverVariant::Fast => {

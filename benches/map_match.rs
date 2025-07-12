@@ -2,7 +2,6 @@ use routers_fixtures::{
     LAX_LYNWOOD_MATCHED, LAX_LYNWOOD_TRIP, LOS_ANGELES, VENTURA_MATCHED, VENTURA_TRIP, ZURICH,
     fixture,
 };
-use std::hint::black_box;
 
 use routers::transition::*;
 use routers::{Graph, Match};
@@ -95,8 +94,6 @@ fn target_benchmark(c: &mut criterion::Criterion) {
             let _ = graph
                 .r#match(&runtime, SolverVariant::Fast, coordinates.clone())
                 .expect("Match must complete successfully");
-
-            panic!("graph ingested & warmup completed successfully.");
 
             // Always the default solver, used to ensure no regressions to a primary audience
             group.bench_function(format!("match: {}", sc.name), |b| {

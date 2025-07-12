@@ -1,7 +1,5 @@
 use crate::transition::*;
 
-use std::sync::{Arc, Mutex};
-
 use itertools::Itertools;
 use measure_time::{debug_time, info_time};
 use pathfinding::num_traits::Zero;
@@ -20,7 +18,7 @@ where
     M: Metadata,
 {
     // Internally holds a successors cache
-    successors: Arc<Mutex<SuccessorsCache<E, M>>>,
+    successors: SuccessorsCache<E, M>,
     reachable_hash: scc::HashMap<(usize, usize), Reachable<E>>,
 }
 
@@ -31,7 +29,7 @@ where
 {
     fn default() -> Self {
         Self {
-            successors: Arc::new(Mutex::new(SuccessorsCache::default())),
+            successors: SuccessorsCache::default(),
             reachable_hash: scc::HashMap::new(),
         }
     }
@@ -42,7 +40,7 @@ where
     E: Entry,
     M: Metadata,
 {
-    pub fn use_cache(self, cache: Arc<Mutex<SuccessorsCache<E, M>>>) -> Self {
+    pub fn use_cache(self, cache: SuccessorsCache<E, M>) -> Self {
         Self {
             successors: cache,
             ..self
@@ -63,9 +61,7 @@ where
         const NUM_SHORTEST_PATHS: usize = 1;
 
         let successors = |&node: &E| {
-            let mut cache = SuccessorsCache::default();
-            // let mut cache = .successors.lock().unwrap();
-            ArcIter::new(cache.query(ctx, node))
+            ArcIter::new(self.successors.query(ctx, node))
                 .filter(|(_, edge, _)| {
                     // Only traverse paths which can be accessed by
                     // the specific runtime routing conditions available
@@ -111,7 +107,7 @@ where
                     return vec![(E::end_id(), WeightAndDistance::zero())];
                 }
 
-                return successors(node);
+                successors(node)
             },
             |&maybe_end| maybe_end == E::end_id(),
             NUM_SHORTEST_PATHS,

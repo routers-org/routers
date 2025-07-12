@@ -250,7 +250,7 @@ where
 
             source_candidate: &reachable.source,
             target_candidate: &reachable.target,
-            routing_context: &context,
+            routing_context: context,
 
             layer_width,
             optimal_path,

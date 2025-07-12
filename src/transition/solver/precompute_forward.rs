@@ -3,7 +3,6 @@ use crate::transition::*;
 use log::info;
 
 use rustc_hash::FxHashMap;
-use std::sync::{Arc, Mutex};
 
 use measure_time::debug_time;
 use routers_codec::{Entry, Metadata};
