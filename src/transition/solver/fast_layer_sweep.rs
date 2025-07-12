@@ -65,7 +65,9 @@ where
         let successors = |&node: &E| {
             // let mut cache = self.successors.lock().unwrap();
 
-            ArcIter::new(SuccessorsCache::default().query(ctx, node))
+            SuccessorsCache::default()
+                .query(ctx, node)
+                .iter()
                 .filter(|(_, edge, _)| {
                     // Only traverse paths which can be accessed by
                     // the specific runtime routing conditions available
@@ -74,8 +76,9 @@ where
 
                     meta.accessible(ctx.runtime, direction)
                 })
-                .map(|(a, _, b)| (a, b))
+                .map(|(a, _, b)| (*a, *b))
                 .filter(|(_, weight)| weight.1 < 20_000)
+                .collect_vec()
         };
 
         let start_candidates = a
@@ -110,7 +113,7 @@ where
                     return vec![(E::end_id(), WeightAndDistance::zero())];
                 }
 
-                return successors(node).collect_vec();
+                return successors(node);
             },
             |&maybe_end| maybe_end == E::end_id(),
             NUM_SHORTEST_PATHS,
