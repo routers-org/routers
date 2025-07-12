@@ -34,7 +34,7 @@ where
     pub(crate) index: RTree<Node<E>>,
     pub(crate) index_edge: RTree<FatEdge<E>>,
 
-    pub cache: Arc<Mutex<PredicateCache<E, M>>>,
+    pub cache: PredicateCache<E, M>,
 }
 
 impl<E, M> Debug for Graph<E, M>

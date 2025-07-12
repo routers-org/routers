@@ -5,7 +5,7 @@ use log::{debug, info};
 
 use rustc_hash::FxHashMap;
 use std::cell::RefCell;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 
 use geo::{Distance, Haversine};
 use itertools::Itertools;
@@ -21,7 +21,7 @@ where
     M: Metadata,
 {
     // Internally holds a successors cache
-    predicate: Arc<Mutex<PredicateCache<E, M>>>,
+    predicate: PredicateCache<E, M>,
     reachable_hash: RefCell<FxHashMap<(usize, usize), Reachable<E>>>,
 }
 
@@ -32,7 +32,7 @@ where
 {
     fn default() -> Self {
         Self {
-            predicate: Arc::new(Mutex::new(PredicateCache::default())),
+            predicate: PredicateCache::default(),
             reachable_hash: RefCell::new(FxHashMap::default()),
         }
     }
@@ -43,7 +43,7 @@ where
     E: Entry,
     M: Metadata,
 {
-    pub fn use_cache(self, cache: Arc<Mutex<PredicateCache<E, M>>>) -> Self {
+    pub fn use_cache(self, cache: PredicateCache<E, M>) -> Self {
         Self {
             predicate: cache,
             ..self
@@ -144,10 +144,7 @@ where
         let predicate_map = {
             debug_time!("query predicate for {source:?}");
 
-            self.predicate
-                .lock()
-                .ok()?
-                .query(ctx, source_candidate.edge.target)
+            self.predicate.query(ctx, source_candidate.edge.target)
         };
 
         let reachable = {
