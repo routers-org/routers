@@ -2,6 +2,7 @@ use routers_fixtures::{
     LAX_LYNWOOD_MATCHED, LAX_LYNWOOD_TRIP, LOS_ANGELES, VENTURA_MATCHED, VENTURA_TRIP, ZURICH,
     fixture,
 };
+use std::hint::black_box;
 
 use routers::transition::*;
 use routers::{Graph, Match};
@@ -9,8 +10,9 @@ use routers::{Graph, Match};
 use routers_codec::osm::OsmEdgeMetadata;
 use routers_codec::{Entry, Metadata};
 
-use criterion::{black_box, criterion_main};
+use criterion::criterion_main;
 use geo::LineString;
+use log::info;
 use std::path::Path;
 use wkt::TryFromWkt;
 
@@ -77,14 +79,7 @@ fn target_benchmark(c: &mut criterion::Criterion) {
             let coordinates: LineString<f64> = LineString::try_from_wkt_str(sc.input_linestring)
                 .expect("Linestring must parse successfully.");
 
-            // Warm up the cache
-            let _ = graph
-                .r#match(
-                    &runtime,
-                    SolverVariant::Fast,
-                    black_box(coordinates.clone()),
-                )
-                .expect("Match must complete successfully");
+            info!("Benchmark: matching: {}", sc.name);
 
             group.bench_function(format!("layer-gen: {}", sc.name), |b| {
                 let points = coordinates.clone().into_points();
@@ -96,7 +91,14 @@ fn target_benchmark(c: &mut criterion::Criterion) {
                 })
             });
 
-            // Always the default solver, used to ensure no regressions to a primary audiance
+            // Warm up the cache
+            let _ = graph
+                .r#match(&runtime, SolverVariant::Fast, coordinates.clone())
+                .expect("Match must complete successfully");
+
+            panic!("graph ingested & warmup completed successfully.");
+
+            // Always the default solver, used to ensure no regressions to a primary audience
             group.bench_function(format!("match: {}", sc.name), |b| {
                 b.iter(|| {
                     let edges =

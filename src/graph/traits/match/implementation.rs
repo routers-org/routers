@@ -21,7 +21,8 @@ where
         info!("Finding matched route for {} positions", linestring.0.len());
         let costing = CostingStrategies::default();
 
-        let solver = solver.into().instance(self.cache.clone());
+        let solver_variant: SolverVariant = solver.into();
+        let solver = solver_variant.instance(self.cache.clone());
 
         // Create our hidden markov model solver
         let transition = Transition::new(self, linestring, costing);

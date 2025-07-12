@@ -63,11 +63,9 @@ where
         const NUM_SHORTEST_PATHS: usize = 1;
 
         let successors = |&node: &E| {
+            let mut cache = SuccessorsCache::default();
             // let mut cache = self.successors.lock().unwrap();
-
-            SuccessorsCache::default()
-                .query(ctx, node)
-                .iter()
+            ArcIter::new(cache.query(ctx, node))
                 .filter(|(_, edge, _)| {
                     // Only traverse paths which can be accessed by
                     // the specific runtime routing conditions available
@@ -76,7 +74,7 @@ where
 
                     meta.accessible(ctx.runtime, direction)
                 })
-                .map(|(a, _, b)| (*a, *b))
+                .map(|(a, _, b)| (a, b))
                 .filter(|(_, weight)| weight.1 < 20_000)
                 .collect_vec()
         };
@@ -119,6 +117,7 @@ where
             NUM_SHORTEST_PATHS,
         );
 
+        // SAFE.
         shortest
             .into_iter()
             .filter_map(|(nodes, _)| {
@@ -143,6 +142,11 @@ where
                     .collect::<Vec<_>>();
 
                 Some(Reachable::new(*start_candidate, *end_candidate, path))
+            })
+            .inspect(|reachable| {
+                self.reachable_hash
+                    .insert(reachable.hash(), reachable.clone())
+                    .expect("hash collision, must insert correctly.");
             })
             .collect::<Vec<_>>()
     }
@@ -178,6 +182,8 @@ where
             })
             .filter_map(|reachable| transition.resolve(&context, reachable))
             .collect::<Vec<_>>();
+
+        panic!("solve midway");
 
         // Add all the costs into the graph, adding appropriate
         // connecting edges and respective weights.

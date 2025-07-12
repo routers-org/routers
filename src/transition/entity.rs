@@ -151,14 +151,7 @@ where
         self,
         lookup: &scc::HashMap<(usize, usize), Reachable<E>>,
     ) -> Result<CollapsedPath<E>, MatchError> {
-        // There should be exclusive read-access by the time collapse is called.
-        // This will block access to any other client using this candidate structure,
-        // however this function
-        let graph = self
-            .candidates
-            .graph
-            .read()
-            .map_err(|_| MatchError::CollapseFailure(CollapseError::ReadLockFailed))?;
+        panic!("end");
 
         // Calculates the combination of emission and transition costs.
         let cost_fn = |target: &CandidateRef, edge: &CandidateEdge| {
@@ -190,23 +183,32 @@ where
         let bridge = Bridge::new(self.candidates.source, self.candidates.target)
             .layered(self.layers.first().unwrap(), self.layers.last().unwrap());
 
-        let Some((route, cost)) = pathfinding::directed::astar::astar(
-            &self.candidates.source,
-            |node| {
-                bridge
-                    .handle(node, successors)
-                    .into_iter()
-                    .filter_map(|(candidate, cost)| {
-                        Some((candidate, cost_fn(graph.node_weight(candidate)?, &cost)))
-                    })
-            },
-            |_| u32::ZERO,
-            |&node| self.candidates.target == node,
-        ) else {
+        // There should be exclusive read-access by the time collapse is called.
+        // This will block access to any other client using this candidate structure,
+        // however this function
+        let Some((route, cost)) = ({
+            let graph = self
+                .candidates
+                .graph
+                .read()
+                .map_err(|_| MatchError::CollapseFailure(CollapseError::ReadLockFailed))?;
+
+            pathfinding::directed::astar::astar(
+                &self.candidates.source,
+                |node| {
+                    bridge
+                        .handle(node, successors)
+                        .into_iter()
+                        .filter_map(|(candidate, cost)| {
+                            Some((candidate, cost_fn(graph.node_weight(candidate)?, &cost)))
+                        })
+                },
+                |_| u32::ZERO,
+                |&node| self.candidates.target == node,
+            )
+        }) else {
             return Err(MatchError::CollapseFailure(CollapseError::NoPathFound));
         };
-
-        drop(graph);
 
         let reached = route
             .windows(2)
