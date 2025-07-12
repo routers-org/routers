@@ -21,6 +21,9 @@ pub trait Entry:
     Default + Copy + Clone + PartialEq + Eq + Ord + Hash + Debug + Send + Sync
 {
     fn identifier(&self) -> i64;
+
+    fn start_id() -> Self;
+    fn end_id() -> Self;
 }
 
 pub trait Metadata: Clone + Debug + Send + Sync {

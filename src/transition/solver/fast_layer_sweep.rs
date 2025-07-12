@@ -1,15 +1,19 @@
 use crate::transition::*;
 
-use log::info;
+use log::{debug, info};
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 
 use geo::{Distance, Haversine};
 use itertools::Itertools;
+use measure_time::{debug_time, info_time};
+use pathfinding::num_traits::Zero;
 use routers_codec::{Entry, Metadata};
 
 use rayon::iter::ParallelIterator;
 use rayon::prelude::ParallelSlice;
+use routers_codec::osm::primitives::TransportMode::Canoe;
+use scc::HashMap;
 
 /// A Upper-Bounded Dijkstra (UBD) algorithm.
 ///
@@ -20,7 +24,7 @@ where
     M: Metadata,
 {
     // Internally holds a successors cache
-    predicate: Arc<Mutex<PredicateCache<E, M>>>,
+    successors: Arc<Mutex<SuccessorsCache<E, M>>>,
     reachable_hash: scc::HashMap<(usize, usize), Reachable<E>>,
 }
 
@@ -31,7 +35,7 @@ where
 {
     fn default() -> Self {
         Self {
-            predicate: Arc::new(Mutex::new(PredicateCache::default())),
+            successors: Arc::new(Mutex::new(SuccessorsCache::default())),
             reachable_hash: scc::HashMap::new(),
         }
     }
@@ -42,17 +46,108 @@ where
     E: Entry,
     M: Metadata,
 {
-    pub fn use_cache(self, cache: Arc<Mutex<PredicateCache<E, M>>>) -> Self {
+    pub fn use_cache(self, cache: Arc<Mutex<SuccessorsCache<E, M>>>) -> Self {
         Self {
-            predicate: cache,
+            successors: cache,
             ..self
         }
     }
 
-    fn optimality(&self, _a: &Layer, _b: &Layer) -> Vec<Reachable<E>> {
-        // Find K optimal paths between layer A and layer B.
-        // => Create a virtual node that represents the entry and terminus of A and B.
-        todo!()
+    fn optimality<'a>(
+        &self,
+        ctx: &RoutingContext<E, M>,
+        a: &'a Layer,
+        b: &'a Layer,
+    ) -> Vec<Reachable<E>>
+    where
+        E: 'a,
+    {
+        debug_time!("optimality");
+
+        const NUM_SHORTEST_PATHS: usize = 1;
+
+        let mut successors = |&node: &E| {
+            // let mut cache = self.successors.lock().unwrap();
+
+            ArcIter::new(SuccessorsCache::default().query(ctx, node))
+                .filter(|(_, edge, _)| {
+                    // Only traverse paths which can be accessed by
+                    // the specific runtime routing conditions available
+                    let meta = ctx.map.meta(edge);
+                    let direction = edge.direction();
+
+                    meta.accessible(ctx.runtime, direction)
+                })
+                .map(|(a, _, b)| (a, b))
+                .filter(|(_, weight)| weight.1 < 20_000)
+        };
+
+        let bridge = Bridge::new(E::start_id(), E::end_id()).layered(a, b);
+
+        let start_candidates = a
+            .nodes
+            .iter()
+            .filter_map(|candidate| Some((ctx.candidate(candidate)?.edge.source, *candidate)))
+            .collect::<HashMap<_, _>>();
+
+        let end_candidates = b
+            .nodes
+            .iter()
+            .filter_map(|candidate| Some((ctx.candidate(candidate)?.edge.source, *candidate)))
+            .collect::<HashMap<_, _>>();
+
+        let shortest = pathfinding::directed::yen::yen(
+            &E::start_id(),
+            |node| {
+                // If the node is the same as the bridge's start, it's free to go to the entering layer.
+                if *node == E::start_id() {
+                    return a
+                        .nodes
+                        .iter()
+                        .filter_map(|node| {
+                            let candidate = ctx.candidate(node)?;
+                            Some((candidate.edge.source, WeightAndDistance::zero()))
+                        })
+                        .collect();
+                }
+
+                // If the node is within the departing layer, it's free to leave (go to the terminus).
+                if end_candidates.contains(node) {
+                    return vec![(E::end_id(), WeightAndDistance::zero())];
+                }
+
+                return successors(node).collect_vec();
+            },
+            |&maybe_end| maybe_end == E::end_id(),
+            NUM_SHORTEST_PATHS,
+        );
+
+        shortest
+            .into_iter()
+            .filter_map(|(nodes, weight)| {
+                debug_assert_eq!(*nodes.first().unwrap(), E::start_id());
+                debug_assert_eq!(*nodes.last().unwrap(), E::end_id());
+
+                let entering_layer = nodes.get(1)?;
+                let departing_layer = nodes.get(nodes.len() - 2)?;
+
+                let start_candidate = start_candidates.get(entering_layer)?;
+                let end_candidate = end_candidates.get(departing_layer)?;
+
+                let path = nodes
+                    .windows(2)
+                    .filter_map(|pair| {
+                        if let [a, b] = pair {
+                            return ctx.edge(a, b);
+                        }
+
+                        None
+                    })
+                    .collect::<Vec<_>>();
+
+                Some(Reachable::new(*start_candidate, *end_candidate, path))
+            })
+            .collect::<Vec<_>>()
     }
 }
 
@@ -70,7 +165,7 @@ where
         Emmis: EmissionStrategy + Send + Sync,
         Trans: TransitionStrategy<E, M> + Send + Sync,
     {
-        info!("Solving. ");
+        info_time!("FastLayerSweep solve");
         let context = transition.context(runtime);
 
         // For every layer pair in the transition set, iterate and find optimal paths between.
@@ -79,38 +174,12 @@ where
             .par_windows(2)
             .flat_map(|entries| {
                 if let [a, b] = entries {
-                    return self.optimality(a, b);
+                    return self.optimality(&context, a, b);
                 }
 
                 vec![]
             })
-            .filter_map(|reachable| {
-                let path_vec = reachable.path_nodes().collect_vec();
-
-                let optimal_path = Trip::new_with_map(transition.map, &path_vec);
-
-                let source = context.candidate(&reachable.source)?;
-                let target = context.candidate(&reachable.target)?;
-
-                let sl = transition.layers.layers.get(source.location.layer_id)?;
-                let tl = transition.layers.layers.get(target.location.layer_id)?;
-
-                let layer_width = Haversine.distance(sl.origin, tl.origin);
-
-                let transition_cost = transition.heuristics.transition(TransitionContext {
-                    map_path: &path_vec,
-                    requested_resolution_method: reachable.resolution_method,
-
-                    source_candidate: &reachable.source,
-                    target_candidate: &reachable.target,
-                    routing_context: &context,
-
-                    layer_width,
-                    optimal_path,
-                });
-
-                Some((reachable, CandidateEdge::new(transition_cost)))
-            })
+            .filter_map(|reachable| transition.resolve(&context, reachable))
             .collect::<Vec<_>>();
 
         // Add all the costs into the graph, adding appropriate

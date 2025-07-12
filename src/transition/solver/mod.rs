@@ -6,6 +6,7 @@ pub mod methods;
 pub mod precompute_forward;
 #[doc(hidden)]
 pub mod selective_forward;
+mod util;
 
 #[doc(inline)]
 pub use fast_layer_sweep::*;
@@ -41,7 +42,8 @@ impl SolverVariant {
     ) -> SolverImpl<E, M> {
         match self {
             SolverVariant::Fast => {
-                SolverImpl::Fast(FastLayerSweepSolver::default().use_cache(cache))
+                // TODO: Give it a cache
+                SolverImpl::Fast(FastLayerSweepSolver::default())
             }
             SolverVariant::Precompute => {
                 SolverImpl::Precompute(PrecomputeForwardSolver::default().use_cache(cache))

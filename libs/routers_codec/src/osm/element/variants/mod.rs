@@ -56,6 +56,24 @@ pub mod common {
         fn identifier(&self) -> i64 {
             self.identifier
         }
+
+        fn start_id() -> Self {
+            const START_ID: OsmEntryId = OsmEntryId {
+                identifier: i64::MIN,
+                #[cfg(debug_assertions)]
+                variant: MemberType::Node,
+            };
+            START_ID
+        }
+
+        fn end_id() -> Self {
+            const END_ID: OsmEntryId = OsmEntryId {
+                identifier: i64::MAX,
+                #[cfg(debug_assertions)]
+                variant: MemberType::Node,
+            };
+            END_ID
+        }
     }
 
     impl Default for OsmEntryId {

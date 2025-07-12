@@ -224,14 +224,14 @@ mod predicate {
 }
 
 /// Iterator wrapper that keeps the Arc alive while yielding `&T`
-struct ArcIter<T> {
+pub struct ArcIter<T> {
     data: Arc<Vec<T>>,
     index: usize,
 }
 
 impl<T> ArcIter<T> {
     #[inline(always)]
-    fn new(data: Arc<Vec<T>>) -> Self {
+    pub(crate) fn new(data: Arc<Vec<T>>) -> Self {
         ArcIter { data, index: 0 }
     }
 }

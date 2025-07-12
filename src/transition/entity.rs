@@ -1,7 +1,8 @@
 use crate::graph::Graph;
 use crate::transition::*;
 
-use geo::LineString;
+use geo::{Distance, Haversine, LineString};
+use itertools::Itertools;
 use pathfinding::num_traits::ConstZero;
 use routers_codec::Metadata;
 use routers_codec::primitive::Entry;
@@ -44,10 +45,10 @@ type NodeId = usize;
 ///     // Create our runtime conditions.
 ///     // These allow us to make on-the-fly changes to costing, such as
 ///     // our transport mode (Car, Bus, ..) or otherwise.
-///     let runtime = OsmEdgeMetadata::runtime();
+///     let runtime = OsmEdgeMetadata::runtime(None);
 ///
 ///     // Now.. we simply solve the transition graph using the solver
-///     let solution = transition.solve(solver, runtime).ok()?;
+///     let solution = transition.solve(solver, &runtime).ok()?;
 ///
 ///     // Then, we can return the interpolated path, just like that!
 ///     Some(solution.interpolated(map))
@@ -221,5 +222,40 @@ where
             .collect::<Vec<_>>();
 
         Ok(CollapsedPath::new(cost, reached, route, self.candidates))
+    }
+
+    /// TODO: Docs
+    /// Resolves the transition cost for a reachable element in the transition
+    /// graph given some transition context.
+    pub(crate) fn resolve(
+        &self,
+        context: &RoutingContext<E, M>,
+        reachable: Reachable<E>,
+    ) -> Option<(Reachable<E>, CandidateEdge)> {
+        let path_vec = reachable.path_nodes().collect_vec();
+
+        let optimal_path = Trip::new_with_map(self.map, &path_vec);
+
+        let source = context.candidate(&reachable.source)?;
+        let target = context.candidate(&reachable.target)?;
+
+        let sl = self.layers.layers.get(source.location.layer_id)?;
+        let tl = self.layers.layers.get(target.location.layer_id)?;
+
+        let layer_width = Haversine.distance(sl.origin, tl.origin);
+
+        let transition_cost = self.heuristics.transition(TransitionContext {
+            map_path: &path_vec,
+            requested_resolution_method: reachable.resolution_method,
+
+            source_candidate: &reachable.source,
+            target_candidate: &reachable.target,
+            routing_context: &context,
+
+            layer_width,
+            optimal_path,
+        });
+
+        Some((reachable, CandidateEdge::new(transition_cost)))
     }
 }

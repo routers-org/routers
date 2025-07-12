@@ -69,35 +69,7 @@ where
         layer
             .into_par_iter()
             .filter_map(|target| self.get_reachable(context, source, &target))
-            .filter_map(move |reachable| {
-                let path_vec = reachable.path_nodes().collect_vec();
-                let optimal_path = Trip::new_with_map(transition.map, &path_vec);
-
-                let source = context.candidate(&reachable.source)?;
-                let target = context.candidate(&reachable.target)?;
-
-                let sl = transition.layers.layers.get(source.location.layer_id)?;
-                let tl = transition.layers.layers.get(target.location.layer_id)?;
-                let layer_width = Haversine.distance(sl.origin, tl.origin);
-
-                let transition_cost = transition.heuristics.transition(TransitionContext {
-                    map_path: &path_vec,
-                    requested_resolution_method: reachable.resolution_method,
-
-                    source_candidate: &reachable.source,
-                    target_candidate: &reachable.target,
-                    routing_context: context,
-
-                    layer_width,
-                    optimal_path,
-                });
-
-                let transition = (transition_cost as f64 * 0.6) as u32;
-                let emission = (target.emission as f64 * 0.4) as u32;
-                let cost = emission.saturating_add(transition);
-
-                Some((reachable, CandidateEdge::new(cost)))
-            })
+            .filter_map(move |reachable| transition.resolve(context, reachable))
             .collect::<Vec<_>>()
     }
 

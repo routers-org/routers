@@ -81,7 +81,7 @@ fn target_benchmark(c: &mut criterion::Criterion) {
             let _ = graph
                 .r#match(
                     &runtime,
-                    SolverVariant::Precompute,
+                    SolverVariant::Fast,
                     black_box(coordinates.clone()),
                 )
                 .expect("Match must complete successfully");
@@ -106,41 +106,51 @@ fn target_benchmark(c: &mut criterion::Criterion) {
                 })
             });
 
-            // Benchmarks for specific solvers
+            // == Benchmarks for specific solvers ==
+
+            // Benchmark the fast layer sweep solver
+            group.bench_function(format!("fast_layer_sweep_solver:match: {}", sc.name), |b| {
+                b.iter(|| {
+                    let edges =
+                        bench_match(&graph, &runtime, coordinates.clone(), SolverVariant::Fast);
+
+                    assert_subsequence(sc.expected_linestring, &edges);
+                })
+            });
 
             // Benchmark the pre-compute solver
-            group.bench_function(
-                format!("precompute_forward_solver:match: {}", sc.name),
-                |b| {
-                    b.iter(|| {
-                        let edges = bench_match(
-                            &graph,
-                            &runtime,
-                            coordinates.clone(),
-                            SolverVariant::Precompute,
-                        );
-
-                        assert_subsequence(sc.expected_linestring, &edges);
-                    })
-                },
-            );
-
-            // Benchmark the selective solver
-            group.bench_function(
-                format!("selective_forward_solver:match: {}", sc.name),
-                |b| {
-                    b.iter(|| {
-                        let edges = bench_match(
-                            &graph,
-                            &runtime,
-                            coordinates.clone(),
-                            SolverVariant::Selective,
-                        );
-
-                        assert_subsequence(sc.expected_linestring, &edges);
-                    })
-                },
-            );
+            // group.bench_function(
+            //     format!("precompute_forward_solver:match: {}", sc.name),
+            //     |b| {
+            //         b.iter(|| {
+            //             let edges = bench_match(
+            //                 &graph,
+            //                 &runtime,
+            //                 coordinates.clone(),
+            //                 SolverVariant::Precompute,
+            //             );
+            //
+            //             assert_subsequence(sc.expected_linestring, &edges);
+            //         })
+            //     },
+            // );
+            //
+            // // Benchmark the selective solver
+            // group.bench_function(
+            //     format!("selective_forward_solver:match: {}", sc.name),
+            //     |b| {
+            //         b.iter(|| {
+            //             let edges = bench_match(
+            //                 &graph,
+            //                 &runtime,
+            //                 coordinates.clone(),
+            //                 SolverVariant::Selective,
+            //             );
+            //
+            //             assert_subsequence(sc.expected_linestring, &edges);
+            //         })
+            //     },
+            // );
         });
     });
 

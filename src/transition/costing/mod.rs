@@ -7,15 +7,20 @@
 //! structure, which is then supplied to the relevant transition
 //! graph constructor.
 //!
-//! ```rust
-//! use routers::route::transition::CostingStrategies;
-//! use routers::route::transition::graph::Transition;
+//! ```rust,no_run
+//! use std::ffi::OsString;
+//! use routers::impls::osm::OsmGraph;
+//! use routers::transition::{CostingStrategies, Transition};
+//!
+//! // Create a graph with a specific dataset, such as the OpenStreetMap impl.
+//! let graph = OsmGraph::new(OsString::from("<path_to_file>.pbf"))
+//!     .expect("Fatal: Must ingest");
 //!
 //! // Create default strategies
 //! let costing = CostingStrategies::default();
 //!
 //! // Supply them to the relevant constructor
-//! let transition = Transition::new(todo!(), todo!(), costing);
+//! let transition = Transition::new(&graph, todo!(), costing);
 //!```
 //!
 //! To override the default strategies, simply apply your own
@@ -32,19 +37,19 @@
 //! which implement [`Strategy<TransitionContext>`].
 //!
 //!```rust
-//! use routers_codec::Entry;
-//! use routers::route::transition::{Strategy, TransitionContext};
+//! use routers_codec::{Entry, Metadata};
+//! use routers::transition::{Strategy, TransitionContext};
 //!
 //! struct MyTransitionStrategy;
 //!
 //! // Implement the strategy with the correct context.
-//! impl<'a, E> Strategy<TransitionContext<'a, E>> for MyTransitionStrategy where E: Entry {
+//! impl<'a, E: Entry, M: Metadata> Strategy<TransitionContext<'a, E, M>> for MyTransitionStrategy {
 //!    type Cost = f64;
 //!
 //!    const ZETA: f64 = 1.0;
 //!    const BETA: f64 = -50.0;
 //!
-//!    fn calculate(&self, context: TransitionContext<'a, E>) -> Option<Self::Cost> {
+//!    fn calculate(&self, context: TransitionContext<'a, E, M>) -> Option<Self::Cost> {
 //!        todo!()
 //!    }
 //! }

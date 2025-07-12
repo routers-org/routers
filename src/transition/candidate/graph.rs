@@ -124,24 +124,24 @@ where
     }
 }
 
-pub struct Bridge {
-    start: CandidateId,
-    terminus: CandidateId,
+pub struct Bridge<T> {
+    start: T,
+    terminus: T,
 }
 
-pub struct LayeredBridge<'a> {
-    bridge: Bridge,
+pub struct LayeredBridge<'a, T> {
+    bridge: Bridge<T>,
 
     entering_layer: &'a Layer,
     departing_layer: &'a Layer,
 }
 
-impl Bridge {
-    pub fn new(start: CandidateId, terminus: CandidateId) -> Self {
+impl<T> Bridge<T> {
+    pub fn new(start: T, terminus: T) -> Self {
         Bridge { start, terminus }
     }
 
-    pub fn layered<'a>(self, entering: &'a Layer, departing: &'a Layer) -> LayeredBridge<'a> {
+    pub fn layered<'a>(self, entering: &'a Layer, departing: &'a Layer) -> LayeredBridge<'a, T> {
         LayeredBridge {
             bridge: self,
             entering_layer: entering,
@@ -150,7 +150,7 @@ impl Bridge {
     }
 }
 
-impl<'a> LayeredBridge<'a> {
+impl<'a> LayeredBridge<'a, CandidateId> {
     pub fn handle<FnSuccessor: FnMut(&CandidateId) -> Vec<(CandidateId, CandidateEdge)>>(
         &'a self,
         node: &CandidateId,
