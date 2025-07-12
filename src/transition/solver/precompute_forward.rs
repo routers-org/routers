@@ -24,7 +24,7 @@ where
     M: Metadata,
 {
     // Internally holds a successors cache
-    predicate: Arc<Mutex<PredicateCache<E, M>>>,
+    predicate: PredicateCache<E, M>,
     reachable_hash: scc::HashMap<(usize, usize), Reachable<E>>,
 }
 
@@ -35,7 +35,7 @@ where
 {
     fn default() -> Self {
         Self {
-            predicate: Arc::new(Mutex::new(PredicateCache::default())),
+            predicate: PredicateCache::default(),
             reachable_hash: scc::HashMap::new(),
         }
     }
@@ -46,7 +46,7 @@ where
     E: Entry,
     M: Metadata,
 {
-    pub fn use_cache(self, cache: Arc<Mutex<PredicateCache<E, M>>>) -> Self {
+    pub fn use_cache(self, cache: PredicateCache<E, M>) -> Self {
         Self {
             predicate: cache,
             ..self
@@ -114,7 +114,7 @@ where
         // Upper-Bounded reachable map containing a Child:Parent relation
         // Note: Parent is OsmEntryId::NULL, which will not be within the map,
         //       indicating the root element.
-        let predicate_map = { self.predicate.lock().ok()?.query(ctx, source.edge.target) };
+        let predicate_map = self.predicate.query(ctx, source.edge.target);
 
         // Get the candidate information of the target found
         let candidate = ctx.candidate(target_id)?;
