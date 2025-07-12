@@ -48,14 +48,6 @@ where
     }
 
     #[cfg_attr(feature="telemetry", tracing::instrument(skip_all, err(level = Level::INFO)))]
-    async fn edge(
-        self: Arc<Self>,
-        _request: Request<EdgeRequest>,
-    ) -> Result<Response<EdgeResponse>, Status> {
-        unimplemented!()
-    }
-
-    #[cfg_attr(feature="telemetry", tracing::instrument(skip_all, err(level = Level::INFO)))]
     async fn point_snapped(
         self: Arc<Self>,
         request: Request<PointSnappedRequest>,
@@ -100,5 +92,13 @@ where
         Ok(Response::new(PointSnappedResponse {
             coordinate: Some(nearest_point),
         }))
+    }
+
+    #[cfg_attr(feature="telemetry", tracing::instrument(skip_all, err(level = Level::INFO)))]
+    async fn edge(
+        self: Arc<Self>,
+        _request: Request<EdgeRequest>,
+    ) -> Result<Response<EdgeResponse>, Status> {
+        unimplemented!()
     }
 }
