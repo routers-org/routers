@@ -145,7 +145,7 @@ impl OsmGraph {
             index: tree,
             index_edge: tree_edge,
 
-            cache: Arc::new(Mutex::new(PredicateCache::default())),
+            cache: PredicateCache::default(),
         })
     }
 }
