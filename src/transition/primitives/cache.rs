@@ -176,6 +176,8 @@ mod successor {
 }
 
 mod predicate {
+    use geo::Haversine;
+    use pathfinding::num_traits::Zero;
     use crate::transition::*;
     use routers_codec::Entry;
 
@@ -227,7 +229,7 @@ mod predicate {
         fn calculate(&self, ctx: &RoutingContext<E, M>, key: E) -> Predicates<E> {
             let threshold = self.0.read().unwrap().metadata.threshold_distance;
 
-            Dijkstra
+            AStar
                 .reach(&key, move |node| {
                     ArcIter::new(self.0.read().unwrap().metadata.successors.query(ctx, *node))
                         .filter(|(_, edge, _)| {
@@ -246,6 +248,13 @@ mod predicate {
                             meta.accessible(ctx.runtime, direction)
                         })
                         .map(|(a, _, b)| (a, b))
+                }, |node| {
+                    if let Some(pos) = ctx.map .get_position(node) {
+                        let distance = Haversine.distance(pos, unimplemented!());
+                        WeightAndDistance::new(Fraction::zero(), (distance * PRECISION) as u32)
+                    } else {
+                        WeightAndDistance::new(Fraction { numerator: u32::MAX, denominator: 1 }, u32::MAX)
+                    }
                 })
                 .take_while(|p| {
                     // Bounded by the threshold distance (centimeters)

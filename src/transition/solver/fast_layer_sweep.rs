@@ -60,8 +60,13 @@ where
 
         const NUM_SHORTEST_PATHS: usize = 1;
 
+
+        // Algo is running recursively, in resolving the shortest path (possibly cyclically induced)
+        // which is therefore allocating infinitely and reaching a memory hit before a stack smash
+        // since it appears to be TCOd and isnt allocating a significant amount more stack frame space.
         let successors = |&node: &E| {
-            ArcIter::new(self.successors.query(ctx, node))
+            let suc: Vec<(E, WeightAndDistance)> = self.successors.query(ctx, node)
+                .iter()
                 .filter(|(_, edge, _)| {
                     // Only traverse paths which can be accessed by
                     // the specific runtime routing conditions available
@@ -70,9 +75,11 @@ where
 
                     meta.accessible(ctx.runtime, direction)
                 })
-                .map(|(a, _, b)| (a, b))
-                .filter(|(_, weight)| weight.1 < 20_000)
-                .collect_vec()
+                .map(|(a, _, b)| (*a, *b))
+                .collect::<_>();
+
+            eprintln!("suc.len() = {}", suc.len());
+            return suc;
         };
 
         let start_candidates = a

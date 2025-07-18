@@ -97,8 +97,17 @@ opt-level = 3
 lto = "fat"
 
 [profile.dev]
-opt-level = 0
-lto = "off"
+opt-level = 3
+debug = true
+split-debuginfo = '...'
+strip = "none"
+debug-assertions = true
+overflow-checks = true
+lto = false
+panic = 'unwind'
+incremental = true
+codegen-units = 256
+rpath = false
 
 [profile.dev.package."*"]
 opt-level = 3
@@ -157,6 +166,10 @@ thiserror = "2.0.12"
 wkt = { workspace = true }
 criterion = { workspace = true }
 routers_fixtures = { workspace = true }
+
+[[example]]
+name = "map_match"
+path = "examples/map_match.rs"
 
 [[bench]]
 name = "map_match"
