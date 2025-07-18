@@ -61,7 +61,7 @@ name = "codec_target"
 harness = false
 
 [features]
-default = ["mimalloc"]
+default = []
 
 # Alternate Allocator (Applies to #[global_allocator])
 mimalloc = ["dep:mimalloc"]

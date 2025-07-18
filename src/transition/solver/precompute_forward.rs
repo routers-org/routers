@@ -1,15 +1,10 @@
 use crate::transition::*;
 
-use log::{debug, info};
+use log::info;
 
 use rustc_hash::FxHashMap;
-use std::sync::{Arc, Mutex};
 
-use geo::{Distance, Haversine};
-use itertools::Itertools;
 use measure_time::debug_time;
-use pathfinding::num_traits::Zero;
-use pathfinding::prelude::*;
 use routers_codec::{Entry, Metadata};
 
 use rayon::iter::ParallelIterator;
@@ -71,35 +66,7 @@ where
         layer
             .into_par_iter()
             .filter_map(|target| self.get_reachable(context, source, &target))
-            .filter_map(move |reachable| {
-                let path_vec = reachable.path_nodes().collect_vec();
-                let optimal_path = Trip::new_with_map(transition.map, &path_vec);
-
-                let source = context.candidate(&reachable.source)?;
-                let target = context.candidate(&reachable.target)?;
-
-                let sl = transition.layers.layers.get(source.location.layer_id)?;
-                let tl = transition.layers.layers.get(target.location.layer_id)?;
-                let layer_width = Haversine.distance(sl.origin, tl.origin);
-
-                let transition_cost = transition.heuristics.transition(TransitionContext {
-                    map_path: &path_vec,
-                    requested_resolution_method: reachable.resolution_method,
-
-                    source_candidate: &reachable.source,
-                    target_candidate: &reachable.target,
-                    routing_context: context,
-
-                    layer_width,
-                    optimal_path,
-                });
-
-                let transition = (transition_cost as f64 * 0.6) as u32;
-                let emission = (target.emission as f64 * 0.4) as u32;
-                let cost = emission.saturating_add(transition);
-
-                Some((reachable, CandidateEdge::new(cost)))
-            })
+            .filter_map(move |reachable| transition.resolve(context, reachable))
             .collect::<Vec<_>>()
     }
 
@@ -168,30 +135,18 @@ where
 {
     fn solve<Emmis, Trans>(
         &self,
-        mut transition: Transition<Emmis, Trans, E, M>,
+        transition: Transition<Emmis, Trans, E, M>,
         runtime: &M::Runtime,
     ) -> Result<CollapsedPath<E>, MatchError>
     where
         Emmis: EmissionStrategy + Send + Sync,
         Trans: TransitionStrategy<E, M> + Send + Sync,
     {
-        let (start, end) = {
-            // Compute cost ~= free
-            transition
-                .candidates
-                .attach_ends(&transition.layers)
-                .map_err(MatchError::EndAttachFailure)?
-        };
-
-        debug!("Attached Ends");
-        transition.candidates.weave(&transition.layers);
-        debug!("Weaved all candidate layers.");
-
-        info!("Solving: Start={start:?}. End={end:?}. ");
+        info!("Solving. ");
         let context = transition.context(runtime);
 
         // Pre-generate KV pair
-        let mut pair = {
+        let _pair = {
             debug_time!("generate transition graph");
 
             transition
@@ -220,21 +175,6 @@ where
                 .collect::<FxHashMap<CandidateId, Vec<(CandidateId, CandidateEdge)>>>()
         };
 
-        pair.insert(
-            start,
-            transition.layers.layers[0]
-                .nodes
-                .iter()
-                .map(|source| (*source, CandidateEdge::zero()))
-                .collect_vec(),
-        );
-
-        if let Some(all) = transition.layers.layers.last() {
-            for node in &all.nodes {
-                pair.insert(*node, vec![(end, CandidateEdge::zero())]);
-            }
-        }
-
         // Note: For every candidate, generate their reachable elements, then run the solver overtop.
         //       This means we can do it in parallel, which is more efficient - however will have to
         //       compute for *every* candidate, not just the likely ones, which will lead to poor
@@ -242,38 +182,30 @@ where
         //
         //       This behaviour can be implemented using the `AllForwardSolver` going forward.
 
-        let Some((path, cost)) = ({
-            debug_time!("Solved transition graph");
+        // call collapse...
+        unimplemented!();
 
-            astar(
-                &start,
-                |source| pair.get(source).cloned().unwrap_or(vec![]),
-                |_| CandidateEdge::zero(),
-                |node| *node == end,
-            )
-        }) else {
-            return Err(MatchError::CollapseFailure(CollapseError::NoPathFound));
-        };
-
-        info!("Total cost of solve: {}", cost.weight);
-        let reached = path
-            .windows(2)
-            .filter_map(|nodes| {
-                if let [a, b] = nodes {
-                    self.reachable_hash
-                        .get(&(a.index(), b.index()))
-                        .map(|entry| entry.get().clone())
-                } else {
-                    None
-                }
-            })
-            .collect::<Vec<_>>();
-
-        Ok(CollapsedPath::new(
-            cost.weight,
-            reached,
-            path,
-            transition.candidates,
-        ))
+        // We should generate the layers first. Over which we
+        // should paralellise a .window function which is tasked
+        // with creating the K shortest paths between two consecutive
+        // candidates...
+        //
+        // With this, we can perform a bidirectional modified reach
+        // dijkstra algorithm to perform the search to reduce the
+        // search space consumed, prevent traversing largely unplausable
+        // candidates, etc.
+        //
+        // This solver (in its current form) should be preserved
+        // and rebranded as a slower but methodical solver which checks
+        // every possible pathing sequence as it precomputes all paths.
+        //
+        // Therefore, we will ideally search far less space, and in the final
+        // dijkstra path through the trajectory graph we can reveal the optimal
+        // matchings of the trajectory.
+        //
+        // If this is true, we can hot-cache (bin heap) the candidates and paths between
+        // such that if the service is hit with a consecutive request with similar
+        // starting parameters it only has to compute the final layer's candidates
+        // and the final window entry, all others would have a cache hit!
     }
 }

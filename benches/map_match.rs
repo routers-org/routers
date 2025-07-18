@@ -9,8 +9,9 @@ use routers::{Graph, Match};
 use routers_codec::osm::OsmEdgeMetadata;
 use routers_codec::{Entry, Metadata};
 
-use criterion::{black_box, criterion_main};
+use criterion::criterion_main;
 use geo::LineString;
+use log::info;
 use std::path::Path;
 use wkt::TryFromWkt;
 
@@ -77,14 +78,7 @@ fn target_benchmark(c: &mut criterion::Criterion) {
             let coordinates: LineString<f64> = LineString::try_from_wkt_str(sc.input_linestring)
                 .expect("Linestring must parse successfully.");
 
-            // Warm up the cache
-            let _ = graph
-                .r#match(
-                    &runtime,
-                    PrecomputeForwardSolver::default().use_cache(graph.cache.clone()),
-                    black_box(coordinates.clone()),
-                )
-                .expect("Match must complete successfully");
+            info!("Benchmark: matching: {}", sc.name);
 
             group.bench_function(format!("layer-gen: {}", sc.name), |b| {
                 let points = coordinates.clone().into_points();
@@ -96,48 +90,66 @@ fn target_benchmark(c: &mut criterion::Criterion) {
                 })
             });
 
-            // Always the default solver, used to ensure no regressions to a primary audiance
+            // Warm up the cache
+            let _ = graph
+                .r#match(&runtime, SolverVariant::Fast, coordinates.clone())
+                .expect("Match must complete successfully");
+
+            // Always the default solver, used to ensure no regressions to a primary audience
             group.bench_function(format!("match: {}", sc.name), |b| {
                 b.iter(|| {
-                    let solver = SelectiveForwardSolver::default().use_cache(graph.cache.clone());
-
-                    let edges = bench_match(&graph, &runtime, coordinates.clone(), solver);
+                    let edges =
+                        bench_match(&graph, &runtime, coordinates.clone(), SolverVariant::Fast);
 
                     assert_subsequence(sc.expected_linestring, &edges);
                 })
             });
 
-            // Benchmarks for specific solvers
+            // == Benchmarks for specific solvers ==
+
+            // Benchmark the fast layer sweep solver
+            group.bench_function(format!("fast_layer_sweep_solver:match: {}", sc.name), |b| {
+                b.iter(|| {
+                    let edges =
+                        bench_match(&graph, &runtime, coordinates.clone(), SolverVariant::Fast);
+
+                    assert_subsequence(sc.expected_linestring, &edges);
+                })
+            });
 
             // Benchmark the pre-compute solver
-            group.bench_function(
-                format!("precompute_forward_solver:match: {}", sc.name),
-                |b| {
-                    b.iter(|| {
-                        let solver =
-                            PrecomputeForwardSolver::default().use_cache(graph.cache.clone());
-
-                        let edges = bench_match(&graph, &runtime, coordinates.clone(), solver);
-
-                        assert_subsequence(sc.expected_linestring, &edges);
-                    })
-                },
-            );
-
-            // Benchmark the selective solver
-            group.bench_function(
-                format!("selective_forward_solver:match: {}", sc.name),
-                |b| {
-                    b.iter(|| {
-                        let solver =
-                            SelectiveForwardSolver::default().use_cache(graph.cache.clone());
-
-                        let edges = bench_match(&graph, &runtime, coordinates.clone(), solver);
-
-                        assert_subsequence(sc.expected_linestring, &edges);
-                    })
-                },
-            );
+            // group.bench_function(
+            //     format!("precompute_forward_solver:match: {}", sc.name),
+            //     |b| {
+            //         b.iter(|| {
+            //             let edges = bench_match(
+            //                 &graph,
+            //                 &runtime,
+            //                 coordinates.clone(),
+            //                 SolverVariant::Precompute,
+            //             );
+            //
+            //             assert_subsequence(sc.expected_linestring, &edges);
+            //         })
+            //     },
+            // );
+            //
+            // // Benchmark the selective solver
+            // group.bench_function(
+            //     format!("selective_forward_solver:match: {}", sc.name),
+            //     |b| {
+            //         b.iter(|| {
+            //             let edges = bench_match(
+            //                 &graph,
+            //                 &runtime,
+            //                 coordinates.clone(),
+            //                 SolverVariant::Selective,
+            //             );
+            //
+            //             assert_subsequence(sc.expected_linestring, &edges);
+            //         })
+            //     },
+            // );
         });
     });
 
@@ -151,7 +163,7 @@ fn bench_match<E: Entry, M: Metadata>(
     graph: &Graph<E, M>,
     runtime: &M::Runtime,
     coordinates: LineString<f64>,
-    solver: impl Solver<E, M>,
+    solver: impl Into<SolverVariant>,
 ) -> Vec<i64> {
     let result = graph
         .r#match(runtime, solver, coordinates.clone())

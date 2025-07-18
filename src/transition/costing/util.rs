@@ -2,8 +2,8 @@ use crate::transition::*;
 use routers_codec::{Entry, Metadata};
 use std::f64::consts::E;
 
-const PRECISION: f64 = 1_000.0f64;
-const OFFSET: f64 = E;
+pub const PRECISION: f64 = 1_000.0f64;
+pub const OFFSET: f64 = E;
 
 pub trait Strategy<Ctx> {
     /// A calculable cost which can be any required

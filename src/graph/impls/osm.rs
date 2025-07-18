@@ -13,7 +13,7 @@ use rustc_hash::FxHashMap;
 
 use std::error::Error;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 use std::time::Instant;
 
 pub type OsmGraph = Graph<OsmEntryId, OsmEdgeMetadata>;

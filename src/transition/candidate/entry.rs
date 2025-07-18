@@ -156,6 +156,7 @@ where
 ///
 /// As it is large, this should only be used transitively
 /// like in [`Scan::nearest_edges`](crate::route::Scan::nearest_edges).
+#[derive(Debug)]
 pub struct FatEdge<E>
 where
     E: Entry,
@@ -241,10 +242,12 @@ where
 /// distance from this intermediate, to the source of the edge, and vice versa for
 /// the target.
 ///
+/// ```text
 ///                 Candidate
 ///          ToSource   |   ToTarget
 ///        +------------|------------+
 ///      Source                    Target
+/// ```
 pub enum VirtualTail {
     /// The distance from the edge's source to the virtual candidate position.
     ToSource,
@@ -264,11 +267,13 @@ where
     /// an intermediate which is equivalent to the source of the edge, whilst `100%`
     /// represents an intermediate equivalent to the target.
     ///
+    /// ```text
     ///                Edge Percentages
     ///     Source                         Target
     ///       +---------|----------------|---+
     ///                0.4              0.9
     ///               (40%)            (90%)
+    /// ```
     ///
     pub fn percentage<M: Metadata>(&self, graph: &Graph<E, M>) -> Option<f64> {
         let edge = graph
@@ -365,5 +370,10 @@ impl CandidateEdge {
     #[inline]
     pub fn new(weight: u32) -> Self {
         Self { weight }
+    }
+
+    pub const fn zero_static() -> &'static Self {
+        const ZERO_EDGE: CandidateEdge = CandidateEdge { weight: 0 };
+        &ZERO_EDGE
     }
 }
