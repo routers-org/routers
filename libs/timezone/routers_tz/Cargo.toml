@@ -6,8 +6,11 @@ license = "GPL-3.0-or-later"
 description = "Timezone Resolver"
 
 [dependencies]
-geo = "0.30.0"
+geo = { version = "0.30.0", features = ["serde"] }
 geo-index = { version = "0.3.1", optional = true }
+
+routers_tz_types = { workspace = true }
+routers_tz_build = { workspace = true }
 
 [features]
 default = ["basic"]

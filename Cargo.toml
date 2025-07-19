@@ -4,7 +4,7 @@ resolver = "2"
 members = [
     "libs/routers_codec", "libs/routers_geo", "libs/routers_grpc",
     "libs/routers_shard", "libs/routers_tiles", "libs/routers_fixtures",
-    "libs/routers_tz"
+    "libs/timezone/routers_tz", "libs/timezone/routers_tz_build", "libs/timezone/routers_tz_types"
 ]
 
 [workspace.lints.rust]
@@ -18,7 +18,9 @@ routers_grpc = { path = "libs/routers_grpc" }
 routers_shard = { path = "libs/routers_shard" }
 routers_tiles = { path = "libs/routers_tiles" }
 routers_fixtures = { path = "libs/routers_fixtures" }
-routers_tz = { path = "libs/routers_tz" }
+routers_tz = { path = "libs/timezone/routers_tz" }
+routers_tz_build = { path = "libs/timezone/routers_tz_build" }
+routers_tz_types = { path = "libs/timezone/routers_tz_types" }
 
 # === Workspace Deps ===
 [workspace.dependencies]
@@ -31,6 +33,9 @@ routers_codec = "0.1.2"
 routers_geo = "0.1.0"
 routers_grpc = "0.1.0"
 routers_tiles = "0.1.0"
+routers_tz = "0.1.0"
+routers_tz_build = "0.1.0"
+routers_tz_types = "0.1.0"
 routers = "0.2.1"
 
 # Optimisation Crates
