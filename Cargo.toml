@@ -4,7 +4,7 @@ resolver = "2"
 members = [
     "libs/routers_codec", "libs/routers_geo", "libs/routers_grpc",
     "libs/routers_shard", "libs/routers_tiles", "libs/routers_fixtures",
-    "libs/routers_network"
+    "libs/routers_network", "libs/routers_tz"
 ]
 
 [workspace.lints.rust]
@@ -24,6 +24,7 @@ routers_grpc = { path = "libs/routers_grpc" }
 routers_shard = { path = "libs/routers_shard" }
 routers_tiles = { path = "libs/routers_tiles" }
 routers_fixtures = { path = "libs/routers_fixtures" }
+routers_tz = { path = "libs/routers_tz" }
 
 # === Workspace Deps ===
 [workspace.dependencies]

@@ -1,0 +1,16 @@
+[package]
+name = "routers_tz"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+description = "Timezone Resolver"
+
+[dependencies]
+geo = "0.30.0"
+geo-index = { version = "0.3.1", optional = true }
+
+[features]
+default = ["basic"]
+
+basic = []
+rtree = ["geo-index"]
