@@ -1,8 +1,9 @@
 pub mod interface;
+pub mod model;
 pub mod storage;
 
 // Trait Definition
-pub use interface::Timezone;
+pub use interface::TimezoneResolver;
 
 // Basic Storage Impl
 #[cfg(feature = "basic")]
