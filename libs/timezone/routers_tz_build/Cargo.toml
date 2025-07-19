@@ -13,5 +13,9 @@ routers_tz_types = { workspace = true }
 [build-dependencies]
 geo = "0.30.0"
 geojson = "0.24.2"
-bincode = { version = "2.0.1", features = ["serde"] }
+bincode = { version = "2.0.1", features = ["serde", "bincode_derive"] }
 routers_tz_types = { workspace = true }
+
+[features]
+rtree = []
+basic = []
