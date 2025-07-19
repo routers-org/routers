@@ -2753,6 +2753,7 @@ version = "0.1.0"
 dependencies = [
  "bincode 2.0.1",
  "geo",
+ "geo-index",
  "serde",
 ]
 

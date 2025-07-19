@@ -13,7 +13,7 @@ routers_tz_types = { workspace = true }
 routers_tz_build = { workspace = true }
 
 [features]
-default = ["basic"]
+default = ["basic", "rtree"]
 
-basic = []
-rtree = ["geo-index"]
+basic = ["routers_tz_build/basic"]
+rtree = ["routers_tz_build/rtree", "geo-index"]
