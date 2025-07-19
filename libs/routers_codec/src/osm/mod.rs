@@ -138,61 +138,6 @@ pub mod meta {
             default
         }
 
-        // #[inline]
-        // fn accessible(&self, conditions: &Self::Runtime, direction: Direction) -> bool {
-        //     // Computes the negative-filter access restriction, assuming accessible by default.
-        //     // If any access conditions match the input, it will be rejected.
-        //
-        //     let mut most_specific_access: Option<(AccessValue, usize)> = None;
-        //
-        //     for access_tag in &self.access {
-        //         // Only consider access methods which are applicable
-        //         if !conditions
-        //             .transport_mode
-        //             .is_restricted_by(access_tag.restriction.transport_mode)
-        //         {
-        //             continue;
-        //         }
-        //
-        //         // Check directionality
-        //         let direction_matches = match access_tag.restriction.directionality {
-        //             Directionality::Forward => direction == Direction::Outgoing,
-        //             Directionality::Backward => direction == Direction::Incoming,
-        //             Directionality::BothWays => true,
-        //             _ => false,
-        //         };
-        //
-        //         if !direction_matches {
-        //             continue;
-        //         }
-        //
-        //         // Get specificity level for this restriction
-        //         let specificity = access_tag.restriction.transport_mode.specificity_level();
-        //
-        //         // Keep track of the most specific (lowest specificity value) access tag
-        //         match most_specific_access {
-        //             None => {
-        //                 most_specific_access = Some((access_tag.access, specificity));
-        //             }
-        //             Some((_, current_specificity)) => {
-        //                 if specificity < current_specificity {
-        //                     most_specific_access = Some((access_tag.access, specificity));
-        //                 }
-        //             }
-        //         }
-        //     }
-        //
-        //     // Process the most specific access tag we found
-        //     match most_specific_access {
-        //         Some((access, _)) => match access {
-        //             AccessValue::Yes => true,
-        //             AccessValue::Private => conditions.allow_private_roads,
-        //             _ => false,
-        //         },
-        //         None => true, // Default to accessible if no restrictions apply
-        //     }
-        // }
-
         #[inline]
         fn accessible(&self, conditions: &Self::Runtime, direction: Direction) -> bool {
             // Computes the negative-filter access restriction, assuming accessible by default.

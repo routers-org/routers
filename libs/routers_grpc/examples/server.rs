@@ -1,4 +1,4 @@
-use routers_fixtures::{LOS_ANGELES, fixture_path};
+use routers_fixtures::{LOS_ANGELES, fixture_path, AUSTRALIA, SYDNEY};
 use routers_grpc::r#match::MatchServiceServer;
 use routers_grpc::optimise::OptimiseServiceServer;
 use routers_grpc::scan::ScanServiceServer;
@@ -22,7 +22,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Create the router
     tracing::info!("Creating Router");
-    let los_angeles = fixture_path(LOS_ANGELES);
+    let los_angeles = fixture_path(AUSTRALIA);
     let router_base = RouteService::from_file(los_angeles).expect("-");
     let router = Arc::new(router_base);
 

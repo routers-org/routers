@@ -176,6 +176,8 @@ mod successor {
 }
 
 mod predicate {
+    use geo::{Haversine, Point};
+    use pathfinding::num_traits::Zero;
     use crate::transition::*;
     use routers_codec::Entry;
 
@@ -195,6 +197,9 @@ mod predicate {
 
         /// The threshold by which the solver is bounded, in centimeters.
         threshold_distance: f64,
+
+        // TODO: Docs
+        target: Point,
     }
 
     impl<E, M> Default for PredicateMetadata<E, M>
@@ -206,6 +211,7 @@ mod predicate {
             Self {
                 successors: SuccessorsCache::default(),
                 threshold_distance: DEFAULT_THRESHOLD,
+                // target
             }
         }
     }
@@ -226,8 +232,9 @@ mod predicate {
         #[inline]
         fn calculate(&self, ctx: &RoutingContext<E, M>, key: E) -> Predicates<E> {
             let threshold = self.0.read().unwrap().metadata.threshold_distance;
+            let target = self.0.read().unwrap().metadata.target;
 
-            Dijkstra
+            AStar
                 .reach(&key, move |node| {
                     ArcIter::new(self.0.read().unwrap().metadata.successors.query(ctx, *node))
                         .filter(|(_, edge, _)| {
@@ -246,6 +253,13 @@ mod predicate {
                             meta.accessible(ctx.runtime, direction)
                         })
                         .map(|(a, _, b)| (a, b))
+                }, |node| {
+                    if let Some(pos) = ctx.map.get_position(node) {
+                        let distance = Haversine.distance(pos, target);
+                        WeightAndDistance::new(Fraction::zero(), (distance * PRECISION) as u32)
+                    } else {
+                        WeightAndDistance::new(Fraction { numerator: u32::MAX, denominator: 1 }, u32::MAX)
+                    }
                 })
                 .take_while(|p| {
                     // Bounded by the threshold distance (centimeters)

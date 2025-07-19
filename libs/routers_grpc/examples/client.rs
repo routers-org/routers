@@ -1,4 +1,4 @@
-use routers_fixtures::LAX_LYNWOOD_TRIP;
+use routers_fixtures::{LAX_LYNWOOD_TRIP, WHALE_MASCOT_TRIP};
 use routers_grpc::r#match::*;
 
 use std::fs::File;
@@ -16,7 +16,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let channel = Channel::from_static("http://[::1]:9001").connect().await?;
     let mut client = MatchServiceClient::new(channel);
 
-    let linestring = LineString::try_from_wkt_str(LAX_LYNWOOD_TRIP)?;
+    let linestring = LineString::try_from_wkt_str(WHALE_MASCOT_TRIP)?;
 
     let route = Request::new(MatchRequest {
         data: Into::<sdk::Coordinates>::into(linestring).clone(),

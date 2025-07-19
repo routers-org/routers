@@ -1,7 +1,4 @@
-use routers_fixtures::{
-    LAX_LYNWOOD_MATCHED, LAX_LYNWOOD_TRIP, LOS_ANGELES, VENTURA_MATCHED, VENTURA_TRIP, ZURICH,
-    fixture,
-};
+use routers_fixtures::{LAX_LYNWOOD_MATCHED, LAX_LYNWOOD_TRIP, LOS_ANGELES, VENTURA_MATCHED, VENTURA_TRIP, ZURICH, fixture, SYDNEY, WHALE_MASCOT_TRIP, WHALE_MASCOT_MATCHED};
 
 use routers::transition::*;
 use routers::{Graph, Match};
@@ -25,7 +22,7 @@ struct GraphArea {
     matches: &'static [MapMatchScenario],
 }
 
-const MATCH_CASES: [GraphArea; 2] = [
+const MATCH_CASES: &[GraphArea] = &[
     GraphArea {
         source_file: LOS_ANGELES,
         matches: &[
@@ -44,6 +41,16 @@ const MATCH_CASES: [GraphArea; 2] = [
     GraphArea {
         source_file: ZURICH,
         matches: &[],
+    },
+    GraphArea {
+        source_file: SYDNEY,
+        matches: &[
+            MapMatchScenario {
+                name: "WHALE_MASCOT",
+                input_linestring: WHALE_MASCOT_TRIP,
+                expected_linestring: WHALE_MASCOT_MATCHED,
+            }
+        ],
     },
 ];
 
