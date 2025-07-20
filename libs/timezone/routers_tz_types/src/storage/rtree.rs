@@ -1,38 +1,37 @@
+use bincode::{Decode, Encode};
+use geo_index::rtree::sort::HilbertSort;
+use geo_index::rtree::{RTreeBuilder, RTreeRef};
+use ouroboros::self_referencing;
+use serde::de::{Error, Visitor};
+use serde::{Deserialize, Deserializer};
 use std::collections::BTreeMap;
 use std::fmt;
 use std::ops::Deref;
-use bincode::{Decode, Encode};
-use bincode::enc::write::Writer;
 
-use geo_index::rtree::sort::HilbertSort;
-use geo_index::rtree::{RTree, RTreeBuilder, RTreeRef};
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use serde::de::{Error, Visitor};
 use crate::timezone::Timezone;
 
-#[repr(transparent)]
-#[derive(Debug, Clone)]
+#[self_referencing]
 pub struct InternalTree {
-    tree: RTreeRef<'static, f64>,
-    data: &'static [u8]
+    data: Vec<u8>,
+    #[borrows(data)]
+    #[covariant]
+    tree: RTreeRef<'this, f64>,
 }
 
-impl Deref for InternalTree {
-    type Target = RTreeRef<'static, f64>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.tree
+impl InternalTree {
+    pub fn borrow<'this>(&'this self) -> &'this RTreeRef<'this, f64> {
+        self.borrow_tree::<'this>()
     }
 }
 
-impl Serialize for InternalTree {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_bytes(&self.data)
-    }
-}
+// impl Serialize for InternalTree {
+//     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+//     where
+//         S: Serializer,
+//     {
+//         serializer.serialize_bytes(&self.data)
+//     }
+// }
 
 impl<'de> Deserialize<'de> for InternalTree {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
@@ -48,65 +47,65 @@ impl<'de> Deserialize<'de> for InternalTree {
                 formatter.write_str("internal rtree repr")
             }
 
-            fn visit_borrowed_bytes<E>(self, v: &'de [u8]) -> Result<Self::Value, E>
+            fn visit_byte_buf<E>(self, v: Vec<u8>) -> Result<Self::Value, E>
             where
                 E: Error,
             {
-                RTreeRef::try_new(v)
+                let tree = InternalTreeBuilder {
+                    data: v,
+                    tree_builder: |data| RTreeRef::try_new(data).unwrap(),
+                }
+                .build();
+
+                Ok(tree)
             }
         }
 
-        deserializer.deserialize_bytes(RTreeVisitor)
+        deserializer.deserialize_byte_buf(RTreeVisitor)
     }
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct RTreeStorageImpl {
-    pub tree: InternalTree,
-    pub index: BTreeMap<usize, Timezone>,
-}
-
-#[derive(Encode, Decode, Debug, Clone)]
-pub struct RTreeStorageBackend {
+#[derive(Decode)]
+pub struct DecodableRTreeStorageBackend {
     #[bincode(with_serde)]
-    __impl: RTreeStorageImpl,
+    pub tree: InternalTree,
+    #[bincode(with_serde)]
+    pub index: BTreeMap<u32, Timezone>,
 }
 
-impl Deref for RTreeStorageBackend {
-    type Target = RTreeStorageImpl;
+// Alias.
+pub type RTreeStorageBackend = DecodableRTreeStorageBackend;
 
-    fn deref(&self) -> &Self::Target {
-        &self.__impl
-    }
+#[derive(Encode, Debug, Clone)]
+pub struct EncodableRTreeStorageBackend {
+    pub tree: Vec<u8>,
+    #[bincode(with_serde)]
+    pub index: BTreeMap<u32, Timezone>,
 }
 
-impl RTreeStorageBackend {
+impl EncodableRTreeStorageBackend {
     pub fn new(timezones: Vec<Timezone>) -> Self {
-        RTreeStorageBackend::build_from_tzs(timezones)
-            .expect("failed to construct tree from timezones")
+        Self::build_from_tzs(timezones).expect("failed to construct tree from timezones")
     }
 
-    fn build_from_tzs(tzs: Vec<Timezone>) -> Option<Self> {
+    fn build_from_tzs(tzs: Vec<Timezone>) -> Result<Self, Box<dyn std::error::Error>> {
         let mut builder = RTreeBuilder::new(tzs.len() as _);
         let mut index = BTreeMap::new();
 
         for (i, tz) in tzs.into_iter().enumerate() {
-            let bbox = tz.bounding_box()?;
+            let bbox = tz
+                .bounding_box()
+                .ok_or(format!("no bounding box for tz {}", i))?;
 
             builder.add_rect(&bbox);
-            index.insert(i, tz)?;
+            let _ = index.insert(i as u32, tz);
         }
 
         let tree = builder.finish::<HilbertSort>();
 
-        Some(RTreeStorageBackend {
-            __impl: RTreeStorageImpl {
-                tree: InternalTree {
-                    t
-                    data: tree.as_ref()
-                },
-                index
-            }
+        Ok(EncodableRTreeStorageBackend {
+            tree: tree.into_inner(),
+            index,
         })
     }
 }
