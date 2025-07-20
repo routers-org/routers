@@ -10,5 +10,6 @@ geo = { version = "0.30.0", features = ["use-serde"] }
 serde = { version = "1.0.219", features = ["derive"] }
 bincode = { version = "2.0.1", features = ["serde"] }
 geo-index = { version = "0.3.1" }
+ouroboros = "0.18.5"
 
 
