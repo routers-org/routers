@@ -1189,6 +1189,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "geozero"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e5f28f34864745eb2f123c990c6ffd92c1584bd39439b3f27ff2a0f4ea5b309b"
+dependencies = [
+ "geo-types",
+ "geojson",
+ "log",
+ "serde_json",
+ "thiserror 1.0.69",
+ "wkt 0.11.1",
+]
+
+[[package]]
 name = "getrandom"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2876,7 +2890,7 @@ dependencies = [
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",
- "wkt",
+ "wkt 0.14.0",
 ]
 
 [[package]]
@@ -2953,7 +2967,7 @@ dependencies = [
  "tracing-opentelemetry",
  "tracing-subscriber",
  "walkdir",
- "wkt",
+ "wkt 0.14.0",
 ]
 
 [[package]]
@@ -2999,9 +3013,11 @@ dependencies = [
 name = "routers_tz"
 version = "0.1.0"
 dependencies = [
+ "codspeed-criterion-compat",
  "ctor",
  "geo",
  "geo-index",
+ "geozero",
  "routers_tz_build",
  "routers_tz_types",
  "rstest",
@@ -3025,6 +3041,7 @@ dependencies = [
  "bincode 2.0.1",
  "geo",
  "geo-index",
+ "geozero",
  "ouroboros",
  "serde",
 ]
@@ -4747,6 +4764,18 @@ dependencies = [
  "serde_json",
  "unicode-xid",
  "wasmparser",
+]
+
+[[package]]
+name = "wkt"
+version = "0.11.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "54f7f1ff4ea4c18936d6cd26a6fd24f0003af37e951a8e0e8b9e9a2d0bd0a46d"
+dependencies = [
+ "geo-types",
+ "log",
+ "num-traits",
+ "thiserror 1.0.69",
 ]
 
 [[package]]
