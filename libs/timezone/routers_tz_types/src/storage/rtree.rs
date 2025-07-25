@@ -1,14 +1,15 @@
+use crate::timezone::{IANATimezoneName, Timezone};
 use bincode::{Decode, Encode};
+use geo::{BoundingRect, ConvexHull, Geometry, MultiPolygon, Polygon};
 use geo_index::rtree::sort::HilbertSort;
 use geo_index::rtree::{RTreeBuilder, RTreeRef};
+use geozero::ToWkt;
 use ouroboros::self_referencing;
 use serde::de::{Error, Visitor};
 use serde::{Deserialize, Deserializer};
 use std::collections::BTreeMap;
 use std::fmt;
 use std::ops::Deref;
-
-use crate::timezone::Timezone;
 
 #[self_referencing]
 pub struct InternalTree {
@@ -69,8 +70,9 @@ impl<'de> Deserialize<'de> for InternalTree {
 pub struct DecodableRTreeStorageBackend {
     #[bincode(with_serde)]
     pub tree: InternalTree,
-    #[bincode(with_serde)]
-    pub index: BTreeMap<u32, Timezone>,
+
+    pub names: Vec<IANATimezoneName>,
+    pub geometries: Vec<String>,
 }
 
 // Alias.
@@ -79,8 +81,9 @@ pub type RTreeStorageBackend = DecodableRTreeStorageBackend;
 #[derive(Encode, Debug, Clone)]
 pub struct EncodableRTreeStorageBackend {
     pub tree: Vec<u8>,
-    #[bincode(with_serde)]
-    pub index: BTreeMap<u32, Timezone>,
+
+    pub names: Vec<IANATimezoneName>,
+    pub geometries: Vec<String>,
 }
 
 impl EncodableRTreeStorageBackend {
@@ -90,22 +93,34 @@ impl EncodableRTreeStorageBackend {
 
     fn build_from_tzs(tzs: Vec<Timezone>) -> Result<Self, Box<dyn std::error::Error>> {
         let mut builder = RTreeBuilder::new(tzs.len() as _);
-        let mut index = BTreeMap::new();
 
-        for (i, tz) in tzs.into_iter().enumerate() {
-            let bbox = tz
-                .bounding_box()
+        let mut names = Vec::new();
+        let mut geometries = Vec::new();
+
+        for (i, Timezone { iana, geometry }) in tzs.into_iter().enumerate() {
+            let bbox = geometry
+                .bounding_rect()
                 .ok_or(format!("no bounding box for tz {}", i))?;
 
             builder.add_rect(&bbox);
-            let _ = index.insert(i as u32, tz);
+
+            // todo; convex hull then simplify
+
+            names.push(iana);
+            geometries.push(
+                Geometry::MultiPolygon(geometry)
+                    .to_wkt()
+                    .expect("failed to convert geometry to wkt"),
+            );
         }
 
         let tree = builder.finish::<HilbertSort>();
 
         Ok(EncodableRTreeStorageBackend {
             tree: tree.into_inner(),
-            index,
+
+            names,
+            geometries,
         })
     }
 }

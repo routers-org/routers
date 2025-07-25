@@ -29,7 +29,7 @@ mod tests {
     }
 
     // Helpers
-    fn assert_singular(point: Point, expected: &str) {
+    pub fn assert_singular(point: Point, expected: &str) {
         let possible_timezones = RESOLVER
             .get()
             .expect("timezones not initialized")

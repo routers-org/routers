@@ -1,3 +1,4 @@
+use bincode::{Decode, Encode};
 use geo::{BoundingRect, MultiPolygon, Rect};
 use serde::{Deserialize, Serialize};
 
@@ -15,7 +16,8 @@ impl Timezone {
 }
 
 // todo: docs
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[derive(Encode, Decode, Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[repr(transparent)]
 pub struct IANATimezoneName(pub String);
 
 impl Default for IANATimezoneName {
