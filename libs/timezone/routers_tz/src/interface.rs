@@ -14,7 +14,6 @@ mod tests {
     use crate::{RTreeStorage, TimezoneResolver};
     use geo::{BoundingRect, Point, point};
     use routers_tz_types::timezone::ResolvedTimezones;
-    use std::fmt::Debug;
     use std::sync::OnceLock;
     use std::time::Instant;
 

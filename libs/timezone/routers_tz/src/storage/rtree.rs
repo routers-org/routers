@@ -1,13 +1,9 @@
 use crate::TimezoneResolver;
-use geo::Geometry::MultiPolygon;
-use geo::{Contains, ConvexHull, Rect};
+use geo::Rect;
 use geo_index::rtree::RTreeIndex;
-use geozero::ToGeo;
-use geozero::wkt::Wkt;
 use routers_tz_types::storage::rtree::RTreeStorageBackend;
-use routers_tz_types::timezone::{IANATimezoneName, ResolvedTimezones, Timezone};
+use routers_tz_types::timezone::ResolvedTimezones;
 use std::fmt::Debug;
-use std::time::Instant;
 
 pub struct RTreeStorage {
     backend: &'static RTreeStorageBackend,
@@ -40,23 +36,14 @@ impl TimezoneResolver for RTreeStorage {
                     .geometries
                     .get(index)
                     .map(|geometries| (index, geometries))
-            });
+            })
+            .filter_map(|(index, _)| self.backend.names.get(index))
+            .collect::<Vec<_>>();
 
-        let mut resolved: Vec<IANATimezoneName> = vec![];
-
-        for (index, geometry) in timezones {
-            // if let MultiPolygon(geometry) = Wkt(geometry).to_geo().expect("failed to convert geometry to wkt") {
-            //     if geometry.contains(rect) {
-            let iana: &IANATimezoneName = self.backend.names.get(index).unwrap();
-            resolved.push(iana.clone())
-            //     }
-            // }
-        }
-
-        match resolved.as_slice() {
+        match timezones.as_slice() {
             [] => Err(()),
-            [one] => Ok(ResolvedTimezones::Singular(one.clone())),
-            _ => Ok(ResolvedTimezones::Many(resolved)),
+            [one] => Ok(ResolvedTimezones::Singular(one)),
+            _ => Ok(ResolvedTimezones::Many(timezones)),
         }
     }
 }
