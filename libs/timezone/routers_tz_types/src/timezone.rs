@@ -26,25 +26,25 @@ impl Default for IANATimezoneName {
     }
 }
 
-impl PartialEq<&str> for IANATimezoneName {
+impl PartialEq<&str> for &IANATimezoneName {
     fn eq(&self, other: &&str) -> bool {
         self.0 == *other
     }
 }
 
 // todo: docs
-pub enum ResolvedTimezones {
-    Singular(IANATimezoneName),
-    Many(Vec<IANATimezoneName>),
+pub enum ResolvedTimezones<'a> {
+    Singular(&'a IANATimezoneName),
+    Many(Vec<&'a IANATimezoneName>),
 }
 
-impl ResolvedTimezones {
-    pub fn tz(self) -> IANATimezoneName {
+impl<'a> ResolvedTimezones<'a> {
+    pub fn tz(&'a self) -> &'a IANATimezoneName {
         use ResolvedTimezones::*;
 
         match self {
             Singular(tz) => tz,
-            Many(tzs) => tzs.first().unwrap().clone(),
+            Many(tzs) => tzs.get(0).unwrap(),
         }
     }
 }

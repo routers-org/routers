@@ -1,10 +1,7 @@
 use criterion::{black_box, criterion_main};
-use geo::{BoundingRect, Point, point};
+use geo::{BoundingRect, Rect, point};
 use routers_tz::{RTreeStorage, TimezoneResolver};
-use routers_tz_types::timezone::ResolvedTimezones;
-use std::path::Path;
 use std::sync::OnceLock;
-use std::time::Instant;
 
 pub static RESOLVER: OnceLock<RTreeStorage> = OnceLock::new();
 
@@ -15,18 +12,20 @@ fn init() {
     });
 }
 
-pub fn assert_singular(point: Point, expected: &str) {
+pub fn run_singular(rect: &Rect) {
     let possible_timezones = RESOLVER
         .get()
         .expect("timezones not initialized")
-        .search(&point.bounding_rect())
+        .search(rect)
         .expect("should have been resolved");
 
     black_box(possible_timezones);
 }
 
 fn search_sparse() {
-    assert_singular(point! { x: 151.208211, y: -33.871075 }, "Australia/Sydney");
+    let rect = point! { x: 151.208211, y: -33.871075 }.bounding_rect();
+
+    run_singular(&rect);
 }
 
 fn discovery_benchmark(c: &mut criterion::Criterion) {

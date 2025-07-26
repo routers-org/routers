@@ -1,15 +1,13 @@
 use crate::timezone::{IANATimezoneName, Timezone};
 use bincode::{Decode, Encode};
-use geo::{BoundingRect, ConvexHull, Geometry, MultiPolygon, Polygon};
+use geo::{BoundingRect, Geometry};
 use geo_index::rtree::sort::HilbertSort;
 use geo_index::rtree::{RTreeBuilder, RTreeRef};
 use geozero::ToWkt;
 use ouroboros::self_referencing;
 use serde::de::{Error, Visitor};
 use serde::{Deserialize, Deserializer};
-use std::collections::BTreeMap;
 use std::fmt;
-use std::ops::Deref;
 
 #[self_referencing]
 pub struct InternalTree {
