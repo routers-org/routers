@@ -8,7 +8,7 @@ pub static RESOLVER: OnceLock<RTreeStorage> = OnceLock::new();
 fn init() {
     RESOLVER.get_or_init(|| {
         use crate::RTreeStorage;
-        return RTreeStorage::new();
+        return RTreeStorage::default();
     });
 }
 

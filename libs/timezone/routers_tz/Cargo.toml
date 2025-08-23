@@ -9,6 +9,8 @@ description = "Timezone Resolver"
 geo = { version = "0.30.0", features = ["serde"] }
 geo-index = { version = "0.3.1", optional = true }
 
+time-tz = "2.0.0"
+lazy_static = "1.5.0"
 routers_tz_types = { workspace = true }
 routers_tz_build = { workspace = true }
 rstest = "0.25.0"

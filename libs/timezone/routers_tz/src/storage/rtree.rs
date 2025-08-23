@@ -1,8 +1,9 @@
-use crate::TimezoneResolver;
 use geo::Rect;
 use geo_index::rtree::RTreeIndex;
 use routers_tz_types::storage::rtree::RTreeStorageBackend;
-use routers_tz_types::timezone::ResolvedTimezones;
+
+use crate::TimezoneResolver;
+use routers_tz_types::TimeZone;
 use std::fmt::Debug;
 
 pub struct RTreeStorage {
@@ -15,8 +16,8 @@ impl Debug for RTreeStorage {
     }
 }
 
-impl RTreeStorage {
-    pub fn new() -> Self {
+impl Default for RTreeStorage {
+    fn default() -> Self {
         RTreeStorage {
             backend: routers_tz_build::rtree::storage(),
         }
@@ -26,24 +27,18 @@ impl RTreeStorage {
 impl TimezoneResolver for RTreeStorage {
     type Error = ();
 
-    fn search(&self, rect: &Rect) -> Result<ResolvedTimezones, Self::Error> {
-        let cache_hits = self.backend.tree.borrow().search_rect(rect);
-        let timezones = cache_hits
-            .into_iter()
-            .map(|v| v as usize)
-            .filter_map(|index| {
-                self.backend
-                    .geometries
-                    .get(index)
-                    .map(|geometries| (index, geometries))
-            })
-            .filter_map(|(index, _)| self.backend.names.get(index))
-            .collect::<Vec<_>>();
+    fn search(&self, rect: &Rect) -> Result<TimeZone, Self::Error> {
+        let cache_hits =
+            self.backend
+                .tree
+                .borrow_this()
+                .neighbors_coord(&rect.center(), Some(1), None);
 
-        match timezones.as_slice() {
-            [] => Err(()),
-            [one] => Ok(ResolvedTimezones::Singular(one)),
-            _ => Ok(ResolvedTimezones::Many(timezones)),
-        }
+        cache_hits
+            .into_iter()
+            .filter_map(|index| self.backend.names.get(index as usize))
+            .map(|name| TimeZone::new(name.tz()))
+            .next()
+            .ok_or(())
     }
 }

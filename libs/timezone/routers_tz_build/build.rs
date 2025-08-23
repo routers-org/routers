@@ -3,7 +3,7 @@ use geo::{Coord, LineString, MultiPolygon, Polygon};
 use geojson::{GeoJson, Geometry, Value as GeoValue};
 use routers_tz_types::storage::basic::BasicStorageBackend;
 use routers_tz_types::storage::rtree::EncodableRTreeStorageBackend;
-use routers_tz_types::timezone::{IANATimezoneName, Timezone};
+use routers_tz_types::timezone::internal::{TimeZoneGeometry, TimeZoneName, TimezoneBuild};
 use std::env;
 use std::fs::{self, File};
 use std::io::Write;
@@ -90,7 +90,7 @@ fn convert_geojson_to_geo_multipolygon(
     }
 }
 
-fn extract_timezones() -> Result<Vec<Timezone>, Box<dyn std::error::Error>> {
+fn extract_timezones() -> Result<Vec<TimezoneBuild>, Box<dyn std::error::Error>> {
     let version = "2025b";
 
     let geojson_path = format!("data/{version}/timezones.geojson");
@@ -118,11 +118,16 @@ fn extract_timezones() -> Result<Vec<Timezone>, Box<dyn std::error::Error>> {
                 let geometry = feature.geometry.ok_or("Missing geometry")?;
                 let multi_polygon = convert_geojson_to_geo_multipolygon(&geometry)?;
 
-                // Create timezone structure
-                timezones.push(Timezone {
-                    iana: IANATimezoneName(tzid),
-                    geometry: multi_polygon,
-                });
+                if let Some(timezone_ref) = time_tz::timezones::get_by_name(tzid.as_str()) {
+                    // Create timezone structure
+                    timezones.push(TimezoneBuild {
+                        tz: timezone_ref,
+                        name: TimeZoneName::new(tzid),
+                        geometry: TimeZoneGeometry(multi_polygon),
+                    });
+                } else {
+                    eprintln!("Could not find timezone '{tzid}' in the database");
+                }
             }
         }
         _ => return Err("Expected FeatureCollection".into()),
@@ -131,15 +136,24 @@ fn extract_timezones() -> Result<Vec<Timezone>, Box<dyn std::error::Error>> {
     Ok(timezones)
 }
 
-fn rtree_backend(timezones: Vec<Timezone>) -> Result<(), Box<dyn std::error::Error>> {
+fn rtree_backend(timezones: &[TimezoneBuild]) -> Result<(), Box<dyn std::error::Error>> {
     let backend = EncodableRTreeStorageBackend::new(timezones);
     write_backend(backend, "rtree", "RTreeStorageBackend")
 }
 
-fn basic_backend(timezones: Vec<Timezone>) -> Result<(), Box<dyn std::error::Error>> {
-    let backend = BasicStorageBackend {
-        polygons: timezones,
-    };
+fn basic_backend(constructs: &[TimezoneBuild]) -> Result<(), Box<dyn std::error::Error>> {
+    let mut names = vec![];
+    let mut geometries = vec![];
+
+    constructs
+        .iter()
+        .for_each(|TimezoneBuild { name, geometry, .. }| {
+            names.push(name.clone());
+            geometries.push(geometry.clone());
+        });
+
+    let backend = BasicStorageBackend { geometries, names };
+
     write_backend(backend, "basic", "BasicStorageBackend")
 }
 
@@ -148,6 +162,8 @@ fn write_backend(
     dir: &str,
     name: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    use bincode::*;
+
     let data_binary = format!("{dir}_timezone_data.bin");
     let codegen_file = format!("{dir}_timezone_storage.rs");
 
@@ -157,7 +173,7 @@ fn write_backend(
     let mut file = File::create(&dest_path)?;
 
     // Serialize with bincode
-    bincode::encode_into_std_write(backend, &mut file, bincode::config::standard())?;
+    encode_into_std_write(backend, &mut file, config::standard())?;
 
     // Generate Rust code to include the data
     let code_path = Path::new(&out_dir).join(codegen_file);
@@ -184,7 +200,7 @@ lazy_static! {{
 }}
 
 pub fn storage() -> &'static {name} {{
-    &*STORAGE
+    &STORAGE
 }}
 "#
     )?;
@@ -198,11 +214,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // For all backends, if the feature is enabled - generate it.
     if env::var("CARGO_FEATURE_RTREE").is_ok() {
-        rtree_backend(timezones.clone())?;
+        rtree_backend(&timezones)?;
     }
 
     if env::var("CARGO_FEATURE_BASIC").is_ok() {
-        basic_backend(timezones.clone())?;
+        basic_backend(&timezones)?;
     }
 
     eprintln!("Wrote data files");

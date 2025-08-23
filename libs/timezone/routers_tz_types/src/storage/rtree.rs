@@ -1,9 +1,7 @@
-use crate::timezone::{IANATimezoneName, Timezone};
+use crate::timezone::internal::{TimeZoneName, TimezoneBuild};
 use bincode::{Decode, Encode};
-use geo::{BoundingRect, Geometry};
 use geo_index::rtree::sort::HilbertSort;
 use geo_index::rtree::{RTreeBuilder, RTreeRef};
-use geozero::ToWkt;
 use ouroboros::self_referencing;
 use serde::de::{Error, Visitor};
 use serde::{Deserialize, Deserializer};
@@ -18,19 +16,15 @@ pub struct InternalTree {
 }
 
 impl InternalTree {
-    pub fn borrow<'this>(&'this self) -> &'this RTreeRef<'this, f64> {
-        self.borrow_tree::<'this>()
+    // Cannot be type-defined using the `Borrow` trait due
+    // to the covariant requirement with self's lifetime.
+    pub fn borrow_this<'this, 'ext>(&'ext self) -> &'ext RTreeRef<'this, f64>
+    where
+        'ext: 'this,
+    {
+        self.borrow_tree()
     }
 }
-
-// impl Serialize for InternalTree {
-//     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-//     where
-//         S: Serializer,
-//     {
-//         serializer.serialize_bytes(&self.data)
-//     }
-// }
 
 impl<'de> Deserialize<'de> for InternalTree {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
@@ -68,57 +62,41 @@ impl<'de> Deserialize<'de> for InternalTree {
 pub struct DecodableRTreeStorageBackend {
     #[bincode(with_serde)]
     pub tree: InternalTree,
-
-    pub names: Vec<IANATimezoneName>,
-    pub geometries: Vec<String>,
+    pub names: Vec<TimeZoneName>,
 }
 
 // Alias.
 pub type RTreeStorageBackend = DecodableRTreeStorageBackend;
 
-#[derive(Encode, Debug, Clone)]
+#[derive(Encode, Debug)]
 pub struct EncodableRTreeStorageBackend {
     pub tree: Vec<u8>,
-
-    pub names: Vec<IANATimezoneName>,
-    pub geometries: Vec<String>,
+    pub names: Vec<TimeZoneName>,
 }
 
 impl EncodableRTreeStorageBackend {
-    pub fn new(timezones: Vec<Timezone>) -> Self {
+    pub fn new(timezones: &[TimezoneBuild]) -> Self {
         Self::build_from_tzs(timezones).expect("failed to construct tree from timezones")
     }
 
-    fn build_from_tzs(tzs: Vec<Timezone>) -> Result<Self, Box<dyn std::error::Error>> {
+    fn build_from_tzs(tzs: &[TimezoneBuild]) -> Result<Self, Box<dyn std::error::Error>> {
         let mut builder = RTreeBuilder::new(tzs.len() as _);
-
         let mut names = Vec::new();
-        let mut geometries = Vec::new();
 
-        for (i, Timezone { iana, geometry }) in tzs.into_iter().enumerate() {
+        for (i, TimezoneBuild { name, geometry, .. }) in tzs.into_iter().enumerate() {
             let bbox = geometry
-                .bounding_rect()
-                .ok_or(format!("no bounding box for tz {}", i))?;
+                .bbox()
+                .ok_or(format!("no bounding box for tz::[{i}]"))?;
 
             builder.add_rect(&bbox);
-
-            // todo; convex hull then simplify
-
-            names.push(iana);
-            geometries.push(
-                Geometry::MultiPolygon(geometry)
-                    .to_wkt()
-                    .expect("failed to convert geometry to wkt"),
-            );
+            names.push(name.clone());
         }
 
         let tree = builder.finish::<HilbertSort>();
 
         Ok(EncodableRTreeStorageBackend {
             tree: tree.into_inner(),
-
             names,
-            geometries,
         })
     }
 }
