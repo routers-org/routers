@@ -1,6 +1,6 @@
 use geo::{Contains, Rect};
 use routers_tz_types::storage::basic::BasicStorageBackend;
-use routers_tz_types::timezone::{IANATimezoneName, ResolvedTimezones, Timezone};
+use routers_tz_types::timezone::{IANATimezoneName, ResolvedTimezones, TimezoneBuild};
 
 use crate::TimezoneResolver;
 
@@ -28,7 +28,7 @@ impl TimezoneResolver for BasicStorage {
     fn search(&self, rect: &Rect) -> Result<ResolvedTimezones, Self::Error> {
         let mut resolved: Vec<IANATimezoneName> = vec![];
 
-        for Timezone { iana, geometry } in &self.backend.polygons {
+        for TimezoneBuild { iana, geometry } in &self.backend.geometries {
             if geometry.contains(rect) {
                 resolved.push(iana.clone())
             }

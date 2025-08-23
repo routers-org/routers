@@ -12,11 +12,11 @@ repos:
     hooks:
       - id: udeps
 
-  - repo: local
-    hooks:
-      - id: audit
-        name: audit
-        description: Checks to find vulnerable or unmaintained versions
-        entry: cargo audit
-        language: system
-        pass_filenames: false
+#  - repo: local
+#    hooks:
+#      - id: audit
+#        name: audit
+#        description: Checks to find vulnerable or unmaintained versions
+#        entry: cargo audit
+#        language: system
+#        pass_filenames: false

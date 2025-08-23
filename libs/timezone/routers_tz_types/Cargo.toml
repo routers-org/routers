@@ -12,5 +12,7 @@ bincode = { version = "2.0.1", features = ["serde"] }
 geo-index = { version = "0.3.1" }
 ouroboros = "0.18.5"
 geozero = "0.14.0"
+time-tz = "2.0.0"
+tz-rs = { version = "0.7.0" }
 
 
