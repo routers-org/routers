@@ -2,7 +2,7 @@ mod r#match;
 mod proximity;
 mod route;
 
-pub use r#match::Match;
+pub use r#match::{Match, MatchSimpleExt};
 pub use proximity::Scan;
 pub use route::Route;
 

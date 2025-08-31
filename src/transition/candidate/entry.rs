@@ -156,6 +156,7 @@ where
 ///
 /// As it is large, this should only be used transitively
 /// like in [`Scan::nearest_edges`](crate::route::Scan::nearest_edges).
+#[derive(Debug)]
 pub struct FatEdge<E>
 where
     E: Entry,

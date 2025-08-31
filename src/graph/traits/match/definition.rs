@@ -32,3 +32,20 @@ where
         linestring: LineString,
     ) -> Result<RoutedPath<E, M>, MatchError>;
 }
+
+// Simplifies the interface to the `Match` trait.
+pub trait MatchSimpleExt<E, M>: Match<E, M>
+where
+    E: Entry,
+    M: Metadata
+{
+    fn r#match_simple(&self, linestring: LineString) -> Result<RoutedPath<E, M>, MatchError> {
+        self.r#match(&M::runtime(None), SolverVariant::default(), linestring)
+    }
+
+    fn snap_simple(&self, linestring: LineString) -> Result<RoutedPath<E, M>, MatchError> {
+        self.snap(&M::runtime(None), SolverVariant::default(), linestring)
+    }
+}
+
+impl<T, E: Entry, M: Metadata> MatchSimpleExt<E, M> for T where T: Match<E, M> {}
