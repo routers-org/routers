@@ -37,14 +37,14 @@ where
 pub trait MatchSimpleExt<E, M>: Match<E, M>
 where
     E: Entry,
-    M: Metadata
+    M: Metadata,
 {
     fn r#match_simple(&self, linestring: LineString) -> Result<RoutedPath<E, M>, MatchError> {
-        self.r#match(&M::runtime(None), SolverVariant::default(), linestring)
+        self.r#match(&M::default_runtime(), SolverVariant::default(), linestring)
     }
 
     fn snap_simple(&self, linestring: LineString) -> Result<RoutedPath<E, M>, MatchError> {
-        self.snap(&M::runtime(None), SolverVariant::default(), linestring)
+        self.snap(&M::default_runtime(), SolverVariant::default(), linestring)
     }
 }
 

@@ -3,7 +3,6 @@ use crate::transition::*;
 use log::{debug, info};
 
 use rustc_hash::FxHashMap;
-use std::sync::{Arc, Mutex};
 
 use geo::{Distance, Haversine};
 use itertools::Itertools;
