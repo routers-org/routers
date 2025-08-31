@@ -1,11 +1,11 @@
 use std::path::{Path, PathBuf};
 
-pub const DISTRICT_OF_COLUMBIA: &str = "district-of-columbia.osm.pbf";
-pub const BADEN_WUERTTEMBERG: &str = "baden-wuerttemberg.osm.pbf";
-pub const AUSTRALIA: &str = "australia.osm.pbf";
-pub const SYDNEY: &str = "sydney.osm.pbf";
-pub const LOS_ANGELES: &str = "los-angeles.osm.pbf";
-pub const ZURICH: &str = "zurich.osm.pbf";
+pub const DISTRICT_OF_COLUMBIA: &str = "district-of-columbia-minified.osm.pbf";
+pub const BADEN_WUERTTEMBERG: &str = "baden-wuerttemberg-minified.osm.pbf";
+pub const AUSTRALIA: &str = "australia-minified.osm.pbf";
+pub const SYDNEY: &str = "sydney-minified.osm.pbf";
+pub const LOS_ANGELES: &str = "los-angeles-minified.osm.pbf";
+pub const ZURICH: &str = "zurich-minified.osm.pbf";
 
 pub mod macros {
     #[macro_export]

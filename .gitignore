@@ -8,7 +8,7 @@ todo.md
 
 /libs/routers_fixtures/resources/*
 
-!district-of-columbia.osm.pbf
-!los-angeles.osm.pbf
-!zurich.osm.pbf
-!sydney.osm.pbf
+!district-of-columbia-minified*
+!los-angeles-minified*
+!zurich-minified*
+!sydney-minified*
