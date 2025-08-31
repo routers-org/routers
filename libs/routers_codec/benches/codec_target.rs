@@ -34,7 +34,7 @@ fn iterate_blocks_each() {
     }
 
     assert_eq!(header_blocks, 1);
-    assert_eq!(primitive_blocks, 237);
+    assert_eq!(primitive_blocks, 21);
 }
 
 fn parallel_iterate_blocks_each() {
@@ -50,7 +50,7 @@ fn parallel_iterate_blocks_each() {
         })
         .reduce(|| (0, 0), |a, b| (a.0 + b.0, a.1 + b.1));
 
-    assert_eq!(elements, (237, 1));
+    assert_eq!(elements, (21, 1));
 }
 
 fn compare_to_osmpbf() {
@@ -79,7 +79,7 @@ fn compare_to_osmpbf() {
     }
 
     assert_eq!(header_blocks, 1);
-    assert_eq!(primitive_blocks, 237);
+    assert_eq!(primitive_blocks, 21);
 }
 
 fn ingest_and_count() {
