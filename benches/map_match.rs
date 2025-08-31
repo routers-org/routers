@@ -71,7 +71,7 @@ fn target_benchmark(c: &mut criterion::Criterion) {
         let graph = Graph::new(path).expect("Graph must be created");
 
         let costing = CostingStrategies::default();
-        let runtime = OsmEdgeMetadata::runtime(None);
+        let runtime = OsmEdgeMetadata::default_runtime();
 
         ga.matches.iter().for_each(|sc| {
             let coordinates: LineString<f64> = LineString::try_from_wkt_str(sc.input_linestring)

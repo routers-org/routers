@@ -26,7 +26,7 @@ impl Taggable for osm::Relation {
 }
 
 impl Referential for osm::Relation {
-    fn indices(&self) -> impl Iterator<Item = ReferenceKey> {
+    fn indices(&self) -> impl Iterator<Item = ReferenceKey<'_>> {
         self.roles_sid
             .iter()
             .zip(self.memids.iter())

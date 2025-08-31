@@ -54,7 +54,7 @@ impl Taggable for osm::Way {
 }
 
 impl Referential for osm::Way {
-    fn indices(&self) -> impl Iterator<Item = ReferenceKey> {
+    fn indices(&self) -> impl Iterator<Item = ReferenceKey<'_>> {
         self.refs.iter().map(|id| Intermediate {
             role: &-1i32,
             index: id,

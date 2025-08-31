@@ -8,7 +8,6 @@ use rustc_hash::{FxHashMap, FxHasher};
 
 use std::fmt::{Debug, Formatter};
 use std::hash::BuildHasherDefault;
-use std::sync::{Arc, Mutex};
 #[cfg(feature = "tracing")]
 use tracing::Level;
 

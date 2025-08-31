@@ -5,7 +5,6 @@ use log::{debug, info};
 
 use rustc_hash::FxHashMap;
 use std::cell::RefCell;
-use std::sync::{Arc, Mutex, RwLock};
 
 use geo::{Distance, Haversine};
 use itertools::Itertools;

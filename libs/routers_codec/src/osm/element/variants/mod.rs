@@ -200,7 +200,7 @@ pub mod common {
     }
 
     pub trait Referential {
-        fn indices(&self) -> impl Iterator<Item = ReferenceKey>;
+        fn indices(&self) -> impl Iterator<Item = ReferenceKey<'_>>;
 
         fn references(&self, block: &PrimitiveBlock) -> References {
             self.indices()
