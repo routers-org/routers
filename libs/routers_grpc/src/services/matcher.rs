@@ -7,7 +7,7 @@ use crate::definition::r#match::*;
 use crate::definition::model::*;
 
 use crate::services::RouteService;
-use routers::{Match, Path, PrecomputeForwardSolver, RoutedPath, SelectiveForwardSolver};
+use routers::{Match, Path, RoutedPath};
 use routers_codec::{Entry, Metadata};
 #[cfg(feature = "telemetry")]
 use tracing::Level;
@@ -78,12 +78,12 @@ where
         self: Arc<Self>,
         request: Request<MatchRequest>,
     ) -> Result<Response<MatchResponse>, Status> {
-        let map_match = request.into_inner();
-        let coordinates = map_match.linestring();
+        let (.., message) = request.into_parts();
+        let coordinates = message.linestring();
 
-        let solver = PrecomputeForwardSolver::default().use_cache(self.graph.cache.clone());
-
-        let runtime = M::runtime(map_match.options.and_then(Option::<M::TripContext>::from));
+        // Find which solver to use...
+        let solver = OptimiseFor::from(message.options);
+        let runtime = M::runtime(message.trip_context::<M>());
 
         let result = self
             .graph
@@ -91,7 +91,6 @@ where
             .map_err(|e| e.to_string())
             .map_err(Status::internal)?;
 
-        // TODO: Vector to allow trip-splitting in the future.
         Ok(Response::new(MatchResponse {
             matches: Util::<M::Runtime>::process(result, runtime),
         }))
@@ -102,12 +101,12 @@ where
         self: Arc<Self>,
         request: Request<SnapRequest>,
     ) -> Result<Response<SnapResponse>, Status> {
-        let map_match = request.into_inner();
-        let coordinates = map_match.linestring();
+        let (.., message) = request.into_parts();
+        let coordinates = message.linestring();
 
-        let solver = SelectiveForwardSolver::default().use_cache(self.graph.cache.clone());
-
-        let runtime = M::runtime(map_match.options.and_then(Option::<M::TripContext>::from));
+        // Find which solver to use...
+        let solver = OptimiseFor::from(message.options);
+        let runtime = M::runtime(message.trip_context::<M>());
 
         let result = self
             .graph
