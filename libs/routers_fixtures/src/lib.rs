@@ -1,8 +1,8 @@
 use std::path::{Path, PathBuf};
 
 pub const DISTRICT_OF_COLUMBIA: &str = "district-of-columbia.osm.pbf";
-pub const BADEN_WUERTTEMBERG: &str = "baden-wuerttemberg-latest.osm.pbf";
-pub const AUSTRALIA: &str = "australia-latest.osm.pbf";
+pub const BADEN_WUERTTEMBERG: &str = "baden-wuerttemberg.osm.pbf";
+pub const AUSTRALIA: &str = "australia.osm.pbf";
 pub const SYDNEY: &str = "sydney.osm.pbf";
 pub const LOS_ANGELES: &str = "los-angeles.osm.pbf";
 pub const ZURICH: &str = "zurich.osm.pbf";
