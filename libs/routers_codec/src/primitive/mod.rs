@@ -33,6 +33,10 @@ pub trait Metadata: Clone + Debug + Send + Sync {
 
     fn pick(raw: Self::Raw<'_>) -> Self;
     fn runtime(ctx: Option<Self::TripContext>) -> Self::Runtime;
-
     fn accessible(&self, access: &Self::Runtime, direction: Direction) -> bool;
+
+    /// The default runtime for the specific metadata implementation
+    fn default_runtime() -> Self::Runtime {
+        Self::runtime(None)
+    }
 }

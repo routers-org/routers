@@ -29,7 +29,7 @@ fn it_matches() {
     let path = Path::new(fixture!(source)).as_os_str().to_ascii_lowercase();
     let graph = Graph::new(path).expect("Graph must be created");
 
-    let runtime = OsmEdgeMetadata::runtime(None);
+    let runtime = OsmEdgeMetadata::default_runtime();
 
     // Yield the transition layers of each level
     // & Collapse the layers into a final vector
