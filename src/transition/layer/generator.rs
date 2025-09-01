@@ -33,8 +33,8 @@ impl FromParallelIterator<Layer> for Layers {
     }
 }
 
-const DEFAULT_SEARCH_DISTANCE: f64 = 1_000.0; // 1km (1_000m)
-const DEFAULT_FILTER_DISTANCE: f64 = 250.0; // 250m
+const DEFAULT_SEARCH_DISTANCE: f64 = 100.; // 100m
+const DEFAULT_FILTER_DISTANCE: f64 = 50.; // 50m
 
 /// Generates the layers within the transition graph.
 ///
