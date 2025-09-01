@@ -43,7 +43,7 @@ where
         let top_left = Geodesic.destination(*point, 315.0, distance);
 
         let bbox = AABB::from_corners(top_left, bottom_right);
-        self.index_edge().locate_in_envelope(&bbox)
+        self.index_edge().locate_in_envelope_intersecting(&bbox)
     }
 
     #[cfg_attr(feature = "tracing", tracing::instrument(level = Level::INFO, skip(self)))]
