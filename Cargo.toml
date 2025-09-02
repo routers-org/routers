@@ -44,7 +44,7 @@ test-log = { version = "0.2.17", features = ["log"] }
 # Server/Paralellism
 dotenv = { package = "dotenvy", version = "0.15.7" }
 tower-http = { version = "0.6.4", features = ["cors"] }
-tokio = { version = "1.45.1", features = [
+tokio = { version = "1.47.1", features = [
     "rt",
     "rt-multi-thread",
     "macros",
@@ -52,7 +52,7 @@ tokio = { version = "1.45.1", features = [
 ] }
 
 # GeoRust
-geo = { version = "0.30.0" }
+geo = { version = "0.31.0" }
 wkt = { version = "0.14.0" }
 rstar = { version = "0.12.2", features = ["serde"] }
 
@@ -80,10 +80,12 @@ criterion = { version = "3.0.1", features = [
 strum = { version = "0.27.1", features = ["phf", "derive"] }
 
 # Schema
-prost = "0.13.5"
-prost-types = "0.13.5"
-prost-build = "0.13.5"
-tonic-build = { version = "0.13.1", features = ["prost"] }
+prost = "0.14.1"
+prost-types = "0.14.1"
+prost-build = "0.14.1"
+tonic-prost-build = "0.14.1"
+tonic-prost = "0.14.1"
+tonic-build = { version = "0.14.1" }
 bytes = { version = "1.10.1", features = ["default"] }
 
 # === Profiles ===
