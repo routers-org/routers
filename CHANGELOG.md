@@ -2,6 +2,27 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.2] - 2025-09-02
+
+### 🚀 Features
+
+- *(routers)* Add enumeration variant for solver
+
+### 🐛 Bug Fixes
+
+- *(lint)* Update to 1.88 clippy lints
+- *(locking)* Do not hold lock whilst calculating
+- *(routers)* Provide simplified match trait, with *_simple methods, using sensible defaults
+- *(routers)* Provide helper method, Metadata::default_runtime()
+- *(routers)* Clear clippy warnings, provide explicit lifetimes
+- *(routers)* Update dependencies
+- *(routers)* Make appropriate changes to grpc build step
+
+### ⚙️ Miscellaneous Tasks
+
+- Bump codspeed to v3
+
+RoutersOrg - 2025
 ## [0.2.1] - 2025-06-24
 
 ### 🚀 Features
