@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.3] - 2025-09-02
+
+### 🐛 Bug Fixes
+
+- *(lint)* Update to 1.88 clippy lints
+- *(routers)* Provide helper method, Metadata::default_runtime()
+- *(routers)* Clear clippy warnings, provide explicit lifetimes
+- *(routers_codec)* Number of blocks reduced from minification; snapshots updated
+- *(routers_codec)* Benchmark snapshots updated
+
+RoutersOrg - 2025
 ## [0.1.2] - 2025-06-24
 
 ### 🚀 Features

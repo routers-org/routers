@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.1] - 2025-09-02
+
+### 🚀 Features
+
+- *(routers)* Add enumeration variant for solver
+
+### 🐛 Bug Fixes
+
+- *(lint)* Update to 1.88 clippy lints
+- *(rpc)* Reorders point rpcs in scan service
+- *(routers)* Make appropriate changes to grpc build step
+
+RoutersOrg - 2025
 ## [0.1.0] - 2025-06-24
 
 ### 🚀 Features
