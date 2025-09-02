@@ -80,13 +80,16 @@ criterion = { version = "3.0.1", features = [
 strum = { version = "0.27.1", features = ["phf", "derive"] }
 
 # Schema
+bytes = { version = "1.10.1", features = ["default"] }
 prost = "0.14.1"
 prost-types = "0.14.1"
 prost-build = "0.14.1"
 tonic-prost-build = "0.14.1"
 tonic-prost = "0.14.1"
-tonic-build = { version = "0.14.1" }
-bytes = { version = "1.10.1", features = ["default"] }
+tonic-build = "0.14.1"
+tonic-reflection = "0.14.1"
+tonic-web = "0.14.1"
+tonic = "0.14.1"
 
 # === Profiles ===
 [profile.release]
