@@ -33,8 +33,7 @@ impl FromParallelIterator<Layer> for Layers {
     }
 }
 
-const DEFAULT_SEARCH_DISTANCE: f64 = 100.; // 100m
-const DEFAULT_FILTER_DISTANCE: f64 = 50.; // 50m
+const DEFAULT_SEARCH_DISTANCE: f64 = 50.; // 50m
 
 /// Generates the layers within the transition graph.
 ///
@@ -52,16 +51,11 @@ where
 {
     /// The maximum distance by which the generator will search for nodes,
     /// allowing it to find edges which may be comprised of distant nodes.
-    pub search_distance: f64,
-
-    /// The maximum distance by which matched candidates will be found,
-    /// this directly minimises the cost to compute since it impacts the
-    /// quantity of candidates found.
     ///
-    /// A high search distance may take longer to compute but will give
-    /// more accurate candidates as it can find edges who's comprising nodes
-    /// are far apart.
-    pub filter_distance: f64,
+    /// This is a square-radius search, so may pick up nodes outside this
+    /// distance as the edge may exist at the square-boundary, beyond the
+    /// radial-boundary.
+    pub search_distance: f64,
 
     /// The costing heuristics required to generate the layers.
     ///
@@ -90,7 +84,6 @@ where
             heuristics,
 
             search_distance: DEFAULT_SEARCH_DISTANCE,
-            filter_distance: DEFAULT_FILTER_DISTANCE,
         }
     }
 
@@ -114,15 +107,7 @@ where
                     self.map
                         // We'll do a best-effort search (square) radius
                         .scan_nodes_projected(origin, self.search_distance)
-                        .filter_map(|(point, edge)| {
-                            let distance = Haversine.distance(point, *origin);
-
-                            if distance < self.filter_distance {
-                                Some((point, edge, distance))
-                            } else {
-                                None
-                            }
-                        })
+                        .map(|(point, edge)| (point, edge, Haversine.distance(point, *origin)))
                         .sorted_by(|(_, _, a), (_, _, b)| a.total_cmp(b))
                         .take(25)
                         .enumerate()
