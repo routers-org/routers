@@ -9,7 +9,7 @@ description = "Utilities to create tiles"
 # Big Table Connector
 bigtable_rs = { version = "0.2.17", optional = true }
 
-geo = "0.30.0"
+geo = { workspace = true }
 routers_geo = { workspace = true }
 
 # Server dependencies

@@ -9,7 +9,7 @@ description = "Geospatial Utilities for Routers"
 log = { version = "0.4.27", features = [] }
 strum = { workspace = true }
 
-geo = "0.30.0"
+geo = { workspace = true }
 geohash = "0.13.1"
 
 [features]
