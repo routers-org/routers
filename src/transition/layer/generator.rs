@@ -1,10 +1,11 @@
 use crate::transition::*;
 use crate::{Graph, Scan};
+use std::collections::HashMap;
 
 use geo::{Distance, Haversine, Point};
 use itertools::Itertools;
-use measure_time::debug_time;
-use rayon::iter::{IndexedParallelIterator, ParallelIterator};
+use petgraph::{Directed, Graph as PetGraph};
+use rayon::iter::{IndexedParallelIterator, ParallelBridge, ParallelIterator};
 use rayon::prelude::{FromParallelIterator, IntoParallelIterator};
 use routers_codec::{Entry, Metadata};
 
@@ -33,8 +34,7 @@ impl FromParallelIterator<Layer> for Layers {
     }
 }
 
-const DEFAULT_SEARCH_DISTANCE: f64 = 1_000.0; // 1km (1_000m)
-const DEFAULT_FILTER_DISTANCE: f64 = 250.0; // 250m
+const DEFAULT_SEARCH_DISTANCE: f64 = 50.; // 50m
 
 /// Generates the layers within the transition graph.
 ///
@@ -52,16 +52,11 @@ where
 {
     /// The maximum distance by which the generator will search for nodes,
     /// allowing it to find edges which may be comprised of distant nodes.
-    pub search_distance: f64,
-
-    /// The maximum distance by which matched candidates will be found,
-    /// this directly minimises the cost to compute since it impacts the
-    /// quantity of candidates found.
     ///
-    /// A high search distance may take longer to compute but will give
-    /// more accurate candidates as it can find edges who's comprising nodes
-    /// are far apart.
-    pub filter_distance: f64,
+    /// This is a square-radius search, so may pick up nodes outside this
+    /// distance as the edge may exist at the square-boundary, beyond the
+    /// radial-boundary.
+    pub search_distance: f64,
 
     /// The costing heuristics required to generate the layers.
     ///
@@ -71,6 +66,12 @@ where
 
     /// The routing map used to pull candidates from, and provide layout context.
     map: &'a Graph<E, M>,
+}
+
+struct PartiallyGeneratedCandidate<E: Entry> {
+    candidate: Candidate<E>,
+    candidate_ref: CandidateRef,
+    layer_id: usize,
 }
 
 impl<'a, Emmis, Trans, E, M> LayerGenerator<'a, Emmis, Trans, E, M>
@@ -90,82 +91,104 @@ where
             heuristics,
 
             search_distance: DEFAULT_SEARCH_DISTANCE,
-            filter_distance: DEFAULT_FILTER_DISTANCE,
         }
+    }
+
+    fn generate_candidates(
+        &self,
+        layer_id: usize,
+        origin: &Point,
+    ) -> impl IntoParallelIterator<Item = PartiallyGeneratedCandidate<E>> {
+        self.map
+            // We'll do a best-effort search (square) radius
+            .scan_nodes_projected(origin, self.search_distance)
+            .enumerate()
+            .par_bridge()
+            // Find the distance to the center point
+            .map(|(index, (point, edge))| (index, point, edge, Haversine.distance(point, *origin)))
+            // Get the index for each
+            // And calculate the emission costs of each of these points
+            .map(move |(node_id, position, edge, distance)| {
+                let location = CandidateLocation { layer_id, node_id };
+
+                // We have the actual projected position, and it's associated edge.
+                // Therefore, we can use the Emission costing function to calculate
+                // the associated emission cost of this candidate.
+                let emission = self
+                    .heuristics
+                    .emission(EmissionContext::new(&position, origin, distance));
+
+                let candidate = Candidate::new(edge.thin(), position, emission, location);
+                let candidate_reference = CandidateRef::new(emission);
+
+                (candidate, candidate_reference)
+            })
+            .map(
+                move |(candidate, candidate_ref): (Candidate<E>, CandidateRef)| {
+                    PartiallyGeneratedCandidate {
+                        candidate,
+                        candidate_ref,
+                        layer_id,
+                    }
+                },
+            )
+    }
+
+    fn default_data() -> (
+        PetGraph<CandidateRef, CandidateEdge, Directed>,
+        scc::HashMap<CandidateId, Candidate<E>>,
+        HashMap<usize, Layer>,
+    ) {
+        (
+            PetGraph::<CandidateRef, CandidateEdge, Directed>::default(),
+            scc::HashMap::<CandidateId, Candidate<E>>::default(),
+            HashMap::<usize, Layer>::default(),
+        )
     }
 
     /// Utilises the configured search and filter distances to produce
     /// the candidates and layers required to match the initial input.
     pub fn with_points(&self, input: &[Point]) -> (Layers, Candidates<E>) {
-        let candidates = Candidates::default();
-
         // In parallel, create each layer, and collect into a single structure.
-        let layers = input
+        let (graph, lookup, layers) = input
             .into_par_iter()
             .enumerate()
-            .map(|(layer_id, origin)| {
-                debug_time!("{layer_id}: individual layer generation (!!)"); // 0.1 - 5.0ms
+            .flat_map(|(i, o)| self.generate_candidates(i, o))
+            .collect::<Vec<PartiallyGeneratedCandidate<E>>>()
+            .into_iter()
+            .fold(
+                Self::default_data(),
+                |(mut graph, map, mut set),
+                 PartiallyGeneratedCandidate {
+                     candidate,
+                     candidate_ref,
+                     layer_id,
+                 }| {
+                    let node_index: CandidateId = graph.add_node(candidate_ref);
+                    let _ = map.insert(node_index, candidate);
 
-                // Generate an individual layer
-                // Function takes about 10ms to compute.
-                let nodes = {
-                    debug_time!("{layer_id}: gen all");
-
-                    self.map
-                        // We'll do a best-effort search (square) radius
-                        .scan_nodes_projected(origin, self.search_distance)
-                        .filter_map(|(point, edge)| {
-                            let distance = Haversine.distance(point, *origin);
-
-                            if distance < self.filter_distance {
-                                Some((point, edge, distance))
-                            } else {
-                                None
-                            }
+                    set.entry(layer_id)
+                        .and_modify(|layer| {
+                            layer.nodes.push(node_index);
                         })
-                        .sorted_by(|(_, _, a), (_, _, b)| a.total_cmp(b))
-                        .take(25)
-                        .enumerate()
-                        .map(|(node_id, (position, edge, distance))| {
-                            // We have the actual projected position, and it's associated edge.
-                            // Therefore, we can use the Emission costing function to calculate
-                            // the associated emission cost of this candidate.
-                            let emission = self
-                                .heuristics
-                                .emission(EmissionContext::new(&position, origin, distance));
+                        .or_insert(Layer {
+                            nodes: vec![node_index],
+                            origin: input[layer_id],
+                        });
 
-                            let location = CandidateLocation { layer_id, node_id };
-                            let candidate =
-                                Candidate::new(edge.thin(), position, emission, location);
+                    (graph, map, set)
+                },
+            );
 
-                            let candidate_reference = CandidateRef::new(emission);
-                            (candidate, candidate_reference)
-                        })
-                        .collect::<Vec<_>>()
-                };
+        let as_vec = Self::hashmap_to_vec(layers);
 
-                // Inner-Scope for the graph, dropped on close.
-                // Note: Contention here is negligible, runtime = free.
-                let nodes = {
-                    let mut graph = candidates.graph.write().unwrap();
-                    nodes
-                        .into_iter()
-                        .map(|(candidate, candidate_ref)| {
-                            let node_index = graph.add_node(candidate_ref);
-                            let _ = candidates.lookup.insert(node_index, candidate);
+        (Layers { layers: as_vec }, Candidates::new(graph, lookup))
+    }
 
-                            node_index as CandidateId
-                        })
-                        .collect::<Vec<CandidateId>>()
-                };
-
-                Layer {
-                    nodes,
-                    origin: *origin,
-                }
-            })
-            .collect::<Layers>();
-
-        (layers, candidates)
+    fn hashmap_to_vec<T>(mut map: HashMap<usize, T>) -> Vec<T> {
+        map.into_iter()
+            .sorted_by_key(|(i, _)| *i)
+            .map(|(_, v)| v)
+            .collect()
     }
 }
