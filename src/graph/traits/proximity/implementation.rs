@@ -66,15 +66,15 @@ where
         E: 'a,
     {
         // Total overhead of this function is negligible.
-        self.scan_edges(point, distance).filter_map(move |edge| {
-            let line = Line::new(edge.source.position, edge.target.position);
-
-            // We locate the point upon the linestring,
-            // and then project that fractional (%)
-            // upon the linestring to obtain a point
-            line.line_locate_point(point)
-                .map(|frac| line.point_at_ratio_from_start(&Haversine, frac))
-                .map(|point| (point, edge))
-        })
+        self.scan_edges(point, distance)
+            .map(|edge| (Line::new(edge.source.position, edge.target.position), edge))
+            .filter_map(move |(line, edge)| {
+                // We locate the point upon the linestring,
+                // and then project that fractional (%)
+                // upon the linestring to obtain a point
+                line.line_locate_point(point)
+                    .map(|frac| line.point_at_ratio_from_start(&Haversine, frac))
+                    .map(|point| (point, edge))
+            })
     }
 }
