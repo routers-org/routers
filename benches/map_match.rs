@@ -48,13 +48,13 @@ const MATCH_CASES: [GraphArea; 2] = [
     },
 ];
 
-fn assert_subsequence<T: Debug>(a: &[i64], b: &[i64], _meta: T) {
+fn assert_subsequence<T: Debug>(a: &[i64], b: &[i64], meta: T) {
     let mut a_iter = a.iter();
 
     for b_item in b {
         if !a_iter.any(|a_item| a_item == b_item) {
             panic!(
-                "b is not a subsequence of a: element {b_item} not found in remaining portion of a",
+                "b is not a subsequence of a: element {b_item} not found in remaining portion of a. {meta:?}",
             );
         }
     }
