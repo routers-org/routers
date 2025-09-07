@@ -1,6 +1,7 @@
 use crate::transition::*;
 
 use crate::EndAttachError::{EndsAlreadyAttached, LayerMissing, WriteLockFailed};
+use crate::LockedGraph;
 use pathfinding::num_traits::{ConstZero, Zero};
 use petgraph::algo::astar;
 use petgraph::graph::EdgeReference;
@@ -11,10 +12,8 @@ use scc::HashMap;
 use std::fmt::Debug;
 use std::sync::{Arc, RwLock};
 
-pub type LockedGraph<A, B> = Arc<RwLock<Graph<A, B, Directed>>>;
-
-type OpenCandidateGraph = Graph<CandidateRef, CandidateEdge>;
-type LockedCandidateGraph = LockedGraph<CandidateRef, CandidateEdge>;
+pub type OpenCandidateGraph = Graph<CandidateRef, CandidateEdge>;
+pub type LockedCandidateGraph = LockedGraph<CandidateRef, CandidateEdge>;
 
 pub struct Candidates<E>
 where
