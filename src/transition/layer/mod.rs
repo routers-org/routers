@@ -3,8 +3,11 @@ pub mod generator;
 #[doc(inline)]
 pub use generator::*;
 
+use crate::Candidate;
 use crate::transition::candidate::CandidateId;
-use geo::Point;
+use geo::{MultiPoint, Point};
+use routers_codec::Entry;
+use scc::HashMap;
 
 /// A layer within the transition graph.
 ///
@@ -20,4 +23,17 @@ pub struct Layer {
     /// This position is consumed by the [`LayerGenerator`](LayerGenerator)
     /// to produce candidates for each layer, based on intrinsic location properties.
     pub origin: Point,
+}
+
+impl Layer {
+    pub fn geometry<E: Entry>(
+        &self,
+        lookup: &HashMap<CandidateId, Candidate<E>>,
+    ) -> MultiPoint<f64> {
+        self.nodes
+            .iter()
+            .filter_map(|id| lookup.get(id))
+            .map(|candidate| candidate.position)
+            .collect::<MultiPoint<_>>()
+    }
 }

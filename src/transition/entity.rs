@@ -1,3 +1,4 @@
+use crate::dump_wkt;
 use crate::graph::Graph;
 use crate::transition::*;
 
@@ -93,6 +94,7 @@ where
 
         // Generate the layers and candidates.
         let (layers, candidates) = generator.with_points(&points);
+        dump_wkt!("positions.wkt", layers.geometry(&candidates.lookup));
 
         Transition {
             map,

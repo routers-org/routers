@@ -1,12 +1,13 @@
 use crate::transition::*;
 use crate::{Graph, Scan};
 
-use geo::{Distance, Haversine, Point};
+use geo::{Distance, Haversine, MultiPoint, Point};
 use itertools::Itertools;
 use measure_time::debug_time;
 use rayon::iter::{IndexedParallelIterator, ParallelIterator};
 use rayon::prelude::{FromParallelIterator, IntoParallelIterator};
 use routers_codec::{Entry, Metadata};
+use scc::HashMap;
 
 #[derive(Default)]
 pub struct Layers {
@@ -20,6 +21,16 @@ impl Layers {
 
     pub fn first(&self) -> Option<&Layer> {
         self.layers.first()
+    }
+
+    pub fn geometry<E: Entry>(
+        &self,
+        lookup: &HashMap<CandidateId, Candidate<E>>,
+    ) -> MultiPoint<f64> {
+        self.layers
+            .iter()
+            .flat_map(|layer| layer.geometry(lookup).0)
+            .collect::<MultiPoint<_>>()
     }
 }
 
