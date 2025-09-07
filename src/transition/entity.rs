@@ -2,6 +2,8 @@ use crate::dump_wkt;
 use crate::graph::Graph;
 use crate::transition::*;
 
+use crate::definition::Layers;
+use crate::generation::LayerGeneration;
 use geo::LineString;
 use routers_codec::Metadata;
 use routers_codec::primitive::Entry;
@@ -61,7 +63,7 @@ where
     Transition: TransitionStrategy<E, M>,
 {
     pub(crate) map: &'a Graph<E, M>,
-    pub(crate) heuristics: CostingStrategies<Emission, Transition, E, M>,
+    pub(crate) heuristics: &'a CostingStrategies<Emission, Transition, E, M>,
 
     pub(crate) candidates: Candidates<E>,
     pub(crate) layers: Layers,
@@ -87,13 +89,14 @@ where
     pub fn new(
         map: &'a Graph<E, M>,
         linestring: LineString,
-        heuristics: CostingStrategies<Emmis, Trans, E, M>,
+        heuristics: &'a CostingStrategies<Emmis, Trans, E, M>,
+        generator: impl LayerGeneration<E>,
     ) -> Transition<'a, Emmis, Trans, E, M> {
         let points = linestring.into_points();
-        let generator = LayerGenerator::new(map, &heuristics);
 
         // Generate the layers and candidates.
-        let (layers, candidates) = generator.with_points(&points);
+        let (layers, candidates) = generator.generate(&points);
+
         dump_wkt!("positions.wkt", layers.geometry(&candidates.lookup));
 
         Transition {

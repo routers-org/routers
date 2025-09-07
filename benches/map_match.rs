@@ -12,6 +12,7 @@ use routers_codec::{Entry, Metadata};
 
 use criterion::{black_box, criterion_main};
 use geo::LineString;
+use routers::generation::{LayerGeneration, StandardGenerator};
 use std::path::Path;
 use wkt::TryFromWkt;
 
@@ -71,7 +72,7 @@ fn target_benchmark(c: &mut criterion::Criterion) {
             .to_ascii_lowercase();
         let graph = Graph::new(path).expect("Graph must be created");
 
-        let costing = CostingStrategies::default();
+        let costing = DefaultEmissionCost::default();
         let runtime = OsmEdgeMetadata::default_runtime();
 
         ga.matches.iter().for_each(|sc| {
@@ -87,10 +88,10 @@ fn target_benchmark(c: &mut criterion::Criterion) {
 
             group.bench_function(format!("layer-gen: {}", sc.name), |b| {
                 let points = coordinates.clone().into_points();
-                let generator = LayerGenerator::new(&graph, &costing);
 
                 b.iter(|| {
-                    let (layers, _) = generator.with_points(&points);
+                    let generator = StandardGenerator::new(&graph, &costing);
+                    let (layers, _) = generator.generate(&points);
                     assert_eq!(layers.layers.len(), points.len())
                 })
             });

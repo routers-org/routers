@@ -2,6 +2,7 @@ use crate::transition::*;
 
 use crate::EndAttachError::{EndsAlreadyAttached, LayerMissing, WriteLockFailed};
 use crate::LockedGraph;
+use crate::definition::{Layer, Layers};
 use pathfinding::num_traits::{ConstZero, Zero};
 use petgraph::algo::astar;
 use petgraph::graph::EdgeReference;

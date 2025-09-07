@@ -1,47 +1,12 @@
+use crate::definition::{Layer, Layers};
+use crate::generation::LayerGeneration;
 use crate::transition::*;
 use crate::{Graph, Scan};
-use std::collections::HashMap;
-
-use geo::{Distance, Haversine, MultiPoint, Point};
+use geo::{Distance, Haversine, Point};
 use itertools::Itertools;
-use rayon::iter::{IndexedParallelIterator, ParallelBridge, ParallelIterator};
-use rayon::prelude::{FromParallelIterator, IntoParallelIterator};
+use rayon::prelude::*;
 use routers_codec::{Entry, Metadata};
-
-#[derive(Default)]
-pub struct Layers {
-    pub layers: Vec<Layer>,
-}
-
-impl Layers {
-    pub fn last(&self) -> Option<&Layer> {
-        self.layers.last()
-    }
-
-    pub fn first(&self) -> Option<&Layer> {
-        self.layers.first()
-    }
-
-    pub fn geometry<E: Entry>(
-        &self,
-        lookup: &scc::HashMap<CandidateId, Candidate<E>>,
-    ) -> MultiPoint<f64> {
-        self.layers
-            .iter()
-            .flat_map(|layer| layer.geometry(lookup).0)
-            .collect::<MultiPoint<_>>()
-    }
-}
-
-impl FromParallelIterator<Layer> for Layers {
-    fn from_par_iter<I>(layers: I) -> Self
-    where
-        I: IntoParallelIterator<Item = Layer>,
-    {
-        let layers = layers.into_par_iter().collect::<Vec<Layer>>();
-        Self { layers }
-    }
-}
+use std::collections::HashMap;
 
 const DEFAULT_SEARCH_DISTANCE: f64 = 50.0; // 50m
 
@@ -52,12 +17,12 @@ const DEFAULT_SEARCH_DISTANCE: f64 = 50.0; // 50m
 /// represents a candidate transition point, within the `distance`
 /// search radius of the linestring point, which was found by the
 /// projection of the linestring point upon the closest edges within this radius.
-pub struct LayerGenerator<'a, Emmis, Trans, E, M>
+#[derive(Copy, Clone)]
+pub struct StandardGenerator<'a, E, M, Emmis>
 where
-    M: Metadata,
     E: Entry,
-    Emmis: EmissionStrategy,
-    Trans: TransitionStrategy<E, M>,
+    M: Metadata,
+    Emmis: EmissionStrategy + Send + Sync,
 {
     /// The maximum distance by which the generator will search for nodes,
     /// allowing it to find edges which may be comprised of distant nodes.
@@ -67,11 +32,11 @@ where
     /// radial-boundary.
     pub search_distance: f64,
 
-    /// The costing heuristics required to generate the layers.
+    /// The emission heuristics required to generate the layers.
     ///
     /// This is required as a caching technique since the costs for a candidate
     /// need only be calculated once.
-    pub heuristics: &'a CostingStrategies<Emmis, Trans, E, M>,
+    pub emission: &'a Emmis,
 
     /// The routing map used to pull candidates from, and provide layout context.
     map: &'a Graph<E, M>,
@@ -97,22 +62,17 @@ struct PartialLayerGeneration<E: Entry> {
     layers: HashMap<usize, Layer>,
 }
 
-impl<'a, Emmis, Trans, E, M> LayerGenerator<'a, Emmis, Trans, E, M>
+impl<'a, E, M, Emmis> StandardGenerator<'a, E, M, Emmis>
 where
     E: Entry,
     M: Metadata,
     Emmis: EmissionStrategy + Send + Sync,
-    Trans: TransitionStrategy<E, M> + Send + Sync,
 {
-    /// Creates a [`LayerGenerator`] from a map and costing heuristics.
-    pub fn new(
-        map: &'a Graph<E, M>,
-        heuristics: &'a CostingStrategies<Emmis, Trans, E, M>,
-    ) -> Self {
-        LayerGenerator {
+    /// Creates a [`StandardGenerator`] from a map and costing heuristics.
+    pub fn new(map: &'a Graph<E, M>, emission: &'a Emmis) -> Self {
+        StandardGenerator {
             map,
-            heuristics,
-
+            emission,
             search_distance: DEFAULT_SEARCH_DISTANCE,
         }
     }
@@ -138,8 +98,8 @@ where
                 // Therefore, we can use the Emission costing function to calculate
                 // the associated emission cost of this candidate.
                 let emission = self
-                    .heuristics
-                    .emission(EmissionContext::new(&position, origin, distance));
+                    .emission
+                    .cost(EmissionContext::new(&position, origin, distance));
 
                 let candidate = Candidate::new(edge.thin(), position, emission, location);
                 let candidate_reference = CandidateRef::new(emission);
@@ -181,10 +141,27 @@ where
 
         layer
     }
+}
 
-    /// Utilises the configured search and filter distances to produce
-    /// the candidates and layers required to match the initial input.
-    pub fn with_points(&self, input: &[Point]) -> (Layers, Candidates<E>) {
+fn hashmap_to_vec<T>(map: HashMap<usize, T>) -> Vec<T> {
+    map.into_iter()
+        .sorted_by_key(|(i, _)| *i)
+        .map(|(_, v)| v)
+        .collect()
+}
+
+#[derive(Debug, Default)]
+pub struct Config {
+    search_distance: Option<f64>,
+}
+
+impl<Emmis, E, M> LayerGeneration<E> for StandardGenerator<'_, E, M, Emmis>
+where
+    E: Entry,
+    M: Metadata,
+    Emmis: EmissionStrategy + Send + Sync,
+{
+    fn generate(self, input: &[Point]) -> (Layers, Candidates<E>) {
         let fold_binding = |layer, candidate| {
             Self::prepare_candidate(layer, &candidate, &input[candidate.layer_id])
         };
@@ -207,11 +184,4 @@ where
 
         (Layers { layers }, candidates)
     }
-}
-
-fn hashmap_to_vec<T>(map: HashMap<usize, T>) -> Vec<T> {
-    map.into_iter()
-        .sorted_by_key(|(i, _)| *i)
-        .map(|(_, v)| v)
-        .collect()
 }
