@@ -6,7 +6,7 @@ use pathfinding::num_traits::{ConstZero, Zero};
 use petgraph::algo::astar;
 use petgraph::graph::EdgeReference;
 use petgraph::prelude::EdgeRef;
-use petgraph::{Directed, Direction, Graph};
+use petgraph::{Direction, Graph};
 use routers_codec::Entry;
 use scc::HashMap;
 use std::fmt::Debug;

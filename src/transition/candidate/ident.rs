@@ -4,6 +4,7 @@ use petgraph::graph::NodeIndex;
 /// candidate graph, [`Candidates`].
 pub type CandidateId = NodeIndex;
 
+#[derive(Copy, Clone)]
 pub struct CandidateRef {
     /// Emission cost of the candidate
     weight: Option<u32>,
