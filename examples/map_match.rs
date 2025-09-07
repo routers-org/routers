@@ -20,7 +20,7 @@ fn main() {
         .expect("Match must complete successfully");
 
     let linestring = route
-        .discretized
+        .interpolated
         .iter()
         .map(|v| v.point)
         .collect::<LineString<_>>();
