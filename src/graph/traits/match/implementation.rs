@@ -21,12 +21,11 @@ where
         info!("Finding matched route for {} positions", linestring.0.len());
 
         let costing = CostingStrategies::default();
-        let generator = StandardGenerator::new(self, &costing.emission);
+        let generator = StandardGenerator::new(self, &costing.emission, opts.search_distance);
 
         // Create our hidden markov model solver
-        let transition = Transition::new(self, linestring, costing);
-        let solver = opts.solver.instance(self.cache.clone());
         let transition = Transition::new(self, linestring, &costing, generator);
+        let solver = opts.solver.instance(self.cache.clone());
 
         transition
             .solve(solver, &opts.runtime)

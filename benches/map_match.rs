@@ -49,7 +49,7 @@ const MATCH_CASES: [GraphArea; 2] = [
     },
 ];
 
-fn assert_subsequence<T: Debug>(a: &[i64], b: &[i64], meta: T) {
+fn assert_subsequence<T: Debug>(a: &[i64], b: &[i64], _meta: T) {
     let mut a_iter = a.iter();
 
     for b_item in b {
@@ -90,7 +90,8 @@ fn target_benchmark(c: &mut criterion::Criterion) {
                 let points = coordinates.clone().into_points();
 
                 b.iter(|| {
-                    let generator = StandardGenerator::new(&graph, &costing);
+                    let generator =
+                        StandardGenerator::new(&graph, &costing, DEFAULT_SEARCH_DISTANCE);
                     let (layers, _) = generator.generate(&points);
                     assert_eq!(layers.layers.len(), points.len())
                 })

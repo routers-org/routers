@@ -8,8 +8,6 @@ use rayon::prelude::*;
 use routers_codec::{Entry, Metadata};
 use std::collections::HashMap;
 
-const DEFAULT_SEARCH_DISTANCE: f64 = 50.0; // 50m
-
 /// Generates the layers within the transition graph.
 ///
 /// Generates the layers of the transition graph, where each layer
@@ -68,12 +66,12 @@ where
     M: Metadata,
     Emmis: EmissionStrategy + Send + Sync,
 {
-    /// Creates a [`StandardGenerator`] from a map and costing heuristics.
-    pub fn new(map: &'a Graph<E, M>, emission: &'a Emmis) -> Self {
+    /// Creates a [`StandardGenerator`] from a map and emission heuristic.
+    pub fn new(map: &'a Graph<E, M>, emission: &'a Emmis, search_distance: f64) -> Self {
         StandardGenerator {
             map,
             emission,
-            search_distance: DEFAULT_SEARCH_DISTANCE,
+            search_distance,
         }
     }
 
@@ -148,11 +146,6 @@ fn hashmap_to_vec<T>(map: HashMap<usize, T>) -> Vec<T> {
         .sorted_by_key(|(i, _)| *i)
         .map(|(_, v)| v)
         .collect()
-}
-
-#[derive(Debug, Default)]
-pub struct Config {
-    search_distance: Option<f64>,
 }
 
 impl<Emmis, E, M> LayerGeneration<E> for StandardGenerator<'_, E, M, Emmis>
