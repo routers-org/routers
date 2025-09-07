@@ -37,7 +37,8 @@ where
         E: 'a,
     {
         let bounding_box = square_box(point, distance);
-        self.index_edge().locate_in_envelope(&bounding_box)
+        self.index_edge()
+            .locate_in_envelope_intersecting(&bounding_box)
     }
 
     #[cfg_attr(feature = "tracing", tracing::instrument(level = Level::INFO, skip(self)))]
