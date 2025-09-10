@@ -10,7 +10,7 @@ message MatchRequest {
   repeated model.v1.Coordinate data = 1;
 
   // The distance (in m) used to search for the closest edges, using a square scan.
-  // The default value is 50 meters.
+  // The default value is 250 meters.
   optional double search_distance = 2;
 
   // The maximum distance (in m) between coordinates before a new route is started.
@@ -29,7 +29,7 @@ message SnapRequest {
   repeated model.v1.Coordinate data = 1;
 
   // The distance (in m) used to search for the closest edges, using a square scan.
-  // The default value is 50 meters.
+  // The default value is 250 meters.
   optional double search_distance = 2;
 
   // The maximum distance (in m) between coordinates before a new route is started.

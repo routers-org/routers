@@ -4,7 +4,7 @@ use crate::transition::{MatchError, RoutedPath};
 use geo::LineString;
 use routers_codec::{Entry, Metadata};
 
-pub const DEFAULT_SEARCH_DISTANCE: f64 = 50.0; // 50m
+pub const DEFAULT_SEARCH_DISTANCE: f64 = 250.0; // 250m
 
 pub struct MatchOptions<M: Metadata> {
     /// The distance the solver will use to search for candidates
