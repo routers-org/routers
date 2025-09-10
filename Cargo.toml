@@ -38,12 +38,12 @@ itertools = "0.14.0"
 indexmap = "2.9.0"
 
 # Logging
-log = { version = "0.4.27" }
-test-log = { version = "0.2.17", features = ["log"] }
+log = { version = "0.4.28" }
+test-log = { version = "0.2.18", features = ["log"] }
 
 # Server/Paralellism
 dotenv = { package = "dotenvy", version = "0.15.7" }
-tower-http = { version = "0.6.4", features = ["cors"] }
+tower-http = { version = "0.6.6", features = ["cors"] }
 tokio = { version = "1.47.1", features = [
     "rt",
     "rt-multi-thread",
@@ -58,7 +58,7 @@ rstar = { version = "0.12.2", features = ["serde"] }
 
 # Tracing
 tracing = { version = "0.1.41" }
-tracing-subscriber = { version = "0.3.19", features = [
+tracing-subscriber = { version = "0.3.20", features = [
     "tracing-log",
     "fmt",
     "env-filter",
@@ -72,7 +72,7 @@ opentelemetry-otlp = { version = "0.29.0", features = ["tls", "grpc-tonic", "tra
 opentelemetry-stdout = { version = "0.29.0", features = ["trace", "logs", "metrics"] }
 
 # Benchmarking
-criterion = { version = "3.0.1", features = [
+criterion = { version = "3.0.5", features = [
     "async_tokio",
 ], package = "codspeed-criterion-compat" }
 
@@ -84,12 +84,12 @@ bytes = { version = "1.10.1", features = ["default"] }
 prost = "0.14.1"
 prost-types = "0.14.1"
 prost-build = "0.14.1"
-tonic-prost-build = "0.14.1"
-tonic-prost = "0.14.1"
-tonic-build = "0.14.1"
-tonic-reflection = "0.14.1"
-tonic-web = "0.14.1"
-tonic = "0.14.1"
+tonic-prost-build = "0.14.2"
+tonic-prost = "0.14.2"
+tonic-build = "0.14.2"
+tonic-reflection = "0.14.2"
+tonic-web = "0.14.2"
+tonic = "0.14.2"
 
 # === Profiles ===
 [profile.release]
