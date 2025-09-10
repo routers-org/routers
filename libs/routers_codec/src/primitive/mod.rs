@@ -28,7 +28,7 @@ pub trait Metadata: Clone + Debug + Send + Sync {
     where
         Self: 'a;
 
-    type Runtime: Debug + Send + Sync;
+    type Runtime: Clone + Debug + Send + Sync;
     type TripContext;
 
     fn pick(raw: Self::Raw<'_>) -> Self;

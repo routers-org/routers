@@ -189,7 +189,7 @@ impl From<CostOptions> for Option<TripContext> {
 
 impl From<Option<CostOptions>> for OptimiseFor {
     fn from(value: Option<CostOptions>) -> Self {
-        OptimiseFor::try_from(value.unwrap_or_default().optimise_for).unwrap_or_default()
+        value.unwrap_or_default().optimise_for()
     }
 }
 
@@ -204,7 +204,7 @@ impl From<OptimiseFor> for SolverVariant {
 }
 
 impl SnapRequest {
-    pub fn trip_context<M: Metadata>(self) -> Option<M::TripContext>
+    pub fn trip_context<M: Metadata>(&self) -> Option<M::TripContext>
     where
         Option<M::TripContext>: From<CostOptions>,
     {
@@ -213,7 +213,7 @@ impl SnapRequest {
 }
 
 impl MatchRequest {
-    pub fn trip_context<M: Metadata>(self) -> Option<M::TripContext>
+    pub fn trip_context<M: Metadata>(&self) -> Option<M::TripContext>
     where
         Option<M::TripContext>: From<CostOptions>,
     {

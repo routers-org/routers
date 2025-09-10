@@ -7,7 +7,7 @@ use crate::definition::r#match::*;
 use crate::definition::model::*;
 
 use crate::services::RouteService;
-use routers::{Match, Path, RoutedPath};
+use routers::{Match, MatchOptions, Path, RoutedPath};
 use routers_codec::{Entry, Metadata};
 #[cfg(feature = "telemetry")]
 use tracing::Level;
@@ -85,9 +85,14 @@ where
         let solver = OptimiseFor::from(message.options);
         let runtime = M::runtime(message.trip_context::<M>());
 
+        let opts = MatchOptions::new()
+            .with_runtime(runtime.clone())
+            .with_solver(solver)
+            .with_search_distance(message.search_distance);
+
         let result = self
             .graph
-            .r#match(&runtime, solver, coordinates)
+            .r#match(coordinates, opts)
             .map_err(|e| e.to_string())
             .map_err(Status::internal)?;
 
@@ -108,9 +113,14 @@ where
         let solver = OptimiseFor::from(message.options);
         let runtime = M::runtime(message.trip_context::<M>());
 
+        let opts = MatchOptions::new()
+            .with_runtime(runtime.clone())
+            .with_solver(solver)
+            .with_search_distance(message.search_distance);
+
         let result = self
             .graph
-            .snap(&runtime, solver, coordinates)
+            .snap(coordinates, opts)
             .map_err(|e| e.to_string())
             .map_err(Status::internal)?;
 
