@@ -1,6 +1,6 @@
-use crate::Graph;
 use crate::Match;
 use crate::transition::*;
+use crate::{Graph, MatchOptions};
 
 use geo::LineString;
 use log::info;
@@ -14,30 +14,27 @@ where
     #[cfg_attr(feature = "tracing", tracing::instrument(skip_all, level = Level::INFO))]
     fn r#match(
         &self,
-        runtime: &M::Runtime,
-        solver: impl Into<SolverVariant>,
         linestring: LineString,
+        opts: MatchOptions<M>,
     ) -> Result<RoutedPath<E, M>, MatchError> {
         info!("Finding matched route for {} positions", linestring.0.len());
+
         let costing = CostingStrategies::default();
 
         // Create our hidden markov model solver
         let transition = Transition::new(self, linestring, costing);
-
-        let solver_variant: SolverVariant = solver.into();
-        let solver = solver_variant.instance(self.cache.clone());
+        let solver = opts.solver.instance(self.cache.clone());
 
         transition
-            .solve(solver, runtime)
+            .solve(solver, &opts.runtime)
             .map(|collapsed| RoutedPath::new(collapsed, self))
     }
 
     #[cfg_attr(feature = "tracing", tracing::instrument(skip_all, level = Level::INFO))]
     fn snap(
         &self,
-        _runtime: &M::Runtime,
-        _solver: impl Into<SolverVariant>,
         _linestring: LineString,
+        _opts: MatchOptions<M>,
     ) -> Result<RoutedPath<E, M>, MatchError> {
         unimplemented!()
     }
