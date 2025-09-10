@@ -1,7 +1,6 @@
 syntax = "proto3";
 package api.match.v1;
 
-import "google/protobuf/timestamp.proto";
 import "model/v1/costing.proto";
 import "model/v1/geo.proto";
 import "model/v1/route.proto";
@@ -9,18 +8,16 @@ import "model/v1/route.proto";
 message MatchRequest {
   // A list of coordinates to match
   repeated model.v1.Coordinate data = 1;
-  // A list of timestamps to match, each timestamp corresponds to a coordinate. Lengths are expected to be equal.
-  repeated google.protobuf.Timestamp timestamps = 2;
 
   // The distance (in m) used to search for the closest edges, using a square scan.
-  // The default value is 20 meters.
-  optional double search_distance = 3;
+  // The default value is 50 meters.
+  optional double search_distance = 2;
 
   // The maximum distance (in m) between coordinates before a new route is started.
-  optional double breakage_distance = 4;
+  optional double breakage_distance = 3;
 
   // Configurable options to dictate the costing functions
-  model.v1.CostOptions options = 5;
+  model.v1.CostOptions options = 4;
 }
 
 message MatchResponse {
@@ -30,18 +27,16 @@ message MatchResponse {
 message SnapRequest {
   // A list of coordinates to match
   repeated model.v1.Coordinate data = 1;
-  // A list of timestamps to match, each timestamp corresponds to a coordinate. Lengths are expected to be equal.
-  repeated google.protobuf.Timestamp timestamps = 2;
 
   // The distance (in m) used to search for the closest edges, using a square scan.
-  // The default value is 20 meters.
-  optional double search_distance = 3;
+  // The default value is 50 meters.
+  optional double search_distance = 2;
 
   // The maximum distance (in m) between coordinates before a new route is started.
-  optional double breakage_distance = 4;
+  optional double breakage_distance = 3;
 
   // Configurable options to dictate the costing functions
-  model.v1.CostOptions options = 5;
+  model.v1.CostOptions options = 4;
 }
 
 message SnapResponse {
