@@ -189,8 +189,8 @@ pub mod costing {
         Emmis: EmissionStrategy,
         Trans: TransitionStrategy<E, M>,
     {
-        emission: Emmis,
-        transition: Trans,
+        pub emission: Emmis,
+        pub transition: Trans,
 
         _phantom: std::marker::PhantomData<E>,
         _phantom2: std::marker::PhantomData<M>,

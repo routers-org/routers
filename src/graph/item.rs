@@ -6,12 +6,16 @@ use petgraph::prelude::DiGraphMap;
 use rstar::RTree;
 use rustc_hash::{FxHashMap, FxHasher};
 
+use petgraph::Directed;
 use std::fmt::{Debug, Formatter};
 use std::hash::BuildHasherDefault;
+use std::sync::{Arc, RwLock};
 #[cfg(feature = "tracing")]
 use tracing::Level;
 
 pub type Weight = u32;
+
+pub type LockedGraph<A, B> = Arc<RwLock<petgraph::Graph<A, B, Directed>>>;
 
 pub type GraphStructure<E> =
     DiGraphMap<E, (Weight, DirectionAwareEdgeId<E>), BuildHasherDefault<FxHasher>>;

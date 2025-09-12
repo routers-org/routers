@@ -22,11 +22,8 @@ where
     where
         E: 'a,
     {
-        let bottom_right = Geodesic.destination(*point, 135.0, distance);
-        let top_left = Geodesic.destination(*point, 315.0, distance);
-
-        let bbox = AABB::from_corners(top_left, bottom_right);
-        self.index().locate_in_envelope(&bbox)
+        let bounding_box = square_box(point, distance);
+        self.index().locate_in_envelope(&bounding_box)
     }
 
     #[cfg_attr(feature = "tracing", tracing::instrument(level = Level::INFO, skip(self)))]
@@ -39,11 +36,9 @@ where
     where
         E: 'a,
     {
-        let bottom_right = Geodesic.destination(*point, 135.0, distance);
-        let top_left = Geodesic.destination(*point, 315.0, distance);
-
-        let bbox = AABB::from_corners(top_left, bottom_right);
-        self.index_edge().locate_in_envelope(&bbox)
+        let bounding_box = square_box(point, distance);
+        self.index_edge()
+            .locate_in_envelope_intersecting(&bounding_box)
     }
 
     #[cfg_attr(feature = "tracing", tracing::instrument(level = Level::INFO, skip(self)))]
@@ -77,4 +72,11 @@ where
                 .map(|point| (point, edge))
         })
     }
+}
+
+fn square_box(point: &Point, square_radius: f64) -> AABB<Point> {
+    let bottom_right = Geodesic.destination(*point, 135.0, square_radius);
+    let top_left = Geodesic.destination(*point, 315.0, square_radius);
+
+    AABB::from_corners(top_left, bottom_right)
 }
