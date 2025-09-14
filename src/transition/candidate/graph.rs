@@ -1,17 +1,20 @@
 use crate::transition::*;
 
 use crate::EndAttachError::{EndsAlreadyAttached, LayerMissing, WriteLockFailed};
+use crate::LockedGraph;
+use crate::definition::{Layer, Layers};
 use pathfinding::num_traits::{ConstZero, Zero};
 use petgraph::algo::astar;
 use petgraph::graph::EdgeReference;
 use petgraph::prelude::EdgeRef;
-use petgraph::{Directed, Direction, Graph};
+use petgraph::{Direction, Graph};
 use routers_codec::Entry;
 use scc::HashMap;
 use std::fmt::Debug;
 use std::sync::{Arc, RwLock};
 
-type LockedGraph<A, B> = Arc<RwLock<Graph<A, B, Directed>>>;
+pub type OpenCandidateGraph = Graph<CandidateRef, CandidateEdge>;
+pub type LockedCandidateGraph = LockedGraph<CandidateRef, CandidateEdge>;
 
 pub struct Candidates<E>
 where
@@ -22,7 +25,7 @@ where
     ///
     /// The associated node information in the graph can be
     /// used to look up the candidate from the flyweight.
-    pub(crate) graph: LockedGraph<CandidateRef, CandidateEdge>,
+    pub(crate) graph: LockedCandidateGraph,
 
     /// Candidate flyweight
     pub(crate) lookup: HashMap<CandidateId, Candidate<E>>,
@@ -47,6 +50,14 @@ impl<E> Candidates<E>
 where
     E: Entry,
 {
+    pub fn new(graph: OpenCandidateGraph, lookup: HashMap<CandidateId, Candidate<E>>) -> Self {
+        Self {
+            graph: Arc::new(RwLock::new(graph)),
+            lookup,
+            ..Self::default()
+        }
+    }
+
     /// Returns all the candidates within the following layer to the supplied candidate.
     /// Such as observed in the following diagram, given the candidate exists within
     /// layer `N`, all candidates in layer `N+1`, to which it is connected, will be returned.

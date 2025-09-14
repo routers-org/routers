@@ -142,6 +142,7 @@ log = { workspace = true }
 
 # GeoRust
 geo = { workspace = true }
+wkt = { workspace = true }
 
 # Tracing [Optional-"tracing"]
 tracing = { workspace = true, optional = true }

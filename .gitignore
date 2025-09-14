@@ -2,7 +2,10 @@
 .DS_Store
 /.idea
 .env
+
+# Fixtures
 *.wkt
+*.geojson
 
 todo.md
 

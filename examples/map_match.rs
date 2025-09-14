@@ -19,5 +19,11 @@ fn main() {
         .r#match_simple(coordinates)
         .expect("Match must complete successfully");
 
-    println!("Matched Route: {route:?}");
+    let linestring = route
+        .interpolated
+        .iter()
+        .map(|v| v.point)
+        .collect::<LineString<_>>();
+
+    println!("Matched Route: {:?}", linestring);
 }
