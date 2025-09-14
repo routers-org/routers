@@ -97,7 +97,10 @@ where
         // Generate the layers and candidates.
         let (layers, candidates) = generator.generate(&points);
 
-        dump_wkt!("positions.wkt", layers.geometry(&candidates.lookup));
+        dump_wkt!(
+            "geometry:positions.wkt",
+            layers.geometry(&candidates.lookup)
+        );
 
         Transition {
             map,
