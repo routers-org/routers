@@ -75,6 +75,7 @@ opentelemetry-stdout = { version = "0.29.0", features = ["trace", "logs", "metri
 criterion = { version = "3.0.5", features = [
     "async_tokio",
 ], package = "codspeed-criterion-compat" }
+insta = "1.43.2"
 
 # Utilities
 strum = { version = "0.27.1", features = ["phf", "derive"] }
@@ -161,6 +162,7 @@ thiserror = "2.0.12"
 
 [dev-dependencies]
 wkt = { workspace = true }
+insta = { workspace = true }
 criterion = { workspace = true }
 routers_fixtures = { workspace = true }
 
