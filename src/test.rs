@@ -1,55 +1,30 @@
-fn assert_subsequence(a: &[i64], b: &[i64]) {
-    let mut a_iter = a.iter();
+use geo::LineString;
+use routers_fixtures::fixture;
+use std::path::Path;
+use wkt::TryFromWkt;
 
-    for b_item in b {
-        if !a_iter.any(|a_item| a_item == b_item) {
-            panic!(
-                "b is not a subsequence of a: element {b_item} not found in remaining portion of a",
-            );
-        }
-    }
-}
+use crate::{Graph, MatchSimpleExt, impls::osm::OsmGraph};
 
-#[test]
-#[cfg(not(all()))]
-fn it_matches() {
-    use routers_fixtures::{LAX_LYNWOOD_MATCHED, LAX_LYNWOOD_TRIP, LOS_ANGELES, fixture};
-
-    use crate::{Graph, Match, PrecomputeForwardSolver};
-    use geo::LineString;
-    use routers_codec::Metadata;
-    use routers_codec::osm::OsmEdgeMetadata;
-    use std::path::Path;
-    use wkt::TryFromWkt;
-
-    let source = LOS_ANGELES;
-    let input_linestring = LAX_LYNWOOD_TRIP;
-    let expected_linestring = LAX_LYNWOOD_MATCHED;
-
+fn setup(source: &str, linestring: &str) -> (OsmGraph, LineString<f64>) {
     let path = Path::new(fixture!(source)).as_os_str().to_ascii_lowercase();
     let graph = Graph::new(path).expect("Graph must be created");
 
-    let runtime = OsmEdgeMetadata::default_runtime();
-
     // Yield the transition layers of each level
     // & Collapse the layers into a final vector
-    let solver = PrecomputeForwardSolver::default();
-    let coordinates: LineString<f64> = LineString::try_from_wkt_str(input_linestring)
-        .expect("Linestring must parse successfully.");
+    let coordinates: LineString<f64> =
+        LineString::try_from_wkt_str(linestring).expect("Linestring must parse successfully.");
+
+    (graph, coordinates)
+}
+
+#[test]
+fn lax_lynwood() {
+    use routers_fixtures::{LAX_LYNWOOD_TRIP, LOS_ANGELES};
+    let (graph, coordinates) = setup(LOS_ANGELES, LAX_LYNWOOD_TRIP);
 
     let result = graph
-        .r#match(
-            &runtime,
-            solver.use_cache(graph.cache.clone()),
-            coordinates.clone(),
-        )
+        .match_simple(coordinates)
         .expect("Match must complete successfully");
 
-    let edges = result
-        .interpolated
-        .iter()
-        .map(|element| element.edge.id().identifier)
-        .collect::<Vec<_>>();
-
-    assert_subsequence(expected_linestring, &edges);
+    insta::assert_debug_snapshot!(result);
 }
