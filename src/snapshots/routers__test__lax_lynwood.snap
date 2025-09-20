@@ -6,13 +6,13 @@ RoutedPath {
     discretized: Path {
         elements: [
             PathElement {
-                point: POINT(-118.39284730000013 33.95027469999995),
+                point: POINT(-118.39299299999985 33.95027540000022),
                 edge: FatEdge {
                     source: Node {
                         id: OsmEntryId {
-                            identifier: 9244445783,
+                            identifier: 8452114441,
                         },
-                        position: POINT(-118.39284730000013 33.95027469999995),
+                        position: POINT(-118.39318699999984 33.95027640000022),
                     },
                     target: Node {
                         id: OsmEntryId {
@@ -25,7 +25,7 @@ RoutedPath {
                         id: OsmEntryId {
                             identifier: 1033816941,
                         },
-                        direction: Outgoing,
+                        direction: Incoming,
                     },
                 },
                 metadata: OsmEdgeMetadata {
