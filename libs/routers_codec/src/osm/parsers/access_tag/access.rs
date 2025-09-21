@@ -4,7 +4,20 @@ use crate::osm::{Parser, TagString, Tags};
 use strum::{AsRefStr, Display, EnumIter, EnumString};
 
 /// Top-level access restrictions that apply to all transport modes
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Display, EnumString, EnumIter, AsRefStr)]
+#[derive(
+    Debug,
+    Ord,
+    PartialOrd,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    Display,
+    EnumString,
+    EnumIter,
+    AsRefStr,
+)]
 #[strum(serialize_all = "snake_case")]
 pub enum AccessValue {
     /// Public access, legal right of way

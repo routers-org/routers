@@ -18,9 +18,9 @@ fn setup(source: &str, linestring: &str) -> (OsmGraph, LineString<f64>) {
 }
 
 #[test]
-fn lax_lynwood() {
-    use routers_fixtures::{LAX_LYNWOOD_TRIP, LOS_ANGELES};
-    let (graph, coordinates) = setup(LOS_ANGELES, LAX_LYNWOOD_TRIP);
+fn ventura() {
+    use routers_fixtures::{LOS_ANGELES, VENTURA_TRIP};
+    let (graph, coordinates) = setup(LOS_ANGELES, VENTURA_TRIP);
 
     let result = graph
         .match_simple(coordinates)
