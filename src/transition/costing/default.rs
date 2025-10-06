@@ -64,9 +64,9 @@ pub mod emission {
 }
 
 pub mod transition {
+    use crate::Graph;
     use crate::transition::*;
     use routers_codec::{Entry, Metadata};
-    use crate::Graph;
 
     /// Calculates the transition cost between two candidates.
     ///
@@ -133,17 +133,15 @@ pub mod transition {
         #[inline]
         fn calculate(&self, context: TransitionContext<'a, E, M>) -> Option<Self::Cost> {
             // Values in range [0, 1] (1=Low Cost, 0=High Cost)
-            let distinct_cost = Self::travel_cost::<E, M>(context.map_path, context.routing_context.map);
+            let distinct_cost =
+                Self::travel_cost::<E, M>(context.map_path, context.routing_context.map);
             let turn_cost = Self::turn_cost::<E>(&context.optimal_path);
             let deviance_cost = Self::deviance_cost::<E, M>(&context)?;
 
             // Value in range [0, 1] (1=Low Cost, 0=High Cost)
             //  Weighted: 60% Turn Difficulty, 30% Edge Distinction, 10% Distance Deviance
             //      Note: Weights must sum to 100%
-            let avg_cost = 0.
-                + (0.6 * turn_cost)
-                + (0.3 * distinct_cost)
-                + (0.1 * deviance_cost);
+            let avg_cost = 0. + (0.6 * turn_cost) + (0.3 * distinct_cost) + (0.1 * deviance_cost);
 
             // Take the inverse to "span" values
             Some(avg_cost.recip())
@@ -151,16 +149,14 @@ pub mod transition {
     }
 
     impl DefaultTransitionCost {
-        pub(super) fn deviance_cost<E: Entry, M: Metadata>(context: &TransitionContext<E, M>) -> Option<f64> {
-            context
-                .lengths()
-                .map(|v| v.deviance())
+        pub(super) fn deviance_cost<E: Entry, M: Metadata>(
+            context: &TransitionContext<E, M>,
+        ) -> Option<f64> {
+            context.lengths().map(|v| v.deviance())
         }
 
         pub(super) fn turn_cost<E: Entry>(optimal_path: &Trip<E>) -> f64 {
-            optimal_path
-                .angular_complexity()
-                .clamp(0.0, 1.0)
+            optimal_path.angular_complexity().clamp(0.0, 1.0)
         }
 
         pub(crate) fn travel_cost<E: Entry, M: Metadata>(path: &[E], map: &Graph<E, M>) -> f64 {
@@ -190,10 +186,11 @@ pub mod transition {
 
     #[cfg(test)]
     mod test {
-        use approx::assert_relative_eq;
-        use routers_codec::osm::OsmEntryId;
-        use routers_fixtures::{fixture, LOS_ANGELES};
         use super::*;
+        use approx::assert_relative_eq;
+        use geo::{Distance, Haversine};
+        use routers_codec::osm::OsmEntryId;
+        use routers_fixtures::{LOS_ANGELES, fixture};
 
         const REMAIN_ON_HIGHWAY: [OsmEntryId; 18] = [
             OsmEntryId::node(1233732718),
@@ -266,8 +263,6 @@ pub mod transition {
 
         #[test]
         fn assert_highway_better_than_offramp_turn_cost() {
-            const DISTANCE: f64 = 550.; // 550m layer width
-
             let path = std::path::Path::new(fixture!(LOS_ANGELES))
                 .as_os_str()
                 .to_ascii_lowercase();
@@ -282,6 +277,48 @@ pub mod transition {
 
             // 1=No Cost, 0=Inf Cost : We want it to be "cheaper" (higher) to remain, than get off.
             assert!(remain_cost > off_cost);
+        }
+
+        #[test]
+        fn assert_deviance() {
+            let path = std::path::Path::new(fixture!(LOS_ANGELES))
+                .as_os_str()
+                .to_ascii_lowercase();
+
+            let map = Graph::new(path).expect("must initialise");
+
+            let lengths = |values: &[OsmEntryId]| {
+                let start = map
+                    .get_position(values.first().expect("must contain a start point"))
+                    .expect("must resolve to a location");
+
+                let end = map
+                    .get_position(values.last().expect("must contain an end point"))
+                    .expect("must resolve to a location");
+
+                let straightline_distance = Haversine.distance(start, end);
+                let route = Trip::new_with_map(&map, values);
+
+                TransitionLengths {
+                    straightline_distance,
+                    route_length: route.length(),
+                }
+            };
+
+            let remain = lengths(&REMAIN_ON_HIGHWAY);
+            let offramp = lengths(&TAKE_OFFRAMP);
+
+            eprintln!("Remain={:?}", remain);
+            eprintln!("Offramp={:?}", offramp);
+
+            let remain_deviance = remain.deviance();
+            let offramp_deviance = offramp.deviance();
+
+            // We want the remain-on-highway to have a lower deviance than the offramp.
+            assert!(remain_deviance > offramp_deviance);
+
+            assert_relative_eq!(remain_deviance, 0.998, epsilon = 1e-2f64);
+            assert_relative_eq!(offramp_deviance, 0.965, epsilon = 1e-2f64);
         }
     }
 }
