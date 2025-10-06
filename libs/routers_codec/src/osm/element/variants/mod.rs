@@ -50,7 +50,7 @@ pub mod common {
     pub struct OsmEntryId {
         pub identifier: i64,
         #[cfg(debug_assertions)]
-        variant: MemberType,
+        pub variant: MemberType,
     }
 
     impl Entry for OsmEntryId {
