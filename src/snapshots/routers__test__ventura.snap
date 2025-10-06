@@ -6,31 +6,31 @@ RoutedPath {
     discretized: Path {
         elements: [
             PathElement {
-                point: POINT(-118.14946189999965 34.15197130000032),
+                point: POINT(-118.14936669968543 34.151972653225116),
                 edge: FatEdge {
                     source: Node {
+                        id: OsmEntryId {
+                            identifier: 279672843,
+                        },
+                        position: POINT(-118.14661750000019 34.152011700000024),
+                    },
+                    target: Node {
                         id: OsmEntryId {
                             identifier: 1377536883,
                         },
                         position: POINT(-118.14946189999965 34.15197130000032),
                     },
-                    target: Node {
-                        id: OsmEntryId {
-                            identifier: 279669970,
-                        },
-                        position: POINT(-118.1498036000002 34.1519484),
-                    },
                     weight: 1,
                     id: DirectionAwareEdgeId {
                         id: OsmEntryId {
-                            identifier: 123570148,
+                            identifier: 156460301,
                         },
                         direction: Outgoing,
                     },
                 },
                 metadata: OsmEdgeMetadata {
                     lane_count: Some(
-                        5,
+                        6,
                     ),
                     speed_limit: Some(
                         SpeedLimitCollection(
@@ -4555,19 +4555,19 @@ RoutedPath {
                 },
             },
             PathElement {
-                point: POINT(-118.44042371953205 34.1555966409448),
+                point: POINT(-118.44039609999987 34.15560130000005),
                 edge: FatEdge {
                     source: Node {
+                        id: OsmEntryId {
+                            identifier: 3786108825,
+                        },
+                        position: POINT(-118.44002289999987 34.15566130000005),
+                    },
+                    target: Node {
                         id: OsmEntryId {
                             identifier: 3786108823,
                         },
                         position: POINT(-118.44039609999987 34.15560130000005),
-                    },
-                    target: Node {
-                        id: OsmEntryId {
-                            identifier: 35362996,
-                        },
-                        position: POINT(-118.44163029999996 34.15539309999985),
                     },
                     weight: 1,
                     id: DirectionAwareEdgeId {
@@ -10391,19 +10391,19 @@ RoutedPath {
                 },
             },
             PathElement {
-                point: POINT(-118.79216070752992 34.14628041160255),
+                point: POINT(-118.79211530000016 34.146278099999904),
                 edge: FatEdge {
                     source: Node {
+                        id: OsmEntryId {
+                            identifier: 6336921060,
+                        },
+                        position: POINT(-118.79135140000014 34.146277099999956),
+                    },
+                    target: Node {
                         id: OsmEntryId {
                             identifier: 1713328605,
                         },
                         position: POINT(-118.79211530000016 34.146278099999904),
-                    },
-                    target: Node {
-                        id: OsmEntryId {
-                            identifier: 1713328770,
-                        },
-                        position: POINT(-118.79336670000013 34.14634179999991),
                     },
                     weight: 1,
                     id: DirectionAwareEdgeId {
@@ -12524,6 +12524,95 @@ RoutedPath {
     },
     interpolated: Path {
         elements: [
+            PathElement {
+                point: POINT(-118.14946189999965 34.15197130000032),
+                edge: FatEdge {
+                    source: Node {
+                        id: OsmEntryId {
+                            identifier: 1377536883,
+                        },
+                        position: POINT(-118.14946189999965 34.15197130000032),
+                    },
+                    target: Node {
+                        id: OsmEntryId {
+                            identifier: 279669970,
+                        },
+                        position: POINT(-118.1498036000002 34.1519484),
+                    },
+                    weight: 1,
+                    id: DirectionAwareEdgeId {
+                        id: OsmEntryId {
+                            identifier: 123570148,
+                        },
+                        direction: Outgoing,
+                    },
+                },
+                metadata: OsmEdgeMetadata {
+                    lane_count: Some(
+                        5,
+                    ),
+                    speed_limit: Some(
+                        SpeedLimitCollection(
+                            [
+                                SpeedLimitEntry {
+                                    restriction: RestrictionOptionals {
+                                        transport_mode: None,
+                                        directionality: None,
+                                    },
+                                    limit: Blanket(
+                                        PossiblyConditionalSpeedLimit {
+                                            speed: Mph(
+                                                55,
+                                            ),
+                                            condition: None,
+                                        },
+                                    ),
+                                },
+                                SpeedLimitEntry {
+                                    restriction: RestrictionOptionals {
+                                        transport_mode: None,
+                                        directionality: None,
+                                    },
+                                    limit: Blanket(
+                                        PossiblyConditionalSpeedLimit {
+                                            speed: Mph(
+                                                65,
+                                            ),
+                                            condition: None,
+                                        },
+                                    ),
+                                },
+                            ],
+                        ),
+                    ),
+                    access: [
+                        AccessTag {
+                            restriction: Restriction {
+                                transport_mode: Hgv,
+                                directionality: BothWays,
+                            },
+                            access: Yes,
+                        },
+                        AccessTag {
+                            restriction: Restriction {
+                                transport_mode: Bicycle,
+                                directionality: BothWays,
+                            },
+                            access: No,
+                        },
+                        AccessTag {
+                            restriction: Restriction {
+                                transport_mode: Hgv,
+                                directionality: BothWays,
+                            },
+                            access: Designated,
+                        },
+                    ],
+                    road_class: Some(
+                        Motorway,
+                    ),
+                },
+            },
             PathElement {
                 point: POINT(-118.1498036000002 34.1519484),
                 edge: FatEdge {
@@ -47532,19 +47621,19 @@ RoutedPath {
                 },
             },
             PathElement {
-                point: POINT(-118.44002289999987 34.15566130000005),
+                point: POINT(-118.44039609999987 34.15560130000005),
                 edge: FatEdge {
                     source: Node {
-                        id: OsmEntryId {
-                            identifier: 3786108825,
-                        },
-                        position: POINT(-118.44002289999987 34.15566130000005),
-                    },
-                    target: Node {
                         id: OsmEntryId {
                             identifier: 3786108823,
                         },
                         position: POINT(-118.44039609999987 34.15560130000005),
+                    },
+                    target: Node {
+                        id: OsmEntryId {
+                            identifier: 35362996,
+                        },
+                        position: POINT(-118.44163029999996 34.15539309999985),
                     },
                     weight: 1,
                     id: DirectionAwareEdgeId {
@@ -80739,19 +80828,19 @@ RoutedPath {
                 },
             },
             PathElement {
-                point: POINT(-118.79135140000014 34.146277099999956),
+                point: POINT(-118.79211530000016 34.146278099999904),
                 edge: FatEdge {
                     source: Node {
-                        id: OsmEntryId {
-                            identifier: 6336921060,
-                        },
-                        position: POINT(-118.79135140000014 34.146277099999956),
-                    },
-                    target: Node {
                         id: OsmEntryId {
                             identifier: 1713328605,
                         },
                         position: POINT(-118.79211530000016 34.146278099999904),
+                    },
+                    target: Node {
+                        id: OsmEntryId {
+                            identifier: 1713328770,
+                        },
+                        position: POINT(-118.79336670000013 34.14634179999991),
                     },
                     weight: 1,
                     id: DirectionAwareEdgeId {

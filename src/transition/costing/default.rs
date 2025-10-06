@@ -53,7 +53,7 @@ pub mod emission {
     impl<'a> Strategy<EmissionContext<'a>> for DefaultEmissionCost {
         type Cost = f64;
 
-        const ZETA: f64 = 0.5;
+        const ZETA: f64 = 1.;
         const BETA: f64 = -10.0; // TODO: Maybe allow dynamic parameters based on the GPS drift-?
 
         #[inline(always)]
@@ -66,6 +66,7 @@ pub mod emission {
 pub mod transition {
     use crate::transition::*;
     use routers_codec::{Entry, Metadata};
+    use crate::Graph;
 
     /// Calculates the transition cost between two candidates.
     ///
@@ -127,51 +128,160 @@ pub mod transition {
         type Cost = f64;
 
         const ZETA: f64 = 1.0;
-        const BETA: f64 = -1.0;
+        const BETA: f64 = -10.0;
 
         #[inline]
         fn calculate(&self, context: TransitionContext<'a, E, M>) -> Option<Self::Cost> {
-            // Find the transition lengths (shortest path, trip length)
-            let lengths = context.lengths()?;
+            // Values in range [0, 1] (1=Low Cost, 0=High Cost)
+            let distinct_cost = Self::travel_cost::<E, M>(context.map_path, context.routing_context.map);
+            let turn_cost = Self::turn_cost::<E>(&context.optimal_path);
+            let deviance_cost = Self::deviance_cost::<E, M>(&context)?;
 
             // Value in range [0, 1] (1=Low Cost, 0=High Cost)
-            let deviance = lengths.deviance();
+            //  Weighted: 60% Turn Difficulty, 30% Edge Distinction, 10% Distance Deviance
+            //      Note: Weights must sum to 100%
+            let avg_cost = 0.
+                + (0.6 * turn_cost)
+                + (0.3 * distinct_cost)
+                + (0.1 * deviance_cost);
 
+            // Take the inverse to "span" values
+            Some(avg_cost.recip())
+        }
+    }
+
+    impl DefaultTransitionCost {
+        pub(super) fn deviance_cost<E: Entry, M: Metadata>(context: &TransitionContext<E, M>) -> Option<f64> {
+            context
+                .lengths()
+                .map(|v| v.deviance())
+        }
+
+        pub(super) fn turn_cost<E: Entry>(optimal_path: &Trip<E>) -> f64 {
+            optimal_path
+                .angular_complexity()
+                .clamp(0.0, 1.0)
+        }
+
+        pub(crate) fn travel_cost<E: Entry, M: Metadata>(path: &[E], map: &Graph<E, M>) -> f64 {
             // We calculate by weight, not by distinction of edges since this
             // would not uphold the invariants we intend. For example, that would
             // penalise the use of slip-roads which contain different WayIDs, despite
             // being the more-optimal path to take.
             let avg_weight = {
-                let weights = context
-                    .map_path
+                let weights = path
                     .windows(2)
                     .filter_map(|node| match node {
-                        [a, b] if a.identifier() == b.identifier() => None,
-                        [a, b] => context.routing_context.edge(a, b),
+                        [a, b] => map.edge(a, b),
                         _ => None,
                     })
-                    .map(|Edge { weight, .. }| weight as f64)
+                    .map(|Edge { weight, .. }| {
+                        return weight as f64;
+                    })
                     .collect::<Vec<_>>();
 
                 weights.iter().sum::<f64>() / weights.len() as f64
             };
 
             // Value in range [0, 1] (1=Low Cost, 0=High Cost)
-            let distinct_cost = (1.0 / avg_weight).powi(2).clamp(0.0, 1.0);
+            (1.0 / avg_weight).powi(2).clamp(0.0, 1.0)
+        }
+    }
 
-            // Value in range [0, 1] (1=Low Cost, 0=High Cost)
-            let turn_cost = context
-                .optimal_path
-                .angular_complexity(context.layer_width)
-                .clamp(0.0, 1.0);
+    #[cfg(test)]
+    mod test {
+        use approx::assert_relative_eq;
+        use routers_codec::osm::OsmEntryId;
+        use routers_fixtures::{fixture, LOS_ANGELES};
+        use super::*;
 
-            // Value in range [0, 1] (1=Low Cost, 0=High Cost)
-            //  Weighted: 30% Edge Distinction, 30% Turn Difficulty, 30% Distance Deviance
-            //      Note: Weights must sum to 100%
-            let avg_cost = (0.3 * distinct_cost) + (0.3 * turn_cost) + (0.3 * deviance);
+        const REMAIN_ON_HIGHWAY: [OsmEntryId; 18] = [
+            OsmEntryId::node(1233732718),
+            OsmEntryId::node(359024313),
+            OsmEntryId::node(529607857),
+            OsmEntryId::node(7662616751),
+            OsmEntryId::node(7663077001),
+            OsmEntryId::node(359024315),
+            OsmEntryId::node(7663077030),
+            OsmEntryId::node(7662616710),
+            OsmEntryId::node(7663077017),
+            OsmEntryId::node(529607860),
+            OsmEntryId::node(7663077004),
+            OsmEntryId::node(529607863),
+            OsmEntryId::node(7663077033),
+            OsmEntryId::node(7662616705),
+            OsmEntryId::node(7663077020),
+            OsmEntryId::node(7662616741),
+            OsmEntryId::node(7663077007),
+            OsmEntryId::node(529607866),
+        ];
 
-            // Take the inverse to "span" values
-            Some(avg_cost.recip())
+        const TAKE_OFFRAMP: [OsmEntryId; 27] = [
+            OsmEntryId::node(1233732718),
+            OsmEntryId::node(6543305229),
+            OsmEntryId::node(7664051912),
+            OsmEntryId::node(1233732754),
+            OsmEntryId::node(1233732753),
+            OsmEntryId::node(1233732752),
+            OsmEntryId::node(1233732749),
+            OsmEntryId::node(1233732746),
+            OsmEntryId::node(11502558958),
+            OsmEntryId::node(1233732744),
+            OsmEntryId::node(1233732739),
+            OsmEntryId::node(12191918571),
+            OsmEntryId::node(12191918570),
+            OsmEntryId::node(19668244),
+            OsmEntryId::node(529607908),
+            OsmEntryId::node(529607910),
+            OsmEntryId::node(529607911),
+            OsmEntryId::node(529607912),
+            OsmEntryId::node(529607913),
+            OsmEntryId::node(529607914),
+            OsmEntryId::node(529607915),
+            OsmEntryId::node(7663981871),
+            OsmEntryId::node(529607916),
+            OsmEntryId::node(529607917),
+            OsmEntryId::node(6543305223),
+            OsmEntryId::node(529607919),
+            OsmEntryId::node(529607866),
+        ];
+
+        #[test]
+        fn assert_highway_better_than_offramp_travel_cost() {
+            let path = std::path::Path::new(fixture!(LOS_ANGELES))
+                .as_os_str()
+                .to_ascii_lowercase();
+
+            let map = Graph::new(path).expect("must initialise");
+
+            let remain_cost = DefaultTransitionCost::travel_cost(&REMAIN_ON_HIGHWAY, &map);
+            let off_cost = DefaultTransitionCost::travel_cost(&TAKE_OFFRAMP, &map);
+
+            // 1=No Cost, 0=Inf Cost : We want it to be "cheaper" (higher) to remain, than get off.
+            assert!(remain_cost > off_cost);
+
+            assert_relative_eq!(remain_cost, 1.0);
+            assert_relative_eq!(off_cost, 0.25);
+        }
+
+        #[test]
+        fn assert_highway_better_than_offramp_turn_cost() {
+            const DISTANCE: f64 = 550.; // 550m layer width
+
+            let path = std::path::Path::new(fixture!(LOS_ANGELES))
+                .as_os_str()
+                .to_ascii_lowercase();
+
+            let map = Graph::new(path).expect("must initialise");
+
+            let remain = Trip::new_with_map(&map, &REMAIN_ON_HIGHWAY);
+            let off = Trip::new_with_map(&map, &TAKE_OFFRAMP);
+
+            let remain_cost = DefaultTransitionCost::turn_cost(&remain);
+            let off_cost = DefaultTransitionCost::turn_cost(&off);
+
+            // 1=No Cost, 0=Inf Cost : We want it to be "cheaper" (higher) to remain, than get off.
+            assert!(remain_cost > off_cost);
         }
     }
 }
