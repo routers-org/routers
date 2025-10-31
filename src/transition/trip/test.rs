@@ -1,7 +1,7 @@
 use crate::transition::Trip;
 use routers_codec::osm::OsmEntryId;
 
-use approx::{assert_relative_eq};
+use approx::assert_relative_eq;
 use geo::wkt;
 use routers_codec::primitive::Node;
 
