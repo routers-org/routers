@@ -7,7 +7,7 @@ pub type CandidateId = NodeIndex;
 #[derive(Copy, Clone)]
 pub struct CandidateRef {
     /// Emission cost of the candidate
-    weight: Option<u32>,
+    weight: Option<f64>,
 }
 
 impl CandidateRef {
@@ -21,7 +21,7 @@ impl CandidateRef {
 
     /// Creates a standard candidate reference, which contains the
     /// nodes weighting (Derived from the Emission cost).
-    pub fn new(weight: u32) -> Self {
+    pub fn new(weight: f64) -> Self {
         Self {
             weight: Some(weight),
         }
@@ -32,7 +32,7 @@ impl CandidateRef {
         self.weight.is_none()
     }
 
-    pub fn weight(&self) -> u32 {
+    pub fn weight(&self) -> f64 {
         self.weight.unwrap_or_default()
     }
 }

@@ -57,6 +57,8 @@ pub mod model {
 }
 
 pub mod meta {
+    use serde::Serialize;
+
     use crate::osm::access_tag::AccessTag;
     use crate::osm::access_tag::access::AccessValue;
     use crate::osm::element::{TagString, Tags};
@@ -69,7 +71,7 @@ pub mod meta {
 
     use std::num::NonZeroU8;
 
-    #[derive(Debug, Clone, Default)]
+    #[derive(Debug, Clone, Default, Serialize)]
     pub struct OsmEdgeMetadata {
         pub lane_count: Option<NonZeroU8>,
         pub speed_limit: Option<SpeedLimitCollection>,

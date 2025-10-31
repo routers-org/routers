@@ -8,6 +8,7 @@ use routers_codec::primitive::Node;
 use routers_codec::primitive::edge::Direction;
 use routers_codec::{Entry, Metadata};
 use rstar::AABB;
+use serde::Serialize;
 use std::cmp::Ordering;
 use std::fmt::Debug;
 use std::ops::Add;
@@ -17,7 +18,7 @@ use std::ops::Add;
 /// Since the transition graph is a directed graph, it does not support bidirectional edges.
 /// Meaning, any edge which is bidirectional must therefore be converted into two edges, each
 /// with a different direction.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 // TODO: Restructure, Rename or Revisit (Confusing)
 pub struct DirectionAwareEdgeId<E>
 where
@@ -156,7 +157,7 @@ where
 ///
 /// As it is large, this should only be used transitively
 /// like in [`Scan::nearest_edges`](crate::route::Scan::nearest_edges).
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct FatEdge<E>
 where
     E: Entry,
@@ -224,7 +225,7 @@ where
     /// Refers to the points within the map graph (Underlying routing structure)
     pub edge: Edge<E>,
     pub position: Point,
-    pub emission: u32,
+    pub emission: f64,
 
     pub location: CandidateLocation,
 }
@@ -298,7 +299,7 @@ where
         }
     }
 
-    pub fn new(edge: Edge<E>, position: Point, emission: u32, location: CandidateLocation) -> Self {
+    pub fn new(edge: Edge<E>, position: Point, emission: f64, location: CandidateLocation) -> Self {
         Self {
             edge,
             position,
@@ -318,7 +319,7 @@ where
 #[derive(Clone, Copy, Debug, Default)]
 #[repr(transparent)]
 pub struct CandidateEdge {
-    pub weight: u32,
+    pub weight: f64,
 }
 
 impl Eq for CandidateEdge {}
@@ -337,7 +338,7 @@ impl PartialOrd<Self> for CandidateEdge {
 
 impl Ord for CandidateEdge {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.weight.cmp(&other.weight)
+        self.weight.total_cmp(&other.weight)
     }
 }
 
@@ -357,14 +358,14 @@ impl Add<Self> for CandidateEdge {
     #[inline]
     fn add(self, rhs: Self) -> Self::Output {
         CandidateEdge {
-            weight: self.weight.saturating_add(rhs.weight),
+            weight: self.weight.add(rhs.weight),
         }
     }
 }
 
 impl CandidateEdge {
     #[inline]
-    pub fn new(weight: u32) -> Self {
+    pub fn new(weight: f64) -> Self {
         Self { weight }
     }
 }

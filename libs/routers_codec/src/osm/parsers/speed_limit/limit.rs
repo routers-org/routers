@@ -1,3 +1,5 @@
+use serde::Serialize;
+
 use crate::osm::element::TagString;
 use crate::osm::primitives::*;
 use crate::osm::speed_limit::restriction::{Restriction, RestrictionOptionals};
@@ -11,7 +13,7 @@ use crate::osm::speed_limit::subtypes;
 /// This represents the individual `number <unit> @ (...)` value.
 /// This may be spread across a lane representation in the SpeedLimit
 /// structure.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize)]
 pub struct PossiblyConditionalSpeedLimit {
     /// Represents the speed limit on a singular lane.
     ///
@@ -83,7 +85,7 @@ impl PossiblyConditionalSpeedLimit {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize)]
 pub struct PerLaneSpeedLimit(pub Vec<Option<PossiblyConditionalSpeedLimit>>);
 
 impl PerLaneSpeedLimit {
@@ -95,7 +97,7 @@ impl PerLaneSpeedLimit {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize)]
 pub enum SpeedLimitVariant {
     /// Applies to every lane within the way, and is
     /// therefore non-dependent on lanes.
@@ -108,7 +110,7 @@ pub enum SpeedLimitVariant {
     PerLane(PerLaneSpeedLimit),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize)]
 pub struct SpeedLimitEntry {
     pub restriction: RestrictionOptionals,
     pub limit: SpeedLimitVariant,
