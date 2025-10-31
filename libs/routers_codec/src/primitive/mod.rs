@@ -9,6 +9,8 @@ pub use edge::Direction;
 pub use edge::Edge;
 pub use node::Node;
 
+use serde::Serialize;
+
 pub mod context {
     use crate::primitive::transport::TransportMode;
 
@@ -18,12 +20,12 @@ pub mod context {
 }
 
 pub trait Entry:
-    Default + Copy + Clone + PartialEq + Eq + Ord + Hash + Debug + Send + Sync
+    Default + Serialize + Copy + Clone + PartialEq + Eq + Ord + Hash + Debug + Send + Sync
 {
     fn identifier(&self) -> i64;
 }
 
-pub trait Metadata: Clone + Debug + Send + Sync {
+pub trait Metadata: Clone + Debug + Serialize + Send + Sync {
     type Raw<'a>
     where
         Self: 'a;

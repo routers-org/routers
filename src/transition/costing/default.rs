@@ -53,12 +53,9 @@ pub mod emission {
     impl<'a> Strategy<EmissionContext<'a>> for DefaultEmissionCost {
         type Cost = f64;
 
-        const ZETA: f64 = 1.;
-        const BETA: f64 = -10.0; // TODO: Maybe allow dynamic parameters based on the GPS drift-?
-
         #[inline(always)]
         fn calculate(&self, context: EmissionContext<'a>) -> Option<Self::Cost> {
-            Some(context.distance.sqrt() * context.distance)
+            Some(DEFAULT_EMISSION_ERROR / context.distance.powi(5))
         }
     }
 }
@@ -127,9 +124,6 @@ pub mod transition {
     {
         type Cost = f64;
 
-        const ZETA: f64 = 1.0;
-        const BETA: f64 = -10.0;
-
         #[inline]
         fn calculate(&self, context: TransitionContext<'a, E, M>) -> Option<Self::Cost> {
             // Values in range [0, 1] (1=Low Cost, 0=High Cost)
@@ -141,10 +135,8 @@ pub mod transition {
             // Value in range [0, 1] (1=Low Cost, 0=High Cost)
             //  Weighted: 60% Turn Difficulty, 30% Edge Distinction, 10% Distance Deviance
             //      Note: Weights must sum to 100%
-            let avg_cost = 0. + (0.6 * turn_cost) + (0.3 * distinct_cost) + (0.1 * deviance_cost);
-
-            // Take the inverse to "span" values
-            Some(avg_cost.recip())
+            let avg_cost = (0.6 * turn_cost) + (0.3 * distinct_cost) + (0.1 * deviance_cost);
+            Some(avg_cost)
         }
     }
 
@@ -280,7 +272,7 @@ pub mod transition {
         }
 
         #[test]
-        fn assert_deviance() {
+        fn assert_highway_better_than_offramp_deviance() {
             let path = std::path::Path::new(fixture!(LOS_ANGELES))
                 .as_os_str()
                 .to_ascii_lowercase();
@@ -379,12 +371,12 @@ pub mod costing {
         Emmis: EmissionStrategy,
     {
         #[inline(always)]
-        fn emission(&self, context: EmissionContext) -> u32 {
+        fn emission(&self, context: EmissionContext) -> f64 {
             self.emission.cost(context)
         }
 
         #[inline(always)]
-        fn transition(&self, context: TransitionContext<E, M>) -> u32 {
+        fn transition(&self, context: TransitionContext<E, M>) -> f64 {
             self.transition.cost(context)
         }
     }

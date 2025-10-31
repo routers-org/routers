@@ -52,7 +52,7 @@ tokio = { version = "1.47.1", features = [
 ] }
 
 # GeoRust
-geo = { version = "0.31.0" }
+geo = { version = "0.31.0", features = ["use-serde"] }
 wkt = { version = "0.14.0" }
 rstar = { version = "0.12.2", features = ["serde"] }
 
@@ -75,13 +75,14 @@ opentelemetry-stdout = { version = "0.29.0", features = ["trace", "logs", "metri
 criterion = { version = "3.0.5", features = [
     "async_tokio",
 ], package = "codspeed-criterion-compat" }
-insta = "1.43.2"
+insta = { version = "1.43.2", features = ["ron"] }
 
 # Utilities
 strum = { version = "0.27.1", features = ["phf", "derive"] }
+serde = { version = "1.0.228", features = [] }
 
 # Schema
-bytes = { version = "1.10.1", features = ["default"] }
+bytes = { version = "1.10.1", features = ["default", "serde"] }
 prost = "0.14.1"
 prost-types = "0.14.1"
 prost-build = "0.14.1"
@@ -131,6 +132,7 @@ rstar = { workspace = true }
 routers_codec = { workspace = true }
 
 petgraph = { version = "0.8.2", features = ["serde-1", "graphmap", "rayon"] }
+serde = { workspace = true }
 
 # Root-Specific Crates
 approx = "0.5.1"

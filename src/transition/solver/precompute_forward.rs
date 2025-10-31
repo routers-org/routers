@@ -1,3 +1,5 @@
+use std::ops::Add;
+
 use crate::transition::*;
 
 use log::{debug, info};
@@ -93,9 +95,9 @@ where
                     optimal_path,
                 });
 
-                let transition = (transition_cost as f64 * 0.6) as u32;
-                let emission = (target.emission as f64 * 0.4) as u32;
-                let cost = emission.saturating_add(transition);
+                let transition = transition_cost * 0.6;
+                let emission = target.emission * 0.4;
+                let cost = emission.add(transition).recip();
 
                 Some((reachable, CandidateEdge::new(cost)))
             })

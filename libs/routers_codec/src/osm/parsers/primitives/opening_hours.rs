@@ -1,10 +1,11 @@
 use either::{Left, Right};
 use itertools::Itertools;
+use serde::Serialize;
 use std::fmt;
 use std::fmt::{Display, Formatter};
 use strum::{Display, EnumString};
 
-#[derive(Debug, Clone, PartialEq, Display, EnumString)]
+#[derive(Debug, Clone, PartialEq, Display, EnumString, Serialize)]
 pub enum Weekday {
     #[strum(serialize = "Mo")]
     Monday,
@@ -37,7 +38,7 @@ impl Weekday {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 pub struct Time {
     pub hour: u8,
     pub minute: u8,
@@ -59,7 +60,7 @@ impl fmt::Display for Time {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct TimeRange {
     pub start: Time,
     pub end: Time,
@@ -77,7 +78,7 @@ pub struct TimeOfWeek {
     weekday: Weekday,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub enum WeekdayRange {
     Single(Weekday),
     Range(Weekday, Weekday),
@@ -104,7 +105,7 @@ impl Display for WeekdayRange {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct OpeningRule {
     pub weekdays: Option<WeekdayRange>,
     pub times: Vec<TimeRange>,
@@ -122,7 +123,7 @@ impl Display for OpeningRule {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct OpeningHours {
     pub rules: Vec<OpeningRule>,
 }

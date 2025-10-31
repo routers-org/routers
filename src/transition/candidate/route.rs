@@ -1,5 +1,6 @@
 use crate::transition::candidate::*;
 use routers_codec::{Entry, Metadata};
+use serde::Serialize;
 use std::ops::Deref;
 
 use crate::Graph;
@@ -7,7 +8,7 @@ use geo::Point;
 
 /// A route representing the parsed output from a function
 /// passed through the transition graph.
-#[derive(Debug)]
+#[derive(Serialize, Debug)]
 pub struct RoutedPath<E, M>
 where
     E: Entry,
@@ -62,7 +63,7 @@ where
 
 /// A representation of a path taken.
 /// Consists of an array of [PathElement]s, containing relevant information for positioning.
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct Path<E, M>
 where
     E: Entry,
@@ -100,7 +101,7 @@ where
 /// element represents within the path, as well as metadata (Meta)
 /// for the path element, and the edge within the source network at
 /// which the element exists.
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct PathElement<E, M>
 where
     E: Entry,

@@ -12,7 +12,7 @@ where
     /// The solved cost of the collapsed route.
     /// This value is not actionable by the consumer but rather indicative of how confident
     /// the system is in the route chosen.
-    pub cost: u32,
+    pub cost: f64,
 
     /// The route as a vector of [`CandidateId`]s.
     /// To obtain the list of [`Candidate`]s, use [`CollapsedPath::matched`]
@@ -34,7 +34,7 @@ where
     E: Entry,
 {
     pub(crate) fn new(
-        cost: u32,
+        cost: f64,
         interpolated: Vec<Reachable<E>>,
         route: Vec<CandidateId>,
         candidates: Candidates<E>,

@@ -1,9 +1,11 @@
 use std::fmt;
 use std::num::NonZeroU16;
 
+use serde::Serialize;
+
 pub type Speed = NonZeroU16;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Serialize)]
 pub enum SpeedValue {
     /// Speed in kilometers per hour
     Kmh(Speed),

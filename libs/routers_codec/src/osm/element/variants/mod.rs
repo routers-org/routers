@@ -8,6 +8,8 @@ pub use relation::*;
 pub use way::*;
 
 pub mod common {
+    use serde::Serialize;
+
     #[cfg(debug_assertions)]
     use crate::osm::relation::MemberType;
 
@@ -43,7 +45,7 @@ pub mod common {
         "road",
     ];
 
-    #[derive(Clone, Copy, Debug, Eq, PartialOrd, Ord)]
+    #[derive(Clone, Copy, Debug, Eq, PartialOrd, Ord, Serialize)]
     #[cfg_attr(not(debug_assertions), repr(transparent))]
     pub struct OsmEntryId {
         pub identifier: i64,

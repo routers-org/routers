@@ -1,3 +1,5 @@
+use serde::Serialize;
+
 use crate::Entry;
 use std::fmt::Debug;
 
@@ -10,7 +12,7 @@ where
     pub target: E,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Ord, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Ord, Eq, Hash, Serialize)]
 #[repr(u8)]
 pub enum Direction {
     Outgoing = 0,
