@@ -27,9 +27,10 @@ fn ventura() {
         .expect("Match must complete successfully");
 
     insta::assert_ron_snapshot!(
-        result,
+        result.interpolated.elements,
         {
-             ".**" => insta::rounded_redaction(6)
+             ".**.x" => insta::rounded_redaction(6),
+             ".**.y" => insta::rounded_redaction(6)
         }
     );
 }

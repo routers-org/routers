@@ -1,4 +1,4 @@
-use geo::{Coord, Distance, Geodesic, Point};
+use geo::{Distance, Geodesic};
 use std::marker::PhantomData;
 use std::sync::Arc;
 use tonic::{Request, Response, Status};
@@ -15,10 +15,6 @@ use tracing::Level;
 struct Util<Ctx>(PhantomData<Ctx>);
 
 impl<Ctx> Util<Ctx> {
-    fn coordinate_from_point(point: Point) -> Coordinate {
-        <geo::Point as Into<Coord>>::into(point).into()
-    }
-
     fn route_from_path<E: Entry, M: Metadata>(input: Path<E, M>, ctx: &Ctx) -> Vec<RouteElement>
     where
         EdgeMetadata: for<'a> From<(&'a M, &'a Ctx)>,
@@ -38,7 +34,7 @@ impl<Ctx> Util<Ctx> {
                     .unwrap();
 
                 RouteElementBuilder::default()
-                    .coordinate(Util::<Ctx>::coordinate_from_point(entry.point))
+                    .coordinate(Coordinate::from(entry.point))
                     .edge(RouteEdge {
                         edge: Some(edge),
                         ..RouteEdge::default()

@@ -4,7 +4,7 @@ use serde::Serialize;
 use std::ops::Deref;
 
 use crate::Graph;
-use geo::Point;
+use geo::Coord;
 
 /// A route representing the parsed output from a function
 /// passed through the transition graph.
@@ -70,7 +70,7 @@ where
     M: Metadata,
 {
     /// The elements which construct the path.
-    elements: Vec<PathElement<E, M>>,
+    pub elements: Vec<PathElement<E, M>>,
 }
 
 impl<E, M> FromIterator<PathElement<E, M>> for Path<E, M>
@@ -107,7 +107,7 @@ where
     E: Entry,
     M: Metadata,
 {
-    pub point: Point,
+    pub point: Coord,
     pub edge: FatEdge<E>,
 
     pub metadata: M,
@@ -120,7 +120,7 @@ where
 {
     pub fn new(candidate: Candidate<E>, graph: &Graph<E, M>) -> Option<Self> {
         Some(PathElement {
-            point: candidate.position,
+            point: candidate.position.0,
             edge: candidate.edge.fatten(graph)?,
             metadata: graph.meta.get(candidate.edge.id())?.clone(),
         })
@@ -128,7 +128,7 @@ where
 
     pub fn from_fat(edge: FatEdge<E>, graph: &Graph<E, M>) -> Option<Self> {
         Some(PathElement {
-            point: edge.source.position,
+            point: edge.source.position.0,
             metadata: graph.meta.get(edge.id())?.clone(),
             edge,
         })

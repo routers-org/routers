@@ -11,7 +11,7 @@ use routers_codec::osm::OsmEdgeMetadata;
 use routers_codec::{Entry, Metadata};
 
 use criterion::{black_box, criterion_main};
-use geo::LineString;
+use geo::{LineString, Point};
 use routers::generation::{LayerGeneration, StandardGenerator};
 use std::path::Path;
 use wkt::TryFromWkt;
@@ -172,7 +172,7 @@ fn bench_match<E: Entry, M: Metadata>(
     let line_string = result
         .interpolated
         .iter()
-        .map(|v| v.point)
+        .map(|v| Point(v.point))
         .collect::<LineString>();
 
     let edges = result
