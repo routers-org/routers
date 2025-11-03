@@ -225,7 +225,7 @@ where
     /// Refers to the points within the map graph (Underlying routing structure)
     pub edge: Edge<E>,
     pub position: Point,
-    pub emission: f64,
+    pub emission: u32,
 
     pub location: CandidateLocation,
 }
@@ -299,7 +299,7 @@ where
         }
     }
 
-    pub fn new(edge: Edge<E>, position: Point, emission: f64, location: CandidateLocation) -> Self {
+    pub fn new(edge: Edge<E>, position: Point, emission: u32, location: CandidateLocation) -> Self {
         Self {
             edge,
             position,
@@ -319,7 +319,7 @@ where
 #[derive(Clone, Copy, Debug, Default)]
 #[repr(transparent)]
 pub struct CandidateEdge {
-    pub weight: f64,
+    pub weight: u32,
 }
 
 impl Eq for CandidateEdge {}
@@ -338,7 +338,7 @@ impl PartialOrd<Self> for CandidateEdge {
 
 impl Ord for CandidateEdge {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.weight.total_cmp(&other.weight)
+        self.weight.cmp(&other.weight)
     }
 }
 
@@ -358,14 +358,14 @@ impl Add<Self> for CandidateEdge {
     #[inline]
     fn add(self, rhs: Self) -> Self::Output {
         CandidateEdge {
-            weight: self.weight.add(rhs.weight),
+            weight: self.weight.saturating_add(rhs.weight),
         }
     }
 }
 
 impl CandidateEdge {
     #[inline]
-    pub fn new(weight: f64) -> Self {
+    pub fn new(weight: u32) -> Self {
         Self { weight }
     }
 }

@@ -164,12 +164,12 @@ where
             // Loosely-Decaying Emission Cost
             let emission_cost = graph
                 .node_weight(e.target())
-                .map_or(f64::ZERO, |v| v.weight());
+                .map_or(u32::MAX, |v| v.weight());
 
             transition_cost + emission_cost
         };
 
-        let zero = |_| f64::ZERO;
+        let zero = |_| u32::ZERO;
 
         let (cost, route) = astar(&*graph, source, |node| node == target, cost_fn, zero)
             .ok_or(CollapseError::NoPathFound)?;
