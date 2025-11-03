@@ -29,7 +29,7 @@ fn ventura() {
     insta::assert_ron_snapshot!(
         result,
         {
-             ".*" => insta::rounded_redaction(6)
+             ".**" => insta::rounded_redaction(6)
         }
     );
 }
