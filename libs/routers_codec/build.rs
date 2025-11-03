@@ -9,6 +9,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     if let Err(e) = cfg
         .protoc_arg("--experimental_allow_proto3_optional")
+        .enum_attribute(".", "#[derive(::serde::Serialize)]")
         .compile_protos(&protos, &includes)
     {
         eprintln!("Failed to build. {e}");

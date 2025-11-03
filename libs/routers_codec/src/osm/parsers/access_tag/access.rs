@@ -1,10 +1,25 @@
 use crate::osm::speed_limit::restriction::Restriction;
 use crate::osm::{Parser, TagString, Tags};
 
+use serde::Serialize;
 use strum::{AsRefStr, Display, EnumIter, EnumString};
 
 /// Top-level access restrictions that apply to all transport modes
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Display, EnumString, EnumIter, AsRefStr)]
+#[derive(
+    Serialize,
+    Debug,
+    Ord,
+    PartialOrd,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    Display,
+    EnumString,
+    EnumIter,
+    AsRefStr,
+)]
 #[strum(serialize_all = "snake_case")]
 pub enum AccessValue {
     /// Public access, legal right of way
@@ -44,7 +59,7 @@ pub enum AccessValue {
 }
 
 /// Physical accessibility restrictions (not legal restrictions)
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Display, EnumString, EnumIter, AsRefStr)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Display, EnumString, EnumIter, AsRefStr, Serialize)]
 #[strum(serialize_all = "snake_case")]
 pub enum PhysicalAccess {
     /// Physical accessibility for wheelchairs
@@ -56,7 +71,7 @@ pub enum PhysicalAccess {
 }
 
 /// Main parser structure for OSM access tags
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 pub struct AccessTag {
     pub restriction: Restriction,
     pub access: AccessValue,

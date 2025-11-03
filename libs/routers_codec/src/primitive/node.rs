@@ -1,5 +1,6 @@
 use geo::{Destination, Distance, Euclidean, Geodesic, Point};
 use rstar::{AABB, Envelope};
+use serde::Serialize;
 use std::fmt::Debug;
 
 use crate::Entry;
@@ -7,7 +8,7 @@ use crate::Entry;
 /// The standardised node primitive containing a generic
 /// identifier which must implement [Entry], and contain
 /// some given [Point].
-#[derive(Debug, Copy, Clone, PartialEq)]
+#[derive(Debug, Copy, Clone, PartialEq, Serialize)]
 pub struct Node<E>
 where
     E: Entry,
