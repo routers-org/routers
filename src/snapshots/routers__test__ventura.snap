@@ -5,6 +5,88 @@ expression: result.interpolated.elements
 [
   PathElement(
     point: Coord(
+      x: -118.149462,
+      y: 34.151971,
+    ),
+    edge: FatEdge(
+      source: Node(
+        id: OsmEntryId(
+          identifier: 1377536883,
+        ),
+        position: Point(Coord(
+          x: -118.149462,
+          y: 34.151971,
+        )),
+      ),
+      target: Node(
+        id: OsmEntryId(
+          identifier: 279669970,
+        ),
+        position: Point(Coord(
+          x: -118.149804,
+          y: 34.151948,
+        )),
+      ),
+      weight: 1,
+      id: DirectionAwareEdgeId(
+        id: OsmEntryId(
+          identifier: 123570148,
+        ),
+        direction: Outgoing,
+      ),
+    ),
+    metadata: OsmEdgeMetadata(
+      lane_count: Some(5),
+      speed_limit: Some(SpeedLimitCollection([
+        SpeedLimitEntry(
+          restriction: RestrictionOptionals(
+            transport_mode: None,
+            directionality: None,
+          ),
+          limit: Blanket(PossiblyConditionalSpeedLimit(
+            speed: Mph(55),
+            condition: None,
+          )),
+        ),
+        SpeedLimitEntry(
+          restriction: RestrictionOptionals(
+            transport_mode: None,
+            directionality: None,
+          ),
+          limit: Blanket(PossiblyConditionalSpeedLimit(
+            speed: Mph(65),
+            condition: None,
+          )),
+        ),
+      ])),
+      access: [
+        AccessTag(
+          restriction: Restriction(
+            transport_mode: Hgv,
+            directionality: BothWays,
+          ),
+          access: Yes,
+        ),
+        AccessTag(
+          restriction: Restriction(
+            transport_mode: Bicycle,
+            directionality: BothWays,
+          ),
+          access: No,
+        ),
+        AccessTag(
+          restriction: Restriction(
+            transport_mode: Hgv,
+            directionality: BothWays,
+          ),
+          access: Designated,
+        ),
+      ],
+      road_class: Some(Motorway),
+    ),
+  ),
+  PathElement(
+    point: Coord(
       x: -118.149804,
       y: 34.151948,
     ),
@@ -33366,26 +33448,26 @@ expression: result.interpolated.elements
   ),
   PathElement(
     point: Coord(
-      x: -118.440023,
-      y: 34.155661,
+      x: -118.440396,
+      y: 34.155601,
     ),
     edge: FatEdge(
       source: Node(
-        id: OsmEntryId(
-          identifier: 3786108825,
-        ),
-        position: Point(Coord(
-          x: -118.440023,
-          y: 34.155661,
-        )),
-      ),
-      target: Node(
         id: OsmEntryId(
           identifier: 3786108823,
         ),
         position: Point(Coord(
           x: -118.440396,
           y: 34.155601,
+        )),
+      ),
+      target: Node(
+        id: OsmEntryId(
+          identifier: 35362996,
+        ),
+        position: Point(Coord(
+          x: -118.44163,
+          y: 34.155393,
         )),
       ),
       weight: 1,
@@ -62645,26 +62727,26 @@ expression: result.interpolated.elements
   ),
   PathElement(
     point: Coord(
-      x: -118.791351,
-      y: 34.146277,
+      x: -118.792115,
+      y: 34.146278,
     ),
     edge: FatEdge(
       source: Node(
-        id: OsmEntryId(
-          identifier: 6336921060,
-        ),
-        position: Point(Coord(
-          x: -118.791351,
-          y: 34.146277,
-        )),
-      ),
-      target: Node(
         id: OsmEntryId(
           identifier: 1713328605,
         ),
         position: Point(Coord(
           x: -118.792115,
           y: 34.146278,
+        )),
+      ),
+      target: Node(
+        id: OsmEntryId(
+          identifier: 1713328770,
+        ),
+        position: Point(Coord(
+          x: -118.793367,
+          y: 34.146342,
         )),
       ),
       weight: 1,
