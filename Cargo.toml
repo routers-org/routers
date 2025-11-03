@@ -75,7 +75,7 @@ opentelemetry-stdout = { version = "0.29.0", features = ["trace", "logs", "metri
 criterion = { version = "3.0.5", features = [
     "async_tokio",
 ], package = "codspeed-criterion-compat" }
-insta = { version = "1.43.2", features = ["ron"] }
+insta = { version = "1.43.2", features = ["ron", "redactions"] }
 
 # Utilities
 strum = { version = "0.27.1", features = ["phf", "derive"] }
