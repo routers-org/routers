@@ -16,9 +16,10 @@ bench = false
 # Schema
 prost = { workspace = true }
 bytes = { workspace = true }
+serde = { workspace = true }
 
 # GeoRust
-geo = { workspace = true }
+geo = { workspace = true, features = ["serde"] }
 rstar = { workspace = true }
 
 rayon = { workspace = true }

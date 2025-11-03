@@ -1,4 +1,4 @@
-use geo::LineString;
+use geo::{LineString, Point};
 use std::path::Path;
 use wkt::TryFromWkt;
 
@@ -22,7 +22,7 @@ fn main() {
     let linestring = route
         .interpolated
         .iter()
-        .map(|v| v.point)
+        .map(|v| Point(v.point))
         .collect::<LineString<_>>();
 
     println!("Matched Route: {:?}", linestring);

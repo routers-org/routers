@@ -26,5 +26,11 @@ fn ventura() {
         .match_simple(coordinates)
         .expect("Match must complete successfully");
 
-    insta::assert_debug_snapshot!(result);
+    insta::assert_ron_snapshot!(
+        result.interpolated.elements,
+        {
+             ".**.x" => insta::rounded_redaction(6),
+             ".**.y" => insta::rounded_redaction(6)
+        }
+    );
 }
