@@ -216,23 +216,66 @@ where
     /// theoretically complex.
     pub fn angular_complexity(&self) -> f64 {
         const U_TURN: f64 = 179.;
-        const DIST_BETWEEN_ZIGZAG: f64 = 100.0; // 100m minimum
-        const ZIG_ZAG: f64 = 180.0;
+        const EPS: f64 = 1e-12;
 
-        // At least 1
-        let num_zig_zags: f64 = (100. / DIST_BETWEEN_ZIGZAG).max(1.);
+        // Tunable hyperparameter. Represents the exponent on cosine costing function.
+        // Represented by:      f(θ) = cos(θ/2)^P
+        // Acceptable Range:    1-8
+        // Costing:             Examples are 2(=0.5), 4(=0.25) at θ=90deg
+        const P: i32 = 4;
+        // Tunable hyperparameter. Represents the "exaggeration factor".
+        const ALPHA: f64 = 12.0;
 
-        let sum = self.total_angle();
-        if self.delta_angle().iter().any(|v| v.abs() >= U_TURN) {
-            // Should not take this path - but does not exclude it incase it's the only option.
+        let angles = self.delta_angle();
+        if angles.is_empty() {
+            return 1.0;
+        }
+
+        // If any near-U turn, cost = 0
+        if angles.iter().any(|&a| a.abs() >= U_TURN) {
             return 0.0;
         }
 
-        // Complete Zig-Zag
-        let theoretical_max = num_zig_zags * ZIG_ZAG;
+        // Compute segment lengths for weighting
+        let seg_lengths: Vec<f64> = self
+            .0
+            .windows(2)
+            .map(|pair| {
+                if let [a, b] = pair {
+                    Haversine.distance(a.position, b.position)
+                } else {
+                    0.0
+                }
+            })
+            .collect();
 
-        // Sqrt used to create "stretch" to optimality.
-        1.0 - (sum / theoretical_max).sqrt().clamp(0.0, 1.0)
+        // For each turn (between segment i and i+1), weight = average of two segments
+        let mut weights = Vec::with_capacity(angles.len());
+        for i in 0..angles.len() {
+            let w = (seg_lengths[i] + seg_lengths[i + 1]) / 2.0;
+            weights.push(w);
+        }
+
+        // Normalize weights
+        let sum_w: f64 = weights.iter().sum();
+        if sum_w <= 0.0 {
+            return 1.0;
+        }
+        for w in &mut weights {
+            *w /= sum_w;
+        }
+
+        let mut log_cost = 0.0;
+        for (&theta, &w) in angles.iter().zip(weights.iter()) {
+            let theta_rad = theta.to_radians();
+            let val = (theta_rad / 2.0).cos().max(0.0).powi(P);
+            log_cost += w * val.ln();
+        }
+
+        let cost = (ALPHA * log_cost).exp();
+
+        // Clamp final result to [0,1].
+        cost.clamp(0.0, 1.0)
     }
 
     /// Returns the length of the trip in meters, calculated
