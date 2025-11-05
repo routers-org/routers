@@ -186,10 +186,22 @@ pub mod transition {
 
     #[cfg(test)]
     mod test {
+        use std::cell::LazyCell;
+
+        use crate::impls::osm::OsmGraph;
+
         use super::*;
         use approx::assert_relative_eq;
         use routers_codec::osm::OsmEntryId;
         use routers_fixtures::{LOS_ANGELES, fixture};
+
+        const MAP: LazyCell<OsmGraph> = LazyCell::new(|| {
+            let path = std::path::Path::new(fixture!(LOS_ANGELES))
+                .as_os_str()
+                .to_ascii_lowercase();
+
+            Graph::new(path).expect("must initialise")
+        });
 
         const REMAIN_ON_HIGHWAY: [OsmEntryId; 18] = [
             OsmEntryId::node(1233732718),
@@ -244,14 +256,8 @@ pub mod transition {
 
         #[test]
         fn assert_highway_better_than_offramp_travel_cost() {
-            let path = std::path::Path::new(fixture!(LOS_ANGELES))
-                .as_os_str()
-                .to_ascii_lowercase();
-
-            let map = Graph::new(path).expect("must initialise");
-
-            let remain_cost = DefaultTransitionCost::travel_cost(&REMAIN_ON_HIGHWAY, &map);
-            let off_cost = DefaultTransitionCost::travel_cost(&TAKE_OFFRAMP, &map);
+            let remain_cost = DefaultTransitionCost::travel_cost(&REMAIN_ON_HIGHWAY, &MAP);
+            let off_cost = DefaultTransitionCost::travel_cost(&TAKE_OFFRAMP, &MAP);
 
             // 1=No Cost, 0=Inf Cost : We want it to be "cheaper" (higher) to remain, than get off.
             assert!(remain_cost > off_cost);
@@ -262,16 +268,8 @@ pub mod transition {
 
         #[test]
         fn assert_highway_better_than_offramp_turn_cost() {
-            const DISTANCE: f64 = 550.; // 550m layer width
-
-            let path = std::path::Path::new(fixture!(LOS_ANGELES))
-                .as_os_str()
-                .to_ascii_lowercase();
-
-            let map = Graph::new(path).expect("must initialise");
-
-            let remain = Trip::new_with_map(&map, &REMAIN_ON_HIGHWAY);
-            let off = Trip::new_with_map(&map, &TAKE_OFFRAMP);
+            let remain = Trip::new_with_map(&MAP, &REMAIN_ON_HIGHWAY);
+            let off = Trip::new_with_map(&MAP, &TAKE_OFFRAMP);
 
             let remain_cost = DefaultTransitionCost::turn_cost(&remain);
             let off_cost = DefaultTransitionCost::turn_cost(&off);
