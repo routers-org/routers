@@ -1,7 +1,5 @@
-[profile.ci]
-slow-timeout = { period = "120s", terminate-after = 5, grace-period = "60s" }
-
 [profile.default]
+slow-timeout = { period = "120s", terminate-after = 5, grace-period = "60s" }
 global-timeout = "30m"
 # Do not cancel the test run on the first failure.
 fail-fast = false
