@@ -1,4 +1,4 @@
-use crate::{DirectionAwareEdgeId, FatEdge, PredicateCache};
+use crate::{DirectionAwareEdgeId, Edge, FatEdge, PredicateCache};
 use routers_codec::primitive::{Entry, Metadata, Node};
 
 use geo::Point;
@@ -84,5 +84,11 @@ where
             .iter()
             .filter_map(|node| self.get_position(node))
             .collect::<Vec<_>>()
+    }
+
+    /// Obtain the [edge](Edge), should it exist, between two [nodes](NodeIx) (specified as ids)
+    pub fn edge(&self, a: &E, b: &E) -> Option<Edge<E>> {
+        let edge = self.graph.edge_weight(*a, *b)?;
+        Some(Edge::from((*a, *b, edge)))
     }
 }
