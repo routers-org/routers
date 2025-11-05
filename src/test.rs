@@ -1,12 +1,13 @@
 use geo::LineString;
 use routers_fixtures::{LOS_ANGELES, fixture};
-use std::cell::LazyCell;
+#[cfg(test)]
+use std::sync::LazyLock;
 use wkt::TryFromWkt;
 
 use crate::{Graph, MatchSimpleExt, impls::osm::OsmGraph};
 
 #[cfg(test)]
-pub const MAP: LazyCell<OsmGraph> = LazyCell::new(|| {
+pub static MAP: LazyLock<OsmGraph> = LazyLock::new(|| {
     let path = std::path::Path::new(fixture!(LOS_ANGELES))
         .as_os_str()
         .to_ascii_lowercase();
