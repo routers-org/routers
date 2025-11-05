@@ -186,22 +186,11 @@ pub mod transition {
 
     #[cfg(test)]
     mod test {
-        use std::cell::LazyCell;
-
-        use crate::impls::osm::OsmGraph;
+        use crate::test::MAP;
 
         use super::*;
         use approx::assert_relative_eq;
         use routers_codec::osm::OsmEntryId;
-        use routers_fixtures::{LOS_ANGELES, fixture};
-
-        const MAP: LazyCell<OsmGraph> = LazyCell::new(|| {
-            let path = std::path::Path::new(fixture!(LOS_ANGELES))
-                .as_os_str()
-                .to_ascii_lowercase();
-
-            Graph::new(path).expect("must initialise")
-        });
 
         const REMAIN_ON_HIGHWAY: [OsmEntryId; 18] = [
             OsmEntryId::node(1233732718),
