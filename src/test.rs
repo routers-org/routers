@@ -25,7 +25,7 @@ fn setup(linestring: &str) -> LineString<f64> {
 }
 
 #[test]
-fn ventura() {
+fn graphing_ventura() {
     use routers_fixtures::VENTURA_TRIP;
     let coordinates = setup(VENTURA_TRIP);
 

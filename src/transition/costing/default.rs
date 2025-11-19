@@ -244,7 +244,7 @@ pub mod transition {
         ];
 
         #[test]
-        fn assert_highway_better_than_offramp_travel_cost() {
+        fn graphing_assert_highway_better_than_offramp_travel_cost() {
             let remain_cost = DefaultTransitionCost::travel_cost(&REMAIN_ON_HIGHWAY, &MAP);
             let off_cost = DefaultTransitionCost::travel_cost(&TAKE_OFFRAMP, &MAP);
 
@@ -256,7 +256,7 @@ pub mod transition {
         }
 
         #[test]
-        fn assert_highway_better_than_offramp_turn_cost() {
+        fn graphing_assert_highway_better_than_offramp_turn_cost() {
             let remain = Trip::new_with_map(&MAP, &REMAIN_ON_HIGHWAY);
             let off = Trip::new_with_map(&MAP, &TAKE_OFFRAMP);
 
