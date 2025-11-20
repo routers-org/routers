@@ -1,3 +1,5 @@
+use std::f64::consts::LN_2;
+
 use crate::transition::candidate::{Candidate, CandidateId};
 use crate::transition::{ResolutionMethod, RoutingContext, Strategy, Trip, VirtualTail};
 use geo::{Distance, Haversine};
@@ -42,6 +44,7 @@ where
     pub requested_resolution_method: ResolutionMethod,
 }
 
+#[derive(Debug)]
 pub struct TransitionLengths {
     /// The great circle distance between source and target
     pub straightline_distance: f64,
@@ -51,6 +54,8 @@ pub struct TransitionLengths {
 }
 
 impl TransitionLengths {
+    /// todo: update me to reflect current content.
+    ///
     /// Calculates the deviance in straightline distance to the length
     /// of the entire route. Returns values between 0 and 1. Where values
     /// closer to 1 represent more optimal distances, whilst those closer
@@ -76,10 +81,10 @@ impl TransitionLengths {
     /// Note that a lower deviance score means the values are less aligned.
     #[inline]
     pub fn deviance(&self) -> f64 {
-        let numer = self.straightline_distance / 4.0;
-        let demon = self.route_length - self.straightline_distance;
+        const HALVING_FACTOR: f64 = LN_2;
 
-        (numer / demon).abs().clamp(0.0, 1.0)
+        let denom = HALVING_FACTOR + (self.route_length / self.straightline_distance).ln();
+        (HALVING_FACTOR / denom).clamp(0.0, 1.0)
     }
 }
 
