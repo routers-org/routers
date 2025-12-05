@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.1] - 2025-12-05
+
+### 🐛 Bug Fixes
+
+- *(lint)* Update to 1.88 clippy lints
+- *(routers)* Update dependencies
+
+RoutersOrg - 2025
+
 ## [0.1.0] - 2025-06-24
 
 ### 🚀 Features
