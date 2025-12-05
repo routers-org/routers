@@ -13,7 +13,6 @@ use rustc_hash::FxHashMap;
 
 use std::error::Error;
 use std::path::PathBuf;
-use std::sync::Mutex;
 use std::time::Instant;
 
 pub type OsmGraph = Graph<OsmEntryId, OsmEdgeMetadata>;
@@ -33,11 +32,16 @@ impl OsmGraph {
 
         info!("Ingesting...");
 
-        let global_graph = Mutex::new(GraphStructure::new());
-        let meta = Mutex::new(FxHashMap::default());
-
-        let (nodes, edges): (Vec<Node<OsmEntryId>>, Vec<Edge<OsmEntryId>>) = reader.par_red(
-            |mut trees: (Vec<Node<OsmEntryId>>, Vec<Edge<OsmEntryId>>),
+        let (nodes, edges, metadata): (
+            Vec<Node<OsmEntryId>>,
+            Vec<Edge<OsmEntryId>>,
+            Vec<(OsmEntryId, OsmEdgeMetadata)>,
+        ) = reader.par_red(
+            |mut trees: (
+                Vec<Node<OsmEntryId>>,
+                Vec<Edge<OsmEntryId>>,
+                Vec<(OsmEntryId, OsmEdgeMetadata)>,
+            ),
              element: ProcessedElement| {
                 match element {
                     ProcessedElement::Way(way) => {
@@ -51,23 +55,20 @@ impl OsmGraph {
                         let weight = metadata.road_class.unwrap().weighting();
 
                         let bidirectional = !way.tags().unidirectional();
-                        let _ = meta.lock().unwrap().insert(way.id(), metadata);
+                        trees.2.push((way.id(), metadata));
 
                         // Update with all adjacent nodes
                         way.refs().windows(2).for_each(|edge| {
                             if let [a, b] = edge {
                                 let direction_aware = DirectionAwareEdgeId::new(way.id());
-                                let mut lock = global_graph.lock().unwrap();
 
                                 let w = (weight, direction_aware.forward());
                                 trees.1.push(Edge::from((a.id, b.id, &w)));
-                                lock.add_edge(a.id, b.id, w);
 
                                 // If way is bidi, add opposite edge with a DirAw backward.
                                 if bidirectional {
                                     let w = (weight, direction_aware.backward());
                                     trees.1.push(Edge::from((b.id, a.id, &w)));
-                                    lock.add_edge(b.id, a.id, w);
                                 }
                             } else {
                                 debug!("Edge windowing produced odd-sized entry: {edge:?}");
@@ -86,15 +87,21 @@ impl OsmGraph {
             |mut a_tree, b_tree| {
                 a_tree.0.extend(b_tree.0);
                 a_tree.1.extend(b_tree.1);
+                a_tree.2.extend(b_tree.2);
                 a_tree
             },
-            || (Vec::new(), Vec::new()),
+            || (Vec::new(), Vec::new(), Vec::new()),
         );
 
-        let graph = global_graph.into_inner().unwrap();
+        let mut graph = GraphStructure::new();
+        for edge in &edges {
+            graph.add_edge(edge.source, edge.target, (edge.weight, edge.id));
+        }
 
         debug!("Graphical ingestion took: {:?}", start_time.elapsed());
         start_time = Instant::now();
+
+        let meta = metadata.into_iter().collect::<FxHashMap<_, _>>();
 
         let mut hash = FxHashMap::default();
         let filtered = {
@@ -140,7 +147,7 @@ impl OsmGraph {
             graph,
             hash,
 
-            meta: meta.into_inner().unwrap(),
+            meta,
 
             index: tree,
             index_edge: tree_edge,

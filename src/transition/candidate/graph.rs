@@ -1,7 +1,6 @@
 use crate::transition::*;
 
-use crate::EndAttachError::{EndsAlreadyAttached, LayerMissing, WriteLockFailed};
-use crate::LockedGraph;
+use crate::EndAttachError::{EndsAlreadyAttached, LayerMissing};
 use crate::definition::{Layer, Layers};
 use pathfinding::num_traits::{ConstZero, Zero};
 use petgraph::algo::astar;
@@ -11,10 +10,9 @@ use petgraph::{Direction, Graph};
 use routers_codec::Entry;
 use scc::HashMap;
 use std::fmt::Debug;
-use std::sync::{Arc, RwLock};
 
 pub type OpenCandidateGraph = Graph<CandidateRef, CandidateEdge>;
-pub type LockedCandidateGraph = LockedGraph<CandidateRef, CandidateEdge>;
+pub type LockedCandidateGraph = OpenCandidateGraph;
 
 pub struct Candidates<E>
 where
@@ -52,7 +50,7 @@ where
 {
     pub fn new(graph: OpenCandidateGraph, lookup: HashMap<CandidateId, Candidate<E>>) -> Self {
         Self {
-            graph: Arc::new(RwLock::new(graph)),
+            graph,
             lookup,
             ..Self::default()
         }
@@ -74,8 +72,6 @@ where
     /// ```
     pub fn next_layer(&self, candidate: &CandidateId) -> Vec<CandidateId> {
         self.graph
-            .read()
-            .unwrap()
             .edges_directed(*candidate, Direction::Outgoing)
             .map(|edge| edge.target())
             .collect()
@@ -89,7 +85,7 @@ where
             return Err(EndsAlreadyAttached);
         }
 
-        let mut graph = self.graph.write().map_err(|_| WriteLockFailed)?;
+        let graph = &mut self.graph;
 
         let source = graph.add_node(CandidateRef::butt());
         let target = graph.add_node(CandidateRef::butt());
@@ -131,7 +127,6 @@ where
                 graph.add_edge(*node, target, CandidateEdge::zero());
             });
 
-        drop(graph);
         let ends = (source, target);
         self.ends = Some(ends);
         Ok(ends)
@@ -152,10 +147,7 @@ where
         // There should be exclusive read-access by the time collapse is called.
         // This will block access to any other client using this candidate structure,
         // however this function
-        let graph = self
-            .graph
-            .read()
-            .map_err(|_| CollapseError::ReadLockFailed)?;
+        let graph = &self.graph;
 
         let cost_fn = |e: EdgeReference<CandidateEdge>| {
             // Decaying Transition Cost
@@ -171,28 +163,24 @@ where
 
         let zero = |_| u32::ZERO;
 
-        let (cost, route) = astar(&*graph, source, |node| node == target, cost_fn, zero)
+        let (cost, route) = astar(graph, source, |node| node == target, cost_fn, zero)
             .ok_or(CollapseError::NoPathFound)?;
 
-        drop(graph);
         Ok(CollapsedPath::new(cost, vec![], route, self))
     }
 
     /// TODO: Provide docs
     pub fn edge(&self, a: &CandidateId, b: &CandidateId) -> Option<CandidateEdge> {
-        let reader = self.graph.read().ok()?;
-
-        let edge_index = reader.find_edge(*a, *b)?;
+        let edge_index = self.graph.find_edge(*a, *b)?;
 
         // TODO: Can we make this operation cheaper? We're cloning vectors internally.
-        reader.edge_weight(edge_index).cloned()
+        self.graph.edge_weight(edge_index).cloned()
     }
 
     // TODO: Docs
     pub fn attach(&mut self, candidate: CandidateId, layer: &Layer) {
-        let mut write_access = self.graph.write().unwrap();
         for node in &layer.nodes {
-            write_access.add_edge(candidate, *node, CandidateEdge::zero());
+            self.graph.add_edge(candidate, *node, CandidateEdge::zero());
         }
     }
 
@@ -216,7 +204,7 @@ where
     E: Entry,
 {
     fn default() -> Self {
-        let graph = Arc::new(RwLock::new(Graph::new()));
+        let graph = Graph::new();
         let lookup = HashMap::default();
 
         Candidates {

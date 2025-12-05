@@ -1,9 +1,10 @@
 use crate::transition::RoutingContext;
 use geo::Distance;
 use routers_codec::{Entry, Metadata};
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxBuildHasher, FxHashMap};
+use scc::HashMap;
 use std::fmt::Debug;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 pub trait CacheKey: Entry {}
 impl<T> CacheKey for T where T: Entry {}
@@ -17,14 +18,14 @@ where
     M: Metadata,
     Meta: Debug,
 {
-    map: FxHashMap<K, Arc<V>>,
-    metadata: Meta,
+    pub(crate) map: HashMap<K, Arc<V>, FxBuildHasher>,
+    pub(crate) metadata: Meta,
 
     _marker: std::marker::PhantomData<M>,
 }
 
 #[derive(Debug)]
-pub struct LockedMap<K, V, M, Meta>(Arc<RwLock<CacheMap<K, V, M, Meta>>>)
+pub struct LockedMap<K, V, M, Meta>(Arc<CacheMap<K, V, M, Meta>>)
 where
     LockedMap<K, V, M, Meta>: Calculable<K, M, V>,
     M: Metadata,
@@ -42,7 +43,7 @@ where
     Meta: Debug,
 {
     fn default() -> Self {
-        LockedMap(Arc::new(RwLock::new(CacheMap::default())))
+        LockedMap(Arc::new(CacheMap::default()))
     }
 }
 
@@ -81,12 +82,12 @@ where
     /// consumes an owned value of the key, [`K`], which is required for the
     /// call to the [`Calculable::calculate`] function.
     pub fn query(&self, ctx: &RoutingContext<K, M>, key: K) -> Arc<V> {
-        if let Some(value) = self.0.read().unwrap().map.get(&key) {
-            return Arc::clone(value);
+        if let Some(value) = self.0.map.get(&key) {
+            return Arc::clone(value.get());
         }
 
         let calculated = Arc::new(self.calculate(ctx, key));
-        self.0.write().unwrap().map.insert(key, calculated.clone());
+        let _ = self.0.map.insert(key, calculated.clone());
 
         Arc::clone(&calculated)
     }
@@ -101,7 +102,7 @@ where
 {
     fn default() -> Self {
         Self {
-            map: FxHashMap::default(),
+            map: HashMap::default(),
             metadata: Meta::default(),
             _marker: std::marker::PhantomData,
         }
@@ -225,11 +226,11 @@ mod predicate {
     impl<E: CacheKey, M: Metadata> Calculable<E, M, Predicates<E>> for PredicateCache<E, M> {
         #[inline]
         fn calculate(&self, ctx: &RoutingContext<E, M>, key: E) -> Predicates<E> {
-            let threshold = self.0.read().unwrap().metadata.threshold_distance;
+            let threshold = self.0.metadata.threshold_distance;
 
             Dijkstra
                 .reach(&key, move |node| {
-                    ArcIter::new(self.0.read().unwrap().metadata.successors.query(ctx, *node))
+                    ArcIter::new(self.0.metadata.successors.query(ctx, *node))
                         .filter(|(_, edge, _)| {
                             // Only traverse paths which can be accessed by
                             // the specific runtime routing conditions available
