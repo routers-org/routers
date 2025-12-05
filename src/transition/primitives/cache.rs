@@ -1,7 +1,7 @@
 use crate::transition::RoutingContext;
 use geo::Distance;
 use routers_codec::{Entry, Metadata};
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxBuildHasher, FxHashMap};
 use scc::HashMap;
 use std::fmt::Debug;
 use std::sync::Arc;
@@ -18,7 +18,7 @@ where
     M: Metadata,
     Meta: Debug,
 {
-    pub(crate) map: HashMap<K, Arc<V>>,
+    pub(crate) map: HashMap<K, Arc<V>, FxBuildHasher>,
     pub(crate) metadata: Meta,
 
     _marker: std::marker::PhantomData<M>,
