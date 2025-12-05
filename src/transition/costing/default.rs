@@ -168,6 +168,7 @@ pub mod transition {
                 let weights = path
                     .windows(2)
                     .filter_map(|node| match node {
+                        [a, b] if a.identifier() == b.identifier() => None,
                         [a, b] => map.edge(a, b),
                         _ => None,
                     })
