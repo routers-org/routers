@@ -1,6 +1,6 @@
+use alloc::sync::Arc;
 use core::marker::PhantomData;
 use geo::{Distance, Geodesic};
-use std::sync::Arc;
 use tonic::{Request, Response, Status};
 
 use crate::definition::r#match::*;

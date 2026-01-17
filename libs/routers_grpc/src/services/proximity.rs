@@ -4,10 +4,10 @@ use crate::services::RouteService;
 
 use routers::Scan;
 
+use alloc::sync::Arc;
 use core::cmp::Ordering;
 use geo::{Distance, Haversine, Point, coord, point};
 use log::{debug, info};
-use std::sync::Arc;
 use tonic::{Request, Response, Status};
 use wkt::ToWkt;
 
