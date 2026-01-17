@@ -14,3 +14,6 @@ geohash = "0.13.1"
 
 [features]
 tile = []
+
+[lints]
+workspace = true
