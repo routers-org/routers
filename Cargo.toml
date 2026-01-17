@@ -9,6 +9,11 @@ members = [
 [workspace.lints.rust]
 unsafe_code = "forbid"
 
+[workspace.lints.clippy]
+std_instead_of_core = "warn"
+std_instead_of_alloc = "warn"
+alloc_instead_of_core = "warn"
+
 [patch.crates-io]
 routers = { path = "." }
 routers_codec = { path = "libs/routers_codec" }
