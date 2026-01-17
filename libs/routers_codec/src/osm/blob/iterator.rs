@@ -5,12 +5,12 @@ use crate::osm::BlobHeader;
 use crate::osm::BlockItem;
 use crate::osm::blob::item::BlobItem;
 
+use alloc::sync::Arc;
 use prost::Message;
 use std::fs::File;
 use std::io;
 use std::io::{BufReader, Read};
 use std::path::PathBuf;
-use alloc::sync::Arc;
 
 const HEADER_LEN_SIZE: usize = 4;
 
@@ -62,11 +62,13 @@ impl BlobIterator {
             return None;
         }
 
+        #[allow(unsafe_code)]
         let header_len_buffer =
             unsafe { self.buf.as_ptr().add(self.offset as usize) as *const [u8; HEADER_LEN_SIZE] };
         self.offset += HEADER_LEN_SIZE as u64;
 
         // Translate to i32 (Big Endian)
+        #[allow(unsafe_code)]
         let blob_header_length = u32::from_be_bytes(unsafe { *header_len_buffer }) as usize;
 
         if self.buf.len() < self.offset as usize + blob_header_length {

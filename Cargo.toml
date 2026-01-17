@@ -7,7 +7,7 @@ members = [
 ]
 
 [workspace.lints.rust]
-unsafe_code = "warn"
+unsafe_code = "deny"
 
 [workspace.lints.clippy]
 std_instead_of_core = "warn"
