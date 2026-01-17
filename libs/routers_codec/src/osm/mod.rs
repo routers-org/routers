@@ -69,7 +69,7 @@ pub mod meta {
     use crate::primitive::edge::Direction;
     use crate::{Metadata, primitive};
 
-    use std::num::NonZeroU8;
+    use core::num::NonZeroU8;
 
     #[derive(Debug, Clone, Default, Serialize)]
     pub struct OsmEdgeMetadata {

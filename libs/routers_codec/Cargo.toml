@@ -69,3 +69,6 @@ mimalloc = ["dep:mimalloc"]
 
 # Tracing (For Debugging & Logging)
 tracing = ["dep:tracing", "dep:tracing-subscriber"]
+
+[lints]
+workspace = true

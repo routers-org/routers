@@ -1,7 +1,7 @@
 use serde::Serialize;
 
 use crate::Entry;
-use std::fmt::Debug;
+use core::fmt::Debug;
 
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub struct Edge<E>

@@ -1,8 +1,8 @@
 use serde::Serialize;
 
 use crate::osm::primitives::{Directionality, TransportMode};
-use std::fmt::Display;
-use std::str::FromStr;
+use core::fmt::Display;
+use core::str::FromStr;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize)]
 pub struct Restriction {
@@ -65,7 +65,7 @@ impl Restriction {
 }
 
 impl Display for Restriction {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "{}:{}", self.transport_mode, self.directionality)
     }
 }

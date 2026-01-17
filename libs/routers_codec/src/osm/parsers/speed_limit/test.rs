@@ -1,3 +1,5 @@
+#![allow(unsafe_code)]
+
 use crate::osm::Parser;
 use crate::osm::element::{TagString, Tags};
 
@@ -9,8 +11,8 @@ use crate::osm::primitives::condition::{ConditionType, TimeDateCondition};
 use crate::osm::primitives::opening_hours::{Time, TimeRange, Weekday, WeekdayRange};
 use crate::osm::primitives::*;
 
+use core::num::NonZeroU16;
 use std::collections::HashMap;
-use std::num::NonZeroU16;
 
 #[cfg(test)]
 fn parse_singular(key: &str, value: &str) -> SpeedLimitEntry {

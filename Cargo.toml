@@ -7,7 +7,12 @@ members = [
 ]
 
 [workspace.lints.rust]
-unsafe_code = "forbid"
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+std_instead_of_core = "warn"
+std_instead_of_alloc = "warn"
+alloc_instead_of_core = "warn"
 
 [patch.crates-io]
 routers = { path = "." }
@@ -188,3 +193,6 @@ tracing = [
 
 [package.metadata.docs.rs]
 features = []
+
+[lints]
+workspace = true

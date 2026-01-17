@@ -1,8 +1,8 @@
+use core::fmt::Debug;
 use routers_fixtures::{
     LAX_LYNWOOD_MATCHED, LAX_LYNWOOD_TRIP, LOS_ANGELES, VENTURA_MATCHED, VENTURA_TRIP, ZURICH,
     fixture,
 };
-use std::fmt::Debug;
 
 use routers::transition::*;
 use routers::{DEFAULT_SEARCH_DISTANCE, Graph, Match, MatchOptions};
@@ -149,7 +149,7 @@ fn target_benchmark(c: &mut criterion::Criterion) {
         });
     });
 
-    group.measurement_time(std::time::Duration::from_secs(20));
+    group.measurement_time(core::time::Duration::from_secs(20));
     group.sample_size(100);
 
     group.finish();

@@ -7,6 +7,8 @@ use crate::model::{
     Coordinate, CostOptions, EdgeIdentifier, EdgeMetadata, NodeIdentifier, OptimiseFor,
 };
 
+use core::fmt::Error as StdError;
+use core::ops::Deref;
 use geo::{Coord, LineString, coord};
 use routers::SolverVariant;
 use routers_codec::osm::OsmTripConfiguration;
@@ -15,8 +17,6 @@ use routers_codec::osm::speed_limit::{SpeedLimitConditions, SpeedLimitExt};
 use routers_codec::primitive::context::TripContext;
 use routers_codec::primitive::transport::{TransportMode, TruckCosting, VehicleCosting};
 use routers_codec::{Entry, Metadata, Node};
-use std::fmt::Error as StdError;
-use std::ops::Deref;
 
 impl From<Coord> for Coordinate {
     fn from(value: Coord) -> Self {

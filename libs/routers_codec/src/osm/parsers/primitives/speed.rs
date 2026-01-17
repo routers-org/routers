@@ -1,5 +1,5 @@
-use std::fmt;
-use std::num::NonZeroU16;
+use alloc::fmt;
+use core::num::NonZeroU16;
 
 use serde::Serialize;
 

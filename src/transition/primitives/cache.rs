@@ -1,10 +1,10 @@
 use crate::transition::RoutingContext;
+use alloc::sync::Arc;
+use core::fmt::Debug;
 use geo::Distance;
 use routers_codec::{Entry, Metadata};
 use rustc_hash::{FxBuildHasher, FxHashMap};
 use scc::HashMap;
-use std::fmt::Debug;
-use std::sync::Arc;
 
 pub trait CacheKey: Entry {}
 impl<T> CacheKey for T where T: Entry {}
@@ -21,7 +21,7 @@ where
     pub(crate) map: HashMap<K, Arc<V>, FxBuildHasher>,
     pub(crate) metadata: Meta,
 
-    _marker: std::marker::PhantomData<M>,
+    _marker: core::marker::PhantomData<M>,
 }
 
 #[derive(Debug)]
@@ -104,7 +104,7 @@ where
         Self {
             map: HashMap::default(),
             metadata: Meta::default(),
-            _marker: std::marker::PhantomData,
+            _marker: core::marker::PhantomData,
         }
     }
 }
@@ -151,6 +151,7 @@ mod successor {
         #[inline]
         fn calculate(&self, ctx: &RoutingContext<E, M>, key: E) -> SuccessorWeights<E> {
             // Calc. once
+            #[allow(unsafe_code)]
             let source = unsafe { ctx.map.get_position(&key).unwrap_unchecked() };
 
             ctx.map
@@ -159,6 +160,7 @@ mod successor {
                 .map(|(_, next, (w, edge))| {
                     const METER_TO_CM: f64 = 100.0;
 
+                    #[allow(unsafe_code)]
                     let position = unsafe { ctx.map.get_position(&next).unwrap_unchecked() };
 
                     // In centimeters (1m = 100cm)

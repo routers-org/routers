@@ -64,7 +64,7 @@ impl Project for SlippyTile {
         // Same for Y tile position
         let y1 = (lat * 0.0174533).tan();
         let y2 = 1.0 / (lat * 0.0174533).cos();
-        let y = shl_zoom as f64 * (1.0 - (y1 + y2).ln() / std::f64::consts::PI) / 2.0;
+        let y = shl_zoom as f64 * (1.0 - (y1 + y2).ln() / core::f64::consts::PI) / 2.0;
         let (yn, yoff) = offset(y);
 
         SlippyTile((xn, xoff), (yn, yoff), zoom)

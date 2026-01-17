@@ -1,6 +1,6 @@
+use core::str::FromStr;
 use std::env;
 use std::path::{Path, PathBuf};
-use std::str::FromStr;
 
 fn find_proto_files<P: AsRef<Path>>(dir: P) -> Vec<PathBuf> {
     let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
@@ -18,7 +18,7 @@ fn find_proto_files<P: AsRef<Path>>(dir: P) -> Vec<PathBuf> {
         .collect()
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<(), Box<dyn core::error::Error>> {
     let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
 
     let routers = find_proto_files("proto");

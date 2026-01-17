@@ -1,8 +1,8 @@
 use crate::osm::primitives::opening_hours::{OpeningHours, OpeningHoursParser};
+use alloc::fmt;
+use core::fmt::{Display, Formatter};
+use core::str::FromStr;
 use serde::Serialize;
-use std::fmt;
-use std::fmt::{Display, Formatter};
-use std::str::FromStr;
 use strum::{Display, EnumIter, EnumString};
 
 /// Represents a complete conditional restriction condition
@@ -635,7 +635,7 @@ impl fmt::Display for ParseError {
     }
 }
 
-impl std::error::Error for ParseError {}
+impl core::error::Error for ParseError {}
 
 #[cfg(test)]
 mod tests {

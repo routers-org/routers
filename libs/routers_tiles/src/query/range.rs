@@ -1,7 +1,7 @@
 use chrono::{DateTime, Datelike, Duration, Weekday};
+use core::mem;
+use core::ops::Add;
 use serde::{Deserialize, Deserializer};
-use std::mem;
-use std::ops::Add;
 
 use crate::datasource::date::UtcDate;
 

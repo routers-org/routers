@@ -12,7 +12,7 @@ use tonic::Request;
 use tonic::transport::Channel;
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<(), Box<dyn core::error::Error>> {
     let channel = Channel::from_static("http://[::1]:9001").connect().await?;
     let mut client = MatchServiceClient::new(channel);
 

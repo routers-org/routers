@@ -74,9 +74,9 @@ where
                     .path_nodes()
                     .filter_map(|node| map.get_position(&node));
 
-                std::iter::repeat_n(source.position, if index == 0 { 1 } else { 0 })
+                core::iter::repeat_n(source.position, if index == 0 { 1 } else { 0 })
                     .chain(path)
-                    .chain(std::iter::once(target.position))
+                    .chain(core::iter::once(target.position))
             })
             .collect::<LineString>()
     }
