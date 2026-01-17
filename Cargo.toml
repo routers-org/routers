@@ -193,3 +193,6 @@ tracing = [
 
 [package.metadata.docs.rs]
 features = []
+
+[lints]
+workspace = true

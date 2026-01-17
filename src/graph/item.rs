@@ -6,10 +6,11 @@ use petgraph::prelude::DiGraphMap;
 use rstar::RTree;
 use rustc_hash::{FxHashMap, FxHasher};
 
+use alloc::sync::Arc;
+use core::fmt::{Debug, Formatter};
+use core::hash::BuildHasherDefault;
 use petgraph::Directed;
-use std::fmt::{Debug, Formatter};
-use std::hash::BuildHasherDefault;
-use std::sync::{Arc, RwLock};
+use std::sync::RwLock;
 #[cfg(feature = "tracing")]
 use tracing::Level;
 
@@ -45,7 +46,7 @@ where
     E: Entry,
     M: Metadata,
 {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
         write!(f, "Graph with Nodes: {}", self.hash.len())
     }
 }
@@ -70,7 +71,10 @@ where
     /// Safety: Assumes the edge exist
     pub fn meta(&self, edge: &DirectionAwareEdgeId<E>) -> &M {
         let index = edge.index();
-        unsafe { self.meta.get(&index).unwrap_unchecked() }
+        #[allow(unsafe_code)]
+        unsafe {
+            self.meta.get(&index).unwrap_unchecked()
+        }
     }
 
     #[inline]

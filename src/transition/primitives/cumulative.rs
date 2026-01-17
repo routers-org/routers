@@ -1,6 +1,6 @@
 use crate::graph::Weight;
+use core::ops::Add;
 use pathfinding::num_traits::Zero;
-use std::ops::Add;
 
 /// A fractional value, broken into a stored numerator and denominator.
 /// It supports the [`Add`] trait wherein the combination of numerator

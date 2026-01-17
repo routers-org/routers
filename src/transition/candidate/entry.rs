@@ -2,6 +2,9 @@ use crate::Graph;
 use crate::graph::Weight;
 use crate::transition::RoutingContext;
 
+use core::cmp::Ordering;
+use core::fmt::Debug;
+use core::ops::Add;
 use geo::{Distance, Haversine, LineLocatePoint, LineString, Point};
 use pathfinding::num_traits::Zero;
 use routers_codec::primitive::Node;
@@ -9,9 +12,6 @@ use routers_codec::primitive::edge::Direction;
 use routers_codec::{Entry, Metadata};
 use rstar::AABB;
 use serde::Serialize;
-use std::cmp::Ordering;
-use std::fmt::Debug;
-use std::ops::Add;
 
 /// Represents an edge within the system, along with the directionality of the edge.
 ///

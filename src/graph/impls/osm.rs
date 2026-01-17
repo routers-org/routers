@@ -11,7 +11,7 @@ use log::{debug, info};
 use rstar::RTree;
 use rustc_hash::FxHashMap;
 
-use std::error::Error;
+use core::error::Error;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::Instant;
