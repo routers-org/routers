@@ -3,7 +3,7 @@
 //! only the elements required for graph routing.
 
 use geo::point;
-use std::ops::{Add, Mul};
+use core::ops::{Add, Mul};
 
 use super::common::OsmEntryId;
 use crate::osm;

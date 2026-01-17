@@ -5,8 +5,8 @@ use crate::osm::speed_limit::{PossiblyConditionalSpeedLimit, SpeedLimitExt};
 use crate::osm::{OsmTripConfiguration, Parser};
 use itertools::Itertools;
 use serde::Serialize;
-use std::fmt::Debug;
-use std::ops::Deref;
+use core::fmt::Debug;
+use core::ops::Deref;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SpeedLimitCollection(pub(crate) Vec<SpeedLimitEntry>);

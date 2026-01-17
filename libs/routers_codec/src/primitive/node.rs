@@ -1,7 +1,7 @@
 use geo::{Destination, Distance, Euclidean, Geodesic, Point};
 use rstar::{AABB, Envelope};
 use serde::Serialize;
-use std::fmt::Debug;
+use core::fmt::Debug;
 
 use crate::Entry;
 

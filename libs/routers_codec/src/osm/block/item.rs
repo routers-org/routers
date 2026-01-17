@@ -83,7 +83,7 @@ impl BlockItem {
                     .iter()
                     .flat_map(Element::from_group),
             ),
-            BlockItem::HeaderBlock(_) => Either::Right(std::iter::empty()),
+            BlockItem::HeaderBlock(_) => Either::Right(core::iter::empty()),
         }
     }
 
@@ -97,7 +97,7 @@ impl BlockItem {
                     .flat_map(Element::from_group)
                     .flat_map(|element| ProcessedElement::from_raw(element, primitive)),
             ),
-            BlockItem::HeaderBlock(_) => Either::Right(std::iter::empty()),
+            BlockItem::HeaderBlock(_) => Either::Right(core::iter::empty()),
         }
     }
 

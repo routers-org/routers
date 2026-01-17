@@ -91,7 +91,7 @@ impl AccessTag {
     /// // Parse "motor_vehicle=destination"
     /// let tag = AccessTag::from_key_value("motor_vehicle", "destination")?;
     /// ```
-    pub fn from_key_value(key: &str, value: &str) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn from_key_value(key: &str, value: &str) -> Result<Self, Box<dyn core::error::Error>> {
         let access = AccessValue::try_from(value)?;
         let restriction = Restriction::parse_require_transport_mode(key)
             .ok_or("Key not found in require transport mode")?;

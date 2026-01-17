@@ -9,7 +9,7 @@ use std::fs::File;
 use std::io;
 use std::io::{BufReader, Read};
 use std::path::PathBuf;
-use std::sync::Arc;
+use alloc::sync::Arc;
 
 pub struct BlockIterator {
     blobs: Vec<BlobItem>,

@@ -13,7 +13,7 @@ pub use subtypes::SpeedLimitConditions;
 
 pub(super) mod subtypes {
     use crate::osm::primitives::Directionality;
-    use std::num::NonZeroU8;
+    use core::num::NonZeroU8;
 
     pub const LANES: &str = "lanes";
 

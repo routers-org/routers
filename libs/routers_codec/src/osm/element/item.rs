@@ -2,7 +2,7 @@
 //! Nodes, DenseNodes, ... by reference to their
 //! derived item, in the primitive entity.
 
-use std::vec;
+use alloc::vec;
 #[cfg(feature = "tracing")]
 use tracing::debug;
 

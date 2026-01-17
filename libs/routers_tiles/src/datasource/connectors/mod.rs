@@ -1,7 +1,7 @@
 pub mod repositories {
     pub mod big_table {
         use bigtable_rs::bigtable::BigTableConnection;
-        use std::time::Duration;
+        use core::time::Duration;
 
         pub(crate) const READ_ONLY: bool = true;
         pub(crate) const CHANNEL_SIZE: usize = 4;
