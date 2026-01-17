@@ -17,18 +17,12 @@ pub enum CollapseError {
     #[error("ends were not attached")]
     NoEnds,
 
-    #[error("could not lock graph to read")]
-    ReadLockFailed,
-
     #[error("could not find a path through the transition graph")]
     NoPathFound,
 }
 
 #[derive(Error, Debug)]
 pub enum EndAttachError {
-    #[error("failed to lock graph to write")]
-    WriteLockFailed,
-
     #[error("ends already attached to graph, cannot attach more than once")]
     EndsAlreadyAttached,
 
