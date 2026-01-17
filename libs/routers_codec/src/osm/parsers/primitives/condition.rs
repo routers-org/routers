@@ -1,8 +1,8 @@
 use crate::osm::primitives::opening_hours::{OpeningHours, OpeningHoursParser};
-use serde::Serialize;
 use alloc::fmt;
 use core::fmt::{Display, Formatter};
 use core::str::FromStr;
+use serde::Serialize;
 use strum::{Display, EnumIter, EnumString};
 
 /// Represents a complete conditional restriction condition

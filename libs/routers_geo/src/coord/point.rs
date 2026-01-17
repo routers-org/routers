@@ -1,5 +1,5 @@
-use geo::Coord;
 use core::fmt::Display;
+use geo::Coord;
 use strum::{EnumCount, IntoEnumIterator, VariantArray};
 
 pub trait FeatureKey: IntoEnumIterator + VariantArray + EnumCount + Display + Copy {}

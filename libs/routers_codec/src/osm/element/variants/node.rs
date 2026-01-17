@@ -2,8 +2,8 @@
 //! of the context information required for changelogs, and utilising
 //! only the elements required for graph routing.
 
-use geo::point;
 use core::ops::{Add, Mul};
+use geo::point;
 
 use super::common::OsmEntryId;
 use crate::osm;
