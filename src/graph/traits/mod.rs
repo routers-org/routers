@@ -13,7 +13,7 @@ mod util {
 
     use routers_fixtures::fixture_path;
 
-    use std::error::Error;
+    use core::error::Error;
     use std::path::Path;
     use std::time::Instant;
 

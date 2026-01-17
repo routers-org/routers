@@ -131,7 +131,7 @@ impl Parser for Vec<AccessTag> {
 mod tests {
     use super::*;
     use crate::osm::primitives::TransportMode;
-    use std::str::FromStr;
+    use core::str::FromStr;
 
     #[test]
     fn test_access_value_parsing() {

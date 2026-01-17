@@ -1037,7 +1037,7 @@ impl TransportMode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::str::FromStr;
+    use core::str::FromStr;
 
     #[test]
     fn test_parsing() {

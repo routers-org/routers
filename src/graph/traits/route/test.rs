@@ -1,10 +1,10 @@
 use crate::graph::Route;
 use crate::graph::traits::util::init_graph;
+use core::error::Error;
 use geo::{LineString, Point, coord};
 use routers_codec::Node;
 use routers_codec::osm::OsmEntryId;
 use routers_fixtures::DISTRICT_OF_COLUMBIA;
-use std::error::Error;
 use std::time::Instant;
 use wkt::ToWkt;
 
