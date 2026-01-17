@@ -6,7 +6,7 @@ use routers::Scan;
 
 use geo::{Distance, Haversine, Point, coord, point};
 use log::{debug, info};
-use std::cmp::Ordering;
+use core::cmp::Ordering;
 use std::sync::Arc;
 use tonic::{Request, Response, Status};
 use wkt::ToWkt;

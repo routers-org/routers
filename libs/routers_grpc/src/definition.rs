@@ -1,3 +1,6 @@
+#![allow(clippy::all)]
+#![allow(warnings)]
+
 /// The standard service definitions
 #[allow(clippy::all)]
 pub mod proto {

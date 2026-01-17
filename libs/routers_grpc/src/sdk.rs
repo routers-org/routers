@@ -15,8 +15,8 @@ use routers_codec::osm::speed_limit::{SpeedLimitConditions, SpeedLimitExt};
 use routers_codec::primitive::context::TripContext;
 use routers_codec::primitive::transport::{TransportMode, TruckCosting, VehicleCosting};
 use routers_codec::{Entry, Metadata, Node};
-use std::fmt::Error as StdError;
-use std::ops::Deref;
+use core::fmt::Error as StdError;
+use core::ops::Deref;
 
 impl From<Coord> for Coordinate {
     fn from(value: Coord) -> Self {
