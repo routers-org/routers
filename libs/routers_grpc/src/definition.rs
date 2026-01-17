@@ -1,4 +1,5 @@
 /// The standard service definitions
+#[allow(clippy::all)]
 pub mod proto {
     include!(concat!(env!("OUT_DIR"), "/_includes.rs"));
 
