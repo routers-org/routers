@@ -1,3 +1,5 @@
+#![allow(unsafe_code)]
+
 use crate::osm::Parser;
 use crate::osm::element::{TagString, Tags};
 
