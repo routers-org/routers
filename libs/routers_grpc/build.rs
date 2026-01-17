@@ -1,6 +1,6 @@
+use core::str::FromStr;
 use std::env;
 use std::path::{Path, PathBuf};
-use core::str::FromStr;
 
 fn find_proto_files<P: AsRef<Path>>(dir: P) -> Vec<PathBuf> {
     let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap();

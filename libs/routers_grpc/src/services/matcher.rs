@@ -1,5 +1,5 @@
-use geo::{Distance, Geodesic};
 use core::marker::PhantomData;
+use geo::{Distance, Geodesic};
 use std::sync::Arc;
 use tonic::{Request, Response, Status};
 
