@@ -1,3 +1,12 @@
 [profile.ci]
-# Do not cancel the test run on the first failure.
+slow-timeout = { period = "120s", terminate-after = 5, grace-period = "60s" }
 fail-fast = false
+
+[test-groups]
+# Define a group named 'serial-integration'
+serial-integration = { max-threads = 1 }
+
+[[profile.default.overrides]]
+filter = 'test(graphing)'
+platform = 'cfg(unix)'
+test-group = 'serial-integration'

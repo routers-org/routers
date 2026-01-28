@@ -149,7 +149,7 @@ where
             .windows(2)
             .filter_map(|pair| {
                 if let [a, b] = pair {
-                    return ctx.edge(a, b);
+                    return ctx.map.edge(a, b);
                 }
 
                 None
