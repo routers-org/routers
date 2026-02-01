@@ -14,7 +14,7 @@ use routers_codec::osm::meta::OsmEdgeMetadata;
 use routers_codec::osm::speed_limit::{SpeedLimitConditions, SpeedLimitExt};
 use routers_codec::primitive::context::TripContext;
 use routers_codec::primitive::transport::{TransportMode, TruckCosting, VehicleCosting};
-use routers_codec::{Entry, Metadata, Node};
+use routers_network::{Entry, Metadata, Node};
 use std::fmt::Error as StdError;
 use std::ops::Deref;
 

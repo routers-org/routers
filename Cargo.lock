@@ -2759,6 +2759,7 @@ dependencies = [
  "routers",
  "routers_codec",
  "routers_fixtures",
+ "routers_network",
  "tokio",
  "tonic 0.14.2",
  "tonic-prost",

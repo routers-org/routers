@@ -8,7 +8,7 @@ use crate::definition::model::*;
 
 use crate::services::RouteService;
 use routers::{Match, MatchOptions, Path, RoutedPath};
-use routers_codec::{Entry, Metadata};
+use routers_network::{Entry, Metadata};
 #[cfg(feature = "telemetry")]
 use tracing::Level;
 

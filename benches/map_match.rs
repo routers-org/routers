@@ -8,7 +8,7 @@ use routers::transition::*;
 use routers::{DEFAULT_SEARCH_DISTANCE, Graph, Match, MatchOptions};
 
 use routers_codec::osm::OsmEdgeMetadata;
-use routers_codec::{Entry, Metadata};
+use routers_network::{Entry, Metadata};
 
 use criterion::{black_box, criterion_main};
 use geo::{LineString, Point};
