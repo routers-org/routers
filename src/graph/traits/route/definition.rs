@@ -1,7 +1,7 @@
 use crate::graph::Weight;
 
 use geo::Point;
-use routers_codec::{Entry, Node};
+use routers_network::{Entry, Node};
 
 pub trait Route<E>
 where

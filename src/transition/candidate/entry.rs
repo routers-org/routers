@@ -4,9 +4,7 @@ use crate::transition::RoutingContext;
 
 use geo::{Distance, Haversine, LineLocatePoint, LineString, Point};
 use pathfinding::num_traits::Zero;
-use routers_codec::primitive::Node;
-use routers_codec::primitive::edge::Direction;
-use routers_codec::{Entry, Metadata};
+use routers_network::{Direction, Entry, Metadata, Node};
 use rstar::AABB;
 use serde::Serialize;
 use std::cmp::Ordering;

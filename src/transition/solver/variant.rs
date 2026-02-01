@@ -2,7 +2,7 @@ use crate::{
     CollapsedPath, EmissionStrategy, MatchError, PrecomputeForwardSolver, PredicateCache,
     SelectiveForwardSolver, Solver, Transition, TransitionStrategy,
 };
-use routers_codec::{Entry, Metadata};
+use routers_network::{Entry, Metadata};
 
 pub enum SolverImpl<E: Entry, M: Metadata> {
     Precompute(PrecomputeForwardSolver<E, M>),

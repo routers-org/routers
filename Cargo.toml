@@ -131,6 +131,8 @@ bench = false
 
 # === Root Dependencies ===
 [dependencies]
+routers_network = { workspace = true }
+
 # Algorithm
 rstar = { workspace = true }
 routers_codec = { workspace = true }
@@ -165,14 +167,12 @@ scc = { workspace = true }
 itertools = { workspace = true }
 indexmap = { workspace = true }
 thiserror = "2.0.12"
-routers_network.workspace = true
 
 [dev-dependencies]
 wkt = { workspace = true }
 insta = { workspace = true }
 criterion = { workspace = true }
 routers_fixtures = { workspace = true }
-routers_network = { workspace = true, features = ["fixtures"] }
 
 [[bench]]
 name = "map_match"

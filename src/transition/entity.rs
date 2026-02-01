@@ -5,8 +5,7 @@ use crate::transition::*;
 use crate::definition::Layers;
 use crate::generation::LayerGeneration;
 use geo::LineString;
-use routers_codec::Metadata;
-use routers_codec::primitive::Entry;
+use routers_network::{Entry, Metadata};
 
 type LayerId = usize;
 type NodeId = usize;

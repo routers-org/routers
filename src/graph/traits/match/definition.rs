@@ -2,7 +2,7 @@ use crate::SolverVariant;
 use crate::transition::{MatchError, RoutedPath};
 
 use geo::LineString;
-use routers_codec::{Entry, Metadata};
+use routers_network::{Entry, Metadata};
 
 pub const DEFAULT_SEARCH_DISTANCE: f64 = 50.0; // 50m
 

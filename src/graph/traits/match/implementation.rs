@@ -5,7 +5,7 @@ use crate::{Graph, MatchOptions};
 use crate::generation::StandardGenerator;
 use geo::LineString;
 use log::info;
-use routers_codec::{Entry, Metadata};
+use routers_network::{Entry, Metadata};
 
 impl<E, M> Match<E, M> for Graph<E, M>
 where

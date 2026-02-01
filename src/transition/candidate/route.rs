@@ -1,5 +1,5 @@
 use crate::transition::candidate::*;
-use routers_codec::{Entry, Metadata};
+use routers_network::{Entry, Metadata};
 use serde::Serialize;
 use std::ops::Deref;
 
