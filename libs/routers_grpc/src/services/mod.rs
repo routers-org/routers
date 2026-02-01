@@ -18,7 +18,7 @@ where
 }
 
 impl RouteService<OsmEntryId, OsmEdgeMetadata> {
-    pub fn from_file(file: PathBuf) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn from_file(file: PathBuf) -> Result<Self, Box<dyn core::error::Error>> {
         let file_os_str = file.as_os_str().to_ascii_lowercase();
         let graph = Graph::new(file_os_str).map_err(|e| format!("{e:?}"))?;
 

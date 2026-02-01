@@ -179,8 +179,8 @@ pub mod transition {
 pub mod costing {
     use super::{DefaultEmissionCost, DefaultTransitionCost};
     use crate::transition::*;
+    use core::marker::PhantomData;
     use routers_network::{Entry, Metadata};
-    use std::marker::PhantomData;
 
     pub struct CostingStrategies<Emmis, Trans, E, M>
     where
@@ -192,8 +192,8 @@ pub mod costing {
         pub emission: Emmis,
         pub transition: Trans,
 
-        _phantom: std::marker::PhantomData<E>,
-        _phantom2: std::marker::PhantomData<M>,
+        _phantom: core::marker::PhantomData<E>,
+        _phantom2: core::marker::PhantomData<M>,
     }
 
     impl<Emmis, Trans, E, M> CostingStrategies<Emmis, Trans, E, M>

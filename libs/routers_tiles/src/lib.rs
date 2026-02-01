@@ -1,3 +1,6 @@
+extern crate alloc;
+
+#[allow(clippy::all)]
 pub mod proto {
     //! MapboxVectorTile Protobuf Definitions
     include!(concat!(env!("OUT_DIR"), "/mvt.rs"));

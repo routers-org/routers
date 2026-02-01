@@ -15,12 +15,11 @@ pub mod common {
     use crate::osm::relation::MemberType;
 
     use routers_network::Entry;
-    use std::str::FromStr;
-    use std::{
-        collections::HashMap,
-        hash::{Hash, Hasher},
-        ops::{Add, Deref},
-    };
+
+    use core::hash::{Hash, Hasher};
+    use core::ops::{Add, Deref};
+    use core::str::FromStr;
+    use std::collections::HashMap;
 
     const OSM_NULL_SENTINEL: i64 = -1i64;
 

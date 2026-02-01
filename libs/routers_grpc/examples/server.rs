@@ -1,3 +1,5 @@
+extern crate alloc;
+
 use routers_fixtures::{LOS_ANGELES, fixture_path};
 use routers_grpc::r#match::MatchServiceServer;
 use routers_grpc::optimise::OptimiseServiceServer;
@@ -7,13 +9,13 @@ use routers_grpc::{Tracer, proto, services::RouteService};
 use tonic_web::GrpcWebLayer;
 use tower_http::cors::{Any, CorsLayer};
 
+use alloc::sync::Arc;
 use dotenv::dotenv;
-use std::sync::Arc;
 use tonic::codegen::http::Method;
 use tonic::transport::Server;
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<(), Box<dyn core::error::Error>> {
     // Load `.env` file
     dotenv()?;
 

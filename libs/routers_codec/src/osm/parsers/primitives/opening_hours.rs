@@ -1,8 +1,8 @@
+use alloc::fmt;
+use core::fmt::{Display, Formatter};
 use either::{Left, Right};
 use itertools::Itertools;
 use serde::Serialize;
-use std::fmt;
-use std::fmt::{Display, Formatter};
 use strum::{Display, EnumString};
 
 #[derive(Debug, Clone, PartialEq, Display, EnumString, Serialize)]

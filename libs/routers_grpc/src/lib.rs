@@ -1,3 +1,5 @@
+extern crate alloc;
+
 pub mod services;
 
 pub mod definition;

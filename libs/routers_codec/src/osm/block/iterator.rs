@@ -4,12 +4,12 @@ use crate::osm::BlobItem;
 use crate::osm::blob::iterator::BlobIterator;
 use crate::osm::block::item::BlockItem;
 
+use alloc::sync::Arc;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use std::fs::File;
 use std::io;
 use std::io::{BufReader, Read};
 use std::path::PathBuf;
-use std::sync::Arc;
 
 pub struct BlockIterator {
     blobs: Vec<BlobItem>,

@@ -2,6 +2,7 @@ use crate::transition::*;
 
 use crate::EndAttachError::{EndsAlreadyAttached, LayerMissing};
 use crate::definition::{Layer, Layers};
+use core::fmt::Debug;
 use pathfinding::num_traits::{ConstZero, Zero};
 use petgraph::algo::astar;
 use petgraph::graph::EdgeReference;
@@ -9,7 +10,6 @@ use petgraph::prelude::EdgeRef;
 use petgraph::{Direction, Graph};
 use routers_network::Entry;
 use scc::HashMap;
-use std::fmt::Debug;
 
 pub type OpenCandidateGraph = Graph<CandidateRef, CandidateEdge>;
 pub type LockedCandidateGraph = OpenCandidateGraph;
@@ -35,7 +35,7 @@ impl<E> Debug for Candidates<E>
 where
     E: Entry,
 {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> Result<(), core::fmt::Error> {
         let entries = self.lookup.len();
         write!(
             f,

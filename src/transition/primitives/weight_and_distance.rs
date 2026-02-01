@@ -1,8 +1,8 @@
 use crate::transition::primitives::Fraction;
 
+use core::cmp::Ordering;
+use core::ops::Add;
 use pathfinding::num_traits::Zero;
-use std::cmp::Ordering;
-use std::ops::Add;
 
 /// Represents a thin structure storing the weight and distance associated with a candidate
 #[allow(clippy::derived_hash_with_manual_eq)]

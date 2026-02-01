@@ -4,8 +4,8 @@
 
 use crate::osm;
 use crate::osm::element::variants::{OsmEntryId, Relation, Way};
+use alloc::vec;
 use routers_network::Node;
-use std::vec;
 #[cfg(feature = "tracing")]
 use tracing::debug;
 

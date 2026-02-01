@@ -2,11 +2,13 @@
 //! of the context information required for changelogs, and utilising
 //! only the elements required for graph routing.
 
-use super::common::OsmEntryId;
 use crate::osm;
-use geo::point;
+use crate::osm::OsmEntryId;
+
 use routers_network::{Entry, Node};
-use std::ops::{Add, Mul};
+
+use core::ops::{Add, Mul};
+use geo::point;
 
 impl osm::DenseNodes {
     /// Takes an `osm::DenseNodes` structure and extracts `Node`s as an

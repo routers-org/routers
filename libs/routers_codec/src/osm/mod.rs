@@ -68,8 +68,9 @@ pub mod meta {
     use crate::osm::{Access, OsmTripConfiguration, SpeedLimit};
 
     use crate::primitive;
+
+    use core::num::NonZeroU8;
     use routers_network::{Direction, Metadata};
-    use std::num::NonZeroU8;
 
     #[derive(Debug, Clone, Default, Serialize)]
     pub struct OsmEdgeMetadata {

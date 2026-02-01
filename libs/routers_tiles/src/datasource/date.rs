@@ -9,7 +9,7 @@ const REQUEST_FORMAT: &str = "%Y-%m-%d";
 pub struct UtcDate(pub DateTime<Utc>);
 
 impl PartialOrd for UtcDate {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
         self.0.partial_cmp(&other.0)
     }
 }

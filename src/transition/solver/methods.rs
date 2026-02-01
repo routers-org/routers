@@ -1,8 +1,8 @@
 use crate::transition::*;
+use core::hash::Hash;
 use itertools::Either;
 use routers_network::{Entry, Metadata};
 use rustc_hash::FxHashMap;
-use std::hash::Hash;
 
 #[derive(Debug, Default, Copy, Clone)]
 pub enum ResolutionMethod {
@@ -62,9 +62,9 @@ where
                 self.path
                     .iter()
                     .map(|edge| edge.source)
-                    .chain(std::iter::once(last.target)),
+                    .chain(core::iter::once(last.target)),
             ),
-            None => Either::Right(std::iter::empty()),
+            None => Either::Right(core::iter::empty()),
         }
     }
 

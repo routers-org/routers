@@ -5,10 +5,10 @@ use routers_codec::osm::{
     element::ProcessedElement,
 };
 
+use core::any::Any;
 use criterion::criterion_main;
 use log::info;
 use rayon::iter::ParallelIterator;
-use std::any::Any;
 
 fn block_iter_count() {
     let path = fixture_path(DISTRICT_OF_COLUMBIA);

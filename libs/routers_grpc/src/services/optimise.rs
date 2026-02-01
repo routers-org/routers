@@ -1,5 +1,5 @@
+use alloc::sync::Arc;
 use geo::{Point, coord};
-use std::sync::Arc;
 use tonic::{Request, Response, Status};
 
 use crate::definition::model::*;

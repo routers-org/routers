@@ -3,8 +3,8 @@ use routers_network::{Entry, Metadata};
 
 use log::{debug, info};
 
+use core::cell::RefCell;
 use rustc_hash::FxHashMap;
-use std::cell::RefCell;
 
 use geo::{Distance, Haversine};
 use itertools::Itertools;

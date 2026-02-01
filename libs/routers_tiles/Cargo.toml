@@ -52,3 +52,6 @@ bigtable = ["dep:bigtable_rs"]
 name = "server"
 path = "examples/server.rs"
 required-features = ["routers_grpc/telemetry", "tracing", "example"]
+
+[lints]
+workspace = true

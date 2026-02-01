@@ -1,6 +1,7 @@
 use crate::traits::Entry;
+
 use core::fmt::Debug;
-use geo::{Euclidean, Point};
+use geo::{Destination, Distance, Euclidean, Geodesic, Point};
 use rstar::{AABB, Envelope};
 use serde::Serialize;
 
@@ -28,7 +29,6 @@ where
     /// Constructs the rectangular Axis-Aligned Bounding Box ([AABB](rstar::AABB))
     /// for the square [distance](#param.distance) around the node position.
     pub fn bounding(&self, distance: f64) -> AABB<Point> {
-        use geo::{Destination, Geodesic};
         let bottom_right = Geodesic.destination(self.position, 135.0, distance);
         let top_left = Geodesic.destination(self.position, 315.0, distance);
         AABB::from_corners(top_left, bottom_right)
@@ -43,7 +43,6 @@ where
         &self,
         point: &<Self::Envelope as Envelope>::Point,
     ) -> <<Self::Envelope as Envelope>::Point as rstar::Point>::Scalar {
-        use geo::Distance;
         Euclidean.distance(self.position, *point).powi(2)
     }
 }
