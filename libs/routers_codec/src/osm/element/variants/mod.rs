@@ -10,12 +10,11 @@ pub use way::*;
 pub mod common {
     use serde::Serialize;
 
+    use crate::osm::PrimitiveBlock;
     #[cfg(debug_assertions)]
     use crate::osm::relation::MemberType;
 
-    use crate::osm::PrimitiveBlock;
-    use crate::primitive::Entry;
-
+    use routers_network::Entry;
     use std::str::FromStr;
     use std::{
         collections::HashMap,

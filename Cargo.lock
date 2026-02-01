@@ -2718,6 +2718,7 @@ dependencies = [
  "rayon",
  "regex",
  "routers_fixtures",
+ "routers_network",
  "rstar",
  "serde",
  "strum",

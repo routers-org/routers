@@ -13,6 +13,9 @@ path = "./src/lib.rs"
 bench = false
 
 [dependencies]
+# Sister Crates
+routers_network = { workspace = true }
+
 # Schema
 prost = { workspace = true }
 bytes = { workspace = true }

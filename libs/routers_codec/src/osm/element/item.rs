@@ -2,13 +2,12 @@
 //! Nodes, DenseNodes, ... by reference to their
 //! derived item, in the primitive entity.
 
+use crate::osm;
+use crate::osm::element::variants::{OsmEntryId, Relation, Way};
+use routers_network::Node;
 use std::vec;
 #[cfg(feature = "tracing")]
 use tracing::debug;
-
-use crate::osm;
-use crate::osm::element::variants::{OsmEntryId, Relation, Way};
-use crate::primitive::Node;
 
 #[derive(Clone)]
 pub enum Element<'a> {
@@ -40,7 +39,8 @@ impl ProcessedElement {
         let granularity = block.granularity.unwrap_or(100);
 
         match element {
-            Element::DenseNodes(dense_nodes) => Node::from_dense(dense_nodes, granularity)
+            Element::DenseNodes(dense_nodes) => dense_nodes
+                .nodes(granularity)
                 .map(ProcessedElement::Node)
                 .collect(),
             Element::Node(node) => vec![ProcessedElement::Node(Node::from(node))],
