@@ -3,7 +3,8 @@
 resolver = "2"
 members = [
     "libs/routers_codec", "libs/routers_geo", "libs/routers_grpc",
-    "libs/routers_shard", "libs/routers_tiles", "libs/routers_fixtures"
+    "libs/routers_shard", "libs/routers_tiles", "libs/routers_fixtures",
+    "libs/routers_network"
 ]
 
 [workspace.lints.rust]
@@ -23,6 +24,7 @@ routers_fixtures = { path = "libs/routers_fixtures" }
 # Private Members
 routers_shard = { path = "libs/routers_shard", version = "0.1.0" }
 routers_fixtures = { path = "libs/routers_fixtures" }
+routers_network = { path = "libs/routers_network", version = "0.1.0" }
 
 # Members
 routers_codec = "0.1.2"
@@ -36,6 +38,8 @@ rayon = "1.10.0"
 scc = "2.3.4"
 itertools = "0.14.0"
 indexmap = "2.9.0"
+petgraph = { version = "0.8.2", features = ["serde-1", "graphmap", "rayon"] }
+rustc-hash = "2.1.1"
 
 # Logging
 log = { version = "0.4.28" }
@@ -131,14 +135,14 @@ bench = false
 rstar = { workspace = true }
 routers_codec = { workspace = true }
 
-petgraph = { version = "0.8.2", features = ["serde-1", "graphmap", "rayon"] }
+petgraph = { workspace = true }
 serde = { workspace = true }
 
 # Root-Specific Crates
 approx = "0.5.1"
 pathfinding = "4.14.0"
 measure_time = "0.9.0"
-rustc-hash = "2.1.1"
+rustc-hash = { workspace = true }
 
 # Logging Utility
 log = { workspace = true }
@@ -161,12 +165,14 @@ scc = { workspace = true }
 itertools = { workspace = true }
 indexmap = { workspace = true }
 thiserror = "2.0.12"
+routers_network.workspace = true
 
 [dev-dependencies]
 wkt = { workspace = true }
 insta = { workspace = true }
 criterion = { workspace = true }
 routers_fixtures = { workspace = true }
+routers_network = { workspace = true, features = ["fixtures"] }
 
 [[bench]]
 name = "map_match"
