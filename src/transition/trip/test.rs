@@ -3,7 +3,7 @@ use routers_codec::osm::OsmEntryId;
 
 use approx::assert_relative_eq;
 use geo::wkt;
-use routers_codec::primitive::Node;
+use routers_network::Node;
 
 const SHARED_DISTANCE: f64 = 900.0;
 

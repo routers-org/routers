@@ -1,6 +1,6 @@
 use crate::transition::*;
 use core::f64::consts::E;
-use routers_codec::{Entry, Metadata};
+use routers_network::{Entry, Metadata};
 
 const PRECISION: f64 = 1_000.0f64;
 const OFFSET: f64 = E;

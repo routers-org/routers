@@ -2687,6 +2687,7 @@ dependencies = [
  "rayon",
  "routers_codec",
  "routers_fixtures",
+ "routers_network",
  "rstar",
  "rustc-hash",
  "scc",
@@ -2717,6 +2718,7 @@ dependencies = [
  "rayon",
  "regex",
  "routers_fixtures",
+ "routers_network",
  "rstar",
  "serde",
  "strum",
@@ -2757,6 +2759,7 @@ dependencies = [
  "routers",
  "routers_codec",
  "routers_fixtures",
+ "routers_network",
  "tokio",
  "tonic 0.14.2",
  "tonic-prost",
@@ -2769,6 +2772,18 @@ dependencies = [
  "tracing-subscriber",
  "walkdir",
  "wkt",
+]
+
+[[package]]
+name = "routers_network"
+version = "0.1.0"
+dependencies = [
+ "geo",
+ "num-traits",
+ "petgraph 0.8.2",
+ "rstar",
+ "rustc-hash",
+ "serde",
 ]
 
 [[package]]

@@ -66,10 +66,11 @@ pub mod meta {
     use crate::osm::primitives::*;
     use crate::osm::speed_limit::SpeedLimitCollection;
     use crate::osm::{Access, OsmTripConfiguration, SpeedLimit};
-    use crate::primitive::edge::Direction;
-    use crate::{Metadata, primitive};
+
+    use crate::primitive;
 
     use core::num::NonZeroU8;
+    use routers_network::{Direction, Metadata};
 
     #[derive(Debug, Clone, Default, Serialize)]
     pub struct OsmEdgeMetadata {

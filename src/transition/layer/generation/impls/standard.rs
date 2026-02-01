@@ -5,7 +5,7 @@ use crate::{Graph, Scan};
 use geo::{Distance, Haversine, Point};
 use itertools::Itertools;
 use rayon::prelude::*;
-use routers_codec::{Entry, Metadata};
+use routers_network::{Entry, Metadata};
 use std::collections::HashMap;
 
 /// Generates the layers within the transition graph.

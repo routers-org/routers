@@ -11,7 +11,7 @@ use log::{debug, info};
 use tonic::{Request, Response, Status};
 use wkt::ToWkt;
 
-use routers_codec::{Entry, Metadata};
+use routers_network::{Entry, Metadata};
 #[cfg(feature = "telemetry")]
 use tracing::Level;
 

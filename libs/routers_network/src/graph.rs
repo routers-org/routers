@@ -1,44 +1,31 @@
-use crate::{DirectionAwareEdgeId, FatEdge, PredicateCache};
-use routers_network::{Entry, Metadata, Node};
-
+use crate::primitive::{DirectionAwareEdgeId, FatEdge, Node};
+use crate::{Entry, Metadata};
+use core::fmt::{Debug, Formatter};
+use core::hash::BuildHasherDefault;
 use geo::Point;
 use petgraph::prelude::DiGraphMap;
 use rstar::RTree;
 use rustc_hash::{FxHashMap, FxHasher};
 
-use alloc::sync::Arc;
-use core::fmt::{Debug, Formatter};
-use core::hash::BuildHasherDefault;
-use petgraph::Directed;
-use std::sync::RwLock;
-#[cfg(feature = "tracing")]
-use tracing::Level;
-
 pub type Weight = u32;
-
-pub type LockedGraph<A, B> = Arc<RwLock<petgraph::Graph<A, B, Directed>>>;
 
 pub type GraphStructure<E> =
     DiGraphMap<E, (Weight, DirectionAwareEdgeId<E>), BuildHasherDefault<FxHasher>>;
 
-pub(crate) const MAX_WEIGHT: Weight = u32::MAX as Weight;
+pub const MAX_WEIGHT: Weight = u32::MAX as Weight;
 
 /// Routing graph.
-///
-/// TODO: ... can be ingested from an `.osm.pbf` file, and can be actioned upon using `route(start, end)`.
 pub struct Graph<E, M>
 where
     E: Entry,
     M: Metadata,
 {
-    pub(crate) graph: GraphStructure<E>,
-    pub(crate) hash: FxHashMap<E, Node<E>>,
-    pub(crate) meta: FxHashMap<E, M>,
+    pub graph: GraphStructure<E>,
+    pub hash: FxHashMap<E, Node<E>>,
+    pub meta: FxHashMap<E, M>,
 
-    pub(crate) index: RTree<Node<E>>,
-    pub(crate) index_edge: RTree<FatEdge<E>>,
-
-    pub cache: PredicateCache<E, M>,
+    pub index: RTree<Node<E>>,
+    pub index_edge: RTree<FatEdge<E>>,
 }
 
 impl<E, M> Debug for Graph<E, M>
@@ -71,10 +58,7 @@ where
     /// Safety: Assumes the edge exist
     pub fn meta(&self, edge: &DirectionAwareEdgeId<E>) -> &M {
         let index = edge.index();
-        #[allow(unsafe_code)]
-        unsafe {
-            self.meta.get(&index).unwrap_unchecked()
-        }
+        self.meta.get(&index).unwrap()
     }
 
     #[inline]

@@ -5,7 +5,7 @@ use routers_codec::osm::OsmEntryId;
 use routers_codec::osm::element::ProcessedElement;
 use routers_codec::osm::meta::OsmEdgeMetadata;
 use routers_codec::osm::{Parallel, ProcessedElementIterator};
-use routers_codec::{Metadata, Node};
+use routers_network::{Metadata, Node};
 
 use log::{debug, info};
 use rstar::RTree;

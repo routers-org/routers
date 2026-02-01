@@ -1,7 +1,6 @@
 use crate::Graph;
 use geo::{Bearing, Distance, Haversine, LineString};
-use routers_codec::primitive::Node;
-use routers_codec::{Entry, Metadata};
+use routers_network::{Entry, Metadata, Node};
 
 /// Utilities to calculate metadata of a trip.
 /// A trip is composed of a collection of [`Node`] entries.

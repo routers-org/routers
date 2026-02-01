@@ -1,6 +1,6 @@
 use crate::Graph;
 use crate::transition::*;
-use routers_codec::{Entry, Metadata};
+use routers_network::{Entry, Metadata};
 
 /// A base context provided to costing methods.
 ///

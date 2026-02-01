@@ -1,7 +1,7 @@
 use crate::{Candidate, CandidateId};
 use geo::{MultiPoint, Point};
 use rayon::prelude::*;
-use routers_codec::Entry;
+use routers_network::Entry;
 use scc::HashMap;
 
 /// A layer within the transition graph.

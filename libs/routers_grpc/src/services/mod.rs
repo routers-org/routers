@@ -1,7 +1,7 @@
 use routers_codec::osm::{OsmEdgeMetadata, OsmEntryId};
 
 use routers::Graph;
-use routers_codec::{Entry, Metadata};
+use routers_network::{Entry, Metadata};
 
 use std::path::PathBuf;
 

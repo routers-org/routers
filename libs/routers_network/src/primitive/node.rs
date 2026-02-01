@@ -1,9 +1,9 @@
+use crate::traits::Entry;
+
 use core::fmt::Debug;
 use geo::{Destination, Distance, Euclidean, Geodesic, Point};
 use rstar::{AABB, Envelope};
 use serde::Serialize;
-
-use crate::Entry;
 
 /// The standardised node primitive containing a generic
 /// identifier which must implement [Entry], and contain

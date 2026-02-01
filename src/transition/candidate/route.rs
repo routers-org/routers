@@ -1,6 +1,6 @@
 use crate::transition::candidate::*;
 use core::ops::Deref;
-use routers_codec::{Entry, Metadata};
+use routers_network::{Entry, Metadata};
 use serde::Serialize;
 
 use crate::Graph;

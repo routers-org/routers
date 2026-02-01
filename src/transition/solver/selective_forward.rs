@@ -1,5 +1,5 @@
 use crate::transition::*;
-use routers_codec::{Entry, Metadata};
+use routers_network::{Entry, Metadata};
 
 use log::{debug, info};
 

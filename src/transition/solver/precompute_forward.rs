@@ -9,7 +9,7 @@ use itertools::Itertools;
 use measure_time::debug_time;
 use pathfinding::num_traits::Zero;
 use pathfinding::prelude::*;
-use routers_codec::{Entry, Metadata};
+use routers_network::{Entry, Metadata};
 
 use rayon::iter::ParallelIterator;
 use rayon::prelude::IntoParallelRefIterator;

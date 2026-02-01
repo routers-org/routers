@@ -2,7 +2,7 @@ use crate::Graph;
 use crate::transition::Reachable;
 use crate::transition::candidate::*;
 use geo::LineString;
-use routers_codec::{Entry, Metadata};
+use routers_network::{Entry, Metadata};
 
 /// The collapsed solution to a transition graph.
 pub struct CollapsedPath<E>

@@ -4,7 +4,7 @@ use crate::Candidates;
 use crate::definition::Layers;
 use geo::Point;
 pub use impls::*;
-use routers_codec::Entry;
+use routers_network::Entry;
 
 pub trait LayerGeneration<E: Entry> {
     /// Generate consumes self and returns a pairing of the generated layers,
