@@ -47,7 +47,7 @@ where
         &self.index
     }
 
-    pub fn index_edge(&self) -> &RTree<Edge<E>> {
+    pub fn index_edge(&self) -> &RTree<Edge<Node<E>>> {
         &self.index_edge
     }
 

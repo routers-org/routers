@@ -1,5 +1,5 @@
-use crate::transition::RoutingContext;
 use crate::Graph;
+use crate::transition::RoutingContext;
 
 use core::cmp::Ordering;
 use core::fmt::Debug;

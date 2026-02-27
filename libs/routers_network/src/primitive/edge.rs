@@ -1,6 +1,6 @@
-use crate::graph::{Graph, Weight};
+use crate::graph::Weight;
 use crate::primitive::{Direction, Node};
-use crate::traits::{Entry, Metadata};
+use crate::traits::Entry;
 use core::cmp::Ordering;
 use core::fmt::Debug;
 use geo::Point;
@@ -99,17 +99,6 @@ where
     pub const fn id(&self) -> &E {
         &self.id.id
     }
-
-    /// Upsizes a [`Edge`] into a [`FatEdge`].
-    #[inline]
-    pub fn fatten<M: Metadata>(&self, graph: &Graph<E, M>) -> Option<Edge<Node<E>>> {
-        Some(Edge {
-            source: *graph.hash.get(&self.source)?,
-            target: *graph.hash.get(&self.target)?,
-            id: DirectionAwareEdgeId::new(self.id),
-            weight: self.weight,
-        })
-    }
 }
 
 impl<'a, E> From<(E, E, &'a (Weight, DirectionAwareEdgeId<E>))> for Edge<E>
@@ -131,17 +120,13 @@ impl<E> Edge<Node<E>>
 where
     E: Entry,
 {
-    pub const fn id(&self) -> E {
-        self.id.id.id
-    }
-
     /// Downsizes a [`FatEdge`] to an [`Edge`].
     #[inline]
     pub fn thin(&self) -> Edge<E> {
         Edge {
             source: self.source.id,
             target: self.target.id,
-            id: DirectionAwareEdgeId::new(self.id()),
+            id: DirectionAwareEdgeId::new(**self.id()),
             weight: self.weight,
         }
     }

@@ -8,15 +8,14 @@ use routers_codec::osm::{Parallel, ProcessedElementIterator};
 use routers_network::{Metadata, Node};
 
 use log::{debug, info};
-use rstar::{RTree, AABB};
+use rstar::{AABB, RTree};
 use rustc_hash::FxHashMap;
 
 use core::error::Error;
+use geo::Point;
+use routers_network::network::{Discovery, FullObject};
 use std::path::PathBuf;
 use std::time::Instant;
-use geo::Point;
-use petgraph::visit::IntoEdges;
-use routers_network::network::{Discovery, FullObject};
 
 pub type OsmGraph = Graph<OsmEntryId, OsmEdgeMetadata>;
 
@@ -161,14 +160,17 @@ impl OsmGraph {
 }
 
 impl Discovery<OsmEntryId> for OsmGraph {
-    fn edges_in_box<'a>(&'a self, aabb: AABB<Point>) -> impl Iterator<Item=&'a Edge<Node<OsmEntryId>>>
+    fn edges_in_box<'a>(
+        &'a self,
+        aabb: AABB<Point>,
+    ) -> impl Iterator<Item = &'a Edge<Node<OsmEntryId>>>
     where
         OsmEntryId: 'a,
     {
         self.edges.locate_in_envelope(&aabb)
     }
 
-    fn nodes_in_box<'a>(&'a self, aabb: AABB<Point>) -> impl Iterator<Item=&'a Node<OsmEntryId>>
+    fn nodes_in_box<'a>(&'a self, aabb: AABB<Point>) -> impl Iterator<Item = &'a Node<OsmEntryId>>
     where
         OsmEntryId: 'a,
     {

@@ -1,7 +1,7 @@
 use crate::transition::*;
 use core::hash::Hash;
 use itertools::Either;
-use routers_network::{Entry, Metadata};
+use routers_network::{Edge, Entry, Metadata, Node};
 use rustc_hash::FxHashMap;
 
 #[derive(Debug, Default, Copy, Clone)]
@@ -23,7 +23,7 @@ where
 {
     pub source: CandidateId,
     pub target: CandidateId,
-    pub path: Vec<Edge<E>>, // TODO: => Helper method to remove the duplicate node id's to crt8 a vec<e>
+    pub path: Vec<Edge<Node<E>>>, // TODO: => Helper method to remove the duplicate node id's to crt8 a vec<e>
 
     pub(crate) resolution_method: ResolutionMethod,
 }
