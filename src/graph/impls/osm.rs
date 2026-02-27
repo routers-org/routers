@@ -8,12 +8,15 @@ use routers_codec::osm::{Parallel, ProcessedElementIterator};
 use routers_network::{Metadata, Node};
 
 use log::{debug, info};
-use rstar::RTree;
+use rstar::{RTree, AABB};
 use rustc_hash::FxHashMap;
 
 use core::error::Error;
 use std::path::PathBuf;
 use std::time::Instant;
+use geo::Point;
+use petgraph::visit::IntoEdges;
+use routers_network::network::{Discovery, FullObject};
 
 pub type OsmGraph = Graph<OsmEntryId, OsmEdgeMetadata>;
 
@@ -149,10 +152,40 @@ impl OsmGraph {
 
             meta,
 
-            index: tree,
-            index_edge: tree_edge,
+            nodes: tree,
+            edges: tree_edge,
 
             cache: PredicateCache::default(),
         })
+    }
+}
+
+impl Discovery<OsmEntryId> for OsmGraph {
+    fn edges_in_box<'a>(&'a self, aabb: AABB<Point>) -> impl Iterator<Item=&'a Edge<Node<OsmEntryId>>>
+    where
+        OsmEntryId: 'a,
+    {
+        self.edges.locate_in_envelope(&aabb)
+    }
+
+    fn nodes_in_box<'a>(&'a self, aabb: AABB<Point>) -> impl Iterator<Item=&'a Node<OsmEntryId>>
+    where
+        OsmEntryId: 'a,
+    {
+        self.nodes.locate_in_envelope(&aabb)
+    }
+}
+
+impl FullObject<OsmEntryId, OsmEdgeMetadata> for OsmGraph {
+    // fn edge(&self, id: &OsmEntryId) -> Option<&Edge<OsmEntryId>> {
+    //     self.graph.edge
+    // }
+
+    fn metadata(&self, id: &OsmEntryId) -> Option<&OsmEdgeMetadata> {
+        self.meta.get(id)
+    }
+
+    fn node(&self, id: &OsmEntryId) -> Option<&Node<OsmEntryId>> {
+        self.hash.get(id)
     }
 }

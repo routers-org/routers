@@ -1,14 +1,12 @@
-use crate::Graph;
-use crate::graph::Weight;
 use crate::transition::RoutingContext;
+use crate::Graph;
 
 use core::cmp::Ordering;
 use core::fmt::Debug;
 use core::ops::Add;
 use geo::{Distance, Haversine, LineLocatePoint, LineString, Point};
 use pathfinding::num_traits::Zero;
-use routers_network::{Direction, Entry, Metadata, Node};
-use rstar::AABB;
+use routers_network::{Direction, Edge, Entry, Metadata};
 use serde::Serialize;
 
 /// Represents an edge within the system, along with the directionality of the edge.
@@ -82,119 +80,6 @@ where
 {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
-    }
-}
-
-/// A [flyweight] representation of an edge within the system.
-///
-/// The non-backed alternative is the [`FatEdge`] which contains node information directly,
-/// instead of by indices.
-///
-/// Every edge has a [source](#field.source) and [target](#field.target).
-/// They also contain a [weight](#field.weight) to represent how "heavy" the edge is to traverse,
-/// and an identifier, [id](#field.id) which is direction-aware.
-///
-/// [flyweight]: https://refactoring.guru/design-patterns/flyweight
-#[derive(Clone, Copy, Debug)]
-pub struct Edge<E>
-where
-    E: Entry,
-{
-    pub source: E,
-    pub target: E,
-
-    pub weight: Weight,
-    pub id: DirectionAwareEdgeId<E>,
-}
-
-impl<E> Edge<E>
-where
-    E: Entry,
-{
-    pub const fn id(&self) -> &E {
-        &self.id.id
-    }
-
-    /// Upsizes a [`Edge`] into a [`FatEdge`].
-    #[inline]
-    pub fn fatten<M: Metadata>(&self, graph: &Graph<E, M>) -> Option<FatEdge<E>> {
-        Some(FatEdge {
-            source: *graph.hash.get(&self.source)?,
-            target: *graph.hash.get(&self.target)?,
-            id: self.id,
-            weight: self.weight,
-        })
-    }
-}
-
-impl<'a, E> From<(E, E, &'a (Weight, DirectionAwareEdgeId<E>))> for Edge<E>
-where
-    E: Entry,
-{
-    #[inline]
-    fn from((source, target, edge): (E, E, &'a (Weight, DirectionAwareEdgeId<E>))) -> Self {
-        Edge {
-            source,
-            target,
-            weight: edge.0,
-            id: edge.1,
-        }
-    }
-}
-
-/// Represents a fat edge within the system.
-///
-/// A [`FatEdge`], unlike an [`Edge`] contains source/target information inside the structure
-/// itself, instead of through [`NodeIx`] indirection. This makes the structure "fat" since
-/// the [`Node`] struct is large.
-///
-/// A helper method, [`FatEdge::thin`] is provided to downsize to an [`Edge`]. Note this process
-/// is lossy if no data source containing the original node is present.
-///
-/// ### Note
-///
-/// As it is large, this should only be used transitively
-/// like in [`Scan::nearest_edges`](crate::route::Scan::nearest_edges).
-#[derive(Debug, Serialize)]
-pub struct FatEdge<E>
-where
-    E: Entry,
-{
-    pub source: Node<E>,
-    pub target: Node<E>,
-
-    pub weight: Weight,
-    pub id: DirectionAwareEdgeId<E>,
-}
-
-impl<E> FatEdge<E>
-where
-    E: Entry,
-{
-    pub const fn id(&self) -> &E {
-        &self.id.id
-    }
-
-    /// Downsizes a [`FatEdge`] to an [`Edge`].
-    #[inline]
-    pub fn thin(&self) -> Edge<E> {
-        Edge {
-            source: self.source.id,
-            target: self.target.id,
-            id: self.id,
-            weight: self.weight,
-        }
-    }
-}
-
-impl<E> rstar::RTreeObject for FatEdge<E>
-where
-    E: Entry,
-{
-    type Envelope = AABB<Point>;
-
-    fn envelope(&self) -> Self::Envelope {
-        AABB::from_corners(self.target.position, self.source.position)
     }
 }
 

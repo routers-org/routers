@@ -1,4 +1,4 @@
-use crate::primitive::{DirectionAwareEdgeId, FatEdge, Node};
+use crate::primitive::{DirectionAwareEdgeId, Edge, Node};
 use crate::{Entry, Metadata};
 use core::fmt::{Debug, Formatter};
 use core::hash::BuildHasherDefault;
@@ -25,7 +25,7 @@ where
     pub meta: FxHashMap<E, M>,
 
     pub index: RTree<Node<E>>,
-    pub index_edge: RTree<FatEdge<E>>,
+    pub index_edge: RTree<Edge<Node<E>>>,
 }
 
 impl<E, M> Debug for Graph<E, M>
@@ -47,7 +47,7 @@ where
         &self.index
     }
 
-    pub fn index_edge(&self) -> &RTree<FatEdge<E>> {
+    pub fn index_edge(&self) -> &RTree<Edge<E>> {
         &self.index_edge
     }
 

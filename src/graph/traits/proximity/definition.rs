@@ -1,6 +1,6 @@
 use routers_network::{Entry, Node};
 
-use crate::FatEdge;
+use crate::Edge;
 use geo::Point;
 #[cfg(feature = "tracing")]
 use tracing::Level;
@@ -42,7 +42,7 @@ where
         &'a self,
         point: &Point,
         distance: f64,
-    ) -> impl Iterator<Item = &'a FatEdge<Ent>>
+    ) -> impl Iterator<Item = &'a Edge<Node<Ent>>>
     where
         Ent: 'a;
 
@@ -65,7 +65,7 @@ where
         &'a self,
         point: &Point,
         distance: f64,
-    ) -> impl Iterator<Item = (Point, &'a FatEdge<Ent>)>
+    ) -> impl Iterator<Item = (Point, &'a Edge<Node<Ent>>)>
     where
         Ent: 'a;
 }

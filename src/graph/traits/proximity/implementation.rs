@@ -46,7 +46,7 @@ where
     where
         E: 'a,
     {
-        self.index.nearest_neighbor(&point)
+        self.nodes.nearest_neighbor(&point)
     }
 
     #[cfg_attr(feature = "tracing", tracing::instrument(level = Level::INFO))]

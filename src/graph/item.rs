@@ -1,4 +1,4 @@
-use crate::{DirectionAwareEdgeId, FatEdge, PredicateCache};
+use crate::{DirectionAwareEdgeId, Edge, FatEdge, PredicateCache};
 use routers_network::{Entry, Metadata, Node};
 
 use geo::Point;
@@ -35,8 +35,8 @@ where
     pub(crate) hash: FxHashMap<E, Node<E>>,
     pub(crate) meta: FxHashMap<E, M>,
 
-    pub(crate) index: RTree<Node<E>>,
-    pub(crate) index_edge: RTree<FatEdge<E>>,
+    pub(crate) nodes: RTree<Node<E>>,
+    pub(crate) edges: RTree<Edge<Node<E>>>,
 
     pub cache: PredicateCache<E, M>,
 }
@@ -57,11 +57,11 @@ where
     M: Metadata,
 {
     pub fn index(&self) -> &RTree<Node<E>> {
-        &self.index
+        &self.nodes
     }
 
     pub fn index_edge(&self) -> &RTree<FatEdge<E>> {
-        &self.index_edge
+        &self.edges
     }
 
     pub fn size(&self) -> usize {
