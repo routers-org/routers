@@ -182,7 +182,9 @@ impl Discovery<OsmEntryId> for OsmNetwork {
     where
         OsmEntryId: 'a,
     {
-        self.index_edge.locate_in_envelope_intersecting(&aabb).collect()
+        self.index_edge
+            .locate_in_envelope_intersecting(&aabb)
+            .collect()
     }
 
     fn nodes_in_box<'a>(&'a self, aabb: AABB<Point>) -> Vec<&'a Node<OsmEntryId>>
