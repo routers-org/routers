@@ -3,7 +3,6 @@ use crate::transition::candidate::*;
 use geo::LineString;
 use routers_network::Edge;
 use routers_network::Network;
-use routers_network::Node;
 use routers_network::{Entry, Metadata};
 
 /// The collapsed solution to a transition graph.
@@ -81,7 +80,7 @@ where
             .collect::<LineString>()
     }
 
-    pub fn edges(self) -> impl Iterator<Item = Edge<Node<E>>> {
+    pub fn edges(self) -> impl Iterator<Item = Edge<E>> {
         self.interpolated
             .into_iter()
             .flat_map(|reachable| reachable.path)

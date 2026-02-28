@@ -1,5 +1,5 @@
 use itertools::Either;
-use routers_network::{Edge, Entry, Node};
+use routers_network::{Edge, Entry};
 
 use crate::CandidateId;
 
@@ -22,7 +22,7 @@ where
 {
     pub source: CandidateId,
     pub target: CandidateId,
-    pub path: Vec<Edge<Node<E>>>, // TODO: => Helper method to remove the duplicate node id's to crt8 a vec<e>
+    pub path: Vec<Edge<E>>, // TODO: => Helper method to remove the duplicate node id's to crt8 a vec<e>
 
     pub(crate) resolution_method: ResolutionMethod,
 }
@@ -34,7 +34,7 @@ where
     /// Creates a new reachable element, supplied a source, target and path.
     ///
     /// This assumes the default resolution method.
-    pub fn new(source: CandidateId, target: CandidateId, path: Vec<Edge<Node<E>>>) -> Self {
+    pub fn new(source: CandidateId, target: CandidateId, path: Vec<Edge<E>>) -> Self {
         Self {
             source,
             target,
@@ -60,8 +60,8 @@ where
             Some(last) => Either::Left(
                 self.path
                     .iter()
-                    .map(|edge| edge.source.id)
-                    .chain(core::iter::once(last.target.id)),
+                    .map(|edge| edge.source)
+                    .chain(core::iter::once(last.target)),
             ),
             None => Either::Right(core::iter::empty()),
         }

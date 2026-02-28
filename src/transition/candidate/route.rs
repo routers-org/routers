@@ -49,6 +49,7 @@ where
             .interpolated
             .into_iter()
             .flat_map(|reachable| reachable.path)
+            .flat_map(|edge| network.fatten(&edge))
             .flat_map(|edge| PathElement::from_fat(edge, network))
             .collect::<Path<E, M>>();
 

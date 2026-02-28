@@ -9,10 +9,7 @@ use itertools::Itertools;
 use measure_time::debug_time;
 use pathfinding::num_traits::Zero;
 use pathfinding::prelude::*;
-use routers_network::{Entry, Metadata, Node};
-
-use rayon::iter::ParallelIterator;
-use rayon::prelude::IntoParallelRefIterator;
+use routers_network::{Entry, Metadata};
 
 /// A Upper-Bounded Dijkstra (UBD) algorithm.
 ///
@@ -24,7 +21,7 @@ where
 {
     // Internally holds a successors cache
     predicate: PredicateCache<E, M>,
-    reachable_hash: scc::HashMap<(usize, usize), Reachable<Node<E>>>,
+    reachable_hash: scc::HashMap<(usize, usize), Reachable<E>>,
 }
 
 impl<E, M> Default for PrecomputeForwardSolver<E, M>
@@ -57,18 +54,16 @@ where
         transition: &'b Transition<'b, Emmis, Trans, E, M>,
         context: &'b RoutingContext<'b, E, M>,
         source: &CandidateId,
-    ) -> Vec<(Reachable<Node<E>>, CandidateEdge)>
+    ) -> Vec<(Reachable<E>, CandidateEdge)>
     where
         Emmis: EmissionStrategy + Send + Sync,
         Trans: TransitionStrategy<E, M> + Send + Sync,
         'b: 'a,
     {
-        use rayon::prelude::{IntoParallelIterator, ParallelIterator};
-
         let layer = transition.candidates.next_layer(source);
 
         layer
-            .into_par_iter()
+            .into_iter()
             .filter_map(|target| self.get_reachable(context, source, &target))
             .filter_map(move |reachable| {
                 let path_vec = reachable.path_nodes().collect_vec();
@@ -107,7 +102,7 @@ where
         ctx: &'a RoutingContext<'a, E, M>,
         source_id: &CandidateId,
         target_id: &CandidateId,
-    ) -> Option<Reachable<Node<E>>> {
+    ) -> Option<Reachable<E>> {
         let source = ctx.candidate(source_id)?;
 
         // Upper-Bounded reachable map containing a Child:Parent relation
@@ -196,11 +191,11 @@ where
             transition
                 .layers
                 .layers
-                .par_iter()
+                .iter()
                 .flat_map(|layer| {
                     // objectively O(n^2) / O(n) isn't going to scale; we need something more efficient...
                     // we need a way to do a multicast N:N from all in layer N to all in layer N+1
-                    layer.nodes.par_iter().map(|source| {
+                    layer.nodes.iter().map(|source| {
                         let found = self.reach(&transition, &context, source);
 
                         let some = found

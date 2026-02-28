@@ -1,11 +1,12 @@
 use crate::{
+    CollapseError, CollapsedPath, Costing, MatchError, PredicateCache, Reachable, Solver,
+    TransitionContext, Trip,
     candidate::{CandidateEdge, CandidateId},
     costing::{EmissionStrategy, TransitionStrategy},
     entity::Transition,
     primitives::RoutingContext,
-    solver::Reachable,
 };
-use routers_network::{Entry, Metadata, Node};
+use routers_network::{Entry, Metadata};
 
 use log::{debug, info};
 
@@ -15,7 +16,7 @@ use rustc_hash::FxHashMap;
 use geo::{Distance, Haversine};
 use itertools::Itertools;
 use measure_time::debug_time;
-use pathfinding::prelude::*;
+use pathfinding::{num_traits::Zero, prelude::*};
 
 /// A Upper-Bounded Dijkstra (UBD) algorithm.
 ///
@@ -27,7 +28,7 @@ where
 {
     // Internally holds a successors cache
     predicate: PredicateCache<E, M>,
-    reachable_hash: RefCell<FxHashMap<(usize, usize), Reachable<Node<E>>>>,
+    reachable_hash: RefCell<FxHashMap<(usize, usize), Reachable<E>>>,
 }
 
 impl<E, M> Default for SelectiveForwardSolver<E, M>
@@ -97,7 +98,7 @@ where
                 .into_iter()
                 .filter_map(move |reachable| {
                     let path_vec = reachable.path_nodes().collect_vec();
-                    let optimal_path = Trip::new(path_vec);
+                    let optimal_path = Trip::new_with_map(context.map, &path_vec);
 
                     let source = context.candidate(&reachable.source)?;
                     let target = context.candidate(&reachable.target)?;

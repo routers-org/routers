@@ -9,7 +9,7 @@ pub mod entity;
 pub mod layer;
 // pub mod r#match;
 pub mod primitives;
-// pub mod solver;
+pub mod solver;
 pub mod trip;
 
 // pub use r#match::Match;
@@ -21,8 +21,8 @@ pub use candidate::*;
 pub use costing::*;
 #[doc(inline)]
 pub use primitives::*;
-// #[doc(inline)]
-// pub use solver::*;
+#[doc(inline)]
+pub use solver::*;
 
 pub use entity::*;
 pub use layer::*;

@@ -2,7 +2,7 @@ use crate::ResolutionMethod;
 use crate::transition::candidate::{Candidate, CandidateId};
 use crate::transition::{RoutingContext, Strategy, Trip, VirtualTail};
 use geo::{Distance, Haversine};
-use routers_network::{Entry, Metadata, Node};
+use routers_network::{Entry, Metadata};
 
 pub trait TransitionStrategy<E, M>: for<'a> Strategy<TransitionContext<'a, E, M>> {}
 impl<T, E, M> TransitionStrategy<E, M> for T where T: for<'a> Strategy<TransitionContext<'a, E, M>> {}
@@ -21,7 +21,7 @@ where
     pub optimal_path: Trip<E>,
 
     /// A list of all OSM nodes pertaining to the optimal trip path.
-    pub map_path: &'a [Node<E>],
+    pub map_path: &'a [E],
 
     /// The source candidate indicating the edge and
     /// position for which the path begins at.

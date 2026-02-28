@@ -1,7 +1,6 @@
 use crate::transition::*;
 use core::hash::Hash;
-use itertools::Either;
-use routers_network::{Edge, Entry, Metadata, Node};
+use routers_network::{Entry, Metadata};
 use rustc_hash::FxHashMap;
 
 /// Defines a structure which can be supplied to the [`Transition::solve`] function
