@@ -18,6 +18,14 @@ pub enum SolverVariant {
 }
 
 impl SolverVariant {
+    pub(crate) fn without_cache<E: Entry, M: Metadata>(self) -> SolverImpl<E, M> {
+        match self {
+            SolverVariant::Fastest => SolverImpl::Precompute(PrecomputeForwardSolver::default()),
+            SolverVariant::Precompute => SolverImpl::Precompute(PrecomputeForwardSolver::default()),
+            SolverVariant::Selective => SolverImpl::Selective(SelectiveForwardSolver::default()),
+        }
+    }
+
     pub(crate) fn instance<E: Entry, M: Metadata>(
         self,
         cache: PredicateCache<E, M>,

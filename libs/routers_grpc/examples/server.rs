@@ -1,10 +1,12 @@
 extern crate alloc;
 
+use routers_codec::osm::{OsmEdgeMetadata, OsmEntryId, OsmNetwork};
 use routers_fixtures::{LOS_ANGELES, fixture_path};
 use routers_grpc::r#match::MatchServiceServer;
 use routers_grpc::optimise::OptimiseServiceServer;
 use routers_grpc::scan::ScanServiceServer;
-use routers_grpc::{Tracer, proto, services::RouteService};
+use routers_grpc::services::{GrpcAdapter, OsmService};
+use routers_grpc::{Tracer, proto};
 
 use tonic_web::GrpcWebLayer;
 use tower_http::cors::{Any, CorsLayer};
@@ -25,8 +27,11 @@ async fn main() -> Result<(), Box<dyn core::error::Error>> {
     // Create the router
     tracing::info!("Creating Router");
     let los_angeles = fixture_path(LOS_ANGELES);
-    let router_base = RouteService::from_file(los_angeles).expect("-");
-    let router = Arc::new(router_base);
+    let router_base = OsmService::from_file(los_angeles).expect("-");
+
+    let service = GrpcAdapter::<OsmNetwork, OsmEntryId, OsmEdgeMetadata>::new(router_base);
+
+    let router = Arc::new(service);
 
     // Initialize the reflector
     tracing::info!("Router Created");

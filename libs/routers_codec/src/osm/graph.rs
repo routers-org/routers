@@ -10,9 +10,9 @@ use rstar::{AABB, RTree};
 use rustc_hash::{FxHashMap, FxHasher};
 
 use core::error::Error;
+use core::fmt::Debug;
+use core::hash::BuildHasherDefault;
 use geo::Point;
-use std::fmt::Debug;
-use std::hash::BuildHasherDefault;
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -241,7 +241,7 @@ impl Route<OsmEntryId> for OsmNetwork {
 }
 
 impl Debug for OsmNetwork {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_str("open street maps : network")
     }
 }

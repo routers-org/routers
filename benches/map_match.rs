@@ -1,13 +1,14 @@
 use core::fmt::Debug;
+use routers::r#match::MatchOptions;
 use routers_fixtures::{
     LAX_LYNWOOD_MATCHED, LAX_LYNWOOD_TRIP, LOS_ANGELES, VENTURA_MATCHED, VENTURA_TRIP, ZURICH,
     fixture,
 };
 
 use routers::transition::*;
-use routers::{DEFAULT_SEARCH_DISTANCE, Graph, Match, MatchOptions};
+use routers::{DEFAULT_SEARCH_DISTANCE, Match};
 
-use routers_codec::osm::OsmEdgeMetadata;
+use routers_codec::osm::{OsmEdgeMetadata, OsmNetwork};
 use routers_network::{Entry, Metadata};
 
 use criterion::{black_box, criterion_main};
@@ -70,7 +71,7 @@ fn target_benchmark(c: &mut criterion::Criterion) {
         let path = Path::new(fixture!(ga.source_file))
             .as_os_str()
             .to_ascii_lowercase();
-        let graph = Graph::new(path).expect("Graph must be created");
+        let graph = OsmNetwork::new(path).expect("Graph must be created");
 
         let costing = DefaultEmissionCost::default();
         let runtime = OsmEdgeMetadata::default_runtime();
@@ -156,7 +157,7 @@ fn target_benchmark(c: &mut criterion::Criterion) {
 }
 
 fn bench_match<E: Entry, M: Metadata>(
-    graph: &Graph<E, M>,
+    graph: &dyn Match<E, M>,
     runtime: M::Runtime,
     coordinates: LineString<f64>,
     solver: impl Into<SolverVariant>,

@@ -121,15 +121,15 @@ where
         }
     }
 
-    // /// Solves the transition graph, using the provided [`Solver`].
-    // pub fn solve(
-    //     self,
-    //     solver: impl Solver<E, M>,
-    //     runtime: &M::Runtime,
-    // ) -> Result<CollapsedPath<E>, MatchError> {
-    //     // Indirection to call.
-    //     solver.solve(self, runtime)
-    // }
+    /// Solves the transition graph, using the provided [`Solver`].
+    pub fn solve(
+        self,
+        solver: impl Solver<E, M>,
+        runtime: &M::Runtime,
+    ) -> Result<CollapsedPath<E>, MatchError> {
+        // Indirection to call.
+        solver.solve(self, runtime)
+    }
 
     /// Collapses the Hidden Markov Model (See [HMM]) into a
     /// [`CollapsedPath`] result (solve).

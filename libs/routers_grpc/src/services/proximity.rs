@@ -1,13 +1,12 @@
 use crate::definition::model::*;
 use crate::definition::scan::*;
-use crate::services::RouteService;
-
-use routers::Scan;
+use crate::services::GrpcAdapter;
 
 use alloc::sync::Arc;
 use core::cmp::Ordering;
 use geo::{Distance, Haversine, Point, coord, point};
 use log::{debug, info};
+use routers_network::Network;
 use tonic::{Request, Response, Status};
 use wkt::ToWkt;
 
@@ -16,10 +15,11 @@ use routers_network::{Entry, Metadata};
 use tracing::Level;
 
 #[tonic::async_trait]
-impl<E, M> ScanService for RouteService<E, M>
+impl<T, E, M> ScanService for GrpcAdapter<T, E, M>
 where
-    M: Metadata + 'static,
-    E: Entry + 'static,
+    T: Network<E, M> + Send + Sync + 'static,
+    M: Metadata + Send + Sync + 'static,
+    E: Entry + Send + Sync + 'static,
 {
     #[cfg_attr(feature="telemetry", tracing::instrument(skip_all, err(level = Level::INFO)))]
     async fn point(
@@ -32,7 +32,7 @@ where
             None => return Err(Status::invalid_argument("Missing Coordinate")),
         };
 
-        let nearest_point = self.graph.scan_node(point).map_or(
+        let nearest_point = self.inner.nearest_node(&point).map_or(
             Err(Status::internal("Could not find appropriate point")),
             |coord| {
                 Ok(Coordinate {
@@ -66,9 +66,8 @@ where
         );
 
         let mut nearest_points = self
-            .graph
-            .scan_nodes_projected(&point, request.search_radius)
-            .collect::<Vec<_>>();
+            .inner
+            .nearest_nodes_projected(&point, request.search_radius);
 
         debug!("Found {} points", nearest_points.len());
 

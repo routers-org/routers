@@ -1,27 +1,28 @@
-use routers_codec::osm::{OsmEdgeMetadata, OsmEntryId};
+use routers_codec::osm::OsmNetwork;
+use std::{marker::PhantomData, path::PathBuf};
 
-use routers::Graph;
-use routers_network::{Entry, Metadata};
+pub struct GrpcAdapter<T, E, M> {
+    inner: T,
+    _marker: PhantomData<(E, M)>,
+}
 
-use std::path::PathBuf;
+impl<T, E, M> GrpcAdapter<T, E, M> {
+    pub fn new(inner: T) -> Self {
+        Self {
+            inner,
+            _marker: PhantomData,
+        }
+    }
+}
 
 pub mod matcher;
 pub mod optimise;
 pub mod proximity;
 
-pub struct RouteService<E, M>
-where
-    E: Entry,
-    M: Metadata,
-{
-    pub graph: Graph<E, M>,
-}
-
-impl RouteService<OsmEntryId, OsmEdgeMetadata> {
-    pub fn from_file(file: PathBuf) -> Result<Self, Box<dyn core::error::Error>> {
+pub struct OsmService;
+impl OsmService {
+    pub fn from_file(file: PathBuf) -> Result<OsmNetwork, Box<dyn core::error::Error>> {
         let file_os_str = file.as_os_str().to_ascii_lowercase();
-        let graph = Graph::new(file_os_str).map_err(|e| format!("{e:?}"))?;
-
-        Ok(RouteService { graph })
+        OsmNetwork::new(file_os_str)
     }
 }

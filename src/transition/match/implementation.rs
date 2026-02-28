@@ -2,19 +2,18 @@ use crate::Match;
 use crate::candidate::RoutedPath;
 use crate::costing::CostingStrategies;
 use crate::entity::Transition;
+use crate::r#match::MatchOptions;
 use crate::primitives::MatchError;
-use crate::transition::*;
-use crate::{Graph, MatchOptions};
 
 use crate::generation::StandardGenerator;
 use geo::LineString;
 use log::info;
+use routers_network::Network;
 use routers_network::{Entry, Metadata};
 
-impl<E, M> Match<E, M> for Graph<E, M>
+impl<T, E: Entry, M: Metadata> Match<E, M> for T
 where
-    E: Entry,
-    M: Metadata,
+    T: Network<E, M>,
 {
     #[cfg_attr(feature = "tracing", tracing::instrument(skip_all, level = Level::INFO))]
     fn r#match(
@@ -29,7 +28,7 @@ where
 
         // Create our hidden markov model solver
         let transition = Transition::new(self, linestring, &costing, generator);
-        let solver = opts.solver.instance(self.cache.clone());
+        let solver = opts.solver.without_cache();
 
         transition
             .solve(solver, &opts.runtime)

@@ -163,7 +163,7 @@ where
             lookup,
             layers,
         } = input
-            .into_iter()
+            .iter()
             .enumerate()
             .flat_map(|(i, o)| self.discover_candidates(i, o))
             .collect::<Vec<PartiallyGeneratedCandidate<E>>>()

@@ -1,12 +1,12 @@
 use crate::traits::Entry;
 
+use core::cmp::{Ord, Ordering};
 use core::fmt::Debug;
+use core::hash::{Hash, Hasher};
 use core::ops::Deref;
 use geo::{Destination, Distance, Euclidean, Geodesic, Point};
 use rstar::{AABB, Envelope};
 use serde::Serialize;
-use std::cmp::{Ord, Ordering};
-use std::hash::{Hash, Hasher};
 
 /// The standardised node primitive containing a generic
 /// identifier which must implement [Entry], and contain
@@ -63,7 +63,7 @@ where
 
 impl<E: Entry> Entry for Node<E> {
     fn identifier(&self) -> i64 {
-        return self.id.identifier();
+        self.id.identifier()
     }
 }
 
@@ -92,7 +92,7 @@ impl<E: Entry> Ord for Node<E> {
 
 impl<E: Entry> PartialOrd for Node<E> {
     fn partial_cmp(&self, other: &Node<E>) -> Option<Ordering> {
-        self.id.partial_cmp(&other.id)
+        Some(self.cmp(other))
     }
 }
 

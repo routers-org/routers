@@ -141,7 +141,6 @@ routers_network = { workspace = true }
 
 # Algorithm
 rstar = { workspace = true }
-routers_codec = { workspace = true }
 
 petgraph = { workspace = true }
 serde = { workspace = true }
@@ -179,6 +178,7 @@ wkt = { workspace = true }
 insta = { workspace = true }
 criterion = { workspace = true }
 routers_fixtures = { workspace = true }
+routers_codec = { workspace = true }
 
 [[bench]]
 name = "map_match"

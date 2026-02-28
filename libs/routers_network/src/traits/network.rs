@@ -1,12 +1,12 @@
-use std::fmt::Debug;
+use core::fmt::Debug;
 
-use crate::{DirectionAwareEdgeId, Edge, Entry, Metadata, Node, Scan, edge::Weight};
+use crate::{DirectionAwareEdgeId, Edge, Entry, Metadata, Node, Route, Scan, edge::Weight};
 use geo::Point;
 
 pub type EdgeData<E> = (Weight, DirectionAwareEdgeId<E>);
 pub type GraphEdge<E> = (E, E, EdgeData<E>);
 
-pub trait Network<E, M>: Scan<E> + Debug
+pub trait Network<E, M>: Scan<E> + Route<E> + Debug
 where
     E: Entry,
     M: Metadata,

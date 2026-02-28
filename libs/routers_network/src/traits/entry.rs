@@ -1,6 +1,6 @@
+use core::fmt::Debug;
 use core::hash::Hash;
 use serde::Serialize;
-use std::fmt::Debug;
 
 /// TODO: Description
 pub trait Entry:
