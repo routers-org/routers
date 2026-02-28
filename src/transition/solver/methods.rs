@@ -35,7 +35,7 @@ where
     /// Creates a new reachable element, supplied a source, target and path.
     ///
     /// This assumes the default resolution method.
-    pub fn new(source: CandidateId, target: CandidateId, path: Vec<Edge<E>>) -> Self {
+    pub fn new(source: CandidateId, target: CandidateId, path: Vec<Edge<Node<E>>>) -> Self {
         Self {
             source,
             target,
@@ -61,8 +61,8 @@ where
             Some(last) => Either::Left(
                 self.path
                     .iter()
-                    .map(|edge| edge.source)
-                    .chain(core::iter::once(last.target)),
+                    .map(|edge| edge.source.id)
+                    .chain(core::iter::once(last.target.id)),
             ),
             None => Either::Right(core::iter::empty()),
         }

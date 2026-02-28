@@ -20,7 +20,7 @@ where
     pub optimal_path: Trip<E>,
 
     /// A list of all OSM nodes pertaining to the optimal trip path.
-    pub map_path: &'a [E],
+    pub map_path: &'a [Node<E>],
 
     /// The source candidate indicating the edge and
     /// position for which the path begins at.

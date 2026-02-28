@@ -1,9 +1,8 @@
 use crate::transition::candidate::*;
 use core::ops::Deref;
-use routers_network::{Entry, Metadata};
+use routers_network::{Edge, Entry, Graph, Metadata, Node};
 use serde::Serialize;
 
-use crate::Graph;
 use geo::Coord;
 
 /// A route representing the parsed output from a function
@@ -108,7 +107,7 @@ where
     M: Metadata,
 {
     pub point: Coord,
-    pub edge: FatEdge<E>,
+    pub edge: Edge<Node<E>>,
 
     pub metadata: M,
 }
@@ -126,7 +125,7 @@ where
         })
     }
 
-    pub fn from_fat(edge: FatEdge<E>, graph: &Graph<E, M>) -> Option<Self> {
+    pub fn from_fat(edge: Edge<Node<E>>, graph: &Graph<E, M>) -> Option<Self> {
         Some(PathElement {
             point: edge.source.position.0,
             metadata: graph.meta.get(edge.id())?.clone(),

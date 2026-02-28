@@ -1,6 +1,6 @@
 use crate::Graph;
 use crate::transition::*;
-use routers_network::{Entry, Metadata};
+use routers_network::{Edge, Entry, Metadata, Node};
 
 /// A base context provided to costing methods.
 ///
@@ -32,7 +32,7 @@ where
     }
 
     /// Obtain the [edge](Edge), should it exist, between two [nodes](NodeIx) (specified as ids)
-    pub fn edge(&self, a: &E, b: &E) -> Option<Edge<E>> {
+    pub fn edge(&self, a: &E, b: &E) -> Option<Edge<Node<E>>> {
         let edge = self.map.graph.edge_weight(*a, *b)?;
         Some(Edge::from((*a, *b, edge)))
     }

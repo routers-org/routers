@@ -1,6 +1,5 @@
-use routers_network::{Entry, Node};
+use routers_network::{Edge, Entry, Node};
 
-use crate::Edge;
 use geo::Point;
 #[cfg(feature = "tracing")]
 use tracing::Level;

@@ -9,7 +9,7 @@ use itertools::Itertools;
 use measure_time::debug_time;
 use pathfinding::num_traits::Zero;
 use pathfinding::prelude::*;
-use routers_network::{Entry, Metadata};
+use routers_network::{Entry, Metadata, Node};
 
 use rayon::iter::ParallelIterator;
 use rayon::prelude::IntoParallelRefIterator;
@@ -24,7 +24,7 @@ where
 {
     // Internally holds a successors cache
     predicate: PredicateCache<E, M>,
-    reachable_hash: scc::HashMap<(usize, usize), Reachable<E>>,
+    reachable_hash: scc::HashMap<(usize, usize), Reachable<Node<E>>>,
 }
 
 impl<E, M> Default for PrecomputeForwardSolver<E, M>
@@ -57,7 +57,7 @@ where
         transition: &'b Transition<'b, Emmis, Trans, E, M>,
         context: &'b RoutingContext<'b, E, M>,
         source: &CandidateId,
-    ) -> Vec<(Reachable<E>, CandidateEdge)>
+    ) -> Vec<(Reachable<Node<E>>, CandidateEdge)>
     where
         Emmis: EmissionStrategy + Send + Sync,
         Trans: TransitionStrategy<E, M> + Send + Sync,
@@ -107,7 +107,7 @@ where
         ctx: &'a RoutingContext<'a, E, M>,
         source_id: &CandidateId,
         target_id: &CandidateId,
-    ) -> Option<Reachable<E>> {
+    ) -> Option<Reachable<Node<E>>> {
         let source = ctx.candidate(source_id)?;
 
         // Upper-Bounded reachable map containing a Child:Parent relation

@@ -1,6 +1,7 @@
 use crate::graph::Weight;
 use crate::primitive::{Direction, Node};
 use crate::traits::Entry;
+use crate::{Graph, Metadata};
 use core::cmp::Ordering;
 use core::fmt::Debug;
 use geo::Point;
@@ -31,6 +32,10 @@ where
             id,
             direction: Direction::Outgoing,
         }
+    }
+
+    pub fn with_direction(self, direction: Direction) -> Self {
+        Self { direction, ..self }
     }
 
     /// The [`EdgeIx`] of the direction-aware edge.
@@ -81,7 +86,7 @@ where
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq)]
+#[derive(Debug, Copy, Clone, PartialEq, Serialize)]
 pub struct Edge<E>
 where
     E: Entry,
@@ -98,6 +103,15 @@ where
 {
     pub const fn id(&self) -> &E {
         &self.id.id
+    }
+
+    pub fn fatten<M: Metadata>(&self, graph: &Graph<E, M>) -> Option<Edge<Node<E>>> {
+        Some(Edge {
+            source: *graph.hash.get(&self.source)?,
+            target: *graph.hash.get(&self.target)?,
+            id: DirectionAwareEdgeId::new(Node::new(Point::new(0., 0.), self.id.index())),
+            weight: self.weight,
+        })
     }
 }
 

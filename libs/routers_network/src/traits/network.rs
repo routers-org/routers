@@ -15,13 +15,15 @@ pub trait Discovery<E: Entry> {
     fn edges_in_box<'a>(&'a self, aabb: AABB<Point>) -> impl Iterator<Item = &'a Edge<E>>
     where
         E: 'a;
+
     fn nodes_in_box<'a>(&'a self, aabb: AABB<Point>) -> impl Iterator<Item = &'a Node<E>>
     where
         E: 'a;
 }
 
 pub trait FullObject<E: Entry, M: Metadata> {
-    // fn edge(&self, id: &E) -> Option<&Edge<E>>;
+    fn edge(&self, source: &E, target: &E) -> Option<&Edge<E>>;
+
     fn metadata(&self, id: &E) -> Option<&M>;
 
     fn node(&self, id: &E) -> Option<&Node<E>>;

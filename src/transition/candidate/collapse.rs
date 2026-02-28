@@ -2,6 +2,8 @@ use crate::Graph;
 use crate::transition::Reachable;
 use crate::transition::candidate::*;
 use geo::LineString;
+use routers_network::Edge;
+use routers_network::Node;
 use routers_network::{Entry, Metadata};
 
 /// The collapsed solution to a transition graph.
@@ -35,7 +37,7 @@ where
 {
     pub(crate) fn new(
         cost: u32,
-        interpolated: Vec<Reachable<E>>,
+        interpolated: Vec<Reachable<Node<E>>>,
         route: Vec<CandidateId>,
         candidates: Candidates<E>,
     ) -> Self {

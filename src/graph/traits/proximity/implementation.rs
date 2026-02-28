@@ -1,7 +1,7 @@
-use crate::FatEdge;
 use crate::graph::Graph;
 use crate::graph::Scan;
 
+use routers_network::Edge;
 use routers_network::{Entry, Metadata, Node};
 
 use geo::{Destination, Geodesic, Haversine, InterpolatableLine, Line, LineLocatePoint, Point};
@@ -31,7 +31,7 @@ where
         &'a self,
         point: &Point,
         distance: f64,
-    ) -> impl Iterator<Item = &'a FatEdge<E>>
+    ) -> impl Iterator<Item = &'a Edge<Node<E>>>
     where
         E: 'a,
     {

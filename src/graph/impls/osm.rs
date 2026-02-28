@@ -1,11 +1,11 @@
+use crate::PredicateCache;
 use crate::graph::item::{Graph, GraphStructure};
-use crate::{DirectionAwareEdgeId, Edge, FatEdge, PredicateCache};
 
 use routers_codec::osm::OsmEntryId;
 use routers_codec::osm::element::ProcessedElement;
 use routers_codec::osm::meta::OsmEdgeMetadata;
 use routers_codec::osm::{Parallel, ProcessedElementIterator};
-use routers_network::{Metadata, Node};
+use routers_network::{DirectionAwareEdgeId, Edge, Metadata, Node};
 
 use log::{debug, info};
 use rstar::{AABB, RTree};
@@ -121,10 +121,14 @@ impl OsmGraph {
             edges
                 .iter()
                 .flat_map(|edge| {
-                    Some(FatEdge {
+                    Some(Edge {
                         source: *hash.get(&edge.source)?,
                         target: *hash.get(&edge.target)?,
-                        id: edge.id,
+                        id: DirectionAwareEdgeId::new(Node::new(
+                            Point::new(0., 0.),
+                            edge.id.index(),
+                        ))
+                        .with_direction(edge.id.direction()),
                         weight: edge.weight,
                     })
                 })
@@ -179,9 +183,14 @@ impl Discovery<OsmEntryId> for OsmGraph {
 }
 
 impl FullObject<OsmEntryId, OsmEdgeMetadata> for OsmGraph {
-    // fn edge(&self, id: &OsmEntryId) -> Option<&Edge<OsmEntryId>> {
-    //     self.graph.edge
-    // }
+    fn edge(&self, source: &OsmEntryId, target: &OsmEntryId) -> Option<Edge<OsmEntryId>> {
+        self.graph.edge_weight(a, b).map(|(w, id)| Edge {
+            source: *source,
+            target: *target,
+            weight: *w,
+            id,
+        })
+    }
 
     fn metadata(&self, id: &OsmEntryId) -> Option<&OsmEdgeMetadata> {
         self.meta.get(id)

@@ -1,5 +1,5 @@
-use crate::{DirectionAwareEdgeId, Edge, FatEdge, PredicateCache};
-use routers_network::{Entry, Metadata, Node};
+use crate::PredicateCache;
+use routers_network::{DirectionAwareEdgeId, Edge, Entry, Metadata, Node};
 
 use geo::Point;
 use petgraph::prelude::DiGraphMap;
@@ -60,7 +60,7 @@ where
         &self.nodes
     }
 
-    pub fn index_edge(&self) -> &RTree<FatEdge<E>> {
+    pub fn index_edge(&self) -> &RTree<Edge<Node<E>>> {
         &self.edges
     }
 

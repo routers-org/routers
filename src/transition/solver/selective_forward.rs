@@ -1,5 +1,5 @@
 use crate::transition::*;
-use routers_network::{Entry, Metadata};
+use routers_network::{Entry, Metadata, Node};
 
 use log::{debug, info};
 
@@ -22,7 +22,7 @@ where
 {
     // Internally holds a successors cache
     predicate: PredicateCache<E, M>,
-    reachable_hash: RefCell<FxHashMap<(usize, usize), Reachable<E>>>,
+    reachable_hash: RefCell<FxHashMap<(usize, usize), Reachable<Node<E>>>>,
 }
 
 impl<E, M> Default for SelectiveForwardSolver<E, M>
@@ -92,7 +92,7 @@ where
                 .into_iter()
                 .filter_map(move |reachable| {
                     let path_vec = reachable.path_nodes().collect_vec();
-                    let optimal_path = Trip::new_with_map(transition.map, &path_vec);
+                    let optimal_path = Trip::new(path_vec);
 
                     let source = context.candidate(&reachable.source)?;
                     let target = context.candidate(&reachable.target)?;
