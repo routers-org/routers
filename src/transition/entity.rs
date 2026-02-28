@@ -1,10 +1,10 @@
 use crate::dump_wkt;
-use crate::graph::Graph;
 use crate::transition::*;
 
 use crate::definition::Layers;
 use crate::generation::LayerGeneration;
 use geo::LineString;
+use routers_network::Network;
 use routers_network::{Entry, Metadata};
 
 type LayerId = usize;
@@ -61,7 +61,7 @@ where
     Emission: EmissionStrategy,
     Transition: TransitionStrategy<E, M>,
 {
-    pub(crate) map: &'a Graph<E, M>,
+    pub(crate) map: &'a dyn Network<E, M>,
     pub(crate) heuristics: &'a CostingStrategies<Emission, Transition, E, M>,
 
     pub(crate) candidates: Candidates<E>,
@@ -86,7 +86,7 @@ where
     /// Therefore, this function may be more expensive than intended for some cases,
     /// plan accordingly.
     pub fn new(
-        map: &'a Graph<E, M>,
+        map: &'a dyn Network<E, M>,
         linestring: LineString,
         heuristics: &'a CostingStrategies<Emmis, Trans, E, M>,
         generator: impl LayerGeneration<E>,
@@ -121,15 +121,15 @@ where
         }
     }
 
-    /// Solves the transition graph, using the provided [`Solver`].
-    pub fn solve(
-        self,
-        solver: impl Solver<E, M>,
-        runtime: &M::Runtime,
-    ) -> Result<CollapsedPath<E>, MatchError> {
-        // Indirection to call.
-        solver.solve(self, runtime)
-    }
+    // /// Solves the transition graph, using the provided [`Solver`].
+    // pub fn solve(
+    //     self,
+    //     solver: impl Solver<E, M>,
+    //     runtime: &M::Runtime,
+    // ) -> Result<CollapsedPath<E>, MatchError> {
+    //     // Indirection to call.
+    //     solver.solve(self, runtime)
+    // }
 
     /// Collapses the Hidden Markov Model (See [HMM]) into a
     /// [`CollapsedPath`] result (solve).

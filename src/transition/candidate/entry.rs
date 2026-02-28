@@ -1,4 +1,3 @@
-use crate::Graph;
 use crate::transition::RoutingContext;
 
 use core::cmp::Ordering;
@@ -6,8 +5,7 @@ use core::fmt::Debug;
 use core::ops::Add;
 use geo::{Distance, Haversine, LineLocatePoint, LineString, Point};
 use pathfinding::num_traits::Zero;
-use routers_network::{Direction, Edge, Entry, Metadata};
-use serde::Serialize;
+use routers_network::{Edge, Entry, Metadata, Network};
 
 /// The location of a candidate within a solution.
 /// This identifies which layer the candidate came from, and which node in the layer it was.
@@ -81,9 +79,9 @@ where
     ///                0.4              0.9
     ///               (40%)            (90%)
     ///
-    pub fn percentage<M: Metadata>(&self, graph: &Graph<E, M>) -> Option<f64> {
+    pub fn percentage<M: Metadata>(&self, graph: &dyn Network<E, M>) -> Option<f64> {
         let edge = graph
-            .get_line(&[self.edge.source, self.edge.target])
+            .line(&[self.edge.source, self.edge.target])
             .into_iter()
             .collect::<LineString>();
 
@@ -98,11 +96,11 @@ where
     ) -> Option<f64> {
         match variant {
             VirtualTail::ToSource => {
-                let source = ctx.map.get_position(&self.edge.source)?;
+                let source = ctx.map.point(&self.edge.source)?;
                 Some(Haversine.distance(source, self.position))
             }
             VirtualTail::ToTarget => {
-                let target = ctx.map.get_position(&self.edge.target)?;
+                let target = ctx.map.point(&self.edge.target)?;
                 Some(Haversine.distance(self.position, target))
             }
         }

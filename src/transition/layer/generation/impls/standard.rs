@@ -1,11 +1,9 @@
 use crate::definition::{Layer, Layers};
 use crate::generation::LayerGeneration;
 use crate::transition::*;
-use crate::{Graph, Scan};
 use geo::{Distance, Haversine, Point};
 use itertools::Itertools;
-use rayon::prelude::*;
-use routers_network::{Entry, Metadata};
+use routers_network::{Entry, Metadata, Network};
 use std::collections::HashMap;
 
 /// Generates the layers within the transition graph.
@@ -37,7 +35,7 @@ where
     pub emission: &'a Emmis,
 
     /// The routing map used to pull candidates from, and provide layout context.
-    map: &'a Graph<E, M>,
+    map: &'a dyn Network<E, M>,
 }
 
 struct PartiallyGeneratedCandidate<E: Entry> {
@@ -67,7 +65,7 @@ where
     Emmis: EmissionStrategy + Send + Sync,
 {
     /// Creates a [`StandardGenerator`] from a map and emission heuristic.
-    pub fn new(map: &'a Graph<E, M>, emission: &'a Emmis, search_distance: f64) -> Self {
+    pub fn new(map: &'a dyn Network<E, M>, emission: &'a Emmis, search_distance: f64) -> Self {
         StandardGenerator {
             map,
             emission,
@@ -80,13 +78,13 @@ where
         &self,
         layer_id: usize,
         origin: &Point,
-    ) -> impl IntoParallelIterator<Item = PartiallyGeneratedCandidate<E>> {
+    ) -> impl IntoIterator<Item = PartiallyGeneratedCandidate<E>> {
         self.map
             // We'll do a best-effort search (square) radius
-            .scan_nodes_projected(origin, self.search_distance)
+            .nearest_nodes_projected(origin, self.search_distance)
+            .into_iter()
             // Get the index for each
             .enumerate()
-            .par_bridge()
             // And calculate the emission costs of each of these points
             .map(move |(node_id, (position, edge))| {
                 let location = CandidateLocation { layer_id, node_id };
@@ -165,7 +163,7 @@ where
             lookup,
             layers,
         } = input
-            .into_par_iter()
+            .into_iter()
             .enumerate()
             .flat_map(|(i, o)| self.discover_candidates(i, o))
             .collect::<Vec<PartiallyGeneratedCandidate<E>>>()

@@ -1,4 +1,3 @@
-use crate::transition::RoutingContext;
 use alloc::sync::Arc;
 use core::fmt::Debug;
 use geo::Distance;
@@ -133,10 +132,11 @@ pub trait Calculable<K: CacheKey, M: Metadata, V> {
 
 mod successor {
     use super::*;
-    use crate::transition::*;
+    use crate::{primitives::WeightAndDistance, transition::*};
 
     use geo::Haversine;
     use petgraph::Direction;
+    use routers_network::DirectionAwareEdgeId;
 
     /// The weights, given as output from the [`SuccessorsCache::calculate`] function.
     type SuccessorWeights<E> = Vec<(E, DirectionAwareEdgeId<E>, WeightAndDistance)>;
@@ -161,7 +161,7 @@ mod successor {
                     const METER_TO_CM: f64 = 100.0;
 
                     #[allow(unsafe_code)]
-                    let position = unsafe { ctx.map.get_position(&next).unwrap_unchecked() };
+                    let position = unsafe { ctx.map.point(&next).unwrap_unchecked() };
 
                     // In centimeters (1m = 100cm)
                     let distance = Haversine.distance(source, position);
@@ -179,7 +179,7 @@ mod successor {
 }
 
 mod predicate {
-    use crate::transition::*;
+    use crate::primitives::Dijkstra;
     use routers_network::Entry;
 
     use super::*;
@@ -292,3 +292,5 @@ where
 
 pub use predicate::PredicateCache;
 pub use successor::SuccessorsCache;
+
+use crate::primitives::RoutingContext;

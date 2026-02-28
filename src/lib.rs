@@ -3,8 +3,8 @@
 
 extern crate alloc;
 
-// pub mod transition;
-// pub use transition::*;
+pub mod transition;
+pub use transition::*;
 
 #[cfg(test)]
 pub mod test;

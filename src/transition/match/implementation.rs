@@ -1,4 +1,8 @@
 use crate::Match;
+use crate::candidate::RoutedPath;
+use crate::costing::CostingStrategies;
+use crate::entity::Transition;
+use crate::primitives::MatchError;
 use crate::transition::*;
 use crate::{Graph, MatchOptions};
 
