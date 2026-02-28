@@ -10,9 +10,9 @@ pub use error::*;
 pub mod resolve;
 pub use resolve::*;
 
-// pub mod cache;
-// #[doc(inline)]
-// pub use cache::*;
+pub mod cache;
+#[doc(inline)]
+pub use cache::*;
 
 pub mod weight_and_distance;
 #[doc(inline)]

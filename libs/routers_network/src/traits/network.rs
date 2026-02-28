@@ -1,7 +1,10 @@
 use std::fmt::Debug;
 
-use crate::{Edge, Entry, Metadata, Node, Scan};
+use crate::{DirectionAwareEdgeId, Edge, Entry, Metadata, Node, Scan, edge::Weight};
 use geo::Point;
+
+pub type EdgeData<E> = (Weight, DirectionAwareEdgeId<E>);
+pub type GraphEdge<E> = (E, E, EdgeData<E>);
 
 pub trait Network<E, M>: Scan<E> + Debug
 where
@@ -11,6 +14,9 @@ where
     fn metadata(&self, id: &E) -> Option<&M>;
 
     fn point(&self, id: &E) -> Option<Point>;
+
+    fn edges_outof(&self, id: E) -> Vec<GraphEdge<E>>;
+    fn edges_into(&self, id: E) -> Vec<GraphEdge<E>>;
 
     /// Produces an iterator of points for a given input.
     ///

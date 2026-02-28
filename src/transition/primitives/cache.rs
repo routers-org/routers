@@ -135,7 +135,6 @@ mod successor {
     use crate::{primitives::WeightAndDistance, transition::*};
 
     use geo::Haversine;
-    use petgraph::Direction;
     use routers_network::DirectionAwareEdgeId;
 
     /// The weights, given as output from the [`SuccessorsCache::calculate`] function.
@@ -152,11 +151,11 @@ mod successor {
         fn calculate(&self, ctx: &RoutingContext<E, M>, key: E) -> SuccessorWeights<E> {
             // Calc. once
             #[allow(unsafe_code)]
-            let source = unsafe { ctx.map.get_position(&key).unwrap_unchecked() };
+            let source = unsafe { ctx.map.point(&key).unwrap_unchecked() };
 
             ctx.map
-                .graph
-                .edges_directed(key, Direction::Outgoing)
+                .edges_outof(key)
+                .into_iter()
                 .map(|(_, next, (w, edge))| {
                     const METER_TO_CM: f64 = 100.0;
 
@@ -165,7 +164,7 @@ mod successor {
 
                     // In centimeters (1m = 100cm)
                     let distance = Haversine.distance(source, position);
-                    (next, (distance * METER_TO_CM) as u32, *w, *edge)
+                    (next, (distance * METER_TO_CM) as u32, w, edge)
                 })
                 .map(|(next, distance, weight, edge)| {
                     // Stores the weight and distance (in cm) to the candidate
@@ -179,7 +178,7 @@ mod successor {
 }
 
 mod predicate {
-    use crate::primitives::Dijkstra;
+    use crate::{WeightAndDistance, primitives::Dijkstra};
     use routers_network::Entry;
 
     use super::*;
@@ -236,7 +235,11 @@ mod predicate {
                         .filter(|(_, edge, _)| {
                             // Only traverse paths which can be accessed by
                             // the specific runtime routing conditions available
-                            let meta = ctx.map.meta(edge);
+                            let meta = ctx.map.metadata(&edge.index());
+                            if meta.is_none() {
+                                return false;
+                            }
+
                             let direction = edge.direction();
 
                             // TODO: Does not uphold invariant.
@@ -246,7 +249,7 @@ mod predicate {
                             //       paths, which may be accessible with a different runtime
                             //       configuration.
 
-                            meta.accessible(ctx.runtime, direction)
+                            meta.unwrap().accessible(ctx.runtime, direction)
                         })
                         .map(|(a, _, b)| (a, b))
                 })

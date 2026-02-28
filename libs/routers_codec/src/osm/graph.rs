@@ -1,5 +1,6 @@
 use petgraph::prelude::DiGraphMap;
 use routers_network::edge::Weight;
+use routers_network::network::GraphEdge;
 use routers_network::{
     DirectionAwareEdgeId, Discovery, Edge, Metadata, Network, Node, Route, Scan,
 };
@@ -252,6 +253,20 @@ impl Network<OsmEntryId, OsmEdgeMetadata> for OsmNetwork {
 
     fn point(&self, id: &OsmEntryId) -> Option<Point> {
         self.hash.get(id).map(|v| v.position)
+    }
+
+    fn edges_into(&self, id: OsmEntryId) -> Vec<GraphEdge<OsmEntryId>> {
+        self.graph
+            .edges_directed(id, petgraph::Direction::Incoming)
+            .map(|(src, dst, &data)| (src, dst, data))
+            .collect()
+    }
+
+    fn edges_outof(&self, id: OsmEntryId) -> Vec<GraphEdge<OsmEntryId>> {
+        self.graph
+            .edges_directed(id, petgraph::Direction::Outgoing)
+            .map(|(src, dst, &data)| (src, dst, data))
+            .collect()
     }
 
     fn fatten(
