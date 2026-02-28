@@ -26,12 +26,13 @@ where
         &'a self,
         point: &Point,
         distance: f64,
-    ) -> impl Iterator<Item = (Point, &'a Edge<Node<E>>)>
+    ) -> Vec<(Point, &'a Edge<Node<E>>)>
     where
         E: 'a,
     {
         // Total overhead of this function is negligible.
         self.edges_at_distance(point, distance)
+            .into_iter()
             .filter_map(move |edge| {
                 let line = Line::new(edge.source.position, edge.target.position);
 
@@ -42,5 +43,6 @@ where
                     .map(|frac| line.point_at_ratio_from_start(&Haversine, frac))
                     .map(|point| (point, edge))
             })
+            .collect()
     }
 }

@@ -1,7 +1,9 @@
-use crate::{Entry, Metadata, Scan};
+use std::fmt::Debug;
+
+use crate::{Edge, Entry, Metadata, Node, Scan};
 use geo::Point;
 
-pub trait Network<E, M>: Scan<E>
+pub trait Network<E, M>: Scan<E> + Debug
 where
     E: Entry,
     M: Metadata,
@@ -14,9 +16,9 @@ where
     ///
     /// All provided nodes that do not exist will not be returned, so the iterator's
     /// length may be smaller than the input slice.
-    fn line(&self, nodes: &[E]) -> impl Iterator<Item = Point> {
-        nodes.iter().filter_map(|node| self.point(node))
+    fn line(&self, nodes: &[E]) -> Vec<Point> {
+        nodes.iter().filter_map(|node| self.point(node)).collect()
     }
-}
 
-// impl<T, E: Entry, M: Metadata> Network<E, M> for T where T: Discovery<E> + FullObject<E, M> {}
+    fn fatten(&self, edge: &Edge<E>) -> Option<Edge<Node<E>>>;
+}

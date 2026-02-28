@@ -10,6 +10,7 @@ use rustc_hash::{FxHashMap, FxHasher};
 
 use core::error::Error;
 use geo::Point;
+use std::fmt::Debug;
 use std::hash::BuildHasherDefault;
 use std::path::PathBuf;
 use std::time::Instant;
@@ -176,21 +177,18 @@ impl OsmNetwork {
 }
 
 impl Discovery<OsmEntryId> for OsmNetwork {
-    fn edges_in_box<'a>(
-        &'a self,
-        aabb: AABB<Point>,
-    ) -> impl Iterator<Item = &'a Edge<Node<OsmEntryId>>>
+    fn edges_in_box<'a>(&'a self, aabb: AABB<Point>) -> Vec<&'a Edge<Node<OsmEntryId>>>
     where
         OsmEntryId: 'a,
     {
-        self.index_edge.locate_in_envelope(&aabb)
+        self.index_edge.locate_in_envelope(&aabb).collect()
     }
 
-    fn nodes_in_box<'a>(&'a self, aabb: AABB<Point>) -> impl Iterator<Item = &'a Node<OsmEntryId>>
+    fn nodes_in_box<'a>(&'a self, aabb: AABB<Point>) -> Vec<&'a Node<OsmEntryId>>
     where
         OsmEntryId: 'a,
     {
-        self.index.locate_in_envelope(&aabb)
+        self.index.locate_in_envelope(&aabb).collect()
     }
 
     fn node(&self, id: &OsmEntryId) -> Option<&Node<OsmEntryId>> {
@@ -241,6 +239,12 @@ impl Route<OsmEntryId> for OsmNetwork {
     }
 }
 
+impl Debug for OsmNetwork {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("open street maps : network")
+    }
+}
+
 impl Network<OsmEntryId, OsmEdgeMetadata> for OsmNetwork {
     fn metadata(&self, id: &OsmEntryId) -> Option<&OsmEdgeMetadata> {
         self.meta.get(id)
@@ -248,5 +252,22 @@ impl Network<OsmEntryId, OsmEdgeMetadata> for OsmNetwork {
 
     fn point(&self, id: &OsmEntryId) -> Option<Point> {
         self.hash.get(id).map(|v| v.position)
+    }
+
+    fn fatten(
+        &self,
+        Edge {
+            source,
+            target,
+            weight,
+            id,
+        }: &Edge<OsmEntryId>,
+    ) -> Option<Edge<Node<OsmEntryId>>> {
+        Some(Edge {
+            source: *self.hash.get(source)?,
+            target: *self.hash.get(target)?,
+            id: DirectionAwareEdgeId::new(Node::new(Point::new(0., 0.), id.index())),
+            weight: *weight,
+        })
     }
 }
