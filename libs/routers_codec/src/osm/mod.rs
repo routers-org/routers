@@ -5,6 +5,7 @@ pub mod blob;
 pub mod block;
 pub mod element;
 
+pub mod graph;
 pub mod parsers;
 
 // Hidden modules
@@ -37,6 +38,8 @@ pub use element::variants::common::*;
 pub use model::*;
 #[doc(inline)]
 pub use parsers::*;
+
+pub use graph::OsmNetwork;
 
 #[doc(hidden)]
 pub use blob::item::BlobItem;

@@ -1,25 +1,35 @@
-use crate::PredicateCache;
-use crate::graph::item::{Graph, GraphStructure};
-
-use routers_codec::osm::OsmEntryId;
-use routers_codec::osm::element::ProcessedElement;
-use routers_codec::osm::meta::OsmEdgeMetadata;
-use routers_codec::osm::{Parallel, ProcessedElementIterator};
-use routers_network::{DirectionAwareEdgeId, Edge, Metadata, Node};
+use petgraph::prelude::DiGraphMap;
+use routers_network::edge::Weight;
+use routers_network::{
+    DirectionAwareEdgeId, Discovery, Edge, Metadata, Network, Node, Route, Scan,
+};
 
 use log::{debug, info};
 use rstar::{AABB, RTree};
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHasher};
 
 use core::error::Error;
 use geo::Point;
-use routers_network::network::{Discovery, FullObject};
+use std::hash::BuildHasherDefault;
 use std::path::PathBuf;
 use std::time::Instant;
 
-pub type OsmGraph = Graph<OsmEntryId, OsmEdgeMetadata>;
+use crate::osm::element::ProcessedElement;
+use crate::osm::*;
 
-impl OsmGraph {
+pub type GraphStructure<E> =
+    DiGraphMap<E, (Weight, DirectionAwareEdgeId<E>), BuildHasherDefault<FxHasher>>;
+
+pub struct OsmNetwork {
+    pub graph: GraphStructure<OsmEntryId>,
+    pub hash: FxHashMap<OsmEntryId, Node<OsmEntryId>>,
+    pub meta: FxHashMap<OsmEntryId, OsmEdgeMetadata>,
+
+    pub index: RTree<Node<OsmEntryId>>,
+    pub index_edge: RTree<Edge<Node<OsmEntryId>>>,
+}
+
+impl OsmNetwork {
     /// Creates a graph from a `.osm.pbf` file, using the `ProcessedElementIterator`
     pub fn new(filename: std::ffi::OsString) -> Result<Self, Box<dyn Error>> {
         let mut start_time = Instant::now();
@@ -149,21 +159,19 @@ impl OsmGraph {
             fixed_start_time.elapsed().as_millis()
         );
 
-        Ok(Graph {
+        Ok(OsmNetwork {
             graph,
             hash,
 
             meta,
 
-            nodes: tree,
-            edges: tree_edge,
-
-            cache: PredicateCache::default(),
+            index: tree,
+            index_edge: tree_edge,
         })
     }
 }
 
-impl Discovery<OsmEntryId> for OsmGraph {
+impl Discovery<OsmEntryId> for OsmNetwork {
     fn edges_in_box<'a>(
         &'a self,
         aabb: AABB<Point>,
@@ -171,32 +179,70 @@ impl Discovery<OsmEntryId> for OsmGraph {
     where
         OsmEntryId: 'a,
     {
-        self.edges.locate_in_envelope(&aabb)
+        self.index_edge.locate_in_envelope(&aabb)
     }
 
     fn nodes_in_box<'a>(&'a self, aabb: AABB<Point>) -> impl Iterator<Item = &'a Node<OsmEntryId>>
     where
         OsmEntryId: 'a,
     {
-        self.nodes.locate_in_envelope(&aabb)
-    }
-}
-
-impl FullObject<OsmEntryId, OsmEdgeMetadata> for OsmGraph {
-    fn edge(&self, source: &OsmEntryId, target: &OsmEntryId) -> Option<Edge<OsmEntryId>> {
-        self.graph.edge_weight(a, b).map(|(w, id)| Edge {
-            source: *source,
-            target: *target,
-            weight: *w,
-            id,
-        })
-    }
-
-    fn metadata(&self, id: &OsmEntryId) -> Option<&OsmEdgeMetadata> {
-        self.meta.get(id)
+        self.index.locate_in_envelope(&aabb)
     }
 
     fn node(&self, id: &OsmEntryId) -> Option<&Node<OsmEntryId>> {
         self.hash.get(id)
+    }
+
+    fn edge(&self, &source: &OsmEntryId, &target: &OsmEntryId) -> Option<Edge<OsmEntryId>> {
+        self.graph
+            .edge_weight(source, target)
+            .map(|&(weight, id)| Edge {
+                source,
+                target,
+                weight,
+                id,
+            })
+    }
+}
+
+impl Scan<OsmEntryId> for OsmNetwork {
+    fn nearest_node<'a>(&'a self, point: &Point) -> Option<&'a Node<OsmEntryId>>
+    where
+        OsmEntryId: 'a,
+    {
+        self.index.nearest_neighbor(point)
+    }
+}
+
+impl Route<OsmEntryId> for OsmNetwork {
+    fn route_nodes(
+        &self,
+        start_node: OsmEntryId,
+        finish_node: OsmEntryId,
+    ) -> Option<(Weight, Vec<Node<OsmEntryId>>)> {
+        let (score, path) = petgraph::algo::astar(
+            &self.graph,
+            start_node,
+            |finish| finish == finish_node,
+            |(_, _, w)| w.0,
+            |_| 0 as Weight,
+        )?;
+
+        let route = path
+            .iter()
+            .filter_map(|v| self.hash.get(v).copied())
+            .collect();
+
+        Some((score, route))
+    }
+}
+
+impl Network<OsmEntryId, OsmEdgeMetadata> for OsmNetwork {
+    fn metadata(&self, id: &OsmEntryId) -> Option<&OsmEdgeMetadata> {
+        self.meta.get(id)
+    }
+
+    fn point(&self, id: &OsmEntryId) -> Option<Point> {
+        self.hash.get(id).map(|v| v.position)
     }
 }

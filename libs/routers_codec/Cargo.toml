@@ -24,9 +24,11 @@ serde = { workspace = true }
 # GeoRust
 geo = { workspace = true, features = ["serde"] }
 rstar = { workspace = true }
+petgraph = { workspace = true }
 
 rayon = { workspace = true }
 log = { workspace = true }
+rustc-hash = "2.1.1"
 
 # Tracing
 tracing = { workspace = true, optional = true }

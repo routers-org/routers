@@ -1,12 +1,12 @@
-use crate::graph::Weight;
 use crate::primitive::{Direction, Node};
 use crate::traits::Entry;
-use crate::{Graph, Metadata};
 use core::cmp::Ordering;
 use core::fmt::Debug;
 use geo::Point;
 use rstar::AABB;
 use serde::Serialize;
+
+pub type Weight = u32;
 
 /// Represents an edge within the system, along with the directionality of the edge.
 ///
@@ -103,15 +103,6 @@ where
 {
     pub const fn id(&self) -> &E {
         &self.id.id
-    }
-
-    pub fn fatten<M: Metadata>(&self, graph: &Graph<E, M>) -> Option<Edge<Node<E>>> {
-        Some(Edge {
-            source: *graph.hash.get(&self.source)?,
-            target: *graph.hash.get(&self.target)?,
-            id: DirectionAwareEdgeId::new(Node::new(Point::new(0., 0.), self.id.index())),
-            weight: self.weight,
-        })
     }
 }
 

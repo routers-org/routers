@@ -2713,6 +2713,7 @@ dependencies = [
  "log",
  "mimalloc",
  "osmpbf",
+ "petgraph 0.8.2",
  "prost 0.14.1",
  "prost-build 0.14.1",
  "rayon",
@@ -2720,6 +2721,7 @@ dependencies = [
  "routers_fixtures",
  "routers_network",
  "rstar",
+ "rustc-hash",
  "serde",
  "strum",
  "test-log",
@@ -2780,9 +2782,7 @@ version = "0.1.0"
 dependencies = [
  "geo",
  "num-traits",
- "petgraph 0.8.2",
  "rstar",
- "rustc-hash",
  "serde",
 ]
 
