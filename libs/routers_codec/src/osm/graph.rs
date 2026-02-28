@@ -169,6 +169,10 @@ impl OsmNetwork {
             index_edge: tree_edge,
         })
     }
+
+    pub fn num_nodes(&self) -> usize {
+        self.graph.node_count()
+    }
 }
 
 impl Discovery<OsmEntryId> for OsmNetwork {
