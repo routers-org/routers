@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.1] - 2026-03-01
+
+### 🐛 Bug Fixes
+
+- *(lint)* Update to 1.88 clippy lints
+- *(routers)* Update dependencies
+- *(deps)* Allow alloc via extern
+- *(deps)* Inherit lints from workspace
+- *(deps)* Lint according to global linting rules
+- *(deps)* Format code to match rules
+
+RoutersOrg - 2025
+
 ## [0.1.0] - 2025-06-24
 
 ### 🚀 Features

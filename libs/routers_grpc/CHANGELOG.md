@@ -2,6 +2,30 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.1] - 2026-03-01
+
+### 🚀 Features
+
+- *(routers)* Add enumeration variant for solver
+- *(routers_grpc)* Propagate search distance from api to match opts
+- *(generator)* Describe generator using trait, allow as a plugin
+
+### 💼 Other
+
+- Finalize as to work without req.
+
+### 🐛 Bug Fixes
+
+- *(lint)* Update to 1.88 clippy lints
+- *(rpc)* Reorders point rpcs in scan service
+- *(routers)* Make appropriate changes to grpc build step
+- *(distace)* Use existing search distance
+- *(snap)* Replace all x and y values
+- *(grpc)* Update grpc bindings to use network definitions
+- As iterators to take adv. of parallelism
+
+RoutersOrg - 2025
+
 ## [0.1.0] - 2025-06-24
 
 ### 🚀 Features
