@@ -2,6 +2,37 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.3] - 2026-03-01
+
+### 🚀 Features
+
+- *(routers_grpc)* Propagate search distance from api to match opts
+- *(test)* Use insta::ron, require serde on structs
+
+### 💼 Other
+
+- Isolated trait definitions and with-knowledge based implementation strategy
+- Fix up some easy imports
+- Formatting
+- Knock off some more bugs
+- Finalize as to work without req.
+- Keep intersecting query
+- Formatting
+
+### 🐛 Bug Fixes
+
+- *(lint)* Update to 1.88 clippy lints
+- *(routers)* Provide helper method, Metadata::default_runtime()
+- *(routers)* Clear clippy warnings, provide explicit lifetimes
+- *(routers_codec)* Number of blocks reduced from minification; snapshots updated
+- *(routers_codec)* Benchmark snapshots updated
+- *(inst)* Consistent sorting over metadata collections
+- *(codec)* Update to use network definitions
+- Use generics to allow monomorphising the network trait
+- As iterators to take adv. of parallelism
+
+RoutersOrg - 2025
+
 ## [0.1.2] - 2025-06-24
 
 ### 🚀 Features
