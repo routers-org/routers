@@ -1,12 +1,14 @@
-use crate::SolverVariant;
+use std::sync::Arc;
+
 use crate::transition::{MatchError, RoutedPath};
+use crate::{PredicateCache, SolverVariant};
 
 use geo::LineString;
-use routers_network::{Entry, Metadata};
+use routers_network::{Entry, Metadata, Network};
 
 pub const DEFAULT_SEARCH_DISTANCE: f64 = 50.0; // 50m
 
-pub struct MatchOptions<M: Metadata> {
+pub struct MatchOptions<E: Entry, M: Metadata, N: Network<E, M>> {
     /// The distance the solver will use to search for candidates
     /// around every given input position.
     ///
@@ -41,25 +43,35 @@ pub struct MatchOptions<M: Metadata> {
     /// The variant of solver to be used by the matcher.
     /// Any given value of the enumeration is accepted,
     pub solver: SolverVariant,
+
+    pub cache: Option<Arc<PredicateCache<E, M, N>>>,
 }
 
-impl<M: Metadata> Default for MatchOptions<M> {
+impl<E: Entry, M: Metadata, N: Network<E, M>> Default for MatchOptions<E, M, N> {
     fn default() -> Self {
         Self {
             search_distance: DEFAULT_SEARCH_DISTANCE,
             runtime: M::default_runtime(),
             solver: SolverVariant::default(),
+            cache: None,
         }
     }
 }
 
-impl<M: Metadata> MatchOptions<M> {
+impl<E: Entry, M: Metadata, N: Network<E, M>> MatchOptions<E, M, N> {
     pub fn new() -> Self {
         Self::default()
     }
 
     pub fn with_runtime(self, runtime: M::Runtime) -> Self {
         Self { runtime, ..self }
+    }
+
+    pub fn with_cache(self, cache: Arc<PredicateCache<E, M, N>>) -> Self {
+        Self {
+            cache: Some(cache),
+            ..self
+        }
     }
 
     pub fn with_solver(self, solver: impl Into<SolverVariant>) -> Self {
@@ -77,10 +89,11 @@ impl<M: Metadata> MatchOptions<M> {
     }
 }
 
-pub trait Match<E, M>
+pub trait Match<E, M, N>
 where
     E: Entry,
     M: Metadata,
+    N: Network<E, M>,
 {
     /// Matches a given [linestring](LineString) against the map.
     ///
@@ -91,7 +104,7 @@ where
     fn r#match(
         &self,
         linestring: LineString,
-        opts: MatchOptions<M>,
+        opts: MatchOptions<E, M, N>,
     ) -> Result<RoutedPath<E, M>, MatchError>;
 
     /// Snaps a given linestring against the map.
@@ -100,15 +113,16 @@ where
     fn snap(
         &self,
         linestring: LineString,
-        opts: MatchOptions<M>,
+        opts: MatchOptions<E, M, N>,
     ) -> Result<RoutedPath<E, M>, MatchError>;
 }
 
 /// Simplifies the interface to the `Match` trait, providing methods that uses appropriate options.
-pub trait MatchSimpleExt<E, M>: Match<E, M>
+pub trait MatchSimpleExt<E, M, N>: Match<E, M, N>
 where
     E: Entry,
     M: Metadata,
+    N: Network<E, M>,
 {
     fn r#match_simple(&self, linestring: LineString) -> Result<RoutedPath<E, M>, MatchError> {
         self.r#match(linestring, MatchOptions::default())
@@ -119,4 +133,7 @@ where
     }
 }
 
-impl<T, E: Entry, M: Metadata> MatchSimpleExt<E, M> for T where T: Match<E, M> {}
+impl<T, E: Entry, M: Metadata, N: Network<E, M>> MatchSimpleExt<E, M, N> for T where
+    T: Match<E, M, N>
+{
+}

@@ -1,7 +1,10 @@
+use std::{marker::PhantomData, sync::Arc};
+
 use crate::transition::*;
 
 use log::{debug, info};
 
+use rayon::prelude::*;
 use rustc_hash::FxHashMap;
 
 use geo::{Distance, Haversine};
@@ -9,43 +12,46 @@ use itertools::Itertools;
 use measure_time::debug_time;
 use pathfinding::num_traits::Zero;
 use pathfinding::prelude::*;
-use routers_network::{Entry, Metadata};
-
-use rayon::iter::ParallelIterator;
-use rayon::prelude::IntoParallelRefIterator;
+use routers_network::{Entry, Metadata, Network};
 
 /// A Upper-Bounded Dijkstra (UBD) algorithm.
 ///
 /// TODO: Docs
-pub struct PrecomputeForwardSolver<E, M>
+pub struct PrecomputeForwardSolver<E, M, N>
 where
     E: Entry,
     M: Metadata,
+    N: Network<E, M>,
 {
     // Internally holds a successors cache
-    predicate: PredicateCache<E, M>,
+    predicate: Arc<PredicateCache<E, M, N>>,
     reachable_hash: scc::HashMap<(usize, usize), Reachable<E>>,
+
+    _phantom: PhantomData<N>,
 }
 
-impl<E, M> Default for PrecomputeForwardSolver<E, M>
+impl<E, M, N> Default for PrecomputeForwardSolver<E, M, N>
 where
     E: Entry,
     M: Metadata,
+    N: Network<E, M>,
 {
     fn default() -> Self {
         Self {
-            predicate: PredicateCache::default(),
+            predicate: Arc::new(PredicateCache::default()),
             reachable_hash: scc::HashMap::new(),
+            _phantom: PhantomData,
         }
     }
 }
 
-impl<E, M> PrecomputeForwardSolver<E, M>
+impl<E, M, N> PrecomputeForwardSolver<E, M, N>
 where
     E: Entry,
     M: Metadata,
+    N: Network<E, M>,
 {
-    pub fn use_cache(self, cache: PredicateCache<E, M>) -> Self {
+    pub fn use_cache(self, cache: Arc<PredicateCache<E, M, N>>) -> Self {
         Self {
             predicate: cache,
             ..self
@@ -54,17 +60,16 @@ where
 
     fn reach<'a, 'b, Emmis, Trans>(
         &'b self,
-        transition: &'b Transition<'b, Emmis, Trans, E, M>,
-        context: &'b RoutingContext<'b, E, M>,
+        transition: &'b Transition<'b, Emmis, Trans, E, M, N>,
+        context: &'b RoutingContext<'b, E, M, N>,
         source: &CandidateId,
     ) -> Vec<(Reachable<E>, CandidateEdge)>
     where
         Emmis: EmissionStrategy + Send + Sync,
-        Trans: TransitionStrategy<E, M> + Send + Sync,
+        Trans: TransitionStrategy<E, M, N> + Send + Sync,
         'b: 'a,
     {
         use rayon::prelude::{IntoParallelIterator, ParallelIterator};
-
         let layer = transition.candidates.next_layer(source);
 
         layer
@@ -104,7 +109,7 @@ where
 
     fn get_reachable<'a>(
         &self,
-        ctx: &'a RoutingContext<'a, E, M>,
+        ctx: &'a RoutingContext<'a, E, M, N>,
         source_id: &CandidateId,
         target_id: &CandidateId,
     ) -> Option<Reachable<E>> {
@@ -160,19 +165,20 @@ where
     }
 }
 
-impl<E, M> Solver<E, M> for PrecomputeForwardSolver<E, M>
+impl<E, M, N> Solver<E, M, N> for PrecomputeForwardSolver<E, M, N>
 where
     E: Entry,
     M: Metadata,
+    N: Network<E, M>,
 {
     fn solve<Emmis, Trans>(
         &self,
-        mut transition: Transition<Emmis, Trans, E, M>,
+        mut transition: Transition<Emmis, Trans, E, M, N>,
         runtime: &M::Runtime,
     ) -> Result<CollapsedPath<E>, MatchError>
     where
         Emmis: EmissionStrategy + Send + Sync,
-        Trans: TransitionStrategy<E, M> + Send + Sync,
+        Trans: TransitionStrategy<E, M, N> + Send + Sync,
     {
         let (start, end) = {
             // Compute cost ~= free

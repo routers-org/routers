@@ -1,7 +1,8 @@
-use crate::Graph;
-use crate::transition::Reachable;
+use crate::Reachable;
 use crate::transition::candidate::*;
 use geo::LineString;
+use routers_network::Edge;
+use routers_network::Network;
 use routers_network::{Entry, Metadata};
 
 /// The collapsed solution to a transition graph.
@@ -62,7 +63,7 @@ where
 
     /// Returns the interpolated route from the collapse as a [`LineString`].
     /// This can therefore be used to show the expected turn decisions made by the provided input.
-    pub fn interpolated<M: Metadata>(&self, map: &Graph<E, M>) -> LineString {
+    pub fn interpolated<M: Metadata>(&self, map: &impl Network<E, M>) -> LineString {
         self.interpolated
             .iter()
             .enumerate()
@@ -70,9 +71,7 @@ where
                 let source = self.candidates.candidate(&reachable.source).unwrap();
                 let target = self.candidates.candidate(&reachable.target).unwrap();
 
-                let path = reachable
-                    .path_nodes()
-                    .filter_map(|node| map.get_position(&node));
+                let path = reachable.path_nodes().filter_map(|node| map.point(&node));
 
                 core::iter::repeat_n(source.position, if index == 0 { 1 } else { 0 })
                     .chain(path)

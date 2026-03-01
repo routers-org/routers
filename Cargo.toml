@@ -17,6 +17,7 @@ alloc_instead_of_core = "warn"
 
 [patch.crates-io]
 routers = { path = "." }
+routers_network = { path = "libs/routers_network" }
 routers_codec = { path = "libs/routers_codec" }
 routers_geo = { path = "libs/routers_geo" }
 routers_grpc = { path = "libs/routers_grpc" }
@@ -29,13 +30,13 @@ routers_fixtures = { path = "libs/routers_fixtures" }
 # Private Members
 routers_shard = { path = "libs/routers_shard", version = "0.1.0" }
 routers_fixtures = { path = "libs/routers_fixtures" }
-routers_network = { path = "libs/routers_network", version = "0.1.0" }
 
 # Members
 routers_codec = "0.1.2"
 routers_geo = "0.1.0"
 routers_grpc = "0.1.0"
 routers_tiles = "0.1.0"
+routers_network = "0.1.0"
 routers = "0.2.1"
 
 # Optimisation Crates
@@ -140,7 +141,6 @@ routers_network = { workspace = true }
 
 # Algorithm
 rstar = { workspace = true }
-routers_codec = { workspace = true }
 
 petgraph = { workspace = true }
 serde = { workspace = true }
@@ -178,6 +178,7 @@ wkt = { workspace = true }
 insta = { workspace = true }
 criterion = { workspace = true }
 routers_fixtures = { workspace = true }
+routers_codec = { workspace = true }
 
 [[bench]]
 name = "map_match"

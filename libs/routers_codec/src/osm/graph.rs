@@ -1,23 +1,37 @@
-use crate::graph::item::{Graph, GraphStructure};
-use crate::{DirectionAwareEdgeId, Edge, FatEdge, PredicateCache};
-
-use routers_codec::osm::OsmEntryId;
-use routers_codec::osm::element::ProcessedElement;
-use routers_codec::osm::meta::OsmEdgeMetadata;
-use routers_codec::osm::{Parallel, ProcessedElementIterator};
-use routers_network::{Metadata, Node};
+use petgraph::prelude::DiGraphMap;
+use routers_network::edge::Weight;
+use routers_network::network::GraphEdge;
+use routers_network::{
+    DirectionAwareEdgeId, Discovery, Edge, Metadata, Network, Node, Route, Scan,
+};
 
 use log::{debug, info};
-use rstar::RTree;
-use rustc_hash::FxHashMap;
+use rstar::{AABB, RTree};
+use rustc_hash::{FxHashMap, FxHasher};
 
 use core::error::Error;
+use core::fmt::Debug;
+use core::hash::BuildHasherDefault;
+use geo::Point;
 use std::path::PathBuf;
 use std::time::Instant;
 
-pub type OsmGraph = Graph<OsmEntryId, OsmEdgeMetadata>;
+use crate::osm::element::ProcessedElement;
+use crate::osm::*;
 
-impl OsmGraph {
+pub type GraphStructure<E> =
+    DiGraphMap<E, (Weight, DirectionAwareEdgeId<E>), BuildHasherDefault<FxHasher>>;
+
+pub struct OsmNetwork {
+    pub graph: GraphStructure<OsmEntryId>,
+    pub hash: FxHashMap<OsmEntryId, Node<OsmEntryId>>,
+    pub meta: FxHashMap<OsmEntryId, OsmEdgeMetadata>,
+
+    pub index: RTree<Node<OsmEntryId>>,
+    pub index_edge: RTree<Edge<Node<OsmEntryId>>>,
+}
+
+impl OsmNetwork {
     /// Creates a graph from a `.osm.pbf` file, using the `ProcessedElementIterator`
     pub fn new(filename: std::ffi::OsString) -> Result<Self, Box<dyn Error>> {
         let mut start_time = Instant::now();
@@ -119,10 +133,14 @@ impl OsmGraph {
             edges
                 .iter()
                 .flat_map(|edge| {
-                    Some(FatEdge {
+                    Some(Edge {
                         source: *hash.get(&edge.source)?,
                         target: *hash.get(&edge.target)?,
-                        id: edge.id,
+                        id: DirectionAwareEdgeId::new(Node::new(
+                            Point::new(0., 0.),
+                            edge.id.index(),
+                        ))
+                        .with_direction(edge.id.direction()),
                         weight: edge.weight,
                     })
                 })
@@ -143,7 +161,7 @@ impl OsmGraph {
             fixed_start_time.elapsed().as_millis()
         );
 
-        Ok(Graph {
+        Ok(OsmNetwork {
             graph,
             hash,
 
@@ -151,8 +169,134 @@ impl OsmGraph {
 
             index: tree,
             index_edge: tree_edge,
+        })
+    }
 
-            cache: PredicateCache::default(),
+    pub fn num_nodes(&self) -> usize {
+        self.graph.node_count()
+    }
+}
+
+impl Discovery<OsmEntryId> for OsmNetwork {
+    fn edges_in_box<'a>(
+        &'a self,
+        aabb: AABB<Point>,
+    ) -> Box<dyn Iterator<Item = &'a Edge<Node<OsmEntryId>>> + Send + 'a>
+    where
+        OsmEntryId: 'a,
+    {
+        Box::new(self.index_edge.locate_in_envelope_intersecting(&aabb))
+    }
+
+    fn nodes_in_box<'a>(
+        &'a self,
+        aabb: AABB<Point>,
+    ) -> Box<dyn Iterator<Item = &'a Node<OsmEntryId>> + Send + 'a>
+    where
+        OsmEntryId: 'a,
+    {
+        Box::new(self.index.locate_in_envelope(&aabb))
+    }
+
+    fn node(&self, id: &OsmEntryId) -> Option<&Node<OsmEntryId>> {
+        self.hash.get(id)
+    }
+
+    fn edge(&self, &source: &OsmEntryId, &target: &OsmEntryId) -> Option<Edge<OsmEntryId>> {
+        self.graph
+            .edge_weight(source, target)
+            .map(|&(weight, id)| Edge {
+                source,
+                target,
+                weight,
+                id,
+            })
+    }
+}
+
+impl Scan<OsmEntryId> for OsmNetwork {
+    fn nearest_node<'a>(&'a self, point: &Point) -> Option<&'a Node<OsmEntryId>>
+    where
+        OsmEntryId: 'a,
+    {
+        self.index.nearest_neighbor(point)
+    }
+}
+
+impl Route<OsmEntryId> for OsmNetwork {
+    fn route_nodes(
+        &self,
+        start_node: OsmEntryId,
+        finish_node: OsmEntryId,
+    ) -> Option<(Weight, Vec<Node<OsmEntryId>>)> {
+        let (score, path) = petgraph::algo::astar(
+            &self.graph,
+            start_node,
+            |finish| finish == finish_node,
+            |(_, _, w)| w.0,
+            |_| 0 as Weight,
+        )?;
+
+        let route = path
+            .iter()
+            .filter_map(|v| self.hash.get(v).copied())
+            .collect();
+
+        Some((score, route))
+    }
+}
+
+impl Debug for OsmNetwork {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("open street maps : network")
+    }
+}
+
+impl Network<OsmEntryId, OsmEdgeMetadata> for OsmNetwork {
+    fn metadata(&self, id: &OsmEntryId) -> Option<&OsmEdgeMetadata> {
+        self.meta.get(id)
+    }
+
+    fn point(&self, id: &OsmEntryId) -> Option<Point> {
+        self.hash.get(id).map(|v| v.position)
+    }
+
+    fn edges_into<'a>(
+        &'a self,
+        id: OsmEntryId,
+    ) -> Box<dyn Iterator<Item = GraphEdge<OsmEntryId>> + 'a> {
+        Box::new(
+            self.graph
+                .edges_directed(id, petgraph::Direction::Incoming)
+                .map(|(src, dst, &data)| (src, dst, data)),
+        )
+    }
+
+    fn edges_outof<'a>(
+        &'a self,
+        id: OsmEntryId,
+    ) -> Box<dyn Iterator<Item = GraphEdge<OsmEntryId>> + 'a> {
+        Box::new(
+            self.graph
+                .edges_directed(id, petgraph::Direction::Outgoing)
+                .map(|(src, dst, &data)| (src, dst, data)),
+        )
+    }
+
+    fn fatten(
+        &self,
+        Edge {
+            source,
+            target,
+            weight,
+            id,
+        }: &Edge<OsmEntryId>,
+    ) -> Option<Edge<Node<OsmEntryId>>> {
+        Some(Edge {
+            source: *self.hash.get(source)?,
+            target: *self.hash.get(target)?,
+            id: DirectionAwareEdgeId::new(Node::new(Point::new(0., 0.), id.index())),
+            weight: *weight,
         })
     }
 }

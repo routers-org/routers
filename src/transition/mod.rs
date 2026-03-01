@@ -7,9 +7,13 @@ pub mod candidate;
 pub mod costing;
 pub mod entity;
 pub mod layer;
+pub mod r#match;
 pub mod primitives;
 pub mod solver;
 pub mod trip;
+
+pub use r#match::DEFAULT_SEARCH_DISTANCE;
+pub use r#match::Match;
 
 // Re-Exports
 #[doc(inline)]

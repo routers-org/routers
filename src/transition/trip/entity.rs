@@ -1,6 +1,5 @@
-use crate::Graph;
 use geo::{Bearing, Distance, Haversine, LineString};
-use routers_network::{Entry, Metadata, Node};
+use routers_network::{Entry, Metadata, Network, Node};
 
 /// Utilities to calculate metadata of a trip.
 /// A trip is composed of a collection of [`Node`] entries.
@@ -37,8 +36,8 @@ where
 
     // TODO: This should be done lazily, since we may not need the points but possibly OK as is.
     /// Creates a new trip from a slice of [`NodeIx`]s, and a map to lookup their location.
-    pub fn new_with_map<M: Metadata>(map: &Graph<E, M>, nodes: &[E]) -> Self {
-        let resolved = map.get_line(nodes);
+    pub fn new_with_map<M: Metadata>(map: &dyn Network<E, M>, nodes: &[E]) -> Self {
+        let resolved = map.line(nodes);
 
         let nodes = resolved
             .into_iter()

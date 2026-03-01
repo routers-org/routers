@@ -1,5 +1,3 @@
-use crate::transition::WeightAndDistance;
-
 use alloc::collections::BinaryHeap;
 use core::cmp::Ordering;
 use core::hash::{BuildHasherDefault, Hash};
@@ -7,6 +5,8 @@ use indexmap::IndexMap;
 use indexmap::map::Entry;
 use pathfinding::num_traits::Zero;
 use rustc_hash::{FxHashSet, FxHasher};
+
+use crate::primitives::WeightAndDistance;
 
 type FxIndexMap<K, V> = IndexMap<K, V, BuildHasherDefault<FxHasher>>;
 

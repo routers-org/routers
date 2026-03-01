@@ -1,8 +1,9 @@
 use geo::{LineString, Point};
+use routers::r#match::MatchSimpleExt;
+use routers_codec::osm::OsmNetwork;
 use std::path::Path;
 use wkt::TryFromWkt;
 
-use routers::*;
 use routers_fixtures::{LOS_ANGELES, VENTURA_TRIP, fixture};
 
 fn main() {
@@ -13,7 +14,7 @@ fn main() {
         .as_os_str()
         .to_ascii_lowercase();
 
-    let graph = Graph::new(path).expect("Graph must be created");
+    let graph = OsmNetwork::new(path).expect("Graph must be created");
 
     let route = graph
         .r#match_simple(coordinates)

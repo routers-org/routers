@@ -1,9 +1,8 @@
 use crate::transition::candidate::*;
 use core::ops::Deref;
-use routers_network::{Entry, Metadata};
+use routers_network::{Edge, Entry, Metadata, Network, Node};
 use serde::Serialize;
 
-use crate::Graph;
 use geo::Coord;
 
 /// A route representing the parsed output from a function
@@ -34,13 +33,13 @@ where
     E: Entry,
     M: Metadata,
 {
-    pub fn new(collapsed_path: CollapsedPath<E>, graph: &Graph<E, M>) -> Self {
+    pub fn new(collapsed_path: CollapsedPath<E>, network: &impl Network<E, M>) -> Self {
         // Collect the collapsed route, providing graph context.
         let discretized = collapsed_path
             .route
             .iter()
             .flat_map(|id| collapsed_path.candidates.candidate(id))
-            .flat_map(|candidate| PathElement::new(candidate, graph))
+            .flat_map(|candidate| PathElement::new(candidate, network))
             .collect::<Path<E, M>>();
 
         // Collect and interpolate required information from the
@@ -50,8 +49,8 @@ where
             .interpolated
             .into_iter()
             .flat_map(|reachable| reachable.path)
-            .flat_map(|edge| edge.fatten(graph))
-            .flat_map(|edge| PathElement::from_fat(edge, graph))
+            .flat_map(|edge| network.fatten(&edge))
+            .flat_map(|edge| PathElement::from_fat(edge, network))
             .collect::<Path<E, M>>();
 
         RoutedPath {
@@ -108,7 +107,7 @@ where
     M: Metadata,
 {
     pub point: Coord,
-    pub edge: FatEdge<E>,
+    pub edge: Edge<Node<E>>,
 
     pub metadata: M,
 }
@@ -118,18 +117,18 @@ where
     E: Entry,
     M: Metadata,
 {
-    pub fn new(candidate: Candidate<E>, graph: &Graph<E, M>) -> Option<Self> {
+    pub fn new(candidate: Candidate<E>, network: &impl Network<E, M>) -> Option<Self> {
         Some(PathElement {
             point: candidate.position.0,
-            edge: candidate.edge.fatten(graph)?,
-            metadata: graph.meta.get(candidate.edge.id())?.clone(),
+            edge: network.fatten(&candidate.edge)?,
+            metadata: network.metadata(candidate.edge.id())?.clone(),
         })
     }
 
-    pub fn from_fat(edge: FatEdge<E>, graph: &Graph<E, M>) -> Option<Self> {
+    pub fn from_fat(edge: Edge<Node<E>>, network: &impl Network<E, M>) -> Option<Self> {
         Some(PathElement {
             point: edge.source.position.0,
-            metadata: graph.meta.get(edge.id())?.clone(),
+            metadata: network.metadata(edge.id())?.clone(),
             edge,
         })
     }

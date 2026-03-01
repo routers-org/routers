@@ -1,11 +1,10 @@
 use crate::definition::{Layer, Layers};
 use crate::generation::LayerGeneration;
 use crate::transition::*;
-use crate::{Graph, Scan};
 use geo::{Distance, Haversine, Point};
 use itertools::Itertools;
-use rayon::prelude::*;
-use routers_network::{Entry, Metadata};
+use rayon::iter::{IndexedParallelIterator, IntoParallelIterator, ParallelIterator};
+use routers_network::{Entry, Metadata, Network};
 use std::collections::HashMap;
 
 /// Generates the layers within the transition graph.
@@ -37,7 +36,7 @@ where
     pub emission: &'a Emmis,
 
     /// The routing map used to pull candidates from, and provide layout context.
-    map: &'a Graph<E, M>,
+    map: &'a dyn Network<E, M>,
 }
 
 struct PartiallyGeneratedCandidate<E: Entry> {
@@ -67,7 +66,7 @@ where
     Emmis: EmissionStrategy + Send + Sync,
 {
     /// Creates a [`StandardGenerator`] from a map and emission heuristic.
-    pub fn new(map: &'a Graph<E, M>, emission: &'a Emmis, search_distance: f64) -> Self {
+    pub fn new(map: &'a dyn Network<E, M>, emission: &'a Emmis, search_distance: f64) -> Self {
         StandardGenerator {
             map,
             emission,
@@ -76,15 +75,19 @@ where
     }
 
     /// Finds relevant candidates for a given point, and associated layer-id
-    fn discover_candidates(
-        &self,
+    fn discover_candidates<'iter>(
+        &'a self,
         layer_id: usize,
-        origin: &Point,
-    ) -> impl IntoParallelIterator<Item = PartiallyGeneratedCandidate<E>> {
+        origin: &'iter Point,
+    ) -> impl IntoParallelIterator<Item = PartiallyGeneratedCandidate<E>>
+    where
+        'a: 'iter,
+    {
+        use rayon::iter::ParallelBridge;
+
         self.map
             // We'll do a best-effort search (square) radius
-            .scan_nodes_projected(origin, self.search_distance)
-            // Get the index for each
+            .nearest_nodes_projected::<'iter>(origin, self.search_distance)
             .enumerate()
             .par_bridge()
             // And calculate the emission costs of each of these points

@@ -1,8 +1,7 @@
-use crate::transition::RoutingContext;
 use alloc::sync::Arc;
 use core::fmt::Debug;
 use geo::Distance;
-use routers_network::{Entry, Metadata};
+use routers_network::{Entry, Metadata, Network};
 use rustc_hash::{FxBuildHasher, FxHashMap};
 use scc::HashMap;
 
@@ -11,35 +10,39 @@ impl<T> CacheKey for T where T: Entry {}
 
 /// A generic read-through cache for a hashmap-backed data structure
 #[derive(Debug)]
-pub struct CacheMap<K, V, M, Meta>
+pub struct CacheMap<K, V, M, N, Meta>
 where
     K: CacheKey,
     V: Debug,
     M: Metadata,
     Meta: Debug,
+    N: Network<K, M>,
 {
     pub(crate) map: HashMap<K, Arc<V>, FxBuildHasher>,
     pub(crate) metadata: Meta,
 
     _marker: core::marker::PhantomData<M>,
+    _marker2: core::marker::PhantomData<N>,
 }
 
 #[derive(Debug)]
-pub struct LockedMap<K, V, M, Meta>(Arc<CacheMap<K, V, M, Meta>>)
+pub struct LockedMap<K, V, M, N, Meta>(Arc<CacheMap<K, V, M, N, Meta>>)
 where
-    LockedMap<K, V, M, Meta>: Calculable<K, M, V>,
+    LockedMap<K, V, M, N, Meta>: Calculable<K, M, N, V>,
     M: Metadata,
     K: CacheKey,
+    N: Network<K, M>,
     V: Debug,
     Meta: Debug;
 
-impl<K, V, M, Meta> Default for LockedMap<K, V, M, Meta>
+impl<K, V, M, N, Meta> Default for LockedMap<K, V, M, N, Meta>
 where
-    LockedMap<K, V, M, Meta>: Calculable<K, M, V>,
-    CacheMap<K, V, M, Meta>: Default,
+    LockedMap<K, V, M, N, Meta>: Calculable<K, M, N, V>,
+    CacheMap<K, V, M, N, Meta>: Default,
     M: Metadata,
     K: CacheKey,
     V: Debug,
+    N: Network<K, M>,
     Meta: Debug,
 {
     fn default() -> Self {
@@ -47,10 +50,11 @@ where
     }
 }
 
-impl<K, V, M, Meta> Clone for LockedMap<K, V, M, Meta>
+impl<K, V, M, N, Meta> Clone for LockedMap<K, V, M, N, Meta>
 where
-    LockedMap<K, V, M, Meta>: Calculable<K, M, V>,
-    CacheMap<K, V, M, Meta>: Default,
+    LockedMap<K, V, M, N, Meta>: Calculable<K, M, N, V>,
+    CacheMap<K, V, M, N, Meta>: Default,
+    N: Network<K, M>,
     M: Metadata,
     K: CacheKey,
     V: Debug,
@@ -61,11 +65,12 @@ where
     }
 }
 
-impl<K, V, M, Meta> LockedMap<K, V, M, Meta>
+impl<K, V, N, M, Meta> LockedMap<K, V, M, N, Meta>
 where
-    LockedMap<K, V, M, Meta>: Calculable<K, M, V>,
+    LockedMap<K, V, M, N, Meta>: Calculable<K, M, N, V>,
     M: Metadata,
     K: CacheKey,
+    N: Network<K, M>,
     V: Debug,
     Meta: Debug,
 {
@@ -81,7 +86,7 @@ where
     /// This, therefore does not require [`V`] to be `Clone`. However, it
     /// consumes an owned value of the key, [`K`], which is required for the
     /// call to the [`Calculable::calculate`] function.
-    pub fn query(&self, ctx: &RoutingContext<K, M>, key: K) -> Arc<V> {
+    pub fn query(&self, ctx: &RoutingContext<K, M, N>, key: K) -> Arc<V> {
         if let Some(value) = self.0.map.get(&key) {
             return Arc::clone(value.get());
         }
@@ -93,18 +98,21 @@ where
     }
 }
 
-impl<K, V, M, Meta> Default for CacheMap<K, V, M, Meta>
+impl<K, V, M, N, Meta> Default for CacheMap<K, V, M, N, Meta>
 where
     K: CacheKey,
     V: Debug,
     M: Metadata,
+    N: Network<K, M>,
     Meta: Default + Debug,
 {
     fn default() -> Self {
         Self {
             map: HashMap::default(),
             metadata: Meta::default(),
+
             _marker: core::marker::PhantomData,
+            _marker2: core::marker::PhantomData,
         }
     }
 }
@@ -122,21 +130,21 @@ where
 /// The [`SuccessorsCache`], given an underlying map key,
 /// can derive the successors using the routing map and an
 /// upper-bounded dijkstra algorithm.
-pub trait Calculable<K: CacheKey, M: Metadata, V> {
+pub trait Calculable<E: CacheKey, M: Metadata, N: Network<E, M>, V> {
     /// The concrete implementation of the function which derives the
     /// value, [`V`], from the key, [`K`].
     ///
     /// The function parameters include relevant [`RoutingContext`] which
     /// may be required for the calculation.
-    fn calculate(&self, ctx: &RoutingContext<K, M>, key: K) -> V;
+    fn calculate(&self, ctx: &RoutingContext<E, M, N>, key: E) -> V;
 }
 
 mod successor {
     use super::*;
-    use crate::transition::*;
+    use crate::{primitives::WeightAndDistance, transition::*};
 
     use geo::Haversine;
-    use petgraph::Direction;
+    use routers_network::DirectionAwareEdgeId;
 
     /// The weights, given as output from the [`SuccessorsCache::calculate`] function.
     type SuccessorWeights<E> = Vec<(E, DirectionAwareEdgeId<E>, WeightAndDistance)>;
@@ -145,27 +153,28 @@ mod successor {
     ///
     /// It accepts a [`NodeIx`] as input, from which it will obtain all outgoing
     /// edges and obtain the distances to each one as a [`WeightAndDistance`].
-    pub type SuccessorsCache<E, M> = LockedMap<E, SuccessorWeights<E>, M, ()>;
+    pub type SuccessorsCache<E, M, N> = LockedMap<E, SuccessorWeights<E>, M, N, ()>;
 
-    impl<E: CacheKey, M: Metadata> Calculable<E, M, SuccessorWeights<E>> for SuccessorsCache<E, M> {
+    impl<E: CacheKey, M: Metadata, N: Network<E, M>> Calculable<E, M, N, SuccessorWeights<E>>
+        for SuccessorsCache<E, M, N>
+    {
         #[inline]
-        fn calculate(&self, ctx: &RoutingContext<E, M>, key: E) -> SuccessorWeights<E> {
+        fn calculate(&self, ctx: &RoutingContext<E, M, N>, key: E) -> SuccessorWeights<E> {
             // Calc. once
             #[allow(unsafe_code)]
-            let source = unsafe { ctx.map.get_position(&key).unwrap_unchecked() };
+            let source = unsafe { ctx.map.point(&key).unwrap_unchecked() };
 
             ctx.map
-                .graph
-                .edges_directed(key, Direction::Outgoing)
+                .edges_outof(key)
                 .map(|(_, next, (w, edge))| {
                     const METER_TO_CM: f64 = 100.0;
 
                     #[allow(unsafe_code)]
-                    let position = unsafe { ctx.map.get_position(&next).unwrap_unchecked() };
+                    let position = unsafe { ctx.map.point(&next).unwrap_unchecked() };
 
                     // In centimeters (1m = 100cm)
                     let distance = Haversine.distance(source, position);
-                    (next, (distance * METER_TO_CM) as u32, *w, *edge)
+                    (next, (distance * METER_TO_CM) as u32, w, edge)
                 })
                 .map(|(next, distance, weight, edge)| {
                     // Stores the weight and distance (in cm) to the candidate
@@ -179,31 +188,33 @@ mod successor {
 }
 
 mod predicate {
-    use crate::transition::*;
-    use routers_network::Entry;
+    use crate::{WeightAndDistance, primitives::Dijkstra};
+    use routers_network::{Entry, Network};
 
     use super::*;
 
     const DEFAULT_THRESHOLD: f64 = 200_000f64; // 2km in cm
 
     #[derive(Debug)]
-    pub struct PredicateMetadata<E, M>
+    pub struct PredicateMetadata<E, M, N>
     where
         E: Entry,
         M: Metadata,
+        N: Network<E, M>,
     {
         /// The successors cache used to back the successors and
         /// prevent repeated calculations.
-        successors: SuccessorsCache<E, M>,
+        successors: SuccessorsCache<E, M, N>,
 
         /// The threshold by which the solver is bounded, in centimeters.
         threshold_distance: f64,
     }
 
-    impl<E, M> Default for PredicateMetadata<E, M>
+    impl<E, M, N> Default for PredicateMetadata<E, M, N>
     where
         E: Entry,
         M: Metadata,
+        N: Network<E, M>,
     {
         fn default() -> Self {
             Self {
@@ -223,11 +234,14 @@ mod predicate {
 
     /// The predicate cache through which a backing of [`Predicates`] is
     /// made from a [`NodeIx`] key, cached on first calculation and read thereafter.
-    pub type PredicateCache<E, M> = LockedMap<E, Predicates<E>, M, PredicateMetadata<E, M>>;
+    pub type PredicateCache<E, M, N> =
+        LockedMap<E, Predicates<E>, M, N, PredicateMetadata<E, M, N>>;
 
-    impl<E: CacheKey, M: Metadata> Calculable<E, M, Predicates<E>> for PredicateCache<E, M> {
+    impl<E: CacheKey, M: Metadata, N: Network<E, M>> Calculable<E, M, N, Predicates<E>>
+        for PredicateCache<E, M, N>
+    {
         #[inline]
-        fn calculate(&self, ctx: &RoutingContext<E, M>, key: E) -> Predicates<E> {
+        fn calculate(&self, ctx: &RoutingContext<E, M, N>, key: E) -> Predicates<E> {
             let threshold = self.0.metadata.threshold_distance;
 
             Dijkstra
@@ -236,7 +250,11 @@ mod predicate {
                         .filter(|(_, edge, _)| {
                             // Only traverse paths which can be accessed by
                             // the specific runtime routing conditions available
-                            let meta = ctx.map.meta(edge);
+                            let meta = ctx.map.metadata(&edge.index());
+                            if meta.is_none() {
+                                return false;
+                            }
+
                             let direction = edge.direction();
 
                             // TODO: Does not uphold invariant.
@@ -246,7 +264,7 @@ mod predicate {
                             //       paths, which may be accessible with a different runtime
                             //       configuration.
 
-                            meta.accessible(ctx.runtime, direction)
+                            meta.unwrap().accessible(ctx.runtime, direction)
                         })
                         .map(|(a, _, b)| (a, b))
                 })
@@ -292,3 +310,5 @@ where
 
 pub use predicate::PredicateCache;
 pub use successor::SuccessorsCache;
+
+use crate::primitives::RoutingContext;

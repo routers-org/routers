@@ -10,13 +10,12 @@ geo = { workspace = true, features = ["serde"] }
 rstar = { workspace = true }
 serde = { workspace = true }
 num-traits = "0.2"
-petgraph = { workspace = true }
-rustc-hash = "2.1.1"
 
 [dev-dependencies]
 
 [features]
 fixtures = []
+tracing = []
 
 [lints]
 workspace = true

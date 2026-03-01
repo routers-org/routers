@@ -1,11 +1,12 @@
-use crate::graph::{Graph, Weight};
 use crate::primitive::{Direction, Node};
-use crate::traits::{Entry, Metadata};
+use crate::traits::Entry;
 use core::cmp::Ordering;
 use core::fmt::Debug;
 use geo::Point;
 use rstar::AABB;
 use serde::Serialize;
+
+pub type Weight = u32;
 
 /// Represents an edge within the system, along with the directionality of the edge.
 ///
@@ -31,6 +32,10 @@ where
             id,
             direction: Direction::Outgoing,
         }
+    }
+
+    pub fn with_direction(self, direction: Direction) -> Self {
+        Self { direction, ..self }
     }
 
     /// The [`EdgeIx`] of the direction-aware edge.
@@ -81,7 +86,7 @@ where
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq)]
+#[derive(Debug, Copy, Clone, PartialEq, Serialize)]
 pub struct Edge<E>
 where
     E: Entry,
@@ -98,17 +103,6 @@ where
 {
     pub const fn id(&self) -> &E {
         &self.id.id
-    }
-
-    /// Upsizes a [`Edge`] into a [`FatEdge`].
-    #[inline]
-    pub fn fatten<M: Metadata>(&self, graph: &Graph<E, M>) -> Option<FatEdge<E>> {
-        Some(FatEdge {
-            source: *graph.hash.get(&self.source)?,
-            target: *graph.hash.get(&self.target)?,
-            id: self.id,
-            weight: self.weight,
-        })
     }
 }
 
@@ -127,52 +121,23 @@ where
     }
 }
 
-/// Represents a fat edge within the system.
-///
-/// A [`FatEdge`], unlike an [`Edge`] contains source/target information inside the structure
-/// itself, instead of through [`NodeIx`] indirection. This makes the structure "fat" since
-/// the [`Node`] struct is large.
-///
-/// A helper method, [`FatEdge::thin`] is provided to downsize to an [`Edge`]. Note this process
-/// is lossy if no data source containing the original node is present.
-///
-/// ### Note
-///
-/// As it is large, this should only be used transitively
-/// like in [`Scan::nearest_edges`](crate::route::Scan::nearest_edges).
-#[derive(Debug, Serialize)]
-pub struct FatEdge<E>
+impl<E> Edge<Node<E>>
 where
     E: Entry,
 {
-    pub source: Node<E>,
-    pub target: Node<E>,
-
-    pub weight: Weight,
-    pub id: DirectionAwareEdgeId<E>,
-}
-
-impl<E> FatEdge<E>
-where
-    E: Entry,
-{
-    pub const fn id(&self) -> &E {
-        &self.id.id
-    }
-
     /// Downsizes a [`FatEdge`] to an [`Edge`].
     #[inline]
     pub fn thin(&self) -> Edge<E> {
         Edge {
             source: self.source.id,
             target: self.target.id,
-            id: self.id,
+            id: DirectionAwareEdgeId::new(**self.id()),
             weight: self.weight,
         }
     }
 }
 
-impl<E> rstar::RTreeObject for FatEdge<E>
+impl<E> rstar::RTreeObject for Edge<Node<E>>
 where
     E: Entry,
 {

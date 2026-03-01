@@ -1,49 +1,62 @@
-use crate::transition::*;
-use routers_network::{Entry, Metadata};
+use crate::{
+    CollapseError, CollapsedPath, Costing, MatchError, PredicateCache, Reachable, Solver,
+    TransitionContext, Trip,
+    candidate::{CandidateEdge, CandidateId},
+    costing::{EmissionStrategy, TransitionStrategy},
+    entity::Transition,
+    primitives::RoutingContext,
+};
+use routers_network::{Entry, Metadata, Network};
 
 use log::{debug, info};
 
 use core::cell::RefCell;
 use rustc_hash::FxHashMap;
+use std::{marker::PhantomData, sync::Arc};
 
 use geo::{Distance, Haversine};
 use itertools::Itertools;
 use measure_time::debug_time;
-use pathfinding::num_traits::Zero;
-use pathfinding::prelude::*;
+use pathfinding::{num_traits::Zero, prelude::*};
 
 /// A Upper-Bounded Dijkstra (UBD) algorithm.
 ///
 /// TODO: Docs
-pub struct SelectiveForwardSolver<E, M>
+pub struct SelectiveForwardSolver<E, M, N>
 where
     E: Entry,
     M: Metadata,
+    N: Network<E, M>,
 {
     // Internally holds a successors cache
-    predicate: PredicateCache<E, M>,
+    predicate: Arc<PredicateCache<E, M, N>>,
     reachable_hash: RefCell<FxHashMap<(usize, usize), Reachable<E>>>,
+
+    _phantom: PhantomData<N>,
 }
 
-impl<E, M> Default for SelectiveForwardSolver<E, M>
+impl<E, M, N> Default for SelectiveForwardSolver<E, M, N>
 where
     E: Entry,
     M: Metadata,
+    N: Network<E, M>,
 {
     fn default() -> Self {
         Self {
-            predicate: PredicateCache::default(),
+            predicate: Arc::new(PredicateCache::default()),
             reachable_hash: RefCell::new(FxHashMap::default()),
+            _phantom: PhantomData,
         }
     }
 }
 
-impl<E, M> SelectiveForwardSolver<E, M>
+impl<E, M, N> SelectiveForwardSolver<E, M, N>
 where
     E: Entry,
     M: Metadata,
+    N: Network<E, M>,
 {
-    pub fn use_cache(self, cache: PredicateCache<E, M>) -> Self {
+    pub fn use_cache(self, cache: Arc<PredicateCache<E, M, N>>) -> Self {
         Self {
             predicate: cache,
             ..self
@@ -52,14 +65,14 @@ where
 
     fn reach<'a, 'b, Emmis, Trans>(
         &'b self,
-        transition: &'b Transition<'b, Emmis, Trans, E, M>,
-        context: &'b RoutingContext<'b, E, M>,
+        transition: &'b Transition<'b, Emmis, Trans, E, M, N>,
+        context: &'b RoutingContext<'b, E, M, N>,
         (start, end): (CandidateId, CandidateId),
         source: &CandidateId,
     ) -> Vec<(CandidateId, CandidateEdge)>
     where
         Emmis: EmissionStrategy + Send + Sync,
-        Trans: TransitionStrategy<E, M> + Send + Sync,
+        Trans: TransitionStrategy<E, M, N> + Send + Sync,
         'b: 'a,
     {
         let successors = transition.candidates.next_layer(source);
@@ -92,7 +105,7 @@ where
                 .into_iter()
                 .filter_map(move |reachable| {
                     let path_vec = reachable.path_nodes().collect_vec();
-                    let optimal_path = Trip::new_with_map(transition.map, &path_vec);
+                    let optimal_path = Trip::new_with_map(context.map, &path_vec);
 
                     let source = context.candidate(&reachable.source)?;
                     let target = context.candidate(&reachable.target)?;
@@ -132,7 +145,7 @@ where
     /// to reach the target.
     fn reachable<'a>(
         &self,
-        ctx: &'a RoutingContext<'a, E, M>,
+        ctx: &'a RoutingContext<'a, E, M, N>,
         source: &CandidateId,
         targets: &'a [CandidateId],
     ) -> Option<Vec<Reachable<E>>> {
@@ -208,19 +221,20 @@ where
     }
 }
 
-impl<E, M> Solver<E, M> for SelectiveForwardSolver<E, M>
+impl<N, E, M> Solver<E, M, N> for SelectiveForwardSolver<E, M, N>
 where
     E: Entry,
     M: Metadata,
+    N: Network<E, M>,
 {
     fn solve<Emmis, Trans>(
         &self,
-        mut transition: Transition<Emmis, Trans, E, M>,
+        mut transition: Transition<Emmis, Trans, E, M, N>,
         runtime: &M::Runtime,
     ) -> Result<CollapsedPath<E>, MatchError>
     where
         Emmis: EmissionStrategy + Send + Sync,
-        Trans: TransitionStrategy<E, M> + Send + Sync,
+        Trans: TransitionStrategy<E, M, N> + Send + Sync,
     {
         let (start, end) = {
             // Compute cost ~= free

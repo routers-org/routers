@@ -1,8 +1,14 @@
 pub mod algorithms;
 pub use algorithms::*;
 
+pub mod routing;
+pub use routing::*;
+
 pub mod error;
 pub use error::*;
+
+pub mod resolve;
+pub use resolve::*;
 
 pub mod cache;
 #[doc(inline)]

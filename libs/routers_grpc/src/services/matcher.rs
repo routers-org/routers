@@ -1,13 +1,15 @@
 use alloc::sync::Arc;
 use core::marker::PhantomData;
 use geo::{Distance, Geodesic};
+use routers::r#match::MatchOptions;
+use routers_network::Network;
 use tonic::{Request, Response, Status};
 
 use crate::definition::r#match::*;
 use crate::definition::model::*;
 
-use crate::services::RouteService;
-use routers::{Match, MatchOptions, Path, RoutedPath};
+use crate::services::GrpcAdapter;
+use routers::{Match, Path, RoutedPath};
 use routers_network::{Entry, Metadata};
 #[cfg(feature = "telemetry")]
 use tracing::Level;
@@ -62,10 +64,11 @@ impl<Ctx> Util<Ctx> {
 }
 
 #[tonic::async_trait]
-impl<E, M> MatchService for RouteService<E, M>
+impl<T, E, M> MatchService for GrpcAdapter<T, E, M>
 where
-    M: Metadata + 'static,
-    E: Entry + 'static,
+    T: Network<E, M> + Send + Sync + 'static,
+    M: Metadata + Send + Sync + 'static,
+    E: Entry + Send + Sync + 'static,
     EdgeMetadata: for<'a> From<(&'a M, &'a M::Runtime)>,
     Option<M::TripContext>: From<CostOptions>,
 {
@@ -87,7 +90,7 @@ where
             .with_search_distance(message.search_distance);
 
         let result = self
-            .graph
+            .inner
             .r#match(coordinates, opts)
             .map_err(|e| e.to_string())
             .map_err(Status::internal)?;
@@ -115,7 +118,7 @@ where
             .with_search_distance(message.search_distance);
 
         let result = self
-            .graph
+            .inner
             .snap(coordinates, opts)
             .map_err(|e| e.to_string())
             .map_err(Status::internal)?;

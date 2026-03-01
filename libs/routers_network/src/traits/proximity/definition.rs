@@ -1,14 +1,13 @@
-use routers_network::{Entry, Node};
+use routers_network::{Edge, Ery, Node, network::Discovery};
 
-use crate::FatEdge;
 use geo::Point;
 #[cfg(feature = "tracing")]
 use tracing::Level;
 
 /// Trait containing utility functions to find nodes and edges upon a root structure.
-pub trait Scan<Ent>
+pub trait Scan<E>: Discovery<E>
 where
-    Ent: Entry,
+    E: Ery,
 {
     /// A function which returns an unsorted iterator of [`Node`] references which are within
     /// the provided `distance` of the input [point](Point).
@@ -20,19 +19,19 @@ where
     /// it may not select every node within the supplied distance, or it may select more nodes.
     /// This resolution method is however significantly cheaper than a circular scan, so a wider
     /// or shorter search radius may be required in some use-cases.
-    fn scan_nodes<'a>(
-        &'a self,
-        point: &Point,
-        distance: f64,
-    ) -> impl Iterator<Item = &'a Node<Ent>>
+    fn scan_nodes<'a>(&'a self, point: &Point, distance: f64) -> impl Iterator<Item = &'a Node<E>>
     where
-        Ent: 'a;
+        E: 'a,
+    {
+        let aabb = square_box(point, distance);
+        self.nodes_in_box(aabb)
+    }
 
     /// A function which returns an unsorted iterator of [`FatEdge`] references which are within
     /// the provided `distance` of the input [point](Point).
     ///
     /// ### Note
-    /// This function implements a square-scan.
+    /// This function implemEs a square-scan.
     ///
     /// Therefore, it bounds the search to be within a square-radius of the origin. Therefore,
     /// it may not select every node within the supplied distance, or it may select more nodes.
@@ -42,15 +41,21 @@ where
         &'a self,
         point: &Point,
         distance: f64,
-    ) -> impl Iterator<Item = &'a FatEdge<Ent>>
+    ) -> impl Iterator<Item = &'a Edge<Node<E>>>
     where
-        Ent: 'a;
+        E: 'a,
+    {
+        let aabb = square_box(point, distance);
+        self.edges_in_box(aabb)
+    }
 
     /// Searches for, and returns a reference to nearest node from the origin [point](Point).
     /// This node may not exist, and therefore the return type is optional.
-    fn scan_node<'a>(&'a self, point: Point) -> Option<&'a Node<Ent>>
+    fn scan_node<'a>(&'a self, point: Point) -> Option<&'a Node<E>>
     where
-        Ent: 'a;
+        E: 'a {
+            self.nodes
+        }
 
     /// Returns an iterator over [`Projected`] nodes on each edge within the specified `distance`.
     /// It does so using the [`Scan::nearest_edges`] function.
@@ -65,7 +70,7 @@ where
         &'a self,
         point: &Point,
         distance: f64,
-    ) -> impl Iterator<Item = (Point, &'a FatEdge<Ent>)>
+    ) -> impl Iterator<Item = (Point, &'a Edge<Node<E>>)>
     where
-        Ent: 'a;
+        E: 'a;
 }

@@ -1,14 +1,16 @@
 use core::fmt::Debug;
+use routers::r#match::MatchOptions;
 use routers_fixtures::{
     LAX_LYNWOOD_MATCHED, LAX_LYNWOOD_TRIP, LOS_ANGELES, VENTURA_MATCHED, VENTURA_TRIP, ZURICH,
     fixture,
 };
+use std::sync::Arc;
 
 use routers::transition::*;
-use routers::{DEFAULT_SEARCH_DISTANCE, Graph, Match, MatchOptions};
+use routers::{DEFAULT_SEARCH_DISTANCE, Match};
 
-use routers_codec::osm::OsmEdgeMetadata;
-use routers_network::{Entry, Metadata};
+use routers_codec::osm::{OsmEdgeMetadata, OsmEntryId, OsmNetwork};
+use routers_network::{Entry, Metadata, Network};
 
 use criterion::{black_box, criterion_main};
 use geo::{LineString, Point};
@@ -70,7 +72,8 @@ fn target_benchmark(c: &mut criterion::Criterion) {
         let path = Path::new(fixture!(ga.source_file))
             .as_os_str()
             .to_ascii_lowercase();
-        let graph = Graph::new(path).expect("Graph must be created");
+        let cache = Arc::new(PredicateCache::<OsmEntryId, OsmEdgeMetadata, OsmNetwork>::default());
+        let graph = OsmNetwork::new(path).expect("Graph must be created");
 
         let costing = DefaultEmissionCost::default();
         let runtime = OsmEdgeMetadata::default_runtime();
@@ -79,7 +82,9 @@ fn target_benchmark(c: &mut criterion::Criterion) {
             let coordinates: LineString<f64> = LineString::try_from_wkt_str(sc.input_linestring)
                 .expect("Linestring must parse successfully.");
 
-            let opts = MatchOptions::new().with_runtime(runtime.clone());
+            let opts = MatchOptions::new()
+                .with_runtime(runtime.clone())
+                .with_cache(cache.clone());
 
             // Warm up the cache
             let _ = graph
@@ -100,12 +105,12 @@ fn target_benchmark(c: &mut criterion::Criterion) {
             // Always the default solver, used to ensure no regressions to a primary audience
             group.bench_function(format!("match: {}", sc.name), |b| {
                 b.iter(|| {
-                    let (linestring, edges) = bench_match(
-                        &graph,
-                        runtime.clone(),
-                        coordinates.clone(),
-                        SolverVariant::default(),
-                    );
+                    let opts = MatchOptions::new()
+                        .with_runtime(runtime.clone())
+                        .with_cache(cache.clone())
+                        .with_solver(SolverVariant::default());
+
+                    let (linestring, edges) = bench_match(&graph, opts, coordinates.clone());
 
                     assert_subsequence(sc.expected_linestring, &edges, linestring);
                 })
@@ -118,13 +123,12 @@ fn target_benchmark(c: &mut criterion::Criterion) {
                 format!("precompute_forward_solver:match: {}", sc.name),
                 |b| {
                     b.iter(|| {
-                        let (linestring, edges) = bench_match(
-                            &graph,
-                            runtime.clone(),
-                            coordinates.clone(),
-                            SolverVariant::Precompute,
-                        );
+                        let opts = MatchOptions::new()
+                            .with_runtime(runtime.clone())
+                            .with_cache(cache.clone())
+                            .with_solver(SolverVariant::Precompute);
 
+                        let (linestring, edges) = bench_match(&graph, opts, coordinates.clone());
                         assert_subsequence(sc.expected_linestring, &edges, linestring);
                     })
                 },
@@ -135,12 +139,12 @@ fn target_benchmark(c: &mut criterion::Criterion) {
                 format!("selective_forward_solver:match: {}", sc.name),
                 |b| {
                     b.iter(|| {
-                        let (linestring, edges) = bench_match(
-                            &graph,
-                            runtime.clone(),
-                            coordinates.clone(),
-                            SolverVariant::Selective,
-                        );
+                        let opts = MatchOptions::new()
+                            .with_runtime(runtime.clone())
+                            .with_cache(cache.clone())
+                            .with_solver(SolverVariant::Selective);
+
+                        let (linestring, edges) = bench_match(&graph, opts, coordinates.clone());
 
                         assert_subsequence(sc.expected_linestring, &edges, linestring);
                     })
@@ -155,16 +159,11 @@ fn target_benchmark(c: &mut criterion::Criterion) {
     group.finish();
 }
 
-fn bench_match<E: Entry, M: Metadata>(
-    graph: &Graph<E, M>,
-    runtime: M::Runtime,
+fn bench_match<E: Entry, M: Metadata, N: Network<E, M>>(
+    graph: &dyn Match<E, M, N>,
+    opts: MatchOptions<E, M, N>,
     coordinates: LineString<f64>,
-    solver: impl Into<SolverVariant>,
 ) -> (LineString, Vec<i64>) {
-    let opts = MatchOptions::new()
-        .with_solver(solver)
-        .with_runtime(runtime);
-
     let result = graph
         .r#match(coordinates.clone(), opts)
         .expect("Match must complete successfully");
