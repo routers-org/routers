@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crate::transition::*;
 
 use log::{debug, info};
@@ -20,7 +22,7 @@ where
     M: Metadata,
 {
     // Internally holds a successors cache
-    predicate: PredicateCache<E, M>,
+    predicate: Arc<PredicateCache<E, M>>,
     reachable_hash: scc::HashMap<(usize, usize), Reachable<E>>,
 }
 
@@ -31,7 +33,7 @@ where
 {
     fn default() -> Self {
         Self {
-            predicate: PredicateCache::default(),
+            predicate: Arc::new(PredicateCache::default()),
             reachable_hash: scc::HashMap::new(),
         }
     }
@@ -42,7 +44,7 @@ where
     E: Entry,
     M: Metadata,
 {
-    pub fn use_cache(self, cache: PredicateCache<E, M>) -> Self {
+    pub fn use_cache(self, cache: Arc<PredicateCache<E, M>>) -> Self {
         Self {
             predicate: cache,
             ..self

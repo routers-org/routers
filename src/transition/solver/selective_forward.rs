@@ -12,6 +12,7 @@ use log::{debug, info};
 
 use core::cell::RefCell;
 use rustc_hash::FxHashMap;
+use std::sync::Arc;
 
 use geo::{Distance, Haversine};
 use itertools::Itertools;
@@ -27,7 +28,7 @@ where
     M: Metadata,
 {
     // Internally holds a successors cache
-    predicate: PredicateCache<E, M>,
+    predicate: Arc<PredicateCache<E, M>>,
     reachable_hash: RefCell<FxHashMap<(usize, usize), Reachable<E>>>,
 }
 
@@ -38,7 +39,7 @@ where
 {
     fn default() -> Self {
         Self {
-            predicate: PredicateCache::default(),
+            predicate: Arc::new(PredicateCache::default()),
             reachable_hash: RefCell::new(FxHashMap::default()),
         }
     }
@@ -49,7 +50,7 @@ where
     E: Entry,
     M: Metadata,
 {
-    pub fn use_cache(self, cache: PredicateCache<E, M>) -> Self {
+    pub fn use_cache(self, cache: Arc<PredicateCache<E, M>>) -> Self {
         Self {
             predicate: cache,
             ..self

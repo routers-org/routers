@@ -19,7 +19,7 @@ where
     fn r#match(
         &self,
         linestring: LineString,
-        opts: MatchOptions<M>,
+        opts: MatchOptions<E, M>,
     ) -> Result<RoutedPath<E, M>, MatchError> {
         info!("Finding matched route for {} positions", linestring.0.len());
 
@@ -28,7 +28,10 @@ where
 
         // Create our hidden markov model solver
         let transition = Transition::new(self, linestring, &costing, generator);
-        let solver = opts.solver.without_cache();
+        let solver = match opts.cache {
+            Some(cache) => opts.solver.instance(cache),
+            None => opts.solver.without_cache(),
+        };
 
         transition
             .solve(solver, &opts.runtime)
@@ -39,7 +42,7 @@ where
     fn snap(
         &self,
         _linestring: LineString,
-        _opts: MatchOptions<M>,
+        _opts: MatchOptions<E, M>,
     ) -> Result<RoutedPath<E, M>, MatchError> {
         unimplemented!()
     }

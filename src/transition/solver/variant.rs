@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crate::{
     CollapsedPath, EmissionStrategy, MatchError, PrecomputeForwardSolver, PredicateCache,
     SelectiveForwardSolver, Solver, Transition, TransitionStrategy,
@@ -28,7 +30,7 @@ impl SolverVariant {
 
     pub(crate) fn instance<E: Entry, M: Metadata>(
         self,
-        cache: PredicateCache<E, M>,
+        cache: Arc<PredicateCache<E, M>>,
     ) -> SolverImpl<E, M> {
         match self {
             SolverVariant::Fastest => {

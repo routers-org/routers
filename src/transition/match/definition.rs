@@ -1,12 +1,14 @@
-use crate::SolverVariant;
+use std::sync::Arc;
+
 use crate::transition::{MatchError, RoutedPath};
+use crate::{PredicateCache, SolverVariant};
 
 use geo::LineString;
 use routers_network::{Entry, Metadata};
 
 pub const DEFAULT_SEARCH_DISTANCE: f64 = 50.0; // 50m
 
-pub struct MatchOptions<M: Metadata> {
+pub struct MatchOptions<E: Entry, M: Metadata> {
     /// The distance the solver will use to search for candidates
     /// around every given input position.
     ///
@@ -41,25 +43,35 @@ pub struct MatchOptions<M: Metadata> {
     /// The variant of solver to be used by the matcher.
     /// Any given value of the enumeration is accepted,
     pub solver: SolverVariant,
+
+    pub cache: Option<Arc<PredicateCache<E, M>>>,
 }
 
-impl<M: Metadata> Default for MatchOptions<M> {
+impl<E: Entry, M: Metadata> Default for MatchOptions<E, M> {
     fn default() -> Self {
         Self {
             search_distance: DEFAULT_SEARCH_DISTANCE,
             runtime: M::default_runtime(),
             solver: SolverVariant::default(),
+            cache: None,
         }
     }
 }
 
-impl<M: Metadata> MatchOptions<M> {
+impl<E: Entry, M: Metadata> MatchOptions<E, M> {
     pub fn new() -> Self {
         Self::default()
     }
 
     pub fn with_runtime(self, runtime: M::Runtime) -> Self {
         Self { runtime, ..self }
+    }
+
+    pub fn with_cache(self, cache: Arc<PredicateCache<E, M>>) -> Self {
+        Self {
+            cache: Some(cache),
+            ..self
+        }
     }
 
     pub fn with_solver(self, solver: impl Into<SolverVariant>) -> Self {
@@ -91,7 +103,7 @@ where
     fn r#match(
         &self,
         linestring: LineString,
-        opts: MatchOptions<M>,
+        opts: MatchOptions<E, M>,
     ) -> Result<RoutedPath<E, M>, MatchError>;
 
     /// Snaps a given linestring against the map.
@@ -100,7 +112,7 @@ where
     fn snap(
         &self,
         linestring: LineString,
-        opts: MatchOptions<M>,
+        opts: MatchOptions<E, M>,
     ) -> Result<RoutedPath<E, M>, MatchError>;
 }
 

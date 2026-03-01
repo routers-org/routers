@@ -4,11 +4,12 @@ use routers_fixtures::{
     LAX_LYNWOOD_MATCHED, LAX_LYNWOOD_TRIP, LOS_ANGELES, VENTURA_MATCHED, VENTURA_TRIP, ZURICH,
     fixture,
 };
+use std::sync::Arc;
 
 use routers::transition::*;
 use routers::{DEFAULT_SEARCH_DISTANCE, Match};
 
-use routers_codec::osm::{OsmEdgeMetadata, OsmNetwork};
+use routers_codec::osm::{OsmEdgeMetadata, OsmEntryId, OsmNetwork};
 use routers_network::{Entry, Metadata};
 
 use criterion::{black_box, criterion_main};
@@ -71,6 +72,7 @@ fn target_benchmark(c: &mut criterion::Criterion) {
         let path = Path::new(fixture!(ga.source_file))
             .as_os_str()
             .to_ascii_lowercase();
+        let cache = Arc::new(PredicateCache::<OsmEntryId, OsmEdgeMetadata>::default());
         let graph = OsmNetwork::new(path).expect("Graph must be created");
 
         let costing = DefaultEmissionCost::default();
@@ -80,7 +82,9 @@ fn target_benchmark(c: &mut criterion::Criterion) {
             let coordinates: LineString<f64> = LineString::try_from_wkt_str(sc.input_linestring)
                 .expect("Linestring must parse successfully.");
 
-            let opts = MatchOptions::new().with_runtime(runtime.clone());
+            let opts = MatchOptions::new()
+                .with_runtime(runtime.clone())
+                .with_cache(cache.clone());
 
             // Warm up the cache
             let _ = graph
