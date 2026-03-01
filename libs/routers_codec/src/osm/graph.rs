@@ -178,20 +178,24 @@ impl OsmNetwork {
 }
 
 impl Discovery<OsmEntryId> for OsmNetwork {
-    fn edges_in_box<'a>(&'a self, aabb: AABB<Point>) -> Vec<&'a Edge<Node<OsmEntryId>>>
+    fn edges_in_box<'a>(
+        &'a self,
+        aabb: AABB<Point>,
+    ) -> Box<dyn Iterator<Item = &'a Edge<Node<OsmEntryId>>> + Send + 'a>
     where
         OsmEntryId: 'a,
     {
-        self.index_edge
-            .locate_in_envelope_intersecting(&aabb)
-            .collect()
+        Box::new(self.index_edge.locate_in_envelope_intersecting(&aabb))
     }
 
-    fn nodes_in_box<'a>(&'a self, aabb: AABB<Point>) -> Vec<&'a Node<OsmEntryId>>
+    fn nodes_in_box<'a>(
+        &'a self,
+        aabb: AABB<Point>,
+    ) -> Box<dyn Iterator<Item = &'a Node<OsmEntryId>> + Send + 'a>
     where
         OsmEntryId: 'a,
     {
-        self.index.locate_in_envelope(&aabb).collect()
+        Box::new(self.index.locate_in_envelope(&aabb))
     }
 
     fn node(&self, id: &OsmEntryId) -> Option<&Node<OsmEntryId>> {

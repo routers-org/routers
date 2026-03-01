@@ -75,18 +75,19 @@ where
     }
 
     /// Finds relevant candidates for a given point, and associated layer-id
-    fn discover_candidates(
-        &self,
+    fn discover_candidates<'iter>(
+        &'a self,
         layer_id: usize,
-        origin: &Point,
-    ) -> impl IntoParallelIterator<Item = PartiallyGeneratedCandidate<E>> {
+        origin: &'iter Point,
+    ) -> impl IntoParallelIterator<Item = PartiallyGeneratedCandidate<E>>
+    where
+        'a: 'iter,
+    {
         use rayon::iter::ParallelBridge;
 
         self.map
             // We'll do a best-effort search (square) radius
-            .nearest_nodes_projected(origin, self.search_distance)
-            .into_iter()
-            // Get the index for each
+            .nearest_nodes_projected::<'iter>(origin, self.search_distance)
             .enumerate()
             .par_bridge()
             // And calculate the emission costs of each of these points

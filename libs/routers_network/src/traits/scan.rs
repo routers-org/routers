@@ -24,25 +24,26 @@ where
     /// [`Projected`]: https://en.wikipedia.org/wiki/Projection_(linear_algebra)
     fn nearest_nodes_projected<'a>(
         &'a self,
-        point: &Point,
+        point: &'a Point,
         distance: f64,
-    ) -> Vec<(Point, &'a Edge<Node<E>>)>
+    ) -> Box<dyn Iterator<Item = (Point, &'a Edge<Node<E>>)> + Send + 'a>
     where
         E: 'a,
     {
         // Total overhead of this function is negligible.
-        self.edges_at_distance(point, distance)
-            .into_iter()
-            .filter_map(move |edge| {
-                let line = Line::new(edge.source.position, edge.target.position);
+        Box::new(
+            self.edges_at_distance(point, distance)
+                .into_iter()
+                .filter_map(move |edge| {
+                    let line = Line::new(edge.source.position, edge.target.position);
 
-                // We locate the point upon the linestring,
-                // and then project that fractional (%)
-                // upon the linestring to obtain a point
-                line.line_locate_point(point)
-                    .map(|frac| line.point_at_ratio_from_start(&Haversine, frac))
-                    .map(|point| (point, edge))
-            })
-            .collect()
+                    // We locate the point upon the linestring,
+                    // and then project that fractional (%)
+                    // upon the linestring to obtain a point
+                    line.line_locate_point(point)
+                        .map(|frac| line.point_at_ratio_from_start(&Haversine, frac))
+                        .map(|point| (point, edge))
+                }),
+        )
     }
 }

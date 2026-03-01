@@ -5,12 +5,18 @@ use crate::{Edge, Entry, Node};
 
 pub trait Discovery<E: Entry> {
     /// TODO: Document
-    fn edges_in_box<'a>(&'a self, aabb: AABB<Point>) -> Vec<&'a Edge<Node<E>>>
+    fn edges_in_box<'a>(
+        &'a self,
+        aabb: AABB<Point>,
+    ) -> Box<dyn Iterator<Item = &'a Edge<Node<E>>> + Send + 'a>
     where
         E: 'a;
 
     /// TODO: Document
-    fn nodes_in_box<'a>(&'a self, aabb: AABB<Point>) -> Vec<&'a Node<E>>
+    fn nodes_in_box<'a>(
+        &'a self,
+        aabb: AABB<Point>,
+    ) -> Box<dyn Iterator<Item = &'a Node<E>> + Send + 'a>
     where
         E: 'a;
 
@@ -24,7 +30,11 @@ pub trait Discovery<E: Entry> {
     /// it may not select every node within the supplied distance, or it may select more nodes.
     /// This resolution method is however significantly cheaper than a circular scan, so a wider
     /// or shorter search radius may be required in some use-cases.
-    fn nodes_at_distance<'a>(&'a self, point: &Point, distance: f64) -> Vec<&'a Node<E>>
+    fn nodes_at_distance<'a>(
+        &'a self,
+        point: &Point,
+        distance: f64,
+    ) -> Box<dyn Iterator<Item = &'a Node<E>> + Send + 'a>
     where
         E: 'a,
     {
@@ -42,7 +52,11 @@ pub trait Discovery<E: Entry> {
     /// it may not select every node within the supplied distance, or it may select more nodes.
     /// This resolution method is however significantly cheaper than a circular scan, so a wider
     /// or shorter search radius may be required in some use-cases.
-    fn edges_at_distance<'a>(&'a self, point: &Point, distance: f64) -> Vec<&'a Edge<Node<E>>>
+    fn edges_at_distance<'a>(
+        &'a self,
+        point: &Point,
+        distance: f64,
+    ) -> Box<dyn Iterator<Item = &'a Edge<Node<E>>> + Send + 'a>
     where
         E: 'a,
     {

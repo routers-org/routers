@@ -67,7 +67,8 @@ where
 
         let mut nearest_points = self
             .inner
-            .nearest_nodes_projected(&point, request.search_radius);
+            .nearest_nodes_projected(&point, request.search_radius)
+            .collect::<Vec<_>>();
 
         debug!("Found {} points", nearest_points.len());
 
