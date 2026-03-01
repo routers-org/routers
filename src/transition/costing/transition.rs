@@ -2,16 +2,20 @@ use crate::ResolutionMethod;
 use crate::transition::candidate::{Candidate, CandidateId};
 use crate::transition::{RoutingContext, Strategy, Trip, VirtualTail};
 use geo::{Distance, Haversine};
-use routers_network::{Entry, Metadata};
+use routers_network::{Entry, Metadata, Network};
 
-pub trait TransitionStrategy<E, M>: for<'a> Strategy<TransitionContext<'a, E, M>> {}
-impl<T, E, M> TransitionStrategy<E, M> for T where T: for<'a> Strategy<TransitionContext<'a, E, M>> {}
+pub trait TransitionStrategy<E, M, N>: for<'a> Strategy<TransitionContext<'a, E, M, N>> {}
+impl<T, N, E, M> TransitionStrategy<E, M, N> for T where
+    T: for<'a> Strategy<TransitionContext<'a, E, M, N>>
+{
+}
 
 #[derive(Clone, Debug)]
-pub struct TransitionContext<'a, E, M>
+pub struct TransitionContext<'a, E, M, N>
 where
     M: Metadata + 'a,
     E: Entry + 'a,
+    N: Network<E, M>,
 {
     /// The optimal path travelled between the
     /// source candidate and target candidate, used
@@ -33,7 +37,7 @@ where
 
     /// Further context to provide access to determine routing information,
     /// such as node positions upon the map, and referencing other candidates.
-    pub routing_context: &'a RoutingContext<'a, E, M>,
+    pub routing_context: &'a RoutingContext<'a, E, M, N>,
 
     /// The length between the layer nodes
     pub layer_width: f64,
@@ -84,10 +88,11 @@ impl TransitionLengths {
     }
 }
 
-impl<E, M> TransitionContext<'_, E, M>
+impl<E, M, N> TransitionContext<'_, E, M, N>
 where
     E: Entry,
     M: Metadata,
+    N: Network<E, M>,
 {
     /// Obtains the source [candidate](Candidate) from the context.
     pub fn source_candidate(&self) -> Candidate<E> {

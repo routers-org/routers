@@ -11,7 +11,7 @@ use log::info;
 use routers_network::Network;
 use routers_network::{Entry, Metadata};
 
-impl<T, E: Entry, M: Metadata> Match<E, M> for T
+impl<T, E: Entry, M: Metadata> Match<E, M, T> for T
 where
     T: Network<E, M>,
 {
@@ -19,7 +19,7 @@ where
     fn r#match(
         &self,
         linestring: LineString,
-        opts: MatchOptions<E, M>,
+        opts: MatchOptions<E, M, T>,
     ) -> Result<RoutedPath<E, M>, MatchError> {
         info!("Finding matched route for {} positions", linestring.0.len());
 
@@ -42,7 +42,7 @@ where
     fn snap(
         &self,
         _linestring: LineString,
-        _opts: MatchOptions<E, M>,
+        _opts: MatchOptions<E, M, T>,
     ) -> Result<RoutedPath<E, M>, MatchError> {
         unimplemented!()
     }

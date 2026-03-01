@@ -89,11 +89,14 @@ where
     }
 
     /// Calculates the offset, in meters, of the candidate to it's edge by the [`VirtualTail`].
-    pub fn offset<M: Metadata>(
+    pub fn offset<N, M: Metadata>(
         &self,
-        ctx: &RoutingContext<E, M>,
+        ctx: &RoutingContext<E, M, N>,
         variant: VirtualTail,
-    ) -> Option<f64> {
+    ) -> Option<f64>
+    where
+        N: Network<E, M>,
+    {
         match variant {
             VirtualTail::ToSource => {
                 let source = ctx.map.point(&self.edge.source)?;

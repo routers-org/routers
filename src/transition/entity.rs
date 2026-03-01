@@ -54,26 +54,28 @@ type NodeId = usize;
 ///     Some(solution.interpolated(map))
 /// }
 /// ```
-pub struct Transition<'a, Emission, Transition, E, M>
+pub struct Transition<'a, Emission, Transition, E, M, N>
 where
     E: Entry,
     M: Metadata,
+    N: Network<E, M>,
     Emission: EmissionStrategy,
-    Transition: TransitionStrategy<E, M>,
+    Transition: TransitionStrategy<E, M, N>,
 {
-    pub(crate) map: &'a dyn Network<E, M>,
-    pub(crate) heuristics: &'a CostingStrategies<Emission, Transition, E, M>,
+    pub(crate) map: &'a N,
+    pub(crate) heuristics: &'a CostingStrategies<Emission, Transition, E, M, N>,
 
     pub(crate) candidates: Candidates<E>,
     pub(crate) layers: Layers,
 }
 
-impl<'a, Emmis, Trans, E, M> Transition<'a, Emmis, Trans, E, M>
+impl<'a, Emmis, Trans, E, M, N> Transition<'a, Emmis, Trans, E, M, N>
 where
     E: Entry,
     M: Metadata,
+    N: Network<E, M>,
     Emmis: EmissionStrategy + Send + Sync,
-    Trans: TransitionStrategy<E, M> + Send + Sync,
+    Trans: TransitionStrategy<E, M, N> + Send + Sync,
 {
     /// Creates a new transition graph from the input linestring and heuristics.
     ///
@@ -86,11 +88,11 @@ where
     /// Therefore, this function may be more expensive than intended for some cases,
     /// plan accordingly.
     pub fn new(
-        map: &'a dyn Network<E, M>,
+        map: &'a N,
         linestring: LineString,
-        heuristics: &'a CostingStrategies<Emmis, Trans, E, M>,
+        heuristics: &'a CostingStrategies<Emmis, Trans, E, M, N>,
         generator: impl LayerGeneration<E>,
-    ) -> Transition<'a, Emmis, Trans, E, M> {
+    ) -> Transition<'a, Emmis, Trans, E, M, N> {
         let points = linestring.into_points();
 
         // Generate the layers and candidates.
@@ -110,7 +112,7 @@ where
     }
 
     /// Converts the transition graph into a [`RoutingContext`].
-    pub fn context<'b>(&'a self, runtime: &'b M::Runtime) -> RoutingContext<'b, E, M>
+    pub fn context<'b>(&'a self, runtime: &'b M::Runtime) -> RoutingContext<'b, E, M, N>
     where
         'a: 'b,
     {
@@ -124,7 +126,7 @@ where
     /// Solves the transition graph, using the provided [`Solver`].
     pub fn solve(
         self,
-        solver: impl Solver<E, M>,
+        solver: impl Solver<E, M, N>,
         runtime: &M::Runtime,
     ) -> Result<CollapsedPath<E>, MatchError> {
         // Indirection to call.

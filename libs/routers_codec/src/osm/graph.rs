@@ -257,18 +257,26 @@ impl Network<OsmEntryId, OsmEdgeMetadata> for OsmNetwork {
         self.hash.get(id).map(|v| v.position)
     }
 
-    fn edges_into(&self, id: OsmEntryId) -> Vec<GraphEdge<OsmEntryId>> {
-        self.graph
-            .edges_directed(id, petgraph::Direction::Incoming)
-            .map(|(src, dst, &data)| (src, dst, data))
-            .collect()
+    fn edges_into<'a>(
+        &'a self,
+        id: OsmEntryId,
+    ) -> Box<dyn Iterator<Item = GraphEdge<OsmEntryId>> + 'a> {
+        Box::new(
+            self.graph
+                .edges_directed(id, petgraph::Direction::Incoming)
+                .map(|(src, dst, &data)| (src, dst, data)),
+        )
     }
 
-    fn edges_outof(&self, id: OsmEntryId) -> Vec<GraphEdge<OsmEntryId>> {
-        self.graph
-            .edges_directed(id, petgraph::Direction::Outgoing)
-            .map(|(src, dst, &data)| (src, dst, data))
-            .collect()
+    fn edges_outof<'a>(
+        &'a self,
+        id: OsmEntryId,
+    ) -> Box<dyn Iterator<Item = GraphEdge<OsmEntryId>> + 'a> {
+        Box::new(
+            self.graph
+                .edges_directed(id, petgraph::Direction::Outgoing)
+                .map(|(src, dst, &data)| (src, dst, data)),
+        )
     }
 
     fn fatten(

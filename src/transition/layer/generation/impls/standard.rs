@@ -3,6 +3,7 @@ use crate::generation::LayerGeneration;
 use crate::transition::*;
 use geo::{Distance, Haversine, Point};
 use itertools::Itertools;
+use rayon::iter::{IndexedParallelIterator, IntoParallelIterator, ParallelIterator};
 use routers_network::{Entry, Metadata, Network};
 use std::collections::HashMap;
 
@@ -78,13 +79,16 @@ where
         &self,
         layer_id: usize,
         origin: &Point,
-    ) -> impl IntoIterator<Item = PartiallyGeneratedCandidate<E>> {
+    ) -> impl IntoParallelIterator<Item = PartiallyGeneratedCandidate<E>> {
+        use rayon::iter::ParallelBridge;
+
         self.map
             // We'll do a best-effort search (square) radius
             .nearest_nodes_projected(origin, self.search_distance)
             .into_iter()
             // Get the index for each
             .enumerate()
+            .par_bridge()
             // And calculate the emission costs of each of these points
             .map(move |(node_id, (position, edge))| {
                 let location = CandidateLocation { layer_id, node_id };
@@ -163,7 +167,7 @@ where
             lookup,
             layers,
         } = input
-            .iter()
+            .into_par_iter()
             .enumerate()
             .flat_map(|(i, o)| self.discover_candidates(i, o))
             .collect::<Vec<PartiallyGeneratedCandidate<E>>>()

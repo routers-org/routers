@@ -6,7 +6,7 @@ use geo::Point;
 pub type EdgeData<E> = (Weight, DirectionAwareEdgeId<E>);
 pub type GraphEdge<E> = (E, E, EdgeData<E>);
 
-pub trait Network<E, M>: Scan<E> + Route<E> + Debug
+pub trait Network<E, M>: Scan<E> + Route<E> + Debug + Send + Sync
 where
     E: Entry,
     M: Metadata,
@@ -15,8 +15,8 @@ where
 
     fn point(&self, id: &E) -> Option<Point>;
 
-    fn edges_outof(&self, id: E) -> Vec<GraphEdge<E>>;
-    fn edges_into(&self, id: E) -> Vec<GraphEdge<E>>;
+    fn edges_outof<'a>(&'a self, id: E) -> Box<dyn Iterator<Item = GraphEdge<E>> + 'a>;
+    fn edges_into<'a>(&'a self, id: E) -> Box<dyn Iterator<Item = GraphEdge<E>> + 'a>;
 
     /// Produces an iterator of points for a given input.
     ///

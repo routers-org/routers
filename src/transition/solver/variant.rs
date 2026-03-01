@@ -4,11 +4,11 @@ use crate::{
     CollapsedPath, EmissionStrategy, MatchError, PrecomputeForwardSolver, PredicateCache,
     SelectiveForwardSolver, Solver, Transition, TransitionStrategy,
 };
-use routers_network::{Entry, Metadata};
+use routers_network::{Entry, Metadata, Network};
 
-pub enum SolverImpl<E: Entry, M: Metadata> {
-    Precompute(PrecomputeForwardSolver<E, M>),
-    Selective(SelectiveForwardSolver<E, M>),
+pub enum SolverImpl<E: Entry, M: Metadata, N: Network<E, M>> {
+    Precompute(PrecomputeForwardSolver<E, M, N>),
+    Selective(SelectiveForwardSolver<E, M, N>),
 }
 
 #[derive(Default)]
@@ -20,7 +20,9 @@ pub enum SolverVariant {
 }
 
 impl SolverVariant {
-    pub(crate) fn without_cache<E: Entry, M: Metadata>(self) -> SolverImpl<E, M> {
+    pub(crate) fn without_cache<E: Entry, M: Metadata, N: Network<E, M>>(
+        self,
+    ) -> SolverImpl<E, M, N> {
         match self {
             SolverVariant::Fastest => SolverImpl::Precompute(PrecomputeForwardSolver::default()),
             SolverVariant::Precompute => SolverImpl::Precompute(PrecomputeForwardSolver::default()),
@@ -28,10 +30,10 @@ impl SolverVariant {
         }
     }
 
-    pub(crate) fn instance<E: Entry, M: Metadata>(
+    pub(crate) fn instance<E: Entry, M: Metadata, N: Network<E, M>>(
         self,
-        cache: Arc<PredicateCache<E, M>>,
-    ) -> SolverImpl<E, M> {
+        cache: Arc<PredicateCache<E, M, N>>,
+    ) -> SolverImpl<E, M, N> {
         match self {
             SolverVariant::Fastest => {
                 SolverImpl::Precompute(PrecomputeForwardSolver::default().use_cache(cache))
@@ -46,15 +48,15 @@ impl SolverVariant {
     }
 }
 
-impl<E: Entry, M: Metadata> Solver<E, M> for SolverImpl<E, M> {
+impl<E: Entry, M: Metadata, N: Network<E, M>> Solver<E, M, N> for SolverImpl<E, M, N> {
     fn solve<Emmis, Trans>(
         &self,
-        transition: Transition<Emmis, Trans, E, M>,
+        transition: Transition<Emmis, Trans, E, M, N>,
         runtime: &M::Runtime,
     ) -> Result<CollapsedPath<E>, MatchError>
     where
         Emmis: EmissionStrategy + Send + Sync,
-        Trans: TransitionStrategy<E, M> + Send + Sync,
+        Trans: TransitionStrategy<E, M, N> + Send + Sync,
     {
         match self {
             SolverImpl::Precompute(precompute) => precompute.solve(transition, runtime),

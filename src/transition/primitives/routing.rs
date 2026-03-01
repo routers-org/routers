@@ -11,20 +11,22 @@ use crate::candidate::{Candidate, CandidateId, Candidates};
 /// Provides access to the base map [`map`](#field.map).
 /// It also provides a reference to the [`candidates`](#field.candidates) chosen in prior stages.
 #[derive(Clone, Copy, Debug)]
-pub struct RoutingContext<'a, E, M>
+pub struct RoutingContext<'a, E, M, N>
 where
     E: Entry + 'a,
     M: Metadata + 'a,
+    N: Network<E, M>,
 {
     pub candidates: &'a Candidates<E>,
-    pub map: &'a dyn Network<E, M>,
+    pub map: &'a N,
     pub runtime: &'a M::Runtime,
 }
 
-impl<E, M> RoutingContext<'_, E, M>
+impl<N, E, M> RoutingContext<'_, E, M, N>
 where
     E: Entry,
     M: Metadata,
+    N: Network<E, M>,
 {
     /// Obtain a [candidate](Candidate), should it exist, by its [identifier](CandidateId).
     pub fn candidate(&self, candidate: &CandidateId) -> Option<Candidate<E>> {

@@ -1,16 +1,17 @@
 use crate::transition::*;
 use core::hash::Hash;
-use routers_network::{Entry, Metadata};
+use routers_network::{Entry, Metadata, Network};
 use rustc_hash::FxHashMap;
 
 /// Defines a structure which can be supplied to the [`Transition::solve`] function
 /// in order to solve the transition graph.
 ///
 /// Functionality is implemented using the [`Solver::solve`] method.
-pub trait Solver<E, M>
+pub trait Solver<E, M, N>
 where
     E: Entry,
     M: Metadata,
+    N: Network<E, M>,
 {
     /// Refines a single node within an initial layer to all nodes in the
     /// following layer with their respective emission and transition
@@ -23,12 +24,12 @@ where
     /// which are less deterministic than a brute-force model.
     fn solve<Emmis, Trans>(
         &self,
-        transition: Transition<Emmis, Trans, E, M>,
+        transition: Transition<Emmis, Trans, E, M, N>,
         runtime: &M::Runtime,
     ) -> Result<CollapsedPath<E>, MatchError>
     where
         Emmis: EmissionStrategy + Send + Sync,
-        Trans: TransitionStrategy<E, M> + Send + Sync;
+        Trans: TransitionStrategy<E, M, N> + Send + Sync;
 
     /// Creates a path from the source up the parent map until no more parents
     /// are found. This assumes there is only one relation between parent and children.
@@ -37,9 +38,9 @@ where
     ///
     /// If the target is not found by the builder, `None` is returned.
     #[inline]
-    fn path_builder<N, C>(source: &N, target: &N, parents: &FxHashMap<N, (N, C)>) -> Option<Vec<N>>
+    fn path_builder<K, C>(source: &K, target: &K, parents: &FxHashMap<K, (K, C)>) -> Option<Vec<K>>
     where
-        N: Eq + Hash + Copy,
+        K: Eq + Hash + Copy,
     {
         let mut rev = vec![*source];
         let mut next = source;

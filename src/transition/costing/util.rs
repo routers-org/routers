@@ -1,6 +1,6 @@
 use crate::transition::*;
 use core::f64::consts::E;
-use routers_network::{Entry, Metadata};
+use routers_network::{Entry, Metadata, Network};
 
 const PRECISION: f64 = 1_000.0f64;
 const OFFSET: f64 = E;
@@ -52,16 +52,17 @@ pub trait Strategy<Ctx> {
     }
 }
 
-pub trait Costing<Emission, Transition, E, M>
+pub trait Costing<Emission, Transition, E, M, N>
 where
     E: Entry,
     M: Metadata,
-    Transition: TransitionStrategy<E, M>,
+    N: Network<E, M>,
+    Transition: TransitionStrategy<E, M, N>,
     Emission: EmissionStrategy,
 {
     /// The emission costing function, returning a u32 cost value.
     fn emission(&self, context: EmissionContext) -> u32;
 
     /// The emission costing function, returning a u32 cost value.
-    fn transition(&self, context: TransitionContext<E, M>) -> u32;
+    fn transition(&self, context: TransitionContext<E, M, N>) -> u32;
 }

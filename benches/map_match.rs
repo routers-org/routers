@@ -10,7 +10,7 @@ use routers::transition::*;
 use routers::{DEFAULT_SEARCH_DISTANCE, Match};
 
 use routers_codec::osm::{OsmEdgeMetadata, OsmEntryId, OsmNetwork};
-use routers_network::{Entry, Metadata};
+use routers_network::{Entry, Metadata, Network};
 
 use criterion::{black_box, criterion_main};
 use geo::{LineString, Point};
@@ -72,7 +72,7 @@ fn target_benchmark(c: &mut criterion::Criterion) {
         let path = Path::new(fixture!(ga.source_file))
             .as_os_str()
             .to_ascii_lowercase();
-        let cache = Arc::new(PredicateCache::<OsmEntryId, OsmEdgeMetadata>::default());
+        let cache = Arc::new(PredicateCache::<OsmEntryId, OsmEdgeMetadata, OsmNetwork>::default());
         let graph = OsmNetwork::new(path).expect("Graph must be created");
 
         let costing = DefaultEmissionCost::default();
@@ -160,8 +160,8 @@ fn target_benchmark(c: &mut criterion::Criterion) {
     group.finish();
 }
 
-fn bench_match<E: Entry, M: Metadata>(
-    graph: &dyn Match<E, M>,
+fn bench_match<E: Entry, M: Metadata, N: Network<E, M>>(
+    graph: &dyn Match<E, M, N>,
     runtime: M::Runtime,
     coordinates: LineString<f64>,
     solver: impl Into<SolverVariant>,
