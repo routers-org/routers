@@ -35,3 +35,21 @@ fn ventura() {
         }
     );
 }
+
+#[test]
+fn lax_lynwood() {
+    use routers_fixtures::{LAX_LYNWOOD_TRIP, LOS_ANGELES};
+    let (graph, coordinates) = setup(LOS_ANGELES, LAX_LYNWOOD_TRIP);
+
+    let result = graph
+        .match_simple(coordinates)
+        .expect("Match must complete successfully");
+
+    insta::assert_ron_snapshot!(
+        result.interpolated.elements,
+        {
+             ".**.x" => insta::rounded_redaction(6),
+             ".**.y" => insta::rounded_redaction(6)
+        }
+    );
+}

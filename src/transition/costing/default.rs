@@ -58,19 +58,24 @@ pub mod emission {
 
         #[inline(always)]
         fn calculate(&self, context: EmissionContext<'a>) -> Option<Self::Cost> {
-            // Scale the physical distance by the square of the road-class weight
-            // so that candidates on lower-quality roads (e.g. MotorwayLink = 2,
-            // Secondary = 7) are strongly penalised relative to candidates on
-            // higher-quality roads at the same physical offset.
+            // Scale the physical distance by the road-class weight to penalise
+            // candidates on lower-quality roads (e.g. MotorwayLink = 2) relative
+            // to those on higher-quality roads at the same physical offset.
             //
-            // Using weight² (rather than weight) ensures that even a small
-            // physical proximity advantage of a lower-class road cannot overcome
-            // the class penalty: a MotorwayLink candidate (weight=2) must be
-            // within one quarter of the motorway's distance before it can win.
+            // The weight is capped at 2 before squaring (maximum multiplier = 4)
+            // to avoid cost overflow for high-weight urban roads (Secondary = 7,
+            // Residential = 10, etc.).  Without the cap the exp() inside the decay
+            // formula overflows to u32::MAX for any GPS point > ~3 m from the road,
+            // making all secondary-road candidates indistinguishable and causing
+            // erratic matching on urban routes.
             //
-            // Zero-cost behaviour is preserved: distance = 0 → cost = 0
-            // regardless of weight.
-            let w = context.weight as f64;
+            // With the cap:
+            //   Motorway  (w=1) → multiplier = 1  (baseline)
+            //   MotorwayLink (w=2) → multiplier = 4  (must be ≤ ¼ distance of Motorway to win)
+            //   Primary+  (w≥3) → multiplier = 4  (same cap; no run-away overflow)
+            //
+            // Zero-cost behaviour is preserved: distance = 0 → cost = 0.
+            let w = (context.weight as f64).min(2.0);
             let weighted_distance = context.distance * w * w;
             Some(weighted_distance.sqrt() * weighted_distance)
         }
