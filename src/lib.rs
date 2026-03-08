@@ -9,6 +9,9 @@ pub use transition::*;
 #[cfg(test)]
 pub mod test;
 
+#[cfg(test)]
+pub mod testing;
+
 #[macro_export]
 macro_rules! dump_wkt {
     ($file:expr, $geom:expr) => {{
