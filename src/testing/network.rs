@@ -617,7 +617,10 @@ mod tests {
             .bidirectional_edge(2, 4)
             .build();
 
-        // GPS track continues straight west, ~33 m north of the road.
+        // GPS track continues straight west, ~33 m north of the road
+        // (0.0003° latitude ≈ 33 m, within the 50 m default search radius).
+        // All points lie within the longitude range of edges 1→2 and 2→3
+        // so that each point projects onto one of those edges.
         let linestring: LineString = wkt! {
             LINESTRING(
                 -118.101 34.1503,
@@ -626,7 +629,7 @@ mod tests {
                 -118.131 34.1503,
                 -118.141 34.1503,
                 -118.151 34.1503,
-                -118.161 34.1503
+                -118.158 34.1503
             )
         };
 
@@ -634,9 +637,19 @@ mod tests {
             .match_simple(linestring)
             .expect("map match must succeed");
 
+        // A real match must have been made.
+        // Note: the `interpolated` path is intentionally not checked here — when all
+        // consecutive candidates land on the same or adjacent edges the routing layer
+        // produces empty `Reachable::path` entries, so `interpolated` is always empty
+        // for an all-straight trajectory regardless of which road was chosen.
+        assert!(
+            !result.discretized.elements.is_empty(),
+            "discretized path must be non-empty: a real match was made"
+        );
+
         // The matched path must not contain node 4 (the south branch).
         let matched_node_ids: Vec<i64> = result
-            .interpolated
+            .discretized
             .elements
             .iter()
             .flat_map(|e| [e.edge.source.id.0, e.edge.target.id.0])
