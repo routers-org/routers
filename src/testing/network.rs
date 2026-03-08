@@ -660,5 +660,152 @@ mod tests {
             "the south-branch node (4) must not appear in a straight-west trajectory match"
         );
     }
+
+    /// A highway with a long offramp detour that exits and rejoins — the
+    /// matcher should stay on the direct highway rather than routing through
+    /// the detour, even though the highway curves slightly in the same
+    /// direction (south) as the offramp exit.
+    ///
+    /// ```text
+    ///  1 ──── 2 ──── 3 ──── 4     highway (bidirectional, curves slightly south)
+    ///          \            ^
+    ///           5 ──────── /      offramp (one-way south detour)
+    /// ```
+    ///
+    /// GPS point 1 lands on edge 1–2; GPS point 2 lands on edge 3–4.  These
+    /// two points span non-adjacent edges, so the routing layer must pick a
+    /// path through the intermediate edges.  The highway middle (2→3, ~383 m)
+    /// is far shorter than the offramp loop (2→5→4→3, ~1458 m), so the
+    /// highway should win.
+    ///
+    /// # Node-spacing constraint
+    ///
+    /// The predicate cache is bounded to 2 km (200 000 cm).  Each edge here
+    /// is kept well under that limit so the Dijkstra can reach every node.
+    #[test]
+    fn map_match_highway_preferred_over_offramp() {
+        let net = MockNetworkBuilder::new()
+            .node(1, point!(x: -118.100, y: 34.150))
+            .node(2, point!(x: -118.105, y: 34.150)) // offramp exit (~459 m from 1)
+            .node(3, point!(x: -118.109, y: 34.149)) // highway mid, curves south (~383 m from 2)
+            .node(4, point!(x: -118.113, y: 34.148)) // highway end / offramp rejoin (~383 m from 3)
+            .node(5, point!(x: -118.107, y: 34.146)) // offramp south detour (~481 m from 2)
+            .bidirectional_edge(1, 2)
+            .bidirectional_edge(2, 3)
+            .bidirectional_edge(3, 4)
+            .edge(2, 5) // one-way offramp exit
+            .edge(5, 4) // one-way offramp rejoin
+            .build();
+
+        // GPS point 1: ~33 m north of edge 1–2 (offset 0.0003° lat).
+        // GPS point 2: ~33 m north of edge 3–4 at lon = -118.111
+        //   (edge y at that lon ≈ 34.1485; GPS at 34.1488).
+        // The gap between the two candidates spans non-adjacent edges,
+        // forcing the routing layer to choose between the highway and the detour.
+        let linestring: LineString = wkt! {
+            LINESTRING(
+                -118.102 34.1503,
+                -118.111 34.1488
+            )
+        };
+
+        let result = net
+            .match_simple(linestring)
+            .expect("map match must succeed");
+
+        // Routing was forced across non-adjacent edges → the interpolated path
+        // must contain at least the intermediate highway edge.
+        assert!(
+            !result.interpolated.elements.is_empty(),
+            "interpolated path must be non-empty: routing spanned non-adjacent edges"
+        );
+
+        // The offramp detour (node 5) must not appear — the direct highway is preferred.
+        let interpolated_node_ids: Vec<i64> = result
+            .interpolated
+            .elements
+            .iter()
+            .flat_map(|e| [e.edge.source.id.0, e.edge.target.id.0])
+            .collect();
+
+        assert!(
+            !interpolated_node_ids.contains(&5),
+            "offramp detour node (5) must not appear: the shorter highway route is preferred"
+        );
+    }
+
+    /// A T-junction where the GPS track turns north — the matcher must follow
+    /// the northward branch, not continue east.
+    ///
+    /// ```text
+    ///               3   (north branch)
+    ///               ^
+    ///  1 ──── 2 ────┤
+    ///               └── 4   (east continuation, wrong branch)
+    /// ```
+    ///
+    /// The GPS approaches from the west along the horizontal road, then
+    /// pivots northward.  A point placed 0.0003° east of the junction and
+    /// 0.0003° north of the east road is a candidate for **both** the north
+    /// branch (2→3, ~28 m away) and the east branch (2→4, ~43 m away via
+    /// endpoint node 2).  The HMM must use the overall trajectory to resolve
+    /// the ambiguity: assigning that point to the east branch would require
+    /// a costly backtrack/U-turn to reach the subsequent north-branch points,
+    /// so the north branch should be chosen.
+    #[test]
+    fn map_match_follows_turn_at_junction() {
+        let net = MockNetworkBuilder::new()
+            .node(1, point!(x: -118.10, y: 34.15)) // start (west)
+            .node(2, point!(x: -118.13, y: 34.15)) // junction
+            .node(3, point!(x: -118.13, y: 34.18)) // north branch (turn)
+            .node(4, point!(x: -118.16, y: 34.15)) // east continuation (wrong branch)
+            .bidirectional_edge(1, 2)
+            .bidirectional_edge(2, 3)
+            .bidirectional_edge(2, 4)
+            .build();
+
+        // Points 1–3: clearly on edge 1→2 (~33 m north of the road).
+        // Point 4:    0.0003° east and 0.0003° north of node 2 — within 50 m
+        //             of both edge 2→3 (north, ~28 m) and edge 2→4 (east,
+        //             ~43 m via endpoint).  This is the ambiguous junction point.
+        // Points 5–6: clearly on edge 2→3 (~28 m west of the north road),
+        //             outside the 50 m radius of edge 2→4.
+        let linestring: LineString = wkt! {
+            LINESTRING(
+                -118.101 34.1503,
+                -118.111 34.1503,
+                -118.121 34.1503,
+                -118.1297 34.1503,
+                -118.1297 34.153,
+                -118.1297 34.163
+            )
+        };
+
+        let result = net
+            .match_simple(linestring)
+            .expect("map match must succeed");
+
+        // A real match must be produced.
+        assert!(
+            !result.discretized.elements.is_empty(),
+            "discretized path must be non-empty"
+        );
+
+        // The east-continuation node (4) must not appear in the matched path.
+        // If the ambiguous junction point were incorrectly assigned to the east
+        // branch (edge 2→4), node 4 would appear here and the subsequent
+        // transition to the north branch would require a costly U-turn.
+        let matched_node_ids: Vec<i64> = result
+            .discretized
+            .elements
+            .iter()
+            .flat_map(|e| [e.edge.source.id.0, e.edge.target.id.0])
+            .collect();
+
+        assert!(
+            !matched_node_ids.contains(&4),
+            "east-continuation node (4) must not appear when the GPS turns north at the junction"
+        );
+    }
 }
 
