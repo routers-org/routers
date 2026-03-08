@@ -11,11 +11,22 @@ pub struct WeightAndDistance(pub Fraction, pub u32);
 
 impl WeightAndDistance {
     /// A representation method which allows distinguishment between structures
-    /// on a given `f(weight, distance) = sqrt(weight) * distance` function,
+    /// on a given `f(weight, distance) = weight² × distance` function,
     /// returning a `u32` representation of the structure.
+    ///
+    /// Using a quadratic road-class weighting ensures that the Dijkstra path
+    /// finder strongly penalises lower-quality roads (e.g. offramps /
+    /// MotorwayLink), preventing short detours through lower-class roads from
+    /// being preferred over longer, same-class routes.
+    ///
+    /// With quadratic weighting a MotorwayLink detour (weight=2) has an
+    /// effective cost 4× that of an equal-length motorway segment (weight=1),
+    /// so the direct motorway is preferred unless the detour is less than
+    /// one quarter of the motorway path length.
     #[inline]
     pub fn repr(&self) -> u32 {
-        ((self.0.value() as f64).sqrt() * self.1 as f64) as u32
+        let w = self.0.value() as f64;
+        (w * w * self.1 as f64) as u32
     }
 
     #[inline]

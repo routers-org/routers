@@ -100,7 +100,7 @@ where
                 // the associated emission cost of this candidate.
                 let emission = self
                     .emission
-                    .cost(EmissionContext::new(&position, origin, distance));
+                    .cost(EmissionContext::new(&position, origin, distance, edge.weight));
 
                 let candidate = Candidate::new(edge.thin(), position, emission, location);
                 let candidate_reference = CandidateRef::new(emission);

@@ -879,5 +879,72 @@ mod tests {
             );
         }
     }
+
+    /// GPS trace that runs along a motorway (weight = 1) while a parallel
+    /// motorway_link (weight = 2) road lies physically closer to the GPS points.
+    ///
+    /// Without road-class-weighted emission costs the motorway_link candidates
+    /// would win purely on physical proximity.  With the fix, the emission cost
+    /// of a candidate scales by the square of its road-class weight, so the
+    /// motorway (weight 1² × physical distance) beats the motorway_link
+    /// (weight 2² × smaller physical distance).
+    ///
+    /// ```text
+    ///  1 ──── 2 ──── 3 ──── 4    motorway       (weight=1, ~7 m above GPS)
+    ///  ·  GPS ·  GPS ·  GPS ·    GPS trace       (y = 34.15000)
+    ///  5 ──── 6 ──── 7 ──── 8    motorway_link   (weight=2, ~4 m below GPS)
+    /// ```
+    ///
+    /// The GPS points are ≈ 4.4 m from the motorway_link but ≈ 6.7 m from
+    /// the motorway, so without weighting the motorway_link wins.  After
+    /// quadratic weighting: effective distance for motorway_link =
+    /// 4.4 m × 2² = 17.6 m vs motorway = 6.7 m × 1² = 6.7 m → motorway wins.
+    #[test]
+    fn map_match_prefers_motorway_over_motorway_link() {
+        // Motorway nodes at y = 34.15006 (≈ 6.7 m north of GPS line)
+        // MotorwayLink nodes at y = 34.14996 (≈ 4.4 m south of GPS line)
+        let net = MockNetworkBuilder::new()
+            .node(1, point!(x: -118.140, y: 34.15006))
+            .node(2, point!(x: -118.141, y: 34.15006))
+            .node(3, point!(x: -118.142, y: 34.15006))
+            .node(4, point!(x: -118.143, y: 34.15006))
+            // MotorwayLink (weight=2): parallel road slightly south
+            .node(5, point!(x: -118.140, y: 34.14996))
+            .node(6, point!(x: -118.141, y: 34.14996))
+            .node(7, point!(x: -118.142, y: 34.14996))
+            .node(8, point!(x: -118.143, y: 34.14996))
+            .weighted_edge(1, 2, 1)
+            .weighted_edge(2, 3, 1)
+            .weighted_edge(3, 4, 1)
+            .weighted_edge(5, 6, 2)
+            .weighted_edge(6, 7, 2)
+            .weighted_edge(7, 8, 2)
+            .build();
+
+        // GPS trace runs east, at y = 34.150000 — ≈ 4.4 m above motorway_link
+        // (weight=2) but ≈ 6.7 m below the motorway (weight=1).  Without road-
+        // class weighting the motorway_link wins on proximity alone.
+        let linestring: LineString = wkt! {
+            LINESTRING(
+                -118.1405 34.150000,
+                -118.1415 34.150000,
+                -118.1425 34.150000
+            )
+        };
+
+        let result = net
+            .match_simple(linestring)
+            .expect("map match must succeed");
+
+        // All matched edges must be the motorway (weight=1).
+        // A motorway_link (weight=2) match means the road-class penalty
+        // on emission costs is not being applied.
+        for element in &result.discretized.elements {
+            assert_eq!(
+                element.edge.weight, 1,
+                "matched edge must be the motorway (weight=1), not the motorway_link (weight=2)"
+            );
+        }
+    }
 }
 
