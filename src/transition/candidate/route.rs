@@ -68,8 +68,8 @@ where
             // Emit one edge into `elements`, skipping it if the same directed
             // edge (same source node, same target node) was just emitted.
             let push_edge = |edge: &Edge<E>,
-                                 elements: &mut Vec<PathElement<E, M>>,
-                                 last_key: &mut Option<(i64, i64)>| {
+                             elements: &mut Vec<PathElement<E, M>>,
+                             last_key: &mut Option<(i64, i64)>| {
                 let key = (edge.source.identifier(), edge.target.identifier());
                 if *last_key == Some(key) {
                     return;

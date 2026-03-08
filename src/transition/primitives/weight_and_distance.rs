@@ -25,8 +25,17 @@ impl WeightAndDistance {
     /// one quarter of the motorway path length.
     #[inline]
     pub fn repr(&self) -> u32 {
-        let w = self.0.value() as f64;
-        (w * w * self.1 as f64) as u32
+        (self.squared_weight() * self.distance()) as u32
+    }
+
+    #[inline]
+    fn squared_weight(&self) -> f64 {
+        return (self.0.value() as f64).powi(2);
+    }
+
+    #[inline]
+    const fn distance(&self) -> f64 {
+        return self.1 as f64;
     }
 
     #[inline]

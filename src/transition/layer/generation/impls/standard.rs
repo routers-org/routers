@@ -98,9 +98,12 @@ where
                 // We have the actual projected position, and it's associated edge.
                 // Therefore, we can use the Emission costing function to calculate
                 // the associated emission cost of this candidate.
-                let emission = self
-                    .emission
-                    .cost(EmissionContext::new(&position, origin, distance, edge.weight));
+                let emission = self.emission.cost(EmissionContext::new(
+                    &position,
+                    origin,
+                    distance,
+                    edge.weight,
+                ));
 
                 let candidate = Candidate::new(edge.thin(), position, emission, location);
                 let candidate_reference = CandidateRef::new(emission);

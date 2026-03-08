@@ -32,8 +32,7 @@ use geo::Point;
 use petgraph::prelude::DiGraphMap;
 use routers_network::{
     Direction, DirectionAwareEdgeId, Discovery, Edge, Entry, Metadata, Network, Node, Route, Scan,
-    edge::Weight,
-    network::GraphEdge,
+    edge::Weight, network::GraphEdge,
 };
 use rstar::{AABB, RTree};
 use rustc_hash::{FxHashMap, FxHasher};
@@ -385,10 +384,8 @@ impl MockNetworkBuilder {
             .filter_map(|e| {
                 let src_node = *nodes.get(&e.source)?;
                 let tgt_node = *nodes.get(&e.target)?;
-                let direction_aware = DirectionAwareEdgeId::new(Node::new(
-                    dummy_point(),
-                    e.edge_id,
-                ));
+                let direction_aware =
+                    DirectionAwareEdgeId::new(Node::new(dummy_point(), e.edge_id));
                 Some(Edge {
                     source: src_node,
                     target: tgt_node,
@@ -947,4 +944,3 @@ mod tests {
         }
     }
 }
-
