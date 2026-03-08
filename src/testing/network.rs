@@ -638,10 +638,6 @@ mod tests {
             .expect("map match must succeed");
 
         // A real match must have been made.
-        // Note: the `interpolated` path is intentionally not checked here — when all
-        // consecutive candidates land on the same or adjacent edges the routing layer
-        // produces empty `Reachable::path` entries, so `interpolated` is always empty
-        // for an all-straight trajectory regardless of which road was chosen.
         assert!(
             !result.discretized.elements.is_empty(),
             "discretized path must be non-empty: a real match was made"
@@ -806,6 +802,82 @@ mod tests {
             !matched_node_ids.contains(&4),
             "east-continuation node (4) must not appear when the GPS turns north at the junction"
         );
+    }
+
+    /// The interpolated path must include the edges that the GPS points are
+    /// matched to (candidate edges), not just the routing edges between them.
+    ///
+    /// Before the fix, `interpolated` only contained the *bridging* edges that
+    /// the router generated between consecutive candidate pairs.  The edges
+    /// actually bearing the matched GPS positions were absent.
+    ///
+    /// ```text
+    ///  1 ─(e1)─ 2 ─(e2)─ 3 ─(e3)─ 4
+    /// ```
+    ///
+    /// GPS point 1 is near edge e1 (1→2); GPS point 2 is near edge e3 (3→4).
+    /// The routing bridge is edge e2 (2→3).  The correct interpolated path is
+    /// [e1, e2, e3] — all three edges in order.  Previously only [e2] was
+    /// returned.
+    #[test]
+    fn map_match_interpolated_path_includes_candidate_edges() {
+        // Four-node road:  1 ─(e1)─ 2 ─(e2)─ 3 ─(e3)─ 4
+        let net = MockNetworkBuilder::new()
+            .node(1, point!(x: -118.14, y: 34.15))
+            .node(2, point!(x: -118.15, y: 34.15))
+            .node(3, point!(x: -118.16, y: 34.15))
+            .node(4, point!(x: -118.17, y: 34.15))
+            .edge(1, 2)
+            .edge(2, 3)
+            .edge(3, 4)
+            .build();
+
+        // GPS point 1 sits near edge 1→2; GPS point 2 sits near edge 3→4.
+        let linestring: LineString = wkt! {
+            LINESTRING(
+                -118.141 34.1503,
+                -118.169 34.1503
+            )
+        };
+
+        let result = net
+            .match_simple(linestring)
+            .expect("map match must succeed");
+
+        // The interpolated path must cover every edge traversed, including
+        // the first and last candidate edges (e1 and e3).
+        let interpolated_node_ids: Vec<i64> = result
+            .interpolated
+            .elements
+            .iter()
+            .flat_map(|e| [e.edge.source.id.0, e.edge.target.id.0])
+            .collect();
+
+        // e1 (1→2) must appear — it's the edge bearing GPS point 1.
+        assert!(
+            interpolated_node_ids.contains(&1),
+            "node 1 (start of first candidate edge e1) must appear in the interpolated path"
+        );
+
+        // e3 (3→4) must appear — it's the edge bearing GPS point 2.
+        assert!(
+            interpolated_node_ids.contains(&4),
+            "node 4 (end of last candidate edge e3) must appear in the interpolated path"
+        );
+
+        // e2 (2→3) must appear — it bridges the two candidate edges.
+        assert!(
+            interpolated_node_ids.contains(&2) && interpolated_node_ids.contains(&3),
+            "nodes 2 and 3 (intermediate bridging edge e2) must appear in the interpolated path"
+        );
+
+        // Every element must have valid metadata.
+        for element in &result.interpolated.elements {
+            assert!(
+                net.metadata(element.edge.id()).is_some(),
+                "every interpolated edge must have metadata"
+            );
+        }
     }
 }
 

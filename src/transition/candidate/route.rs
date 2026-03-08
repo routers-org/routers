@@ -34,24 +34,72 @@ where
     M: Metadata,
 {
     pub fn new(collapsed_path: CollapsedPath<E>, network: &impl Network<E, M>) -> Self {
-        // Collect the collapsed route, providing graph context.
-        let discretized = collapsed_path
+        // Collect matched candidates in order.  Virtual start/end nodes have no
+        // lookup entry so flat_map quietly skips them.
+        let matched: Vec<Candidate<E>> = collapsed_path
             .route
             .iter()
             .flat_map(|id| collapsed_path.candidates.candidate(id))
-            .flat_map(|candidate| PathElement::new(candidate, network))
+            .collect();
+
+        // discretized: one PathElement per GPS input point.
+        let discretized = matched
+            .iter()
+            .flat_map(|c| PathElement::new(*c, network))
             .collect::<Path<E, M>>();
 
-        // Collect and interpolate required information from the
-        // collapsed path. Derives routing information for a
-        // informative response.
-        let interpolated = collapsed_path
-            .interpolated
-            .into_iter()
-            .flat_map(|reachable| reachable.path)
-            .flat_map(|edge| network.fatten(&edge))
-            .flat_map(|edge| PathElement::from_fat(edge, network))
-            .collect::<Path<E, M>>();
+        // interpolated: the complete traversed path — each candidate edge
+        // interleaved with the routing edges that bridge consecutive candidates.
+        //
+        // For each reachable[i] (transition from candidate i to candidate i+1):
+        //   1. Emit candidate i's own edge.
+        //   2. Emit all intermediate routing edges (source.edge.target → target.edge.source).
+        // After all transitions, emit the last candidate's edge.
+        //
+        // Consecutive identical (source, target) pairs are deduplicated so that
+        // distance-only transitions (same directed edge for both candidates) do not
+        // repeat the segment.  The key is the node-pair rather than the way ID so
+        // that multiple directed segments of the same long OSM way are all retained.
+        let interpolated = {
+            let reachables = collapsed_path.interpolated;
+            let mut elements: Vec<PathElement<E, M>> = Vec::new();
+            let mut last_edge: Option<(i64, i64)> = None;
+
+            // Emit one edge into `elements`, skipping it if the same directed
+            // edge (same source node, same target node) was just emitted.
+            let push_edge = |edge: &Edge<E>,
+                                 elements: &mut Vec<PathElement<E, M>>,
+                                 last_key: &mut Option<(i64, i64)>| {
+                let key = (edge.source.identifier(), edge.target.identifier());
+                if *last_key == Some(key) {
+                    return;
+                }
+                if let Some(fat) = network.fatten(edge) {
+                    if let Some(pe) = PathElement::from_fat(fat, network) {
+                        elements.push(pe);
+                        *last_key = Some(key);
+                    }
+                }
+            };
+
+            for (i, reachable) in reachables.iter().enumerate() {
+                // Emit the source candidate's edge.
+                if let Some(source) = matched.get(i) {
+                    push_edge(&source.edge, &mut elements, &mut last_edge);
+                }
+                // Emit any intermediate routing edges between the candidates.
+                for edge in &reachable.path {
+                    push_edge(edge, &mut elements, &mut last_edge);
+                }
+            }
+
+            // Emit the final candidate's edge.
+            if let Some(last_cand) = matched.last() {
+                push_edge(&last_cand.edge, &mut elements, &mut last_edge);
+            }
+
+            Path { elements }
+        };
 
         RoutedPath {
             discretized,
