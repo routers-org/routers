@@ -4,7 +4,7 @@ use routers_fixtures::fixture;
 use std::path::Path;
 use wkt::TryFromWkt;
 
-use crate::{dump_wkt, r#match::MatchSimpleExt};
+use crate::r#match::MatchSimpleExt;
 
 fn setup(source: &str, linestring: &str) -> (OsmNetwork, LineString<f64>) {
     let path = Path::new(fixture!(source)).as_os_str().to_ascii_lowercase();
