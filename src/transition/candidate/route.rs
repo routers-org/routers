@@ -42,61 +42,46 @@ where
             .flat_map(|id| collapsed_path.candidates.candidate(id))
             .collect();
 
-        // discretized: one PathElement per GPS input point.
+        // One PathElement per GPS input point.
         let discretized = matched
             .iter()
             .flat_map(|c| PathElement::new(*c, network))
             .collect::<Path<E, M>>();
 
-        // interpolated: the complete traversed path — each candidate edge
-        // interleaved with the routing edges that bridge consecutive candidates.
+        // The complete traversed path. Each candidate edge is interleaved
+        // with the routing edges that bridge consecutive candidates.
         //
-        // For each reachable[i] (transition from candidate i to candidate i+1):
-        //   1. Emit candidate i's own edge.
-        //   2. Emit all intermediate routing edges (source.edge.target → target.edge.source).
-        // After all transitions, emit the last candidate's edge.
+        // We iterate through all discrete elements and ensure to include the
+        // edges bridging them (intermediate edges). So as to conjoin the source's
+        // target and the target's source with all relevant filler, preventing seemingly
+        // jumpy segment joins for much-dispersed traffic, or low-frequency positions.
         //
-        // Consecutive identical (source, target) pairs are deduplicated so that
-        // distance-only transitions (same directed edge for both candidates) do not
-        // repeat the segment.  The key is the node-pair rather than the way ID so
-        // that multiple directed segments of the same long OSM way are all retained.
+        // Consecutive identical ends are deduplicated so that distance-only transitions,
+        // which have the same directed edge for both candidates, do not repeat the segment.
         let interpolated = {
-            let reachables = collapsed_path.interpolated;
-            let mut elements: Vec<PathElement<E, M>> = Vec::new();
-            let mut last_edge: Option<(i64, i64)> = None;
+            let mut elements: Vec<_> = collapsed_path
+                .interpolated
+                .iter()
+                .enumerate()
+                .flat_map(|(i, reachable)| {
+                    matched
+                        .get(i)
+                        .map(|m| &m.edge)
+                        .into_iter()
+                        .chain(reachable.path.iter())
+                })
+                .chain(matched.last().map(|m| &m.edge))
+                .filter_map(|edge| {
+                    network
+                        .fatten(edge)
+                        .and_then(|fat| PathElement::from_fat(fat, network))
+                })
+                .collect::<Vec<PathElement<E, M>>>();
 
-            // Emit one edge into `elements`, skipping it if the same directed
-            // edge (same source node, same target node) was just emitted.
-            let push_edge = |edge: &Edge<E>,
-                             elements: &mut Vec<PathElement<E, M>>,
-                             last_key: &mut Option<(i64, i64)>| {
-                let key = (edge.source.identifier(), edge.target.identifier());
-                if *last_key == Some(key) {
-                    return;
-                }
-                if let Some(fat) = network.fatten(edge) {
-                    if let Some(pe) = PathElement::from_fat(fat, network) {
-                        elements.push(pe);
-                        *last_key = Some(key);
-                    }
-                }
-            };
-
-            for (i, reachable) in reachables.iter().enumerate() {
-                // Emit the source candidate's edge.
-                if let Some(source) = matched.get(i) {
-                    push_edge(&source.edge, &mut elements, &mut last_edge);
-                }
-                // Emit any intermediate routing edges between the candidates.
-                for edge in &reachable.path {
-                    push_edge(edge, &mut elements, &mut last_edge);
-                }
-            }
-
-            // Emit the final candidate's edge.
-            if let Some(last_cand) = matched.last() {
-                push_edge(&last_cand.edge, &mut elements, &mut last_edge);
-            }
+            elements.dedup_by(|a, b| {
+                (a.edge.source.identifier(), a.edge.target.identifier())
+                    == (b.edge.source.identifier(), b.edge.target.identifier())
+            });
 
             Path { elements }
         };
