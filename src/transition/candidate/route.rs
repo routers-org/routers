@@ -34,24 +34,57 @@ where
     M: Metadata,
 {
     pub fn new(collapsed_path: CollapsedPath<E>, network: &impl Network<E, M>) -> Self {
-        // Collect the collapsed route, providing graph context.
-        let discretized = collapsed_path
+        // Collect matched candidates in order.  Virtual start/end nodes have no
+        // lookup entry so flat_map quietly skips them.
+        let matched: Vec<Candidate<E>> = collapsed_path
             .route
             .iter()
             .flat_map(|id| collapsed_path.candidates.candidate(id))
-            .flat_map(|candidate| PathElement::new(candidate, network))
+            .collect();
+
+        // One PathElement per GPS input point.
+        let discretized = matched
+            .iter()
+            .flat_map(|c| PathElement::new(*c, network))
             .collect::<Path<E, M>>();
 
-        // Collect and interpolate required information from the
-        // collapsed path. Derives routing information for a
-        // informative response.
-        let interpolated = collapsed_path
-            .interpolated
-            .into_iter()
-            .flat_map(|reachable| reachable.path)
-            .flat_map(|edge| network.fatten(&edge))
-            .flat_map(|edge| PathElement::from_fat(edge, network))
-            .collect::<Path<E, M>>();
+        // The complete traversed path. Each candidate edge is interleaved
+        // with the routing edges that bridge consecutive candidates.
+        //
+        // We iterate through all discrete elements and ensure to include the
+        // edges bridging them (intermediate edges). So as to conjoin the source's
+        // target and the target's source with all relevant filler, preventing seemingly
+        // jumpy segment joins for much-dispersed traffic, or low-frequency positions.
+        //
+        // Consecutive identical ends are deduplicated so that distance-only transitions,
+        // which have the same directed edge for both candidates, do not repeat the segment.
+        let interpolated = {
+            let mut elements: Vec<_> = collapsed_path
+                .interpolated
+                .iter()
+                .enumerate()
+                .flat_map(|(i, reachable)| {
+                    matched
+                        .get(i)
+                        .map(|m| &m.edge)
+                        .into_iter()
+                        .chain(reachable.path.iter())
+                })
+                .chain(matched.last().map(|m| &m.edge))
+                .filter_map(|edge| {
+                    network
+                        .fatten(edge)
+                        .and_then(|fat| PathElement::from_fat(fat, network))
+                })
+                .collect::<Vec<PathElement<E, M>>>();
+
+            elements.dedup_by(|a, b| {
+                (a.edge.source.identifier(), a.edge.target.identifier())
+                    == (b.edge.source.identifier(), b.edge.target.identifier())
+            });
+
+            Path { elements }
+        };
 
         RoutedPath {
             discretized,
