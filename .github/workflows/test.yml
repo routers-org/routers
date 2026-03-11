@@ -37,4 +37,4 @@ jobs:
         run: rustup toolchain install stable
 
       - name: 🧪 Test
-        run: cargo nextest run --workspace --release
+        run: cargo nextest run --workspace
