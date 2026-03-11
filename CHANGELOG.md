@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.3] - 2026-03-11
+
+### 🐛 Bug Fixes
+
+- Multiple Fixes to Route-Base Costing Heuristics ([#97](https://github.com/routers-org/routers/pull/97))
+
+RoutersOrg - 2025
+
 ## [0.2.2] - 2026-03-01
 
 ### 🚀 Features
