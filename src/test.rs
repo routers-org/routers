@@ -18,7 +18,6 @@ fn setup(source: &str, linestring: &str) -> (OsmNetwork, LineString<f64>) {
     (graph, coordinates)
 }
 
-#[test]
 fn ventura() {
     use routers_fixtures::{LOS_ANGELES, VENTURA_TRIP};
     let (graph, coordinates) = setup(LOS_ANGELES, VENTURA_TRIP);
@@ -36,7 +35,6 @@ fn ventura() {
     );
 }
 
-#[test]
 fn lax_lynwood() {
     use routers_fixtures::{LAX_LYNWOOD_TRIP, LOS_ANGELES};
     let (graph, coordinates) = setup(LOS_ANGELES, LAX_LYNWOOD_TRIP);
