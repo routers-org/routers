@@ -1,0 +1,31 @@
+[package]
+name = "routers_tz"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+description = "Timezone Resolver"
+
+[dependencies]
+geo = { version = "0.30.0", features = ["serde"] }
+geo-index = { version = "0.3.1", optional = true }
+
+time-tz = "2.0.0"
+lazy_static = "1.5.0"
+routers_tz_types = { workspace = true }
+routers_tz_build = { workspace = true }
+rstest = "0.25.0"
+ctor = "0.4.2"
+geozero = "0.14.0"
+
+[dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "discovery"
+harness = false
+
+[features]
+default = ["rtree"]
+
+basic = ["routers_tz_build/basic"]
+rtree = ["routers_tz_build/rtree", "geo-index"]
