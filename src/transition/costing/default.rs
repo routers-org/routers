@@ -1,8 +1,13 @@
 pub mod emission {
+    use std::ops::{Add, Mul};
+
+    use pathfinding::num_traits::{Pow, real::Real};
+    use wkt::ToWkt;
+
     use crate::transition::*;
 
-    /// 1 meter (1/10th of the 85th% GPS error)
-    const DEFAULT_EMISSION_ERROR: f64 = 1.0;
+    /// 5 * 1 meter (1/3rd of the 85th% GPS error)
+    const DEFAULT_EMISSION_ERROR: f64 = 5.0;
 
     /// Calculates the emission cost of a candidate relative
     /// to its source node.
@@ -53,8 +58,8 @@ pub mod emission {
     impl<'a> Strategy<EmissionContext<'a>> for DefaultEmissionCost {
         type Cost = f64;
 
-        const ZETA: f64 = 0.5;
-        const BETA: f64 = -10.0; // TODO: Maybe allow dynamic parameters based on the GPS drift-?
+        const ZETA: f64 = 1.;
+        const BETA: f64 = -1.0; // TODO: Maybe allow dynamic parameters based on the GPS drift-?
 
         #[inline(always)]
         fn calculate(&self, context: EmissionContext<'a>) -> Option<Self::Cost> {
@@ -75,9 +80,23 @@ pub mod emission {
             //   Primary+  (w≥3) → multiplier = 4  (same cap; no run-away overflow)
             //
             // Zero-cost behaviour is preserved: distance = 0 → cost = 0.
-            let w = (context.weight as f64).min(2.0);
-            let weighted_distance = context.distance * w * w;
-            Some(weighted_distance.sqrt() * weighted_distance)
+            let w = (context.weight as f64)
+                .min(2.0)
+                .add(context.distance.abs_sub(self.emission_error).powi(2));
+
+            println!(
+                "weight: {w} (source={}, candidate={})",
+                context.source_position.wkt_string(),
+                context.candidate_position.wkt_string()
+            );
+
+            // We return the natural logarithm of the desired cost to neutralize
+            // the `exp()` in the `Strategy::cost` method. This allows the cost
+            // to grow linearly with `w` rather than exponentially, avoiding
+            // the premature overflow which previously occurred at ~19m.
+            //
+            // Final Cost = exp(calculate) - OFFSET = (w + 1. + OFFSET) - OFFSET = w + 1.
+            Some((w + 1. + core::f64::consts::E).ln())
         }
     }
 }
@@ -212,8 +231,14 @@ pub mod transition {
                 + (0.25 * turn_cost)
                 + (0.25 * deviance);
 
-            // Take the inverse to "span" values
-            Some(avg_cost.recip())
+            println!("cost: {}", avg_cost.recip());
+
+            // We return the natural logarithm of the reciprocal of `avg_cost` to neutralize
+            // the `exp()` in the `Strategy::cost` method. This allows the cost to grow
+            // linearly with `avg_cost.recip()` rather than exponentially.
+            //
+            // Final Cost = exp(calculate) - OFFSET = (avg_cost.recip() + OFFSET) - OFFSET = avg_cost.recip()
+            Some((avg_cost.recip() + core::f64::consts::E).ln())
         }
     }
 }

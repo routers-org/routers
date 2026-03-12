@@ -98,9 +98,7 @@ where
                     optimal_path,
                 });
 
-                let transition = (transition_cost as f64 * 0.6) as u32;
-                let emission = (target.emission as f64 * 0.4) as u32;
-                let cost = emission.saturating_add(transition);
+                let cost = target.emission.saturating_add(transition_cost);
 
                 Some((reachable, CandidateEdge::new(cost)))
             })
@@ -230,7 +228,10 @@ where
             transition.layers.layers[0]
                 .nodes
                 .iter()
-                .map(|source| (*source, CandidateEdge::zero()))
+                .filter_map(|source| {
+                    let c = context.candidate(source)?;
+                    Some((*source, CandidateEdge::new(c.emission)))
+                })
                 .collect_vec(),
         );
 
