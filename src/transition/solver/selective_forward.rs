@@ -92,7 +92,9 @@ where
         // Fast-track to the finish line
         if successors.contains(&end) {
             debug!("End-Successors: {successors:?}");
-            return vec![(end, CandidateEdge::zero())];
+            if let Some(c) = context.candidate(&end) {
+                return vec![(end, CandidateEdge::new(c.emission))];
+            }
         }
 
         let reachable = self

@@ -12,7 +12,7 @@ use itertools::Itertools;
 use measure_time::debug_time;
 use pathfinding::num_traits::Zero;
 use pathfinding::prelude::*;
-use routers_network::{Entry, Metadata, Network};
+use routers_network::{Entry, Metadata, Network, Node};
 
 /// A Upper-Bounded Dijkstra (UBD) algorithm.
 ///
@@ -237,7 +237,9 @@ where
 
         if let Some(all) = transition.layers.layers.last() {
             for node in &all.nodes {
-                pair.insert(*node, vec![(end, CandidateEdge::zero())]);
+                if let Some(c) = context.candidate(node) {
+                    pair.insert(*node, vec![(end, CandidateEdge::new(c.emission))]);
+                }
             }
         }
 
