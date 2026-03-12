@@ -1,4 +1,4 @@
-use crate::transition::candidate::*;
+use crate::{ResolutionMethod, transition::candidate::*};
 use core::ops::Deref;
 use routers_network::{Edge, Entry, Metadata, Network, Node};
 use serde::Serialize;
@@ -59,29 +59,55 @@ where
         // Consecutive identical ends are deduplicated so that distance-only transitions,
         // which have the same directed edge for both candidates, do not repeat the segment.
         let interpolated = {
-            let mut elements: Vec<_> = collapsed_path
-                .interpolated
-                .iter()
-                .enumerate()
-                .flat_map(|(i, reachable)| {
-                    matched
-                        .get(i)
-                        .map(|m| &m.edge)
-                        .into_iter()
-                        .chain(reachable.path.iter())
-                })
-                .chain(matched.last().map(|m| &m.edge))
-                .filter_map(|edge| {
-                    network
-                        .fatten(edge)
-                        .and_then(|fat| PathElement::from_fat(fat, network))
-                })
-                .collect::<Vec<PathElement<E, M>>>();
+            let mut elements = Vec::new();
 
-            elements.dedup_by(|a, b| {
-                (a.edge.source.identifier(), a.edge.target.identifier())
-                    == (b.edge.source.identifier(), b.edge.target.identifier())
-            });
+            for (i, reachable) in collapsed_path.interpolated.iter().enumerate() {
+                let current = &matched[i];
+
+                // Add current candidate position
+                if let Some(pe) = PathElement::new(*current, network) {
+                    elements.push(pe);
+                }
+
+                if let ResolutionMethod::Standard = reachable.resolution_method {
+                    // Add target of current candidate edge
+                    if let Some(fat) = network.fatten(&current.edge) {
+                        if let Some(pe) = PathElement::from_fat_target(fat, network) {
+                            elements.push(pe);
+                        }
+                    }
+
+                    // Add intermediate edges
+                    for edge in &reachable.path {
+                        if let Some(fat) = network.fatten(edge) {
+                            if let Some(pe) = PathElement::from_fat_source(fat, network) {
+                                elements.push(pe);
+                            }
+                            if let Some(pe) = PathElement::from_fat_target(fat, network) {
+                                elements.push(pe);
+                            }
+                        }
+                    }
+
+                    // Add source of next candidate edge
+                    if let Some(next) = matched.get(i + 1) {
+                        if let Some(fat) = network.fatten(&next.edge) {
+                            if let Some(pe) = PathElement::from_fat_source(fat, network) {
+                                elements.push(pe);
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Add the very last candidate position
+            if let Some(last_candidate) = matched.last() {
+                if let Some(pe) = PathElement::new(*last_candidate, network) {
+                    elements.push(pe);
+                }
+            }
+
+            elements.dedup_by(|a, b| a.point == b.point);
 
             Path { elements }
         };
@@ -158,9 +184,17 @@ where
         })
     }
 
-    pub fn from_fat(edge: Edge<Node<E>>, network: &impl Network<E, M>) -> Option<Self> {
+    pub fn from_fat_source(edge: Edge<Node<E>>, network: &impl Network<E, M>) -> Option<Self> {
         Some(PathElement {
             point: edge.source.position.0,
+            metadata: network.metadata(edge.id())?.clone(),
+            edge,
+        })
+    }
+
+    pub fn from_fat_target(edge: Edge<Node<E>>, network: &impl Network<E, M>) -> Option<Self> {
+        Some(PathElement {
+            point: edge.target.position.0,
             metadata: network.metadata(edge.id())?.clone(),
             edge,
         })

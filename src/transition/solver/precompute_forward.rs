@@ -12,7 +12,7 @@ use itertools::Itertools;
 use measure_time::debug_time;
 use pathfinding::num_traits::Zero;
 use pathfinding::prelude::*;
-use routers_network::{Entry, Metadata, Network, Node};
+use routers_network::{Entry, Metadata, Network};
 
 /// A Upper-Bounded Dijkstra (UBD) algorithm.
 ///
