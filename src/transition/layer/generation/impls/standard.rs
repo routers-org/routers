@@ -1,7 +1,7 @@
 use crate::definition::{Layer, Layers};
 use crate::generation::LayerGeneration;
 use crate::{dump_wkt, transition::*};
-use geo::{Distance, Haversine, MultiPoint, Point};
+use geo::{Distance, Haversine, Point};
 use itertools::Itertools;
 use rayon::iter::{IndexedParallelIterator, IntoParallelIterator, ParallelIterator};
 use routers_network::{Entry, Metadata, Network};
@@ -180,18 +180,6 @@ where
 
         let layers = hashmap_to_vec(layers);
         let candidates = Candidates::new(candidate_graph, lookup);
-
-        dump_wkt!(
-            "layers.wkt",
-            MultiPoint::new(
-                layers
-                    .iter()
-                    .flat_map(|l| l.nodes.clone())
-                    .filter_map(|n| candidates.candidate(&n))
-                    .map(|v| v.position)
-                    .collect()
-            )
-        );
 
         (Layers { layers }, candidates)
     }
