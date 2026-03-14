@@ -1,8 +1,8 @@
 pub mod emission {
     use crate::transition::*;
 
-    /// 5 * 1 meter (1/3rd of the 85th% GPS error)
-    const DEFAULT_EMISSION_ERROR: f64 = 5.0;
+    /// 1 meter (1/10th of the 85th% GPS error)
+    const DEFAULT_EMISSION_ERROR: f64 = 1.0;
 
     /// Calculates the emission cost of a candidate relative
     /// to its source node.
@@ -212,6 +212,7 @@ pub mod transition {
                 + (0.25 * turn_cost)
                 + (0.25 * deviance);
 
+            // Take the inverse to "span" values
             Some(avg_cost.recip())
         }
     }
