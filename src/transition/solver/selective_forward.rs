@@ -92,9 +92,7 @@ where
         // Fast-track to the finish line
         if successors.contains(&end) {
             debug!("End-Successors: {successors:?}");
-            if let Some(c) = context.candidate(&end) {
-                return vec![(end, CandidateEdge::new(c.emission))];
-            }
+            return vec![(end, CandidateEdge::zero())];
         }
 
         let reachable = self
@@ -131,7 +129,9 @@ where
                         optimal_path,
                     });
 
-                    let cost = target.emission.saturating_add(transition_cost);
+                    let transition = (transition_cost as f64 * 0.6) as u32;
+                    let emission = (target.emission as f64 * 0.4) as u32;
+                    let cost = emission.saturating_add(transition);
 
                     hash.insert(reachable.hash(), reachable.clone());
                     Some((reachable.target, CandidateEdge::new(cost)))

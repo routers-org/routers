@@ -4,16 +4,18 @@ use routers_codec::osm::OsmNetwork;
 use std::path::Path;
 use wkt::TryFromWkt;
 
-use routers_fixtures::{SYDNEY, fixture};
+use routers_fixtures::{LAX_LYNWOOD_TRIP, LOS_ANGELES, VENTURA_TRIP, fixture};
 
 fn main() {
-    let coordinates: LineString<f64> = LineString::try_from_wkt_str("LINESTRING (151.195157 -33.886921, 151.195822 -33.886529, 151.196101 -33.885522, 151.195704 -33.884952, 151.194717 -33.884979, 151.19447 -33.885701)")
-        .expect("must parse");
+    let coordinates: LineString<f64> =
+        LineString::try_from_wkt_str(LAX_LYNWOOD_TRIP).expect("must parse");
 
     // let coordinates: LineString<f64> =
     // LineString::try_from_wkt_str(routers_fixtures::VENTURA_TRIP).expect("Linestring must parse successfully.");
 
-    let path = Path::new(fixture!(SYDNEY)).as_os_str().to_ascii_lowercase();
+    let path = Path::new(fixture!(LOS_ANGELES))
+        .as_os_str()
+        .to_ascii_lowercase();
 
     let graph = OsmNetwork::new(path).expect("Graph must be created");
 
