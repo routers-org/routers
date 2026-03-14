@@ -8,7 +8,7 @@ use routers_fixtures::{LOS_ANGELES, VENTURA_TRIP, fixture};
 
 fn main() {
     let coordinates: LineString<f64> =
-        LineString::try_from_wkt_str(VENTURA_TRIP).expect("Linestring must parse successfully.");
+        LineString::try_from_wkt_str(VENTURA_TRIP).expect("must parse");
 
     let path = Path::new(fixture!(LOS_ANGELES))
         .as_os_str()

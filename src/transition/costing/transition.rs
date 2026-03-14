@@ -81,10 +81,11 @@ impl TransitionLengths {
     /// Note that a lower deviance score means the values are less aligned.
     #[inline]
     pub fn deviance(&self) -> f64 {
-        let numer = self.straightline_distance / 4.0;
-        let demon = self.route_length - self.straightline_distance;
+        if self.route_length <= 0.0 {
+            return 1.0;
+        }
 
-        (numer / demon).abs().clamp(0.0, 1.0)
+        (self.straightline_distance / self.route_length).min(1.0)
     }
 }
 

@@ -38,24 +38,20 @@ where
     ///
     /// If the target is not found by the builder, `None` is returned.
     #[inline]
-    fn path_builder<K, C>(source: &K, target: &K, parents: &FxHashMap<K, (K, C)>) -> Option<Vec<K>>
+    fn path_builder<K, C>(target: &K, source: &K, parents: &FxHashMap<K, (K, C)>) -> Option<Vec<K>>
     where
         K: Eq + Hash + Copy,
     {
-        let mut rev = vec![*source];
-        let mut next = source;
+        let mut path = vec![*target];
+        let mut next = target;
 
-        while let Some((parent, _)) = parents.get(next) {
-            // Located the target
-            if *next == *target {
-                rev.reverse();
-                return Some(rev);
-            }
-
-            rev.push(*parent);
+        while next != source {
+            let (parent, _) = parents.get(next)?;
+            path.push(*parent);
             next = parent;
         }
 
-        None
+        path.reverse();
+        Some(path)
     }
 }

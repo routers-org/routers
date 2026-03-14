@@ -1,6 +1,6 @@
 use crate::definition::{Layer, Layers};
 use crate::generation::LayerGeneration;
-use crate::transition::*;
+use crate::{dump_wkt, transition::*};
 use geo::{Distance, Haversine, Point};
 use itertools::Itertools;
 use rayon::iter::{IndexedParallelIterator, IntoParallelIterator, ParallelIterator};
