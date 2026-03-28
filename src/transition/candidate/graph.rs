@@ -26,7 +26,7 @@ where
     pub(crate) graph: LockedCandidateGraph,
 
     /// Candidate flyweight
-    pub(crate) lookup: HashMap<CandidateId, Candidate<E>>,
+    pub lookup: HashMap<CandidateId, Candidate<E>>,
 
     ends: Option<(CandidateId, CandidateId)>,
 }
