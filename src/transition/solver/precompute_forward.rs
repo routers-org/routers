@@ -237,9 +237,7 @@ where
 
         if let Some(all) = transition.layers.layers.last() {
             for node in &all.nodes {
-                if let Some(c) = context.candidate(node) {
-                    pair.insert(*node, vec![(end, CandidateEdge::new(c.emission))]);
-                }
+                pair.insert(*node, vec![(end, CandidateEdge::zero())]);
             }
         }
 

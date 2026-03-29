@@ -34,7 +34,7 @@ where
     /// Creates a path from the source up the parent map until no more parents
     /// are found. This assumes there is only one relation between parent and children.
     ///
-    /// Returns in the order `[target, ..., source]`.
+    /// Returns in the order `[source, ..., target]`.
     ///
     /// If the target is not found by the builder, `None` is returned.
     #[inline]
