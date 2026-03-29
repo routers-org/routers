@@ -82,10 +82,10 @@ impl TransitionLengths {
     #[inline]
     pub fn deviance(&self) -> f64 {
         if self.route_length <= 0.0 {
-            return 1.0;
+            return 0.0;
         }
 
-        (self.straightline_distance / self.route_length).min(1.0)
+        self.straightline_distance / self.route_length
     }
 }
 
