@@ -815,6 +815,51 @@ expression: result.interpolated.elements
   ),
   PathElement(
     point: Coord(
+      x: -118.391936,
+      y: 33.951266,
+    ),
+    edge: Edge(
+      source: Node(
+        id: OsmEntryId(
+          identifier: 10286089701,
+        ),
+        position: Point(Coord(
+          x: -118.392156,
+          y: 33.951258,
+        )),
+      ),
+      target: Node(
+        id: OsmEntryId(
+          identifier: 3527835321,
+        ),
+        position: Point(Coord(
+          x: -118.391936,
+          y: 33.951266,
+        )),
+      ),
+      weight: 50,
+      id: DirectionAwareEdgeId(
+        id: Node(
+          id: OsmEntryId(
+            identifier: 1179938065,
+          ),
+          position: Point(Coord(
+            x: 0.0,
+            y: 0.0,
+          )),
+        ),
+        direction: Outgoing,
+      ),
+    ),
+    metadata: OsmEdgeMetadata(
+      lane_count: None,
+      speed_limit: None,
+      access: [],
+      road_class: Some(Service),
+    ),
+  ),
+  PathElement(
+    point: Coord(
       x: -118.392156,
       y: 33.951258,
     ),
