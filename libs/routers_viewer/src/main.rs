@@ -4,7 +4,7 @@ use walkers::{
     HttpTiles, Map, MapMemory, Plugin, Position, Projector, lon_lat, sources::OpenStreetMap,
 };
 
-use geo::LineString;
+use geo::{LineString, Coord};
 use std::path::Path;
 
 use routers::transition::candidate::collapse::CollapsedPath;
@@ -14,7 +14,7 @@ use routers::transition::entity::Transition;
 use routers::transition::layer::generation::StandardGenerator;
 use routers::transition::solver::selective_forward::SelectiveForwardSolver;
 use routers_codec::osm::{OsmEntryId, OsmNetwork, OsmTripConfiguration};
-use routers_fixtures::{LOS_ANGELES, VENTURA_TRIP, fixture};
+use routers_fixtures::{fixture, LOS_ANGELES, VENTURA_TRIP};
 use routers_network::Network;
 
 struct MatchState {
@@ -31,6 +31,8 @@ struct ViewerApp {
 
     match_state: Option<MatchState>,
     selected_layer: Option<usize>,
+    selected_candidate: Option<CandidateId>,
+    hovered_transition: Option<(CandidateId, CandidateId)>,
     error_msg: Option<String>,
 }
 
@@ -52,6 +54,8 @@ impl ViewerApp {
             wkt_input: default_wkt.to_string(),
             match_state: None,
             selected_layer: None,
+            selected_candidate: None,
+            hovered_transition: None,
             error_msg: None,
         }
     }
@@ -104,7 +108,7 @@ impl App for ViewerApp {
             ui.separator();
 
             ui.label("Input WKT (LineString):");
-            ui.add(TextEdit::multiline(&mut self.wkt_input).desired_width(250.0));
+            ui.add(TextEdit::singleline(&mut self.wkt_input).desired_width(f32::INFINITY));
 
             if ui.button("Match").clicked() {
                 self.perform_match();
@@ -143,30 +147,89 @@ impl App for ViewerApp {
 
                 if let Some(layer_id) = self.selected_layer {
                     ui.separator();
-                    ui.heading(format!("Layer {} Details", layer_id));
+                    ui.heading(format!("Layer {} Candidates", layer_id));
 
-                    if let Some(chosen_id) = state.collapsed.route.get(layer_id) {
-                        if let Some(cand) = state.collapsed.candidates.candidate(chosen_id) {
-                            ui.label(format!("Chosen Candidate ID: {:?}", chosen_id));
-                            ui.colored_label(
-                                Color32::BLUE,
-                                format!("Emission Cost: {}", cand.emission),
-                            );
+                    let mut layer_candidates = Vec::new();
+                    state.collapsed.candidates.lookup.scan(|k, v| {
+                        if v.location.layer_id == layer_id {
+                            layer_candidates.push((*k, *v));
+                        }
+                    });
+                    layer_candidates.sort_by_key(|(id, _)| id.index());
 
-                            if layer_id > 0 {
-                                if let Some(prev_id) = state.collapsed.route.get(layer_id - 1) {
-                                    // NOTE: state.collapsed.candidates.edge(prev_id, chosen_id)
-                                    // might need to consider virtual nodes? No, collapsed.route is just the matched candidates.
-                                    // However, the transition solver uses a graph.
+                    egui::ScrollArea::vertical()
+                        .id_salt("candidates_list")
+                        .max_height(200.0)
+                        .show(ui, |ui| {
+                            for (id, _cand) in &layer_candidates {
+                                let is_chosen = state.collapsed.route.get(layer_id) == Some(id);
+                                let is_selected = self.selected_candidate == Some(*id);
+                                let text = format!(
+                                    "Candidate {:?}{}",
+                                    id,
+                                    if is_chosen { " [CHOSEN]" } else { "" }
+                                );
+                                if ui.selectable_label(is_selected || is_chosen, text).clicked() {
+                                    self.selected_candidate = Some(*id);
+                                }
+                            }
+                        });
+
+                    if let Some(cand_id) = self.selected_candidate {
+                        if let Some(cand) = state.collapsed.candidates.candidate(&cand_id) {
+                            ui.separator();
+                            ui.heading(format!("Candidate {:?} Details", cand_id));
+                            ui.label(format!("Emission Cost: {}", cand.emission));
+
+                            if let Some(prev_idx) = layer_id.checked_sub(1) {
+                                if let Some(prev_id) = state.collapsed.route.get(prev_idx) {
                                     if let Some(edge) =
-                                        state.collapsed.candidates.edge(prev_id, chosen_id)
+                                        state.collapsed.candidates.edge(prev_id, &cand_id)
                                     {
                                         ui.label(format!(
-                                            "Transition Cost from Prev: {}",
+                                            "Transition Cost from Prev Chosen: {}",
                                             edge.weight
                                         ));
                                     }
                                 }
+                            }
+
+                            #[cfg(debug_assertions)]
+                            {
+                                ui.separator();
+                                ui.heading("Considered Transitions");
+                                egui::ScrollArea::vertical()
+                                    .id_salt("transitions_list")
+                                    .show(ui, |ui| {
+                                        ui.label("From previous layer:");
+                                        for (reachable, cost) in &state.collapsed.considered {
+                                            if reachable.target == cand_id {
+                                                let text = format!("<- {:?}: Cost {}", reachable.source, cost);
+                                                let is_hovered = self.hovered_transition == Some((reachable.source, cand_id));
+                                                let resp = ui.selectable_label(is_hovered, text);
+                                                if resp.hovered() {
+                                                    self.hovered_transition = Some((reachable.source, cand_id));
+                                                } else if is_hovered {
+                                                    self.hovered_transition = None;
+                                                }
+                                            }
+                                        }
+
+                                        ui.separator();
+                                        ui.label("To next layer:");
+                                        for (reachable, cost) in &state.collapsed.considered {
+                                            if reachable.source == cand_id {
+                                                let text = format!("-> {:?}: Cost {}", reachable.target, cost);
+                                                let is_hovered = self.hovered_transition == Some((cand_id, reachable.target));
+                                                let resp = ui.selectable_label(is_hovered, text);
+                                                if resp.hovered() {
+                                                    self.hovered_transition = Some((cand_id, reachable.target));
+                                                } else if is_hovered {
+                                                    self.hovered_transition = None;
+                                                }
+                                            }
+                                        }
+                                    });
                             }
                         }
                     }
@@ -209,9 +272,43 @@ impl App for ViewerApp {
                     let cand_plugin = CandidatePlugin {
                         candidates,
                         chosen_id,
+                        selected_id: self.selected_candidate,
                         original_coord,
                     };
                     map = map.with_plugin(cand_plugin);
+                }
+
+                // Plugin to draw hovered transition
+                #[cfg(debug_assertions)]
+                {
+                    if let Some((src_id, dst_id)) = self.hovered_transition {
+                        for (reachable, _) in &state.collapsed.considered {
+                            if reachable.source == src_id && reachable.target == dst_id {
+                                let mut pts = Vec::new();
+                                if let Some(src) = state.collapsed.candidates.candidate(&src_id) {
+                                    pts.push(src.position.0);
+                                }
+                                for edge in &reachable.path {
+                                    if let Some(p) = self.network.point(&edge.source) {
+                                        pts.push(p.0);
+                                    }
+                                    if let Some(p) = self.network.point(&edge.target) {
+                                        pts.push(p.0);
+                                    }
+                                }
+                                if let Some(dst) = state.collapsed.candidates.candidate(&dst_id) {
+                                    pts.push(dst.position.0);
+                                }
+
+                                map = map.with_plugin(TransitionPlugin {
+                                    pts,
+                                    color: Color32::YELLOW,
+                                    weight: 6.0,
+                                });
+                                break;
+                            }
+                        }
+                    }
                 }
             }
 
@@ -262,10 +359,40 @@ impl Plugin for LinePlugin {
     }
 }
 
+struct TransitionPlugin {
+    pts: Vec<Coord>,
+    color: Color32,
+    weight: f32,
+}
+
+impl Plugin for TransitionPlugin {
+    fn run(
+        self: Box<Self>,
+        ui: &mut egui::Ui,
+        _response: &egui::Response,
+        projector: &Projector,
+        _map_memory: &MapMemory,
+    ) {
+        let painter = ui.painter();
+        if self.pts.len() < 2 {
+            return;
+        }
+
+        let pts: Vec<_> = self
+            .pts
+            .iter()
+            .map(|p| projector.project(lon_lat(p.x, p.y)).to_pos2())
+            .collect();
+
+        painter.line(pts, Stroke::new(self.weight, self.color));
+    }
+}
+
 struct CandidatePlugin {
     candidates: Vec<(CandidateId, Candidate<OsmEntryId>)>,
     chosen_id: Option<CandidateId>,
-    original_coord: Option<geo::Coord>,
+    selected_id: Option<CandidateId>,
+    original_coord: Option<Coord>,
 }
 
 impl Plugin for CandidatePlugin {
@@ -298,12 +425,17 @@ impl Plugin for CandidatePlugin {
                 .to_pos2();
 
             let is_chosen = Some(*id) == self.chosen_id;
-            let color = if is_chosen {
+            let is_selected = Some(*id) == self.selected_id;
+            
+            let color = if is_selected {
+                Color32::from_rgb(255, 165, 0) // Orange
+            } else if is_chosen {
                 Color32::BLUE
             } else {
                 Color32::GRAY
             };
-            let radius = if is_chosen { 8.0 } else { 5.0 };
+            
+            let radius = if is_selected || is_chosen { 8.0 } else { 5.0 };
 
             painter.circle_filled(pos, radius, color);
             painter.circle_stroke(pos, radius, Stroke::new(1.0, Color32::BLACK));
@@ -317,6 +449,8 @@ impl Plugin for CandidatePlugin {
                 egui::FontId::proportional(12.0),
                 if is_chosen {
                     Color32::BLUE
+                } else if is_selected {
+                    Color32::from_rgb(255, 165, 0)
                 } else {
                     Color32::DARK_GRAY
                 },

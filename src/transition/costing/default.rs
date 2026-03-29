@@ -75,9 +75,8 @@ pub mod emission {
             //   Primary+  (w≥3) → multiplier = 4  (same cap; no run-away overflow)
             //
             // Zero-cost behaviour is preserved: distance = 0 → cost = 0.
-            let w = (context.weight as f64).min(2.0);
-            let weighted_distance = context.distance * w * w;
-            Some(weighted_distance.sqrt() * weighted_distance)
+            let w = (context.weight as f64).min(1.0).sqrt();
+            Some(context.distance.sqrt() * w)
         }
     }
 }
@@ -146,8 +145,8 @@ pub mod transition {
     {
         type Cost = f64;
 
-        const ZETA: f64 = 1.0;
-        const BETA: f64 = -1.0;
+        const ZETA: f64 = 0.5;
+        const BETA: f64 = -10.0;
 
         #[inline]
         fn calculate(&self, context: TransitionContext<'a, E, M, N>) -> Option<Self::Cost> {

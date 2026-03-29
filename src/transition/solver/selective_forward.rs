@@ -30,7 +30,7 @@ where
 {
     // Internally holds a successors cache
     predicate: Arc<PredicateCache<E, M, N>>,
-    reachable_hash: RefCell<FxHashMap<(usize, usize), Reachable<E>>>,
+    reachable_hash: RefCell<FxHashMap<(usize, usize), (Reachable<E>, u32)>>,
 
     _phantom: PhantomData<N>,
 }
@@ -131,7 +131,7 @@ where
 
                     let cost = target.emission.saturating_add(transition_cost);
 
-                    hash.insert(reachable.hash(), reachable.clone());
+                    hash.insert(reachable.hash(), (reachable.clone(), cost));
                     Some((reachable.target, CandidateEdge::new(cost)))
                 })
                 .collect::<Vec<_>>()
@@ -280,18 +280,31 @@ where
                     self.reachable_hash
                         .borrow()
                         .get(&(a.index(), b.index()))
-                        .cloned()
+                        .map(|(r, _)| r.clone())
                 } else {
                     None
                 }
             })
             .collect::<Vec<_>>();
 
+        // Update candidate graph with calculated weights
+        for (&(a_idx, b_idx), &(_, cost)) in self.reachable_hash.borrow().iter() {
+            let a = CandidateId::new(a_idx);
+            let b = CandidateId::new(b_idx);
+            if let Some(edge_idx) = transition.candidates.graph.find_edge(a, b) {
+                if let Some(edge) = transition.candidates.graph.edge_weight_mut(edge_idx) {
+                    edge.weight = cost;
+                }
+            }
+        }
+
         Ok(CollapsedPath::new(
             cost.weight,
             reached,
             path,
             transition.candidates,
+            #[cfg(debug_assertions)]
+            self.reachable_hash.borrow().values().cloned().collect(),
         ))
     }
 }

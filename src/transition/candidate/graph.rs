@@ -166,7 +166,14 @@ where
         let (cost, route) = astar(graph, source, |node| node == target, cost_fn, zero)
             .ok_or(CollapseError::NoPathFound)?;
 
-        Ok(CollapsedPath::new(cost, vec![], route, self))
+        Ok(CollapsedPath::new(
+            cost,
+            vec![],
+            route,
+            self,
+            #[cfg(debug_assertions)]
+            vec![],
+        ))
     }
 
     /// TODO: Provide docs
