@@ -1,11 +1,11 @@
 use eframe::{App, Frame, NativeOptions, egui};
-use egui::{CentralPanel, Color32, Context, SidePanel, Stroke, TextEdit};
-use walkers::{
-    HttpTiles, Map, MapMemory, Plugin, Position, Projector, lon_lat, sources::OpenStreetMap,
-};
+use egui::epaint::RectShape;
+use egui::{CentralPanel, Color32, Context, Rect, RichText, SidePanel, Stroke, TextEdit};
+use walkers::{HttpTiles, Map, MapMemory, Plugin, Projector, lon_lat, sources::OpenStreetMap};
 
-use geo::{LineString, Coord};
+use geo::{Coord, LineString};
 use std::path::Path;
+use std::time::{Duration, Instant};
 
 use routers::transition::candidate::collapse::CollapsedPath;
 use routers::transition::candidate::{Candidate, CandidateId};
@@ -14,13 +14,15 @@ use routers::transition::entity::Transition;
 use routers::transition::layer::generation::StandardGenerator;
 use routers::transition::solver::selective_forward::SelectiveForwardSolver;
 use routers_codec::osm::{OsmEntryId, OsmNetwork, OsmTripConfiguration};
-use routers_fixtures::{fixture, LOS_ANGELES, VENTURA_TRIP};
+use routers_fixtures::{LOS_ANGELES, SYDNEY, VENTURA_TRIP, fixture};
 use routers_network::Network;
 
 struct MatchState {
     original_line: LineString,
     collapsed: CollapsedPath<OsmEntryId>,
     interpolated_line: LineString,
+    discrete_line: LineString,
+    time: Duration,
 }
 
 struct ViewerApp {
@@ -38,9 +40,7 @@ struct ViewerApp {
 
 impl ViewerApp {
     fn new(egui_ctx: Context) -> Self {
-        let path = Path::new(fixture!(LOS_ANGELES))
-            .as_os_str()
-            .to_ascii_lowercase();
+        let path = Path::new(fixture!(SYDNEY)).as_os_str().to_ascii_lowercase();
 
         let network = OsmNetwork::new(path).expect("Graph must be created");
 
@@ -72,21 +72,26 @@ impl ViewerApp {
 
         let costing = CostingStrategies::default();
         let generator = StandardGenerator::new(&self.network, &costing.emission, 100.0);
-
         let transition = Transition::new(&self.network, line.clone(), &costing, generator);
 
         let solver = SelectiveForwardSolver::default();
         let runtime = OsmTripConfiguration::default();
 
+        let now = Instant::now();
+
         match transition.solve(solver, &runtime) {
             Ok(collapsed) => {
                 let interpolated_line = collapsed.interpolated(&self.network);
+                let discrete_line = collapsed.collapsed();
 
                 self.match_state = Some(MatchState {
                     original_line: line,
                     collapsed,
                     interpolated_line,
+                    discrete_line,
+                    time: now.elapsed(),
                 });
+
                 self.selected_layer = None;
 
                 // Center map on the first point
@@ -123,6 +128,7 @@ impl App for ViewerApp {
             if let Some(state) = &self.match_state {
                 ui.heading("Match Results");
                 ui.label(format!("Total Path Cost: {}", state.collapsed.cost));
+                ui.label(format!("Time Taken: {}ms", state.time.as_millis()));
 
                 // Find all layers
                 let mut max_layer = 0;
@@ -134,16 +140,20 @@ impl App for ViewerApp {
                     *layer_counts.entry(lid).or_insert(0) += 1;
                 });
 
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    for i in 0..=max_layer {
-                        let count = layer_counts.get(&i).copied().unwrap_or(0);
-                        let text = format!("Layer {} ({} candidates)", i, count);
-                        let is_selected = self.selected_layer == Some(i);
-                        if ui.selectable_label(is_selected, text).clicked() {
-                            self.selected_layer = Some(i);
+                egui::ScrollArea::vertical()
+                    .max_height(200.0)
+                    .show(ui, |ui| {
+                        for i in 0..=max_layer {
+                            let count = layer_counts.get(&i).copied().unwrap_or(0);
+                            let text = format!("Layer {i} ({count} candidates)");
+
+                            let is_selected = self.selected_layer.is_some_and(|v| v == i);
+
+                            if ui.selectable_label(is_selected, text).clicked() {
+                                self.selected_layer = Some(i);
+                            }
                         }
-                    }
-                });
+                    });
 
                 if let Some(layer_id) = self.selected_layer {
                     ui.separator();
@@ -155,21 +165,27 @@ impl App for ViewerApp {
                             layer_candidates.push((*k, *v));
                         }
                     });
-                    layer_candidates.sort_by_key(|(id, _)| id.index());
+                    layer_candidates.sort_by_key(|(_, c)| c.emission);
 
                     egui::ScrollArea::vertical()
                         .id_salt("candidates_list")
                         .max_height(200.0)
                         .show(ui, |ui| {
-                            for (id, _cand) in &layer_candidates {
+                            for (id, cand) in &layer_candidates {
                                 let is_chosen = state.collapsed.route.get(layer_id) == Some(id);
                                 let is_selected = self.selected_candidate == Some(*id);
+
                                 let text = format!(
-                                    "Candidate {:?}{}",
+                                    "Candidate {:?} Cost={} {}",
                                     id,
+                                    cand.emission,
                                     if is_chosen { " [CHOSEN]" } else { "" }
                                 );
-                                if ui.selectable_label(is_selected || is_chosen, text).clicked() {
+
+                                if ui
+                                    .selectable_label(is_selected || is_chosen, text)
+                                    .clicked()
+                                {
                                     self.selected_candidate = Some(*id);
                                 }
                             }
@@ -198,17 +214,23 @@ impl App for ViewerApp {
                             {
                                 ui.separator();
                                 ui.heading("Considered Transitions");
+
                                 egui::ScrollArea::vertical()
                                     .id_salt("transitions_list")
                                     .show(ui, |ui| {
                                         ui.label("From previous layer:");
                                         for (reachable, cost) in &state.collapsed.considered {
                                             if reachable.target == cand_id {
-                                                let text = format!("<- {:?}: Cost {}", reachable.source, cost);
-                                                let is_hovered = self.hovered_transition == Some((reachable.source, cand_id));
+                                                let text = format!(
+                                                    "<- {:?}: Cost {}",
+                                                    reachable.source, cost
+                                                );
+                                                let is_hovered = self.hovered_transition
+                                                    == Some((reachable.source, cand_id));
                                                 let resp = ui.selectable_label(is_hovered, text);
                                                 if resp.hovered() {
-                                                    self.hovered_transition = Some((reachable.source, cand_id));
+                                                    self.hovered_transition =
+                                                        Some((reachable.source, cand_id));
                                                 } else if is_hovered {
                                                     self.hovered_transition = None;
                                                 }
@@ -217,18 +239,28 @@ impl App for ViewerApp {
 
                                         ui.separator();
                                         ui.label("To next layer:");
-                                        for (reachable, cost) in &state.collapsed.considered {
-                                            if reachable.source == cand_id {
-                                                let text = format!("-> {:?}: Cost {}", reachable.target, cost);
-                                                let is_hovered = self.hovered_transition == Some((cand_id, reachable.target));
+
+                                        state
+                                            .collapsed
+                                            .considered
+                                            .iter()
+                                            .filter(|(r, _)| return r.source == cand_id)
+                                            .for_each(|(reachable, cost)| {
+                                                let text = format!(
+                                                    "-> {:?}: Cost {}",
+                                                    reachable.target, cost
+                                                );
+                                                let is_hovered = self.hovered_transition
+                                                    == Some((cand_id, reachable.target));
                                                 let resp = ui.selectable_label(is_hovered, text);
+
                                                 if resp.hovered() {
-                                                    self.hovered_transition = Some((cand_id, reachable.target));
+                                                    self.hovered_transition =
+                                                        Some((cand_id, reachable.target));
                                                 } else if is_hovered {
                                                     self.hovered_transition = None;
                                                 }
-                                            }
-                                        }
+                                            });
                                     });
                             }
                         }
@@ -249,6 +281,7 @@ impl App for ViewerApp {
                 let line_plugin = LinePlugin {
                     original: state.original_line.clone(),
                     interpolated: state.interpolated_line.clone(),
+                    discrete: state.discrete_line.clone(),
                 };
                 map = map.with_plugin(line_plugin);
 
@@ -305,6 +338,7 @@ impl App for ViewerApp {
                                     color: Color32::YELLOW,
                                     weight: 6.0,
                                 });
+
                                 break;
                             }
                         }
@@ -319,7 +353,9 @@ impl App for ViewerApp {
 
 struct LinePlugin {
     original: LineString,
+
     interpolated: LineString,
+    discrete: LineString,
 }
 
 impl Plugin for LinePlugin {
@@ -340,7 +376,11 @@ impl Plugin for LinePlugin {
                 .iter()
                 .map(|p| projector.project(lon_lat(p.x, p.y)).to_pos2())
                 .collect();
-            painter.line(pts, Stroke::new(4.0, Color32::from_rgb(0, 100, 255)));
+
+            painter.line(
+                pts,
+                Stroke::new(4.0, Color32::from_rgba_unmultiplied_const(0, 100, 255, 128)),
+            );
         }
 
         // Draw original WKT as RED (faded)
@@ -351,9 +391,27 @@ impl Plugin for LinePlugin {
                 .iter()
                 .map(|p| projector.project(lon_lat(p.x, p.y)).to_pos2())
                 .collect();
+
+            painter.line(pts, Stroke::new(2.0, Color32::from_rgb(255, 0, 0)));
+        }
+
+        for (a, b) in self.original.into_iter().zip(self.discrete.into_iter()) {
+            let p_original = projector.project(lon_lat(a.x, a.y)).to_pos2();
+            let p_matched = projector.project(lon_lat(b.x, b.y)).to_pos2();
+
+            let pos = projector.project(lon_lat(a.x, a.y)).to_pos2();
+
+            painter.circle_filled(pos, 4.0, Color32::RED);
+            painter.circle_stroke(pos, 4.0, Stroke::new(1.0, Color32::BLACK));
+
+            let pos = projector.project(lon_lat(b.x, b.y)).to_pos2();
+
+            painter.circle_filled(pos, 4.0, Color32::BLUE);
+            painter.circle_stroke(pos, 4.0, Stroke::new(1.0, Color32::BLACK));
+
             painter.line(
-                pts,
-                Stroke::new(2.0, Color32::from_rgba_unmultiplied(255, 0, 0, 100)),
+                vec![p_original, p_matched],
+                Stroke::new(2.0, Color32::from_rgb(50, 50, 50)),
             );
         }
     }
@@ -426,7 +484,7 @@ impl Plugin for CandidatePlugin {
 
             let is_chosen = Some(*id) == self.chosen_id;
             let is_selected = Some(*id) == self.selected_id;
-            
+
             let color = if is_selected {
                 Color32::from_rgb(255, 165, 0) // Orange
             } else if is_chosen {
@@ -434,7 +492,7 @@ impl Plugin for CandidatePlugin {
             } else {
                 Color32::GRAY
             };
-            
+
             let radius = if is_selected || is_chosen { 8.0 } else { 5.0 };
 
             painter.circle_filled(pos, radius, color);

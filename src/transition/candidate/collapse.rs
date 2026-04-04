@@ -69,6 +69,13 @@ where
             .collect::<Vec<_>>()
     }
 
+    pub fn collapsed(&self) -> LineString {
+        self.matched()
+            .iter()
+            .map(|candidate| candidate.position)
+            .collect::<LineString>()
+    }
+
     /// Returns the interpolated route from the collapse as a [`LineString`].
     /// This can therefore be used to show the expected turn decisions made by the provided input.
     pub fn interpolated<M: Metadata>(&self, map: &impl Network<E, M>) -> LineString {

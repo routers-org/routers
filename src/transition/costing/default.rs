@@ -145,8 +145,8 @@ pub mod transition {
     {
         type Cost = f64;
 
-        const ZETA: f64 = 0.5;
-        const BETA: f64 = -10.0;
+        const ZETA: f64 = 1.;
+        const BETA: f64 = -1.0;
 
         #[inline]
         fn calculate(&self, context: TransitionContext<'a, E, M, N>) -> Option<Self::Cost> {

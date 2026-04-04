@@ -289,8 +289,7 @@ where
         #[cfg(debug_assertions)]
         let mut considered = Vec::new();
         #[cfg(debug_assertions)]
-        self.reachable_hash
-            .scan(|_, v| considered.push(v.clone()));
+        self.reachable_hash.scan(|_, v| considered.push(v.clone()));
 
         Ok(CollapsedPath::new(
             cost.weight,
