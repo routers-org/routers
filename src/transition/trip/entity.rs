@@ -1,7 +1,7 @@
-use std::ops::{Add, Rem};
-
 use geo::{Bearing, Distance, Haversine, LineString};
 use routers_network::{Entry, Metadata, Network, Node};
+use std::f64::consts::PI;
+use std::ops::{Div, Mul, Rem};
 
 /// Utilities to calculate metadata of a trip.
 /// A trip is composed of a collection of [`Node`] entries.
@@ -47,6 +47,31 @@ where
             .map(|(point, id)| Node::new(point, *id));
 
         Trip::new(nodes)
+    }
+
+    /// Creates a new trip from a slice of [`NodeIx`]s, and a map to lookup their location.
+    /// Includes the source and target candidate positions as the first and last entries in the trip.
+    pub fn new_with_map_and_offsets<M: Metadata>(
+        map: &dyn Network<E, M>,
+        nodes: &[E],
+        source_pos: geo::Point,
+        target_pos: geo::Point,
+    ) -> Self {
+        let resolved = map.line(nodes);
+        let mut nodes_vec = Vec::with_capacity(resolved.len() + 2);
+
+        nodes_vec.push(Node::new(source_pos, E::default()));
+
+        for (point, id) in resolved.into_iter().zip(nodes) {
+            let node = Node::new(point, *id);
+            if !nodes_vec.contains(&node) {
+                nodes_vec.push(node);
+            }
+        }
+
+        nodes_vec.push(Node::new(target_pos, E::default()));
+
+        Trip::new(nodes_vec)
     }
 
     /// Computes the angle between each pair of nodes in the trip.
@@ -214,67 +239,23 @@ where
     /// but can be graded against `d` as a common distance such that the heuristic can
     /// understand if the trip taken between the two nodes is theoretically simple or
     /// theoretically complex.
-    pub fn angular_complexity(&self, _: f64) -> f64 {
-        const P: i32 = 2; // Increased power for sharper penalty on large turns
-        const ALPHA: f64 = 1.0; // Increased alpha for steeper cost curve
+    pub fn angular_complexity(&self) -> f64 {
+        // The maximum knowable rotation in differential angles is between [-180, +180].
+        const MAX_ANGLE: f64 = 180.0;
+        const COST_DAMPING: f64 = 0.8; // 80% cost dampening
 
-        // 1. Calculate headings and valid lengths in a single pass to prevent index misalignment
-        let valid_segments: Vec<(f64, f64)> = self
-            .0
-            .windows(2)
-            .filter_map(|pair| {
-                let dist = Haversine.distance(pair[0].position, pair[1].position);
-                // Drop extremely small nodes to avoid unstable bearings, but keep as much as possible.
-                // 0.1m is usually enough for a stable-ish bearing in 64-bit float.
-                if dist < 0.1 {
-                    return None;
-                }
-                let heading = Haversine.bearing(pair[0].position, pair[1].position);
-                Some((dist, heading))
-            })
-            .collect();
+        let angles = self.delta_angle();
+        let length = angles.len() as f64;
 
-        if valid_segments.len() < 2 {
-            return 1.0; // Not enough valid segments to form a turn
-        }
+        let costs = angles
+            .into_iter()
+            .map(|angle| angle.clamp(-MAX_ANGLE, MAX_ANGLE))
+            .map(|angle| angle.mul(PI).div(MAX_ANGLE).mul(COST_DAMPING).cos())
+            .map(|cost| cost.clamp(0.0, 1.0).recip())
+            .sum::<f64>();
 
-        // 2. Calculate angles and segment weights simultaneously
-        let mut log_cost = 0.0;
-        let mut total_weight = 0.0;
-
-        for window in valid_segments.windows(2) {
-            let (dist_in, heading_in) = window[0];
-            let (dist_out, heading_out) = window[1];
-
-            // Calculate shortest path turn angle (-180 to 180)
-            let mut delta = (heading_out - heading_in).rem(360.0);
-            if delta > 180.0 {
-                delta -= 360.0;
-            } else if delta <= -180.0 {
-                delta += 360.0;
-            }
-
-            // Weight is the average length of the two segments forming the turn
-            let weight = (dist_in + dist_out) / 2.0;
-            total_weight += weight;
-
-            // Apply penalty math: cos(theta/2)^P
-            let theta_rad = delta.abs().to_radians();
-            let passability = (theta_rad / 2.0).cos().max(1e-12).powi(P); // max(1e-12) prevents ln(0) panic on exact 180 deg turns
-
-            log_cost += weight * passability.ln();
-        }
-
-        if total_weight <= 0.0 {
-            return 1.0;
-        }
-
-        // Normalize by total weight
-        log_cost /= total_weight;
-
-        let cost = (ALPHA * log_cost).exp();
-
-        cost.clamp(0.0, 1.0)
+        let average = costs / length;
+        average.recip().clamp(0.0, 1.0)
     }
 
     /// Returns the length of the trip in meters, calculated

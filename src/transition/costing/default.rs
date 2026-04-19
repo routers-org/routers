@@ -59,10 +59,11 @@ pub mod emission {
         type Cost = f64;
 
         const ZETA: f64 = 1.;
-        const BETA: f64 = 1.; // TODO: Maybe allow dynamic parameters based on the GPS drift-?
+        const BETA: f64 = 10.;
 
         #[inline(always)]
         fn calculate(&self, context: EmissionContext<'a>) -> Option<Self::Cost> {
+            // e^-sqrt(d) * [1 / (z * sqrt(pi))]
             const Z: f64 = 0.5;
             const C: f64 = 1.0 / (Z * ROOT_PI);
 
@@ -147,10 +148,7 @@ pub mod transition {
             let deviance = lengths.deviance().clamp(0.0, 1.0);
 
             // Value in range [0, 1] (1=Low Cost, 0=High Cost)
-            let turn_cost = context
-                .optimal_path
-                .angular_complexity(context.layer_width)
-                .clamp(0.0, 1.0);
+            let turn_cost = context.optimal_path.angular_complexity().clamp(0.0, 1.0);
 
             // Use multiplication instead of averaging to ensure that if either
             // heuristic is highly improbable, the entire transition is penalized

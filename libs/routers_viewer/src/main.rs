@@ -53,10 +53,7 @@ impl ViewerApp {
                 Mapbox {
                     style: walkers::sources::MapboxStyle::Light,
                     high_resolution: true,
-                    access_token: String::from_str(
-                        "...",
-                    )
-                    .expect("..."),
+                    access_token: String::from_str("...").expect("..."),
                 },
                 egui_ctx,
             ),
@@ -470,15 +467,6 @@ impl App for ViewerApp {
                                 if let Some(dst) = state.collapsed.candidates.candidate(&dst_id) {
                                     pts.push(dst.position.0);
                                 }
-
-                                let straight_pts = if let (Some(src), Some(dst)) = (
-                                    state.collapsed.candidates.candidate(&src_id),
-                                    state.collapsed.candidates.candidate(&dst_id),
-                                ) {
-                                    Some([src.position.0, dst.position.0])
-                                } else {
-                                    None
-                                };
 
                                 map = map.with_plugin(TransitionPlugin {
                                     pts,

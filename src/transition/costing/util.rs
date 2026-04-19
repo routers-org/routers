@@ -1,6 +1,5 @@
 use crate::transition::*;
 use core::f64::consts::E;
-use pathfinding::num_traits::Inv;
 use routers_network::{Entry, Metadata, Network};
 use std::ops::Mul;
 
