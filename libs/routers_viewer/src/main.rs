@@ -1,12 +1,9 @@
 use eframe::{App, Frame, NativeOptions, egui};
-use egui::epaint::RectShape;
-use egui::{CentralPanel, Color32, Context, Rect, RichText, SidePanel, Stroke, TextEdit};
-use walkers::{HttpTiles, Map, MapMemory, Plugin, Projector, lon_lat, sources::OpenStreetMap};
+use egui::{CentralPanel, Color32, Context, Response, SidePanel, Stroke, TextEdit, Widget};
+use walkers::{HttpTiles, Map, MapMemory, Plugin, Projector, lon_lat, sources::Mapbox};
 
 use geo::{Coord, LineString};
-use std::path::Path;
-use std::time::{Duration, Instant};
-
+use routers::Trip;
 use routers::transition::candidate::collapse::CollapsedPath;
 use routers::transition::candidate::{Candidate, CandidateId};
 use routers::transition::costing::CostingStrategies;
@@ -14,8 +11,12 @@ use routers::transition::entity::Transition;
 use routers::transition::layer::generation::StandardGenerator;
 use routers::transition::solver::selective_forward::SelectiveForwardSolver;
 use routers_codec::osm::{OsmEntryId, OsmNetwork, OsmTripConfiguration};
-use routers_fixtures::{LOS_ANGELES, SYDNEY, VENTURA_TRIP, fixture};
-use routers_network::Network;
+use routers_fixtures::{SYDNEY, VENTURA_TRIP, fixture};
+use routers_network::{Discovery, Entry, Network, Node};
+use std::path::Path;
+use std::str::FromStr;
+use std::time::{Duration, Instant};
+use wkt::ToWkt;
 
 struct MatchState {
     original_line: LineString,
@@ -48,7 +49,17 @@ impl ViewerApp {
         let default_wkt = VENTURA_TRIP;
 
         Self {
-            tiles: HttpTiles::new(OpenStreetMap, egui_ctx),
+            tiles: HttpTiles::new(
+                Mapbox {
+                    style: walkers::sources::MapboxStyle::Light,
+                    high_resolution: true,
+                    access_token: String::from_str(
+                        "...",
+                    )
+                    .expect("..."),
+                },
+                egui_ctx,
+            ),
             map_memory: MapMemory::default(),
             network,
             wkt_input: default_wkt.to_string(),
@@ -103,6 +114,42 @@ impl ViewerApp {
                 self.error_msg = Some(format!("Match error: {:?}", e));
             }
         }
+    }
+}
+
+struct TransitionWidget {
+    cost: u32,
+
+    source: Candidate<OsmEntryId>,
+    target: Candidate<OsmEntryId>,
+
+    nodes: Vec<Node<OsmEntryId>>,
+}
+
+impl Widget for TransitionWidget {
+    fn ui(self, ui: &mut egui::Ui) -> Response {
+        let trip = Trip::from(self.nodes);
+        let linestring = trip.linestring();
+
+        ui.horizontal(|ui| {
+            let label = ui.selectable_label(
+                false,
+                format!(
+                    "-> {:?}: Cost {}, R={:.1}m, S={:.1}m",
+                    self.target.edge.id().identifier(),
+                    self.cost,
+                    trip.length(),
+                    trip.straightline_length()
+                ),
+            );
+
+            if ui.button("L").clicked() {
+                ui.ctx().copy_text(linestring.wkt_string());
+            }
+
+            label
+        })
+        .inner
     }
 }
 
@@ -176,10 +223,13 @@ impl App for ViewerApp {
                                 let is_selected = self.selected_candidate == Some(*id);
 
                                 let text = format!(
-                                    "Candidate {:?} Cost={} {}",
+                                    "Candidate {:?}\n Cost={}\n EdgeId={:?}\n EdgeWeight={}\nSource={}\nTarget={}",
                                     id,
                                     cand.emission,
-                                    if is_chosen { " [CHOSEN]" } else { "" }
+                                    cand.edge.id.index().identifier,
+                                    cand.edge.weight,
+                                    cand.edge.source.identifier,
+                                    cand.edge.target.identifier
                                 );
 
                                 if ui
@@ -219,48 +269,136 @@ impl App for ViewerApp {
                                     .id_salt("transitions_list")
                                     .show(ui, |ui| {
                                         ui.label("From previous layer:");
-                                        for (reachable, cost) in &state.collapsed.considered {
-                                            if reachable.target == cand_id {
-                                                let text = format!(
-                                                    "<- {:?}: Cost {}",
-                                                    reachable.source, cost
-                                                );
-                                                let is_hovered = self.hovered_transition
-                                                    == Some((reachable.source, cand_id));
-                                                let resp = ui.selectable_label(is_hovered, text);
+
+                                        let considered = state
+                                            .collapsed
+                                            .considered
+                                            .iter()
+                                            .filter(|(r, _)| r.source == cand_id)
+                                            .collect::<Vec<_>>();
+
+                                        let mut normalized = considered.into_iter().map(|(reachable, cost)| {
+                                            (reachable, cost)
+                                        }).collect::<Vec<_>>();
+                                        normalized.sort_by_key(|v| v.1);
+
+                                        normalized.into_iter().for_each(|(reachable, &cost)| {
+                                            if reachable.source == cand_id {
+                                                let source = state
+                                                    .collapsed
+                                                    .candidates
+                                                    .candidate(&reachable.source)
+                                                    .unwrap();
+
+                                                let target = state
+                                                    .collapsed
+                                                    .candidates
+                                                    .candidate(&reachable.target)
+                                                    .unwrap();
+
+                                                let nodes = reachable.path
+                                                    .iter()
+                                                    .filter_map(|edge| {
+                                                        let a = self.network.node(&edge.source);
+                                                        let b = self.network.node(&edge.target);
+
+                                                        if let (Some(a), Some(b)) = (a, b) {
+                                                            return Some(vec![a, b]);
+                                                        }
+
+                                                        return None
+                                                    })
+                                                    .flatten()
+                                                    .cloned()
+                                                    .collect::<Vec<_>>();
+
+                                                let hovered_transition = (reachable.source, cand_id);
+                                                let is_hovered =
+                                                    self.hovered_transition == Some(hovered_transition);
+
+                                                let resp = ui.add(TransitionWidget {
+                                                    cost,
+
+                                                    source,
+                                                    target,
+
+                                                    nodes,
+                                                });
+
                                                 if resp.hovered() {
-                                                    self.hovered_transition =
-                                                        Some((reachable.source, cand_id));
+                                                    self.hovered_transition = Some(hovered_transition);
                                                 } else if is_hovered {
                                                     self.hovered_transition = None;
                                                 }
                                             }
-                                        }
+                                        });
 
                                         ui.separator();
                                         ui.label("To next layer:");
 
-                                        state
+                                        let considered = state
                                             .collapsed
                                             .considered
                                             .iter()
-                                            .filter(|(r, _)| return r.source == cand_id)
-                                            .for_each(|(reachable, cost)| {
-                                                let text = format!(
-                                                    "-> {:?}: Cost {}",
-                                                    reachable.target, cost
-                                                );
-                                                let is_hovered = self.hovered_transition
-                                                    == Some((cand_id, reachable.target));
-                                                let resp = ui.selectable_label(is_hovered, text);
+                                            .filter(|(r, _)| r.source == cand_id)
+                                            .collect::<Vec<_>>();
 
-                                                if resp.hovered() {
-                                                    self.hovered_transition =
-                                                        Some((cand_id, reachable.target));
-                                                } else if is_hovered {
-                                                    self.hovered_transition = None;
-                                                }
+                                        let mut normalized = considered.into_iter().map(|(reachable, cost)| {
+                                            let next_cand = state.collapsed.candidates.candidate(&reachable.target)
+                                                .map_or(0, |v| v.emission);
+
+                                            (reachable, cost - next_cand)
+                                        }).collect::<Vec<_>>();
+
+                                        normalized.sort_by_key(|v| v.1);
+                                        normalized.into_iter().for_each(|(reachable, cost)| {
+                                            let source = state
+                                                .collapsed
+                                                .candidates
+                                                .candidate(&reachable.source)
+                                                .unwrap();
+
+                                            let target = state
+                                                .collapsed
+                                                .candidates
+                                                .candidate(&reachable.target)
+                                                .unwrap();
+
+                                            let nodes = reachable.path
+                                                .iter()
+                                                .filter_map(|edge| {
+                                                    let a = self.network.node(&edge.source);
+                                                    let b = self.network.node(&edge.target);
+
+                                                    if let (Some(a), Some(b)) = (a, b) {
+                                                        return Some(vec![a, b]);
+                                                    }
+
+                                                    return None
+                                                })
+                                                .flatten()
+                                                .cloned()
+                                                .collect::<Vec<_>>();
+
+                                            let hovered_transition = (cand_id, reachable.target);
+                                            let is_hovered =
+                                                self.hovered_transition == Some(hovered_transition);
+
+                                            let resp = ui.add(TransitionWidget {
+                                                cost,
+
+                                                source,
+                                                target,
+
+                                                nodes,
                                             });
+
+                                            if resp.hovered() {
+                                                self.hovered_transition = Some(hovered_transition);
+                                            } else if is_hovered {
+                                                self.hovered_transition = None;
+                                            }
+                                        });
                                     });
                             }
                         }
@@ -332,6 +470,15 @@ impl App for ViewerApp {
                                 if let Some(dst) = state.collapsed.candidates.candidate(&dst_id) {
                                     pts.push(dst.position.0);
                                 }
+
+                                let straight_pts = if let (Some(src), Some(dst)) = (
+                                    state.collapsed.candidates.candidate(&src_id),
+                                    state.collapsed.candidates.candidate(&dst_id),
+                                ) {
+                                    Some([src.position.0, dst.position.0])
+                                } else {
+                                    None
+                                };
 
                                 map = map.with_plugin(TransitionPlugin {
                                     pts,

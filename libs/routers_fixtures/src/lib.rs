@@ -9,6 +9,9 @@ pub const ZURICH: &str = "zurich-minified.osm.pbf";
 
 pub const LOS_ANGELES_SAVED: &str = "los-angeles-minified.rt";
 pub const SYDNEY_SAVED: &str = "sydney-minified.rt";
+// Start: 06:25:21.552241887
+// End:   06:27:44.860016634
+// Total: 2min 23s
 
 pub mod macros {
     #[macro_export]

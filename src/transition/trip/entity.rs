@@ -1,3 +1,5 @@
+use std::ops::{Add, Rem};
+
 use geo::{Bearing, Distance, Haversine, LineString};
 use routers_network::{Entry, Metadata, Network, Node};
 
@@ -30,7 +32,7 @@ where
     }
 
     /// Converts a trip into a [`LineString`].
-    pub(crate) fn linestring(&self) -> LineString {
+    pub fn linestring(&self) -> LineString {
         self.0.iter().map(|v| v.position).collect::<LineString>()
     }
 
@@ -85,17 +87,17 @@ where
         self.headings()
             .windows(2)
             .map(|bearings| {
+                // Output in range: [-180, +180]
                 if let [prev, curr] = bearings {
-                    let mut turn_angle = (curr - prev).abs();
+                    let delta = (curr - prev).rem(360.0);
 
-                    // Normalize to [-180, 180] degrees
-                    if turn_angle > 180.0 {
-                        turn_angle -= 360.0;
-                    } else if turn_angle < -180.0 {
-                        turn_angle += 360.0;
+                    if delta > 180.0 {
+                        delta - 360.0
+                    } else if delta <= -180.0 {
+                        delta + 360.0
+                    } else {
+                        delta
                     }
-
-                    turn_angle.abs()
                 } else {
                     0.0
                 }
@@ -212,25 +214,67 @@ where
     /// but can be graded against `d` as a common distance such that the heuristic can
     /// understand if the trip taken between the two nodes is theoretically simple or
     /// theoretically complex.
-    pub fn angular_complexity(&self, distance: f64) -> f64 {
-        const U_TURN: f64 = 179.;
-        const DIST_BETWEEN_ZIGZAG: f64 = 100.0; // 100m minimum
-        const ZIG_ZAG: f64 = 180.0;
+    pub fn angular_complexity(&self, _: f64) -> f64 {
+        const P: i32 = 2; // Increased power for sharper penalty on large turns
+        const ALPHA: f64 = 1.0; // Increased alpha for steeper cost curve
 
-        // At least 1
-        let num_zig_zags: f64 = (distance / DIST_BETWEEN_ZIGZAG).max(1.);
+        // 1. Calculate headings and valid lengths in a single pass to prevent index misalignment
+        let valid_segments: Vec<(f64, f64)> = self
+            .0
+            .windows(2)
+            .filter_map(|pair| {
+                let dist = Haversine.distance(pair[0].position, pair[1].position);
+                // Drop extremely small nodes to avoid unstable bearings, but keep as much as possible.
+                // 0.1m is usually enough for a stable-ish bearing in 64-bit float.
+                if dist < 0.1 {
+                    return None;
+                }
+                let heading = Haversine.bearing(pair[0].position, pair[1].position);
+                Some((dist, heading))
+            })
+            .collect();
 
-        let sum = self.total_angle();
-        if self.delta_angle().iter().any(|v| v.abs() >= U_TURN) {
-            // Should not take this path - but does not exclude it incase it's the only option.
-            return 0.0;
+        if valid_segments.len() < 2 {
+            return 1.0; // Not enough valid segments to form a turn
         }
 
-        // Complete Zig-Zag
-        let theoretical_max = num_zig_zags * ZIG_ZAG;
+        // 2. Calculate angles and segment weights simultaneously
+        let mut log_cost = 0.0;
+        let mut total_weight = 0.0;
 
-        // Sqrt used to create "stretch" to optimality.
-        1.0 - (sum / theoretical_max).sqrt().clamp(0.0, 1.0)
+        for window in valid_segments.windows(2) {
+            let (dist_in, heading_in) = window[0];
+            let (dist_out, heading_out) = window[1];
+
+            // Calculate shortest path turn angle (-180 to 180)
+            let mut delta = (heading_out - heading_in).rem(360.0);
+            if delta > 180.0 {
+                delta -= 360.0;
+            } else if delta <= -180.0 {
+                delta += 360.0;
+            }
+
+            // Weight is the average length of the two segments forming the turn
+            let weight = (dist_in + dist_out) / 2.0;
+            total_weight += weight;
+
+            // Apply penalty math: cos(theta/2)^P
+            let theta_rad = delta.abs().to_radians();
+            let passability = (theta_rad / 2.0).cos().max(1e-12).powi(P); // max(1e-12) prevents ln(0) panic on exact 180 deg turns
+
+            log_cost += weight * passability.ln();
+        }
+
+        if total_weight <= 0.0 {
+            return 1.0;
+        }
+
+        // Normalize by total weight
+        log_cost /= total_weight;
+
+        let cost = (ALPHA * log_cost).exp();
+
+        cost.clamp(0.0, 1.0)
     }
 
     /// Returns the length of the trip in meters, calculated
@@ -243,5 +287,16 @@ where
 
             length
         })
+    }
+
+    pub fn straightline_length(&self) -> f64 {
+        let start = self.0.first();
+        let end = self.0.last();
+
+        if let (Some(start), Some(end)) = (start, end) {
+            return Haversine.distance(start.position, end.position);
+        }
+
+        return 0.0;
     }
 }
