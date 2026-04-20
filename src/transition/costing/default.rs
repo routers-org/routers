@@ -74,7 +74,7 @@ pub mod emission {
 
 pub mod transition {
     use crate::transition::*;
-    use routers_network::{Entry, Metadata, Network};
+    use routers_network::{Edge, Entry, Metadata, Network};
 
     /// Calculates the transition cost between two candidates.
     ///
@@ -150,10 +150,45 @@ pub mod transition {
             // Value in range [0, 1] (1=Low Cost, 0=High Cost)
             let turn_cost = context.optimal_path.angular_complexity().clamp(0.0, 1.0);
 
+            // Value in range [0, 1] (1=Low Cost, 0=High Cost)
+            let travel_weight_cost = {
+                let (source, target) = context.candidates();
+
+                let src_weight = source.edge.weight as f64;
+                let tgt_weight = target.edge.weight as f64;
+
+                let weights = context
+                    .map_path
+                    .windows(2)
+                    .filter_map(|node| match node {
+                        [a, b] if a.identifier() == b.identifier() => None,
+                        [a, b] => context.routing_context.edge(a, b),
+                        _ => None,
+                    })
+                    .map(|Edge { weight, .. }| weight as f64)
+                    .collect::<Vec<_>>();
+
+                let avg_weight = {
+                    if weights.is_empty() {
+                        // Distance-only transition (same edge): fall back to the
+                        // better (lower-weight) of the two candidate edges to avoid
+                        // a division-by-zero NaN propagating through the rest of the
+                        // calculation.  Choosing the minimum gives the most
+                        // favourable distinct_cost for a same-edge transition, which
+                        // is the correct baseline when the path has zero routing edges.
+                        src_weight.min(tgt_weight)
+                    } else {
+                        weights.iter().sum::<f64>() / weights.len() as f64
+                    }
+                };
+
+                (1.0 / avg_weight).powi(2).clamp(0.0, 1.0)
+            };
+
             // Use multiplication instead of averaging to ensure that if either
             // heuristic is highly improbable, the entire transition is penalized
             // heavily.
-            Some(turn_cost * deviance)
+            Some(turn_cost * deviance * travel_weight_cost)
         }
     }
 }

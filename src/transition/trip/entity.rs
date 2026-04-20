@@ -207,7 +207,7 @@ where
     ///  // # 180
     /// ```
     pub fn total_angle(&self) -> f64 {
-        self.delta_angle().into_iter().sum()
+        self.delta_angle().into_iter().map(|v| v.abs()).sum()
     }
 
     /// Calculates the "immediate" (or average) angle within a trip.
@@ -245,7 +245,11 @@ where
         const COST_DAMPING: f64 = 0.8; // 80% cost dampening
 
         let angles = self.delta_angle();
-        let length = angles.len() as f64;
+        let length = angles.len();
+
+        if length == 0 {
+            return 1.0;
+        }
 
         let costs = angles
             .into_iter()
@@ -254,7 +258,7 @@ where
             .map(|cost| cost.clamp(0.0, 1.0).recip())
             .sum::<f64>();
 
-        let average = costs / length;
+        let average = costs / length as f64;
         average.recip().clamp(0.0, 1.0)
     }
 

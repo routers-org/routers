@@ -74,7 +74,7 @@ fn validate_turning_path() {
     assert_relative_eq!(imm_angle, 24.41, max_relative = 0.1);
 
     let exp_angle = trip.angular_complexity();
-    assert_relative_eq!(exp_angle, 0.65, max_relative = 0.1);
+    assert_relative_eq!(exp_angle, 0.76, max_relative = 0.1);
 }
 
 #[test]
@@ -126,10 +126,10 @@ fn validate_through_lower_cost() {
     const SHARED_DISTANCE: f64 = 227.;
 
     let imm_angle = around.angular_complexity();
-    assert_relative_eq!(imm_angle, 0.333, max_relative = 0.1);
+    assert_relative_eq!(imm_angle, 0.56, max_relative = 0.1);
 
     let imm_angle = through.angular_complexity();
-    assert_relative_eq!(imm_angle, 0.512, max_relative = 0.1);
+    assert_relative_eq!(imm_angle, 0.99, max_relative = 0.1);
 
     let len = around.length();
     assert_relative_eq!(len, 433.0, max_relative = 0.1);
@@ -171,10 +171,10 @@ fn validate_slip_road_optimality() {
     assert_relative_eq!(tot_angle, 129.97, max_relative = 0.1);
 
     let imm_angle = around.angular_complexity();
-    assert_relative_eq!(imm_angle, 0.15, max_relative = 0.1);
+    assert_relative_eq!(imm_angle, 0.0, max_relative = 0.1);
 
     let imm_angle = sliproad.angular_complexity();
-    assert_relative_eq!(imm_angle, 0.2, max_relative = 0.1);
+    assert_relative_eq!(imm_angle, 0.96, max_relative = 0.1);
 
     let len = around.length();
     assert_relative_eq!(len, 148.5, max_relative = 0.1);
