@@ -1,10 +1,24 @@
 download VERSION:
     #!/usr/bin/env bash
-    # Set up the target directory
-    target_dir="/data/{{VERSION}}"
+    target_dir="data/{{ VERSION }}"
+    target_file="timezones.geojson.zip"
+    target_geojson="timezones.geojson"
+    source_file="https://github.com/evansiroky/timezone-boundary-builder/releases/download/{{ VERSION }}/${target_file}"
 
     # Create the target directory if it doesn't exist
-    mkdir -p $target_dir
+    mkdir -p $target_dir && cd $target_dir
 
-    # Change into the target directory and perform the download/unzip
-    cd $target_dir && wget "https://github.com/evansiroky/timezone-boundary-builder/releases/download/{{VERSION}}/timezones.geojson.zip" && unzip -o timezones.geojson.zip
+    rm -f $target_file
+    rm -f $target_geojson
+
+    # Download from BoundaryBuilder
+    echo "Downloading TZ from ${source_file}"
+    curl -L -o $target_file $source_file
+
+    echo "Unzipping ${target_file} into ${target_geojson}"
+
+    unzip -o "${target_file}"
+    rm -f $target_file
+
+    mv "combined.json" $target_geojson
+    rm -f "combined.json"

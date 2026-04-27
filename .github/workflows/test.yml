@@ -25,6 +25,11 @@ jobs:
         with:
           tool: protoc@${{ env.PROTOC_VERSION }}
 
+      - name: Install Just
+        uses: taiki-e/install-action@v2
+        with:
+          tool: just
+
       - name: Install nextest
         uses: taiki-e/install-action@v2
         with:
@@ -35,6 +40,9 @@ jobs:
 
       - name: Install `toolchain`
         run: rustup toolchain install stable
+
+      - name: Initialise
+        run: just init
 
       - name: 🧪 Test
         run: cargo nextest run --workspace
