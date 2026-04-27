@@ -58,7 +58,26 @@ pub mod emission {
 
         #[inline(always)]
         fn calculate(&self, context: EmissionContext<'a>) -> Option<Self::Cost> {
-            Some(context.distance.sqrt() * context.distance)
+            // Scale the physical distance by the road-class weight to penalise
+            // candidates on lower-quality roads (e.g. MotorwayLink = 2) relative
+            // to those on higher-quality roads at the same physical offset.
+            //
+            // The weight is capped at 2 before squaring (maximum multiplier = 4)
+            // to avoid cost overflow for high-weight urban roads (Secondary = 7,
+            // Residential = 10, etc.).  Without the cap the exp() inside the decay
+            // formula overflows to u32::MAX for any GPS point > ~3 m from the road,
+            // making all secondary-road candidates indistinguishable and causing
+            // erratic matching on urban routes.
+            //
+            // With the cap:
+            //   Motorway  (w=1) → multiplier = 1  (baseline)
+            //   MotorwayLink (w=2) → multiplier = 4  (must be ≤ ¼ distance of Motorway to win)
+            //   Primary+  (w≥3) → multiplier = 4  (same cap; no run-away overflow)
+            //
+            // Zero-cost behaviour is preserved: distance = 0 → cost = 0.
+            let w = (context.weight as f64).min(2.0);
+            let weighted_distance = context.distance * w * w;
+            Some(weighted_distance.sqrt() * weighted_distance)
         }
     }
 }
@@ -138,6 +157,15 @@ pub mod transition {
             // Value in range [0, 1] (1=Low Cost, 0=High Cost)
             let deviance = lengths.deviance();
 
+            // Road-class continuity: penalise transitions where the target candidate
+            // is on a lower-quality road than the source candidate.
+            // A motorway (weight=1) → motorway_link (weight=2) transition gives 0.5;
+            // an upgrade (motorway_link → motorway) gives 1.0 (no penalty).
+            let (source, target) = context.candidates();
+            let src_weight = source.edge.weight as f64;
+            let tgt_weight = target.edge.weight as f64;
+            let class_continuity = (src_weight / tgt_weight).min(1.0);
+
             // We calculate by weight, not by distinction of edges since this
             // would not uphold the invariants we intend. For example, that would
             // penalise the use of slip-roads which contain different WayIDs, despite
@@ -154,7 +182,17 @@ pub mod transition {
                     .map(|Edge { weight, .. }| weight as f64)
                     .collect::<Vec<_>>();
 
-                weights.iter().sum::<f64>() / weights.len() as f64
+                if weights.is_empty() {
+                    // Distance-only transition (same edge): fall back to the
+                    // better (lower-weight) of the two candidate edges to avoid
+                    // a division-by-zero NaN propagating through the rest of the
+                    // calculation.  Choosing the minimum gives the most
+                    // favourable distinct_cost for a same-edge transition, which
+                    // is the correct baseline when the path has zero routing edges.
+                    src_weight.min(tgt_weight)
+                } else {
+                    weights.iter().sum::<f64>() / weights.len() as f64
+                }
             };
 
             // Value in range [0, 1] (1=Low Cost, 0=High Cost)
@@ -167,9 +205,12 @@ pub mod transition {
                 .clamp(0.0, 1.0);
 
             // Value in range [0, 1] (1=Low Cost, 0=High Cost)
-            //  Weighted: 30% Edge Distinction, 30% Turn Difficulty, 30% Distance Deviance
+            //  Weighted: 25% Edge Distinction, 25% Class Continuity, 25% Turn Difficulty, 25% Distance Deviance
             //      Note: Weights must sum to 100%
-            let avg_cost = (0.3 * distinct_cost) + (0.3 * turn_cost) + (0.3 * deviance);
+            let avg_cost = (0.25 * distinct_cost)
+                + (0.25 * class_continuity)
+                + (0.25 * turn_cost)
+                + (0.25 * deviance);
 
             // Take the inverse to "span" values
             Some(avg_cost.recip())

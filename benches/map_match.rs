@@ -87,9 +87,18 @@ fn target_benchmark(c: &mut criterion::Criterion) {
                 .with_cache(cache.clone());
 
             // Warm up the cache
-            let _ = graph
+            let result = graph
                 .r#match(black_box(coordinates.clone()), opts)
                 .expect("Match must complete successfully");
+
+            // Verify the solution is actually correct
+            insta::assert_ron_snapshot!(
+                result.interpolated.elements,
+                {
+                     ".**.x" => insta::rounded_redaction(6),
+                     ".**.y" => insta::rounded_redaction(6)
+                }
+            );
 
             group.bench_function(format!("layer-gen: {}", sc.name), |b| {
                 let points = coordinates.clone().into_points();
@@ -145,7 +154,6 @@ fn target_benchmark(c: &mut criterion::Criterion) {
                             .with_solver(SolverVariant::Selective);
 
                         let (linestring, edges) = bench_match(&graph, opts, coordinates.clone());
-
                         assert_subsequence(sc.expected_linestring, &edges, linestring);
                     })
                 },

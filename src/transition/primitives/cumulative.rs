@@ -15,7 +15,7 @@ pub struct Fraction {
 
 impl Fraction {
     /// Returns the fractional value (num / denom) of the cumulative fraction.
-    pub(crate) fn value(&self) -> Weight {
+    pub(crate) const fn value(&self) -> Weight {
         if self.denominator == 0 {
             return 0;
         }

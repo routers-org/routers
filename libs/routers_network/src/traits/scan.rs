@@ -42,7 +42,7 @@ where
                     // upon the linestring to obtain a point
                     line.line_locate_point(point)
                         .map(|frac| line.point_at_ratio_from_start(&Haversine, frac))
-                        .map(|point| (point, edge))
+                        .zip(Some(edge))
                 }),
         )
     }

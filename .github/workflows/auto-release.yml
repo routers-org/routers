@@ -9,6 +9,10 @@ on:
     branches:
       - main
 
+env:
+  PROTOC_VERSION: 3.20.3
+  CARGO_TERM_COLOR: always
+
 jobs:
   # Release unpublished packages.
   release-plz-release:
@@ -24,6 +28,11 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+
+      - name: install protoc
+        uses: taiki-e/install-action@v2
+        with:
+          tool: protoc@${{ env.PROTOC_VERSION }}
 
       - name: Run release-plz
         uses: release-plz/action@v0.5
