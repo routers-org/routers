@@ -91,7 +91,7 @@ fn convert_geojson_to_geo_multipolygon(
 }
 
 fn extract_timezones() -> Result<Vec<TimezoneBuild>, Box<dyn std::error::Error>> {
-    let version = "2025b";
+    let version = "2026a";
 
     let geojson_path = format!("data/{version}/timezones.geojson");
     println!("cargo:rerun-if-changed={geojson_path}");
