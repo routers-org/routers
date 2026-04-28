@@ -9,6 +9,7 @@ pub trait TimezoneResolver {
 }
 
 #[cfg(test)]
+#[cfg(any(feature = "rtree", feature = "basic"))]
 mod tests {
     use crate::TimezoneResolver;
 
@@ -25,16 +26,10 @@ mod tests {
     #[ctor::ctor]
     fn init() {
         #[cfg(feature = "rtree")]
-        RESOLVER.get_or_init(|| {
-            use crate::RTreeStorage;
-            return RTreeStorage::default();
-        });
+        RESOLVER.get_or_init(|| crate::RTreeStorage::default());
 
         #[cfg(feature = "basic")]
-        RESOLVER.get_or_init(|| {
-            use crate::BasicStorage;
-            return BasicStorage::new();
-        });
+        RESOLVER.get_or_init(|| crate::BasicStorage::default());
     }
 
     // Helpers

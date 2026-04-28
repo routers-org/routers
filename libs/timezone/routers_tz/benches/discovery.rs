@@ -1,14 +1,15 @@
+#![cfg(feature = "rtree")]
+
 use criterion::{black_box, criterion_main};
 use geo::{BoundingRect, Rect, point};
-use routers_tz::{RTreeStorage, TimezoneResolver};
+use routers_tz::TimezoneResolver;
 use std::sync::OnceLock;
 
-pub static RESOLVER: OnceLock<RTreeStorage> = OnceLock::new();
+pub static RESOLVER: OnceLock<crate::RTreeStorage> = OnceLock::new();
 
 fn init() {
     RESOLVER.get_or_init(|| {
-        use crate::RTreeStorage;
-        return RTreeStorage::default();
+        return crate::RTreeStorage::default();
     });
 }
 

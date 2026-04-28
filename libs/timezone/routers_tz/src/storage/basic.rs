@@ -17,8 +17,8 @@ impl Debug for BasicStorage {
     }
 }
 
-impl BasicStorage {
-    pub fn new() -> BasicStorage {
+impl Default for BasicStorage {
+    fn default() -> Self {
         BasicStorage {
             backend: routers_tz_build::basic::storage(),
         }
