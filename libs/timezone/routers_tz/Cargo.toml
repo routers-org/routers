@@ -25,7 +25,7 @@ name = "discovery"
 harness = false
 
 [features]
-default = []
+default = ["basic"]
 
 basic = ["routers_tz_build/basic"]
 rtree = ["routers_tz_build/rtree", "geo-index"]

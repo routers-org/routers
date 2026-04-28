@@ -1,16 +1,20 @@
-#![cfg(feature = "rtree")]
-
 use criterion::{black_box, criterion_main};
 use geo::{BoundingRect, Rect, point};
 use routers_tz::TimezoneResolver;
 use std::sync::OnceLock;
 
-pub static RESOLVER: OnceLock<crate::RTreeStorage> = OnceLock::new();
+#[cfg(feature = "rtree")]
+pub static RESOLVER: OnceLock<routers_tz::RTreeStorage> = OnceLock::new();
+
+#[cfg(feature = "basic")]
+pub static RESOLVER: OnceLock<routers_tz::BasicStorage> = OnceLock::new();
 
 fn init() {
-    RESOLVER.get_or_init(|| {
-        return crate::RTreeStorage::default();
-    });
+    #[cfg(feature = "rtree")]
+    RESOLVER.get_or_init(|| routers_tz::RTreeStorage::default());
+
+    #[cfg(feature = "basic")]
+    RESOLVER.get_or_init(|| routers_tz::BasicStorage::default());
 }
 
 pub fn run_singular(rect: &Rect) {
