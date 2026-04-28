@@ -10,19 +10,30 @@ pub trait TimezoneResolver {
 
 #[cfg(test)]
 mod tests {
-    use crate::{RTreeStorage, TimezoneResolver};
+    use crate::TimezoneResolver;
+
     use geo::{BoundingRect, Point, point};
     use std::sync::OnceLock;
-    use std::time::Instant;
     use time_tz::TimeZone;
 
-    pub static RESOLVER: OnceLock<RTreeStorage> = OnceLock::new();
+    #[cfg(feature = "rtree")]
+    pub static RESOLVER: OnceLock<crate::RTreeStorage> = OnceLock::new();
+
+    #[cfg(feature = "basic")]
+    pub static RESOLVER: OnceLock<crate::BasicStorage> = OnceLock::new();
 
     #[ctor::ctor]
     fn init() {
+        #[cfg(feature = "rtree")]
         RESOLVER.get_or_init(|| {
             use crate::RTreeStorage;
             return RTreeStorage::default();
+        });
+
+        #[cfg(feature = "basic")]
+        RESOLVER.get_or_init(|| {
+            use crate::BasicStorage;
+            return BasicStorage::new();
         });
     }
 

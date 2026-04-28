@@ -1,6 +1,9 @@
+use std::fmt::Debug;
+
 use geo::{Contains, Rect};
-use routers_tz_types::storage::basic::BasicStorageBackend;
-use routers_tz_types::timezone::{IANATimezoneName, ResolvedTimezones, TimezoneBuild};
+use routers_tz_types::{
+    TimeZone, storage::basic::BasicStorageBackend, timezone::internal::TimeZoneGeometry,
+};
 
 use crate::TimezoneResolver;
 
@@ -25,19 +28,13 @@ impl BasicStorage {
 impl TimezoneResolver for BasicStorage {
     type Error = ();
 
-    fn search(&self, rect: &Rect) -> Result<ResolvedTimezones, Self::Error> {
-        let mut resolved: Vec<IANATimezoneName> = vec![];
-
-        for TimezoneBuild { iana, geometry } in &self.backend.geometries {
+    fn search(&self, rect: &Rect) -> Result<TimeZone, Self::Error> {
+        for (index, TimeZoneGeometry(geometry)) in self.backend.geometries.iter().enumerate() {
             if geometry.contains(rect) {
-                resolved.push(iana.clone())
+                return Ok(TimeZone::new(self.backend.names[index].tz()));
             }
         }
 
-        match resolved.as_slice() {
-            [] => Err(()),
-            [one] => Ok(ResolvedTimezones::Singular(one.clone())),
-            _ => Ok(ResolvedTimezones::Many(resolved)),
-        }
+        Err(())
     }
 }
