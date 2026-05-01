@@ -6,10 +6,11 @@
 # Fixtures
 *.wkt
 *.geojson
+*.rt
 
 todo.md
 
-/libs/routers_fixtures/resources/*
+libs/routers_fixtures/resources/*
 
 !district-of-columbia-minified*
 !los-angeles-minified*

@@ -10,12 +10,11 @@ use rstar::{AABB, RTree};
 use rustc_hash::{FxHashMap, FxHasher};
 use serde::{Deserialize, Serialize};
 
-use core::error::Error;
 use core::fmt::Debug;
 use core::hash::BuildHasherDefault;
 use geo::Point;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::Path;
 use std::time::Instant;
 
 use crate::osm::element::ProcessedElement;
@@ -36,17 +35,17 @@ pub struct OsmNetwork {
 
 impl OsmNetwork {
     /// Creates a graph from a `.osm.pbf` file, using the `ProcessedElementIterator`
-    pub fn from_saved(filename: std::ffi::OsString) -> Result<Self, Box<dyn Error>> {
-        panic!("");
+    pub fn from_saved(filename: &Path) -> Result<Self, String> {
+        let bytes = std::fs::read(filename).map_err(|v| v.to_string())?;
+        postcard::from_bytes::<Self>(&bytes).map_err(|v| v.to_string())
     }
 
-    pub fn from_pbf(filename: std::ffi::OsString) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn from_pbf(filename: &Path) -> Result<Self, Box<dyn std::error::Error>> {
         let mut start_time = Instant::now();
         let fixed_start_time = Instant::now();
 
-        let path = PathBuf::from(filename);
-
-        let reader = ProcessedElementIterator::new(path).map_err(|err| format!("{err:?}"))?;
+        let reader = ProcessedElementIterator::new(filename.to_path_buf())
+            .map_err(|err| format!("{err:?}"))?;
 
         debug!("Iterator warming took: {:?}", start_time.elapsed());
         start_time = Instant::now();
@@ -183,7 +182,7 @@ impl OsmNetwork {
         self.graph.node_count()
     }
 
-    pub fn save_to_file(&self, path: std::ffi::OsString) -> Result<(), String> {
+    pub fn save_to_file(&self, path: &Path) -> Result<(), String> {
         let mut file = std::fs::File::create(path).map_err(|e| e.to_string())?;
 
         let output: Vec<u8> =
