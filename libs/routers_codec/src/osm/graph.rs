@@ -24,7 +24,7 @@ use crate::osm::*;
 pub type GraphStructure<E> =
     DiGraphMap<E, (Weight, DirectionAwareEdgeId<E>), BuildHasherDefault<FxHasher>>;
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub struct OsmNetwork {
     pub graph: GraphStructure<OsmEntryId>,
     pub hash: FxHashMap<OsmEntryId, Node<OsmEntryId>>,
