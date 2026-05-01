@@ -1,12 +1,13 @@
 use crate::osm::speed_limit::restriction::Restriction;
 use crate::osm::{Parser, TagString, Tags};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use strum::{AsRefStr, Display, EnumIter, EnumString};
 
 /// Top-level access restrictions that apply to all transport modes
 #[derive(
     Serialize,
+    Deserialize,
     Debug,
     Ord,
     PartialOrd,
@@ -71,7 +72,7 @@ pub enum PhysicalAccess {
 }
 
 /// Main parser structure for OSM access tags
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct AccessTag {
     pub restriction: Restriction,
     pub access: AccessValue,

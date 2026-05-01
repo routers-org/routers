@@ -1,4 +1,4 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use strum::{AsRefStr, Display, EnumIter, EnumString};
 
 /// Represents the directionality modes used in OpenStreetMap (OSM) tagging.
@@ -8,6 +8,7 @@ use strum::{AsRefStr, Display, EnumIter, EnumString};
 /// is drawn in the OSM database.
 #[derive(
     Serialize,
+    Deserialize,
     Debug,
     Clone,
     Copy,

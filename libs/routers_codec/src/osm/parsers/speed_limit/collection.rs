@@ -6,9 +6,9 @@ use crate::osm::{OsmTripConfiguration, Parser};
 use core::fmt::Debug;
 use core::ops::Deref;
 use itertools::Itertools;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SpeedLimitCollection(pub(crate) Vec<SpeedLimitEntry>);
 
 impl Deref for SpeedLimitCollection {

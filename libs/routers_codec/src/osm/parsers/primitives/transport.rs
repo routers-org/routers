@@ -1,10 +1,21 @@
 use crate::osm::primitives::transport::bitflag::TransportModeSet;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use strum::{AsRefStr, Display, EnumString};
 
 /// Flattened transport mode enumeration for easy string parsing
 #[derive(
-    Serialize, Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Display, EnumString, AsRefStr,
+    Serialize,
+    Deserialize,
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    Default,
+    Display,
+    EnumString,
+    AsRefStr,
 )]
 #[strum(serialize_all = "snake_case")]
 #[repr(u8)]

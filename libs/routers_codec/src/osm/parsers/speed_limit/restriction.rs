@@ -1,10 +1,10 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::osm::primitives::{Directionality, TransportMode};
 use core::fmt::Display;
 use core::str::FromStr;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub struct Restriction {
     /// The transport mode by which the user is travelling.
     /// This may be omitted if not specified, therefore optional.
@@ -19,7 +19,7 @@ pub struct Restriction {
     pub(crate) directionality: Directionality,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub struct RestrictionOptionals {
     /// The transport mode by which the user is travelling.
     /// This may be omitted if not specified, therefore optional.

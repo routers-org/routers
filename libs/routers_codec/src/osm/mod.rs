@@ -60,7 +60,7 @@ pub mod model {
 }
 
 pub mod meta {
-    use serde::Serialize;
+    use serde::{Deserialize, Serialize};
 
     use crate::osm::access_tag::AccessTag;
     use crate::osm::access_tag::access::AccessValue;
@@ -75,7 +75,7 @@ pub mod meta {
     use core::num::NonZeroU8;
     use routers_network::{Direction, Metadata};
 
-    #[derive(Debug, Clone, Default, Serialize)]
+    #[derive(Debug, Clone, Default, Serialize, Deserialize)]
     pub struct OsmEdgeMetadata {
         pub lane_count: Option<NonZeroU8>,
         pub speed_limit: Option<SpeedLimitCollection>,
