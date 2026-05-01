@@ -23,6 +23,6 @@ pub struct OsmService;
 impl OsmService {
     pub fn from_file(file: PathBuf) -> Result<OsmNetwork, Box<dyn core::error::Error>> {
         let file_os_str = file.as_os_str().to_ascii_lowercase();
-        OsmNetwork::new(file_os_str)
+        OsmNetwork::from_pbf(file_os_str)
     }
 }

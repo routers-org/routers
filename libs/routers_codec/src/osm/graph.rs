@@ -8,11 +8,13 @@ use routers_network::{
 use log::{debug, info};
 use rstar::{AABB, RTree};
 use rustc_hash::{FxHashMap, FxHasher};
+use serde::{Deserialize, Serialize};
 
 use core::error::Error;
 use core::fmt::Debug;
 use core::hash::BuildHasherDefault;
 use geo::Point;
+use std::io::Write;
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -22,6 +24,7 @@ use crate::osm::*;
 pub type GraphStructure<E> =
     DiGraphMap<E, (Weight, DirectionAwareEdgeId<E>), BuildHasherDefault<FxHasher>>;
 
+#[derive(Serialize)]
 pub struct OsmNetwork {
     pub graph: GraphStructure<OsmEntryId>,
     pub hash: FxHashMap<OsmEntryId, Node<OsmEntryId>>,
@@ -33,7 +36,11 @@ pub struct OsmNetwork {
 
 impl OsmNetwork {
     /// Creates a graph from a `.osm.pbf` file, using the `ProcessedElementIterator`
-    pub fn new(filename: std::ffi::OsString) -> Result<Self, Box<dyn Error>> {
+    pub fn from_saved(filename: std::ffi::OsString) -> Result<Self, Box<dyn Error>> {
+        panic!("");
+    }
+
+    pub fn from_pbf(filename: std::ffi::OsString) -> Result<Self, Box<dyn std::error::Error>> {
         let mut start_time = Instant::now();
         let fixed_start_time = Instant::now();
 
@@ -174,6 +181,15 @@ impl OsmNetwork {
 
     pub fn num_nodes(&self) -> usize {
         self.graph.node_count()
+    }
+
+    pub fn save_to_file(&self, path: std::ffi::OsString) -> Result<(), String> {
+        let mut file = std::fs::File::create(path).map_err(|e| e.to_string())?;
+
+        let output: Vec<u8> =
+            postcard::to_allocvec(self).map_err(|e| format!("failed to serialise value: {e}"))?;
+
+        file.write_all(&output).map_err(|e| e.to_string())
     }
 }
 
