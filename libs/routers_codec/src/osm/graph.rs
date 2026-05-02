@@ -18,6 +18,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use crate::osm::element::ProcessedElement;
+use crate::osm::primitives::RoadClass;
 use crate::osm::*;
 
 pub type GraphStructure<E> =
@@ -76,7 +77,10 @@ impl OsmNetwork {
                     ProcessedElement::Way(way) => {
                         let metadata = OsmEdgeMetadata::pick(way.tags());
                         // If way is not traversable (/ is not road)
-                        if metadata.road_class.is_none() {
+                        if metadata
+                            .road_class
+                            .is_none_or(|v| v == RoadClass::Pedestrian)
+                        {
                             return trees;
                         }
 
