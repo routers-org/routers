@@ -28,7 +28,7 @@ fn main() {
 
     let mut match_times = vec![];
 
-    for _ in 0..10_000 {
+    for _ in 0..10 {
         let match_start = std::time::Instant::now();
 
         let _ = graph

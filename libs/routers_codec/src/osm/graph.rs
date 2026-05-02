@@ -43,8 +43,8 @@ impl OsmNetwork {
     pub fn save_to_file(&self, path: &Path) -> Result<(), String> {
         let mut file = std::fs::File::create(path).map_err(|e| e.to_string())?;
 
-        let output: Vec<u8> = postcard::to_allocvec(self)
-            .map_err(|e| format!("failed to serialise value: {e}"))?;
+        let output: Vec<u8> =
+            postcard::to_allocvec(self).map_err(|e| format!("failed to serialise value: {e}"))?;
 
         file.write_all(&output).map_err(|e| e.to_string())
     }
