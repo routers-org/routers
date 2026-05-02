@@ -14,7 +14,7 @@ use core::fmt::Debug;
 use core::hash::BuildHasherDefault;
 use geo::Point;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use crate::osm::element::ProcessedElement;
@@ -35,17 +35,17 @@ pub struct OsmNetwork {
 
 impl OsmNetwork {
     /// Creates a graph from a `.osm.pbf` file, using the `ProcessedElementIterator`
-    pub fn from_saved(filename: &Path) -> Result<Self, String> {
+    pub fn from_saved(filename: &PathBuf) -> Result<Self, String> {
         let bytes = std::fs::read(filename).map_err(|v| v.to_string())?;
         postcard::from_bytes::<Self>(&bytes).map_err(|v| v.to_string())
     }
 
-    pub fn from_pbf(filename: &Path) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn from_pbf(filename: &PathBuf) -> Result<Self, Box<dyn std::error::Error>> {
         let mut start_time = Instant::now();
         let fixed_start_time = Instant::now();
 
-        let reader = ProcessedElementIterator::new(filename.to_path_buf())
-            .map_err(|err| format!("{err:?}"))?;
+        let reader =
+            ProcessedElementIterator::new(filename.clone()).map_err(|err| format!("{err:?}"))?;
 
         debug!("Iterator warming took: {:?}", start_time.elapsed());
         start_time = Instant::now();

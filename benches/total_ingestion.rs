@@ -1,16 +1,12 @@
 use routers_codec::osm::OsmNetwork;
-use routers_fixtures::{DISTRICT_OF_COLUMBIA, fixture_path};
+use routers_fixtures::{DISTRICT_OF_COLUMBIA, fixture, fixture_path};
 
 use criterion::criterion_main;
 use log::info;
 
-use std::path::Path;
-
 fn ingest_as_full_graph() {
-    let path = Path::new(fixture_path(DISTRICT_OF_COLUMBIA).as_os_str())
-        .as_os_str()
-        .to_ascii_lowercase();
-    let graph = OsmNetwork::new(path).expect("Could not generate graph");
+    let graph =
+        OsmNetwork::from_pbf(fixture!(DISTRICT_OF_COLUMBIA)).expect("Could not generate graph");
     info!("OSM network generated with {} nodes", graph.num_nodes());
 }
 

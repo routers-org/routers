@@ -1,30 +1,43 @@
-use geo::{LineString, Point};
+use geo::LineString;
 use routers::r#match::MatchSimpleExt;
 use routers_codec::osm::OsmNetwork;
-use std::path::Path;
 use wkt::TryFromWkt;
 
-use routers_fixtures::{LOS_ANGELES, VENTURA_TRIP, fixture};
+use routers_fixtures::{SYDNEY, SYDNEY_SAVED, SYNDEY_TRIP, fixture};
 
 fn main() {
+    let prog_start = std::time::Instant::now();
+
     let coordinates: LineString<f64> =
-        LineString::try_from_wkt_str(VENTURA_TRIP).expect("must parse");
+        LineString::try_from_wkt_str(SYNDEY_TRIP).expect("must parse");
 
-    let path = Path::new(fixture!(LOS_ANGELES))
-        .as_os_str()
-        .to_ascii_lowercase();
+    println!("Setup time: {}ms", prog_start.elapsed().as_millis());
+    let now = std::time::Instant::now();
 
-    let graph = OsmNetwork::new(path).expect("Graph must be created");
+    let pbf_path = fixture!(SYDNEY);
+    let saved_path = fixture!(SYDNEY_SAVED);
 
-    let route = graph
-        .r#match_simple(coordinates)
-        .expect("Match must complete successfully");
+    if !saved_path.exists() {
+        let graph = OsmNetwork::from_pbf(pbf_path).expect("Graph must be created");
+        graph.save_to_file(saved_path).expect("must save to file");
+    }
 
-    let linestring = route
-        .interpolated
-        .iter()
-        .map(|v| Point(v.point))
-        .collect::<LineString<_>>();
+    let graph = OsmNetwork::from_saved(saved_path).expect("Graph must be created");
 
-    println!("Matched Route: {:?}", linestring);
+    println!("Initialisation time: {}ms", now.elapsed().as_millis());
+
+    let mut match_times = vec![];
+
+    for _ in 0..10_000 {
+        let match_start = std::time::Instant::now();
+
+        let _ = graph
+            .r#match_simple(coordinates.clone())
+            .expect("Match must complete successfully");
+
+        match_times.push(match_start.elapsed().as_millis());
+    }
+
+    let avg_match_time = match_times.iter().sum::<u128>() / match_times.len() as u128;
+    println!("Average match time: {}ms", avg_match_time);
 }

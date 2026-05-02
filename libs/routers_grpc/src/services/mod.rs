@@ -22,6 +22,6 @@ pub mod proximity;
 pub struct OsmService;
 impl OsmService {
     pub fn from_file(file: PathBuf) -> Result<OsmNetwork, Box<dyn core::error::Error>> {
-        OsmNetwork::from_pbf(file.as_path())
+        OsmNetwork::from_pbf(&file)
     }
 }

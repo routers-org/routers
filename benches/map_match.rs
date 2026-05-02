@@ -69,11 +69,8 @@ fn target_benchmark(c: &mut criterion::Criterion) {
     group.significance_level(0.1).sample_size(30);
 
     MATCH_CASES.into_iter().for_each(|ga| {
-        let path = Path::new(fixture!(ga.source_file))
-            .as_os_str()
-            .to_ascii_lowercase();
         let cache = Arc::new(PredicateCache::<OsmEntryId, OsmEdgeMetadata, OsmNetwork>::default());
-        let graph = OsmNetwork::new(path).expect("Graph must be created");
+        let graph = OsmNetwork::from_pbf(fixture!(ga.source_file)).expect("Graph must be created");
 
         let costing = DefaultEmissionCost::default();
         let runtime = OsmEdgeMetadata::default_runtime();
