@@ -8,7 +8,7 @@ pub use relation::*;
 pub use way::*;
 
 pub mod common {
-    use serde::Serialize;
+    use serde::{Deserialize, Serialize};
 
     use crate::osm::PrimitiveBlock;
     #[cfg(debug_assertions)]
@@ -43,7 +43,7 @@ pub mod common {
         "road",
     ];
 
-    #[derive(Clone, Copy, Debug, Eq, PartialOrd, Ord, Serialize)]
+    #[derive(Clone, Copy, Debug, Eq, PartialOrd, Ord, Serialize, Deserialize)]
     #[cfg_attr(not(debug_assertions), repr(transparent))]
     pub struct OsmEntryId {
         pub identifier: i64,

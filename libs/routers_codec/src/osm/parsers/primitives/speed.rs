@@ -1,11 +1,11 @@
 use alloc::fmt;
 use core::num::NonZeroU16;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 pub type Speed = NonZeroU16;
 
-#[derive(Clone, Copy, Debug, Serialize)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub enum SpeedValue {
     /// Speed in kilometers per hour
     Kmh(Speed),

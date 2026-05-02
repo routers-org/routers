@@ -2,18 +2,18 @@ use crate::osm::primitives::opening_hours::{OpeningHours, OpeningHoursParser};
 use alloc::fmt;
 use core::fmt::{Display, Formatter};
 use core::str::FromStr;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use strum::{Display, EnumIter, EnumString};
 
 /// Represents a complete conditional restriction condition
 /// Examples: "Tu-Fr 00:00-24:00", "winter", "snow", "weight < 7.5"
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Condition {
     pub condition_type: ConditionType,
 }
 
 /// Main condition types as defined in OSM conditional restrictions
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ConditionType {
     /// Time and date conditions using opening hours syntax
     /// Examples: "Mo-Fr 07:00-19:00", "Tu-Fr 00:00-24:00", "sunrise-sunset"
@@ -56,7 +56,7 @@ pub enum ConditionType {
 }
 
 /// Time and date conditions using opening hours syntax
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TimeDateCondition {
     /// Raw opening hours string
     /// Examples: "Mo-Fr 07:00-19:00", "sunrise-sunset", "Jan-Mar"
@@ -67,7 +67,7 @@ pub struct TimeDateCondition {
 }
 
 /// Seasonal time restrictions
-#[derive(Debug, Clone, Copy, PartialEq, Display, EnumString, EnumIter, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Display, EnumString, EnumIter, Serialize, Deserialize)]
 #[strum(serialize_all = "lowercase")]
 pub enum SeasonCondition {
     /// Winter season (dates vary by location/year)
@@ -81,7 +81,7 @@ pub enum SeasonCondition {
 }
 
 /// Road surface and weather conditions
-#[derive(Debug, Clone, PartialEq, Display, EnumString, EnumIter, Serialize)]
+#[derive(Debug, Clone, PartialEq, Display, EnumString, EnumIter, Serialize, Deserialize)]
 #[strum(serialize_all = "lowercase")]
 pub enum RoadCondition {
     /// Wet road surface
@@ -99,7 +99,7 @@ pub enum RoadCondition {
 }
 
 /// Vehicle property conditions with comparison operators
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct VehiclePropertyCondition {
     pub property: VehicleProperty,
     pub operator: ComparisonOperator,
@@ -108,7 +108,7 @@ pub struct VehiclePropertyCondition {
 }
 
 /// Vehicle properties that can be restricted
-#[derive(Debug, Clone, PartialEq, Display, EnumString, EnumIter, Serialize)]
+#[derive(Debug, Clone, PartialEq, Display, EnumString, EnumIter, Serialize, Deserialize)]
 #[strum(serialize_all = "lowercase")]
 pub enum VehicleProperty {
     /// Vehicle weight in tonnes
@@ -128,7 +128,7 @@ pub enum VehicleProperty {
 }
 
 /// Comparison operators for vehicle properties
-#[derive(Debug, Clone, PartialEq, Display, Serialize)]
+#[derive(Debug, Clone, PartialEq, Display, Serialize, Deserialize)]
 pub enum ComparisonOperator {
     #[strum(serialize = "<")]
     LessThan,
@@ -143,7 +143,7 @@ pub enum ComparisonOperator {
 }
 
 /// Vehicle usage conditions
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum VehicleUsageCondition {
     /// Number of occupants with comparison
     /// Example: "occupants>1" for HOV lanes
@@ -158,7 +158,7 @@ pub enum VehicleUsageCondition {
 }
 
 /// User group conditions for access restrictions
-#[derive(Debug, Clone, PartialEq, Display, EnumString, EnumIter, Serialize)]
+#[derive(Debug, Clone, PartialEq, Display, EnumString, EnumIter, Serialize, Deserialize)]
 #[strum(serialize_all = "lowercase")]
 pub enum UserGroupCondition {
     /// Medical doctors
@@ -180,7 +180,7 @@ pub enum UserGroupCondition {
 }
 
 /// Purpose of access conditions
-#[derive(Debug, Clone, PartialEq, Display, EnumString, EnumIter, Serialize)]
+#[derive(Debug, Clone, PartialEq, Display, EnumString, EnumIter, Serialize, Deserialize)]
 #[strum(serialize_all = "lowercase")]
 pub enum PurposeCondition {
     /// Destination traffic only
@@ -200,21 +200,21 @@ pub enum PurposeCondition {
 }
 
 /// Stay duration conditions
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StayDurationCondition {
     pub operator: ComparisonOperator,
     pub duration: Duration,
 }
 
 /// Duration representation
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Duration {
     pub value: u32,
     pub unit: DurationUnit,
 }
 
 /// Duration units
-#[derive(Debug, Clone, PartialEq, Display, EnumString, EnumIter, Serialize)]
+#[derive(Debug, Clone, PartialEq, Display, EnumString, EnumIter, Serialize, Deserialize)]
 #[strum(serialize_all = "lowercase")]
 pub enum DurationUnit {
     Minutes,
@@ -223,7 +223,7 @@ pub enum DurationUnit {
 }
 
 /// Combined conditions using logical operators
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CombinedCondition {
     pub left: Box<ConditionType>,
     pub operator: LogicalOperator,
@@ -231,7 +231,7 @@ pub struct CombinedCondition {
 }
 
 /// Logical operators for combining conditions
-#[derive(Debug, Clone, PartialEq, Display, EnumString, Serialize)]
+#[derive(Debug, Clone, PartialEq, Display, EnumString, Serialize, Deserialize)]
 #[strum(serialize_all = "UPPERCASE")]
 pub enum LogicalOperator {
     And,
