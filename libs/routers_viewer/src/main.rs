@@ -13,7 +13,6 @@ use routers::transition::solver::selective_forward::SelectiveForwardSolver;
 use routers_codec::osm::{OsmEntryId, OsmNetwork, OsmTripConfiguration};
 use routers_fixtures::{SYDNEY, VENTURA_TRIP, fixture};
 use routers_network::{Discovery, Entry, Network, Node};
-use std::path::Path;
 use std::str::FromStr;
 use std::time::{Duration, Instant};
 use wkt::ToWkt;
@@ -41,9 +40,7 @@ struct ViewerApp {
 
 impl ViewerApp {
     fn new(egui_ctx: Context) -> Self {
-        let path = Path::new(fixture!(SYDNEY)).as_os_str().to_ascii_lowercase();
-
-        let network = OsmNetwork::new(path).expect("Graph must be created");
+        let network = OsmNetwork::from_pbf(fixture!(SYDNEY)).expect("Graph must be created");
 
         // Default LineString from VENTURA_TRIP fixture
         let default_wkt = VENTURA_TRIP;
