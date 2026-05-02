@@ -31608,20 +31608,20 @@ expression: result.interpolated.elements
     edge: Edge(
       source: Node(
         id: OsmEntryId(
+          identifier: 7668326401,
+        ),
+        position: Point(Coord(
+          x: -118.342574,
+          y: 34.154045,
+        )),
+      ),
+      target: Node(
+        id: OsmEntryId(
           identifier: 7668326396,
         ),
         position: Point(Coord(
           x: -118.342731,
           y: 34.154063,
-        )),
-      ),
-      target: Node(
-        id: OsmEntryId(
-          identifier: 20857695,
-        ),
-        position: Point(Coord(
-          x: -118.34289,
-          y: 34.154079,
         )),
       ),
       weight: 1,
@@ -31680,26 +31680,26 @@ expression: result.interpolated.elements
   ),
   PathElement(
     point: Coord(
-      x: -118.342786,
-      y: 34.154069,
+      x: -118.342574,
+      y: 34.154045,
     ),
     edge: Edge(
       source: Node(
+        id: OsmEntryId(
+          identifier: 7668326401,
+        ),
+        position: Point(Coord(
+          x: -118.342574,
+          y: 34.154045,
+        )),
+      ),
+      target: Node(
         id: OsmEntryId(
           identifier: 7668326396,
         ),
         position: Point(Coord(
           x: -118.342731,
           y: 34.154063,
-        )),
-      ),
-      target: Node(
-        id: OsmEntryId(
-          identifier: 20857695,
-        ),
-        position: Point(Coord(
-          x: -118.34289,
-          y: 34.154079,
         )),
       ),
       weight: 1,
@@ -35586,20 +35586,20 @@ expression: result.interpolated.elements
     edge: Edge(
       source: Node(
         id: OsmEntryId(
+          identifier: 7671660846,
+        ),
+        position: Point(Coord(
+          x: -118.351754,
+          y: 34.153305,
+        )),
+      ),
+      target: Node(
+        id: OsmEntryId(
           identifier: 1233732581,
         ),
         position: Point(Coord(
           x: -118.351886,
           y: 34.153289,
-        )),
-      ),
-      target: Node(
-        id: OsmEntryId(
-          identifier: 1233732582,
-        ),
-        position: Point(Coord(
-          x: -118.352033,
-          y: 34.153271,
         )),
       ),
       weight: 1,
@@ -35658,26 +35658,26 @@ expression: result.interpolated.elements
   ),
   PathElement(
     point: Coord(
-      x: -118.351942,
-      y: 34.153282,
+      x: -118.351754,
+      y: 34.153305,
     ),
     edge: Edge(
       source: Node(
+        id: OsmEntryId(
+          identifier: 7671660846,
+        ),
+        position: Point(Coord(
+          x: -118.351754,
+          y: 34.153305,
+        )),
+      ),
+      target: Node(
         id: OsmEntryId(
           identifier: 1233732581,
         ),
         position: Point(Coord(
           x: -118.351886,
           y: 34.153289,
-        )),
-      ),
-      target: Node(
-        id: OsmEntryId(
-          identifier: 1233732582,
-        ),
-        position: Point(Coord(
-          x: -118.352033,
-          y: 34.153271,
         )),
       ),
       weight: 1,
@@ -47764,20 +47764,20 @@ expression: result.interpolated.elements
     edge: Edge(
       source: Node(
         id: OsmEntryId(
+          identifier: 3786108825,
+        ),
+        position: Point(Coord(
+          x: -118.440023,
+          y: 34.155661,
+        )),
+      ),
+      target: Node(
+        id: OsmEntryId(
           identifier: 3786108823,
         ),
         position: Point(Coord(
           x: -118.440396,
           y: 34.155601,
-        )),
-      ),
-      target: Node(
-        id: OsmEntryId(
-          identifier: 35362996,
-        ),
-        position: Point(Coord(
-          x: -118.44163,
-          y: 34.155393,
         )),
       ),
       weight: 1,
@@ -47856,26 +47856,26 @@ expression: result.interpolated.elements
   ),
   PathElement(
     point: Coord(
-      x: -118.440424,
-      y: 34.155597,
+      x: -118.440023,
+      y: 34.155661,
     ),
     edge: Edge(
       source: Node(
+        id: OsmEntryId(
+          identifier: 3786108825,
+        ),
+        position: Point(Coord(
+          x: -118.440023,
+          y: 34.155661,
+        )),
+      ),
+      target: Node(
         id: OsmEntryId(
           identifier: 3786108823,
         ),
         position: Point(Coord(
           x: -118.440396,
           y: 34.155601,
-        )),
-      ),
-      target: Node(
-        id: OsmEntryId(
-          identifier: 35362996,
-        ),
-        position: Point(Coord(
-          x: -118.44163,
-          y: 34.155393,
         )),
       ),
       weight: 1,
@@ -52174,20 +52174,20 @@ expression: result.interpolated.elements
     edge: Edge(
       source: Node(
         id: OsmEntryId(
+          identifier: 6313641111,
+        ),
+        position: Point(Coord(
+          x: -118.458722,
+          y: 34.159097,
+        )),
+      ),
+      target: Node(
+        id: OsmEntryId(
           identifier: 6773286467,
         ),
         position: Point(Coord(
           x: -118.459367,
           y: 34.159264,
-        )),
-      ),
-      target: Node(
-        id: OsmEntryId(
-          identifier: 6773286466,
-        ),
-        position: Point(Coord(
-          x: -118.460137,
-          y: 34.159412,
         )),
       ),
       weight: 1,
@@ -52266,26 +52266,26 @@ expression: result.interpolated.elements
   ),
   PathElement(
     point: Coord(
-      x: -118.459413,
-      y: 34.159273,
+      x: -118.458722,
+      y: 34.159097,
     ),
     edge: Edge(
       source: Node(
+        id: OsmEntryId(
+          identifier: 6313641111,
+        ),
+        position: Point(Coord(
+          x: -118.458722,
+          y: 34.159097,
+        )),
+      ),
+      target: Node(
         id: OsmEntryId(
           identifier: 6773286467,
         ),
         position: Point(Coord(
           x: -118.459367,
           y: 34.159264,
-        )),
-      ),
-      target: Node(
-        id: OsmEntryId(
-          identifier: 6773286466,
-        ),
-        position: Point(Coord(
-          x: -118.460137,
-          y: 34.159412,
         )),
       ),
       weight: 1,
@@ -93902,20 +93902,20 @@ expression: result.interpolated.elements
     edge: Edge(
       source: Node(
         id: OsmEntryId(
+          identifier: 6336921060,
+        ),
+        position: Point(Coord(
+          x: -118.791351,
+          y: 34.146277,
+        )),
+      ),
+      target: Node(
+        id: OsmEntryId(
           identifier: 1713328605,
         ),
         position: Point(Coord(
           x: -118.792115,
           y: 34.146278,
-        )),
-      ),
-      target: Node(
-        id: OsmEntryId(
-          identifier: 1713328770,
-        ),
-        position: Point(Coord(
-          x: -118.793367,
-          y: 34.146342,
         )),
       ),
       weight: 1,
@@ -93994,26 +93994,26 @@ expression: result.interpolated.elements
   ),
   PathElement(
     point: Coord(
-      x: -118.792161,
-      y: 34.14628,
+      x: -118.791351,
+      y: 34.146277,
     ),
     edge: Edge(
       source: Node(
+        id: OsmEntryId(
+          identifier: 6336921060,
+        ),
+        position: Point(Coord(
+          x: -118.791351,
+          y: 34.146277,
+        )),
+      ),
+      target: Node(
         id: OsmEntryId(
           identifier: 1713328605,
         ),
         position: Point(Coord(
           x: -118.792115,
           y: 34.146278,
-        )),
-      ),
-      target: Node(
-        id: OsmEntryId(
-          identifier: 1713328770,
-        ),
-        position: Point(Coord(
-          x: -118.793367,
-          y: 34.146342,
         )),
       ),
       weight: 1,
