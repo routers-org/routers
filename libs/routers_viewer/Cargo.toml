@@ -1,0 +1,37 @@
+[package]
+name = "routers_viewer"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+routers = { workspace = true }
+routers_network = { workspace = true }
+routers_codec = { workspace = true }
+routers_fixtures = { workspace = true }
+geo = { workspace = true }
+wkt = { workspace = true }
+log = { workspace = true }
+env_logger = "0.11"
+serde = { workspace = true }
+
+# UI Dependencies
+eframe = "0.33.0"
+egui = "0.33.0"
+walkers = "0.47" # Version compatible with egui 0.33
+
+# Async runtime for any background tile fetching
+tokio = { workspace = true }
+
+# Mock Network Dependencies
+petgraph = { workspace = true }
+rstar = { workspace = true }
+rustc-hash = { workspace = true }
+pathfinding = "4.14.0"
+
+[profile.dev]
+opt-level = 0
+lto = "off"
+
+[profile.dev.package."*"]
+opt-level = 3
