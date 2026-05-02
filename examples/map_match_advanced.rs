@@ -1,12 +1,7 @@
 use std::sync::Arc;
 
-use rayon::prelude::*;
-
 use geo::LineString;
-use routers::{
-    DefaultEmissionCost, Match, PredicateCache,
-    r#match::{MatchOptions, MatchSimpleExt},
-};
+use routers::{Match, PredicateCache, r#match::MatchOptions};
 use routers_codec::osm::{OsmEdgeMetadata, OsmEntryId, OsmNetwork};
 use routers_network::Metadata;
 use wkt::TryFromWkt;
