@@ -30,7 +30,7 @@ where
     }
 
     /// Converts a trip into a [`LineString`].
-    pub(crate) fn linestring(&self) -> LineString {
+    pub fn linestring(&self) -> LineString {
         self.0.iter().map(|v| v.position).collect::<LineString>()
     }
 
@@ -243,5 +243,16 @@ where
 
             length
         })
+    }
+
+    pub fn straightline_length(&self) -> f64 {
+        let start = self.0.first();
+        let end = self.0.last();
+
+        if let (Some(start), Some(end)) = (start, end) {
+            return Haversine.distance(start.position, end.position);
+        }
+
+        return 0.0;
     }
 }
