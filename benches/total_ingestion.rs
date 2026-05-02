@@ -1,5 +1,5 @@
 use routers_codec::osm::OsmNetwork;
-use routers_fixtures::{DISTRICT_OF_COLUMBIA, fixture, fixture_path};
+use routers_fixtures::{DISTRICT_OF_COLUMBIA, fixture};
 
 use criterion::criterion_main;
 use log::info;

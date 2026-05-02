@@ -15,7 +15,6 @@ use routers_network::{Entry, Metadata, Network};
 use criterion::{black_box, criterion_main};
 use geo::{LineString, Point};
 use routers::generation::{LayerGeneration, StandardGenerator};
-use std::path::Path;
 use wkt::TryFromWkt;
 
 struct MapMatchScenario {
