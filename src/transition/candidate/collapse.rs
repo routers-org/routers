@@ -30,7 +30,7 @@ where
     /// All considered routes between candidates, regardless of whether they were
     /// chosen for the final path. This is useful for visualisation and debugging.
     #[cfg(debug_assertions)]
-    pub considered: Vec<Reachable<E>>,
+    pub considered: Vec<(Reachable<E>, u32)>,
 
     pub candidates: Candidates<E>,
 }
@@ -44,7 +44,7 @@ where
         interpolated: Vec<Reachable<E>>,
         route: Vec<CandidateId>,
         candidates: Candidates<E>,
-        #[cfg(debug_assertions)] considered: Vec<Reachable<E>>,
+        #[cfg(debug_assertions)] considered: Vec<(Reachable<E>, u32)>,
     ) -> Self {
         Self {
             cost,

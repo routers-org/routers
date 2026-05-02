@@ -1,6 +1,7 @@
 use crate::transition::*;
 use core::f64::consts::E;
 use routers_network::{Entry, Metadata, Network};
+use std::ops::Mul;
 
 const PRECISION: f64 = 100.0f64;
 const OFFSET: f64 = E;
@@ -16,7 +17,11 @@ pub trait Strategy<Ctx> {
     /// The beta (β) value in the decay function.
     const BETA: f64;
 
-    /// The calculation cost you must implement
+    /// The calculation cost you must implement.
+    /// Returned values must be in the range [0, 1], inclusive.
+    ///
+    /// 1 represents a perfect cost, as if the choice were free.
+    /// 0 represents the most expensive possible cost.
     fn calculate(&self, context: Ctx) -> Option<Self::Cost>;
 
     /// An optimal decay-based costing heuristic which accepts
@@ -34,21 +39,21 @@ pub trait Strategy<Ctx> {
     /// ```
     #[inline(always)]
     fn cost(&self, ctx: Ctx) -> u32 {
-        // The base multiplier (1 / ζ)
-        let multiplier = 1.0 / Self::ZETA;
-
         // The exponential cost heuristic (-1 * value / β)
-        let cost = -self.calculate(ctx).map_or(f64::INFINITY, |v| v.into()) / Self::BETA;
-
-        // Shift so low-costs have low output costs (normalised)
-        let shifted = ((multiplier * cost.exp()) - OFFSET).max(0.);
+        let cost = self
+            .calculate(ctx)
+            .map_or(f64::INFINITY, |v| v.into())
+            .mul(Self::BETA)
+            .recip()
+            .ln()
+            .max(0.);
 
         // Since output must be `u32`, we shift by `PRECISION` to
         // increase the cost precision.
         //
         // Note: This must be replicated for all cost heuristics since
         //       this will determine the overall magnitude of costs.
-        (PRECISION * shifted) as u32
+        (PRECISION * cost) as u32
     }
 }
 

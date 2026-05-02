@@ -30,7 +30,7 @@ where
 {
     // Internally holds a successors cache
     predicate: Arc<PredicateCache<E, M, N>>,
-    reachable_hash: RefCell<FxHashMap<(usize, usize), Reachable<E>>>,
+    reachable_hash: RefCell<FxHashMap<(usize, usize), (Reachable<E>, u32)>>,
 
     _phantom: PhantomData<N>,
 }
@@ -108,10 +108,16 @@ where
                 .into_iter()
                 .filter_map(move |mut reachable| {
                     let path_vec = reachable.path_nodes().collect_vec();
-                    let optimal_path = Trip::new_with_map(context.map, &path_vec);
 
                     let source = context.candidate(&reachable.source)?;
                     let target = context.candidate(&reachable.target)?;
+
+                    let optimal_path = Trip::new_with_map_and_offsets(
+                        context.map,
+                        &path_vec,
+                        source.position,
+                        target.position,
+                    );
 
                     let sl = transition.layers.layers.get(source.location.layer_id)?;
                     let tl = transition.layers.layers.get(target.location.layer_id)?;
@@ -135,7 +141,7 @@ where
                         reachable.cost = cost;
                     }
 
-                    hash.insert(reachable.hash(), reachable.clone());
+                    hash.insert(reachable.hash(), (reachable.clone(), cost));
                     Some((reachable.target, CandidateEdge::new(cost)))
                 })
                 .collect::<Vec<_>>()
@@ -284,7 +290,7 @@ where
                     self.reachable_hash
                         .borrow()
                         .get(&(a.index(), b.index()))
-                        .map(|r| r.clone())
+                        .map(|(r, _)| r.clone())
                 } else {
                     None
                 }
@@ -292,11 +298,9 @@ where
             .collect::<Vec<_>>();
 
         // Update candidate graph with calculated weights
-        #[cfg(debug_assertions)]
-        for (&(a_idx, b_idx), &Reachable { cost, .. }) in self.reachable_hash.borrow().iter() {
+        for (&(a_idx, b_idx), &(_, cost)) in self.reachable_hash.borrow().iter() {
             let a = CandidateId::new(a_idx);
             let b = CandidateId::new(b_idx);
-
             if let Some(edge_idx) = transition.candidates.graph.find_edge(a, b) {
                 if let Some(edge) = transition.candidates.graph.edge_weight_mut(edge_idx) {
                     edge.weight = cost;

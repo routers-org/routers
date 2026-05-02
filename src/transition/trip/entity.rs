@@ -1,5 +1,7 @@
 use geo::{Bearing, Distance, Haversine, LineString};
 use routers_network::{Entry, Metadata, Network, Node};
+use std::f64::consts::PI;
+use std::ops::{Div, Mul, Rem};
 
 /// Utilities to calculate metadata of a trip.
 /// A trip is composed of a collection of [`Node`] entries.
@@ -47,6 +49,31 @@ where
         Trip::new(nodes)
     }
 
+    /// Creates a new trip from a slice of [`NodeIx`]s, and a map to lookup their location.
+    /// Includes the source and target candidate positions as the first and last entries in the trip.
+    pub fn new_with_map_and_offsets<M: Metadata>(
+        map: &dyn Network<E, M>,
+        nodes: &[E],
+        source_pos: geo::Point,
+        target_pos: geo::Point,
+    ) -> Self {
+        let resolved = map.line(nodes);
+        let mut nodes_vec = Vec::with_capacity(resolved.len() + 2);
+
+        nodes_vec.push(Node::new(source_pos, E::default()));
+
+        for (point, id) in resolved.into_iter().zip(nodes) {
+            let node = Node::new(point, *id);
+            if !nodes_vec.contains(&node) {
+                nodes_vec.push(node);
+            }
+        }
+
+        nodes_vec.push(Node::new(target_pos, E::default()));
+
+        Trip::new(nodes_vec)
+    }
+
     /// Computes the angle between each pair of nodes in the trip.
     /// Allows you to understand the change in heading, aggregatable
     /// using [`Trip::total_angle`] to determine the total variation
@@ -85,17 +112,17 @@ where
         self.headings()
             .windows(2)
             .map(|bearings| {
+                // Output in range: [-180, +180]
                 if let [prev, curr] = bearings {
-                    let mut turn_angle = (curr - prev).abs();
+                    let delta = (curr - prev).rem(360.0);
 
-                    // Normalize to [-180, 180] degrees
-                    if turn_angle > 180.0 {
-                        turn_angle -= 360.0;
-                    } else if turn_angle < -180.0 {
-                        turn_angle += 360.0;
+                    if delta > 180.0 {
+                        delta - 360.0
+                    } else if delta <= -180.0 {
+                        delta + 360.0
+                    } else {
+                        delta
                     }
-
-                    turn_angle.abs()
                 } else {
                     0.0
                 }
@@ -180,7 +207,7 @@ where
     ///  // # 180
     /// ```
     pub fn total_angle(&self) -> f64 {
-        self.delta_angle().into_iter().sum()
+        self.delta_angle().into_iter().map(|v| v.abs()).sum()
     }
 
     /// Calculates the "immediate" (or average) angle within a trip.
@@ -212,25 +239,27 @@ where
     /// but can be graded against `d` as a common distance such that the heuristic can
     /// understand if the trip taken between the two nodes is theoretically simple or
     /// theoretically complex.
-    pub fn angular_complexity(&self, distance: f64) -> f64 {
-        const U_TURN: f64 = 179.;
-        const DIST_BETWEEN_ZIGZAG: f64 = 100.0; // 100m minimum
-        const ZIG_ZAG: f64 = 180.0;
+    pub fn angular_complexity(&self) -> f64 {
+        // The maximum knowable rotation in differential angles is between [-180, +180].
+        const MAX_ANGLE: f64 = 180.0;
+        const COST_DAMPING: f64 = 0.8; // 80% cost dampening
 
-        // At least 1
-        let num_zig_zags: f64 = (distance / DIST_BETWEEN_ZIGZAG).max(1.);
+        let angles = self.delta_angle();
+        let length = angles.len();
 
-        let sum = self.total_angle();
-        if self.delta_angle().iter().any(|v| v.abs() >= U_TURN) {
-            // Should not take this path - but does not exclude it incase it's the only option.
-            return 0.0;
+        if length == 0 {
+            return 1.0;
         }
 
-        // Complete Zig-Zag
-        let theoretical_max = num_zig_zags * ZIG_ZAG;
+        let costs = angles
+            .into_iter()
+            .map(|angle| angle.clamp(-MAX_ANGLE, MAX_ANGLE))
+            .map(|angle| angle.mul(PI).div(MAX_ANGLE).mul(COST_DAMPING).cos())
+            .map(|cost| cost.clamp(0.0, 1.0).recip())
+            .sum::<f64>();
 
-        // Sqrt used to create "stretch" to optimality.
-        1.0 - (sum / theoretical_max).sqrt().clamp(0.0, 1.0)
+        let average = costs / length as f64;
+        average.recip().clamp(0.0, 1.0)
     }
 
     /// Returns the length of the trip in meters, calculated
