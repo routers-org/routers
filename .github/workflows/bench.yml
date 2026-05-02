@@ -30,7 +30,6 @@ jobs:
         uses: moonrepo/setup-rust@v1
         with:
           channel: stable
-          cache-target: release
           bins: cargo-codspeed
 
       - name: Cache
