@@ -30,11 +30,11 @@ jobs:
         with:
           tool: nextest
 
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
       - name: Cache
         uses: Swatinem/rust-cache@v2
-
-      - name: Install `toolchain`
-        run: rustup toolchain install stable
 
       - name: 🧪 Test
         run: cargo nextest run --workspace
