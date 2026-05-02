@@ -31,6 +31,7 @@ jobs:
         with:
           channel: stable
           bins: cargo-codspeed
+          cache: false
 
       - name: Cache
         uses: Swatinem/rust-cache@v2
