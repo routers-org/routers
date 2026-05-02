@@ -36,8 +36,17 @@ pub struct OsmNetwork {
 impl OsmNetwork {
     /// Creates a graph from a `.osm.pbf` file, using the `ProcessedElementIterator`
     pub fn from_saved(filename: &PathBuf) -> Result<Self, String> {
-        let bytes = std::fs::read(filename).map_err(|v| v.to_string())?;
-        postcard::from_bytes::<Self>(&bytes).map_err(|v| v.to_string())
+        let mut bytes = std::fs::read(filename).map_err(|v| v.to_string())?;
+        postcard::from_bytes::<Self>(&mut bytes).map_err(|v| v.to_string())
+    }
+
+    pub fn save_to_file(&self, path: &Path) -> Result<(), String> {
+        let mut file = std::fs::File::create(path).map_err(|e| e.to_string())?;
+
+        let output: Vec<u8> = postcard::to_allocvec(self)
+            .map_err(|e| format!("failed to serialise value: {e}"))?;
+
+        file.write_all(&output).map_err(|e| e.to_string())
     }
 
     pub fn from_pbf(filename: &PathBuf) -> Result<Self, Box<dyn std::error::Error>> {
@@ -180,15 +189,6 @@ impl OsmNetwork {
 
     pub fn num_nodes(&self) -> usize {
         self.graph.node_count()
-    }
-
-    pub fn save_to_file(&self, path: &Path) -> Result<(), String> {
-        let mut file = std::fs::File::create(path).map_err(|e| e.to_string())?;
-
-        let output: Vec<u8> =
-            postcard::to_allocvec(self).map_err(|e| format!("failed to serialise value: {e}"))?;
-
-        file.write_all(&output).map_err(|e| e.to_string())
     }
 }
 
