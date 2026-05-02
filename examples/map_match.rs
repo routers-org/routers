@@ -6,13 +6,8 @@ use wkt::TryFromWkt;
 use routers_fixtures::{SYDNEY, SYDNEY_SAVED, SYNDEY_TRIP, fixture};
 
 fn main() {
-    let prog_start = std::time::Instant::now();
-
     let coordinates: LineString<f64> =
         LineString::try_from_wkt_str(SYNDEY_TRIP).expect("must parse");
-
-    println!("Setup time: {}ms", prog_start.elapsed().as_millis());
-    let now = std::time::Instant::now();
 
     let pbf_path = fixture!(SYDNEY);
     let saved_path = fixture!(SYDNEY_SAVED);
@@ -24,20 +19,15 @@ fn main() {
 
     let graph = OsmNetwork::from_saved(saved_path).expect("Graph must be created");
 
-    println!("Initialisation time: {}ms", now.elapsed().as_millis());
+    let route = graph
+        .r#match_simple(coordinates.clone())
+        .expect("Match must complete successfully");
 
-    let mut match_times = vec![];
+    let linestring = route
+        .discretized
+        .iter()
+        .map(|v| Point(v.point))
+        .collect::<LineString<_>>();
 
-    for _ in 0..10 {
-        let match_start = std::time::Instant::now();
-
-        let _ = graph
-            .r#match_simple(coordinates.clone())
-            .expect("Match must complete successfully");
-
-        match_times.push(match_start.elapsed().as_millis());
-    }
-
-    let avg_match_time = match_times.iter().sum::<u128>() / match_times.len() as u128;
-    println!("Average match time: {}ms", avg_match_time);
+    println!("Matched Route: {:?}", linestring);
 }
