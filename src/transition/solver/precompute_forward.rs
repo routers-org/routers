@@ -25,7 +25,7 @@ where
 {
     // Internally holds a successors cache
     predicate: Arc<PredicateCache<E, M, N>>,
-    reachable_hash: scc::HashMap<(usize, usize), Reachable<E>>,
+    reachable_hash: scc::HashMap<(usize, usize), (Reachable<E>, u32)>,
 
     _phantom: PhantomData<N>,
 }
@@ -77,10 +77,16 @@ where
             .filter_map(|target| self.get_reachable(context, source, &target))
             .filter_map(move |reachable| {
                 let path_vec = reachable.path_nodes().collect_vec();
-                let optimal_path = Trip::new_with_map(transition.map, &path_vec);
 
                 let source = context.candidate(&reachable.source)?;
                 let target = context.candidate(&reachable.target)?;
+
+                let optimal_path = Trip::new_with_map_and_offsets(
+                    transition.map,
+                    &path_vec,
+                    source.position,
+                    target.position,
+                );
 
                 let sl = transition.layers.layers.get(source.location.layer_id)?;
                 let tl = transition.layers.layers.get(target.location.layer_id)?;
@@ -216,7 +222,7 @@ where
                                 }
 
                                 self.reachable_hash
-                                    .insert(reachable.hash(), reachable.clone())
+                                    .insert(reachable.hash(), (reachable.clone(), edge.weight))
                                     .expect("hash collision, must insert correctly.");
                                 (reachable.target, edge)
                             })
@@ -273,7 +279,7 @@ where
                 if let [a, b] = nodes {
                     self.reachable_hash
                         .get(&(a.index(), b.index()))
-                        .map(|entry| entry.get().clone())
+                        .map(|entry| entry.get().0.clone())
                 } else {
                     None
                 }
@@ -281,18 +287,15 @@ where
             .collect::<Vec<_>>();
 
         // Update candidate graph with calculated weights
-        #[cfg(debug_assertions)]
-        self.reachable_hash
-            .scan(|&(a_idx, b_idx), &Reachable { cost, .. }| {
-                let a = CandidateId::new(a_idx);
-                let b = CandidateId::new(b_idx);
-
-                if let Some(edge_idx) = transition.candidates.graph.find_edge(a, b) {
-                    if let Some(edge) = transition.candidates.graph.edge_weight_mut(edge_idx) {
-                        edge.weight = cost;
-                    }
+        self.reachable_hash.scan(|&(a_idx, b_idx), &(_, cost)| {
+            let a = CandidateId::new(a_idx);
+            let b = CandidateId::new(b_idx);
+            if let Some(edge_idx) = transition.candidates.graph.find_edge(a, b) {
+                if let Some(edge) = transition.candidates.graph.edge_weight_mut(edge_idx) {
+                    edge.weight = cost;
                 }
-            });
+            }
+        });
 
         #[cfg(debug_assertions)]
         let mut considered = Vec::new();
