@@ -2,6 +2,7 @@ use eframe::{App, Frame, NativeOptions, egui};
 use egui::{CentralPanel, Color32, Context, Response, SidePanel, Stroke, TextEdit, Widget};
 use walkers::{HttpTiles, Map, MapMemory, Plugin, Projector, lon_lat, sources::Mapbox};
 
+use dotenv::dotenv;
 use geo::{Coord, LineString};
 use routers::Trip;
 use routers::transition::candidate::collapse::CollapsedPath;
@@ -11,10 +12,10 @@ use routers::transition::entity::Transition;
 use routers::transition::layer::generation::StandardGenerator;
 use routers::transition::solver::selective_forward::SelectiveForwardSolver;
 use routers_codec::osm::{OsmEntryId, OsmNetwork, OsmTripConfiguration};
-use routers_fixtures::{SYDNEY, VENTURA_TRIP, fixture};
+use routers_fixtures::{SYDNEY, SYDNEY_SAVED, VENTURA_TRIP, fixture};
 use routers_network::{Discovery, Entry, Network, Node};
-use std::str::FromStr;
 use std::time::{Duration, Instant};
+use walkers::sources::MapboxStyle;
 use wkt::ToWkt;
 
 struct MatchState {
@@ -40,7 +41,18 @@ struct ViewerApp {
 
 impl ViewerApp {
     fn new(egui_ctx: Context) -> Self {
-        let network = OsmNetwork::from_pbf(fixture!(SYDNEY)).expect("Graph must be created");
+        dotenv().expect("Must load env");
+
+        let pbf_path = fixture!(SYDNEY);
+        let saved_path = fixture!(SYDNEY_SAVED);
+
+        if !saved_path.exists() {
+            let graph = OsmNetwork::from_pbf(pbf_path).expect("Graph must be created");
+            graph.save_to_file(saved_path).expect("must save to file");
+        }
+
+        let network =
+            OsmNetwork::from_saved(fixture!(SYDNEY_SAVED)).expect("Graph must be created");
 
         // Default LineString from VENTURA_TRIP fixture
         let default_wkt = VENTURA_TRIP;
@@ -48,9 +60,10 @@ impl ViewerApp {
         Self {
             tiles: HttpTiles::new(
                 Mapbox {
-                    style: walkers::sources::MapboxStyle::Light,
+                    style: MapboxStyle::Light,
                     high_resolution: true,
-                    access_token: String::from_str("...").expect("..."),
+                    access_token: std::env::var("MAPBOX_API_KEY")
+                        .expect("Must have MAPBOX_API_KEY environment variable set"),
                 },
                 egui_ctx,
             ),

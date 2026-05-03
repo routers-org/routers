@@ -5161,11 +5161,11 @@ dependencies = [
 name = "routers_viewer"
 version = "0.1.0"
 dependencies = [
+ "dotenvy",
  "eframe",
  "egui",
  "env_logger",
  "geo",
- "log",
  "pathfinding",
  "petgraph",
  "routers",
@@ -5174,7 +5174,6 @@ dependencies = [
  "routers_network",
  "rstar 0.12.2",
  "rustc-hash 2.1.1",
- "serde",
  "tokio",
  "walkers",
  "wkt",

@@ -11,9 +11,8 @@ routers_codec = { workspace = true }
 routers_fixtures = { workspace = true }
 geo = { workspace = true }
 wkt = { workspace = true }
-log = { workspace = true }
+dotenv = { workspace = true }
 env_logger = "0.11"
-serde = { workspace = true }
 
 # UI Dependencies
 eframe = "0.33.0"
