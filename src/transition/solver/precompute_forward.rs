@@ -25,7 +25,7 @@ where
 {
     // Internally holds a successors cache
     predicate: Arc<PredicateCache<E, M, N>>,
-    reachable_hash: scc::HashMap<(usize, usize), (Reachable<E>, u32)>,
+    reachable_hash: scc::HashMap<(usize, usize), Reachable<E>>,
 
     _phantom: PhantomData<N>,
 }
@@ -209,9 +209,13 @@ where
 
                         let some = found
                             .into_iter()
-                            .map(|(reachable, edge)| {
+                            .map(|(mut reachable, edge)| {
+                                #[cfg(debug_assertions)] {
+                                    reachable.cost = edge.weight;
+                                }
+
                                 self.reachable_hash
-                                    .insert(reachable.hash(), (reachable.clone(), edge.weight))
+                                    .insert(reachable.hash(), reachable.clone())
                                     .expect("hash collision, must insert correctly.");
                                 (reachable.target, edge)
                             })
@@ -268,7 +272,7 @@ where
                 if let [a, b] = nodes {
                     self.reachable_hash
                         .get(&(a.index(), b.index()))
-                        .map(|entry| entry.get().0.clone())
+                        .map(|entry| entry.get().clone())
                 } else {
                     None
                 }
@@ -276,9 +280,11 @@ where
             .collect::<Vec<_>>();
 
         // Update candidate graph with calculated weights
-        self.reachable_hash.scan(|&(a_idx, b_idx), &(_, cost)| {
+        #[cfg(debug_assertions)]
+        self.reachable_hash.scan(|&(a_idx, b_idx), &Reachable { cost, .. }| {
             let a = CandidateId::new(a_idx);
             let b = CandidateId::new(b_idx);
+
             if let Some(edge_idx) = transition.candidates.graph.find_edge(a, b) {
                 if let Some(edge) = transition.candidates.graph.edge_weight_mut(edge_idx) {
                     edge.weight = cost;

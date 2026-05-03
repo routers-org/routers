@@ -268,15 +268,15 @@ impl App for ViewerApp {
                                             .collapsed
                                             .considered
                                             .iter()
-                                            .filter(|(r, _)| r.source == cand_id)
+                                            .filter(|r| r.source == cand_id)
                                             .collect::<Vec<_>>();
 
-                                        let mut normalized = considered.into_iter().map(|(reachable, cost)| {
-                                            (reachable, cost)
+                                        let mut normalized = considered.into_iter().map(|reachable| {
+                                            (reachable, reachable.cost)
                                         }).collect::<Vec<_>>();
                                         normalized.sort_by_key(|v| v.1);
 
-                                        normalized.into_iter().for_each(|(reachable, &cost)| {
+                                        normalized.into_iter().for_each(|(reachable, cost)| {
                                             if reachable.source == cand_id {
                                                 let source = state
                                                     .collapsed
@@ -334,14 +334,14 @@ impl App for ViewerApp {
                                             .collapsed
                                             .considered
                                             .iter()
-                                            .filter(|(r, _)| r.source == cand_id)
+                                            .filter(|r| r.source == cand_id)
                                             .collect::<Vec<_>>();
 
-                                        let mut normalized = considered.into_iter().map(|(reachable, cost)| {
+                                        let mut normalized = considered.into_iter().map(|reachable| {
                                             let next_cand = state.collapsed.candidates.candidate(&reachable.target)
                                                 .map_or(0, |v| v.emission);
 
-                                            (reachable, cost - next_cand)
+                                            (reachable, reachable.cost - next_cand)
                                         }).collect::<Vec<_>>();
 
                                         normalized.sort_by_key(|v| v.1);
@@ -447,7 +447,7 @@ impl App for ViewerApp {
                 #[cfg(debug_assertions)]
                 {
                     if let Some((src_id, dst_id)) = self.hovered_transition {
-                        for (reachable, _) in &state.collapsed.considered {
+                        for reachable in &state.collapsed.considered {
                             if reachable.source == src_id && reachable.target == dst_id {
                                 let mut pts = Vec::new();
                                 if let Some(src) = state.collapsed.candidates.candidate(&src_id) {

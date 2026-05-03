@@ -30,7 +30,7 @@ where
 {
     // Internally holds a successors cache
     predicate: Arc<PredicateCache<E, M, N>>,
-    reachable_hash: RefCell<FxHashMap<(usize, usize), (Reachable<E>, u32)>>,
+    reachable_hash: RefCell<FxHashMap<(usize, usize), Reachable<E>>>,
 
     _phantom: PhantomData<N>,
 }
@@ -106,7 +106,7 @@ where
 
             reachable
                 .into_iter()
-                .filter_map(move |reachable| {
+                .filter_map(move |mut reachable| {
                     let path_vec = reachable.path_nodes().collect_vec();
                     let optimal_path = Trip::new_with_map(context.map, &path_vec);
 
@@ -130,8 +130,11 @@ where
                     });
 
                     let cost = target.emission.saturating_add(transition_cost);
+                    #[cfg(debug_assertions)] {
+                        reachable.cost = cost;
+                    }
 
-                    hash.insert(reachable.hash(), (reachable.clone(), cost));
+                    hash.insert(reachable.hash(), reachable.clone());
                     Some((reachable.target, CandidateEdge::new(cost)))
                 })
                 .collect::<Vec<_>>()
@@ -280,7 +283,7 @@ where
                     self.reachable_hash
                         .borrow()
                         .get(&(a.index(), b.index()))
-                        .map(|(r, _)| r.clone())
+                        .map(|r| r.clone())
                 } else {
                     None
                 }
@@ -288,9 +291,11 @@ where
             .collect::<Vec<_>>();
 
         // Update candidate graph with calculated weights
-        for (&(a_idx, b_idx), &(_, cost)) in self.reachable_hash.borrow().iter() {
+        #[cfg(debug_assertions)]
+        for (&(a_idx, b_idx), &Reachable { cost, .. }) in self.reachable_hash.borrow().iter() {
             let a = CandidateId::new(a_idx);
             let b = CandidateId::new(b_idx);
+
             if let Some(edge_idx) = transition.candidates.graph.find_edge(a, b) {
                 if let Some(edge) = transition.candidates.graph.edge_weight_mut(edge_idx) {
                     edge.weight = cost;

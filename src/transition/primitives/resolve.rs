@@ -25,6 +25,9 @@ where
     pub path: Vec<Edge<E>>, // TODO: => Helper method to remove the duplicate node id's to crt8 a vec<e>
 
     pub(crate) resolution_method: ResolutionMethod,
+
+    #[cfg(debug_assertions)]
+    pub cost: u32
 }
 
 impl<E> Reachable<E>
@@ -40,6 +43,8 @@ where
             target,
             path,
             resolution_method: Default::default(),
+            #[cfg(debug_assertions)]
+            cost: 0,
         }
     }
 
