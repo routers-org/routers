@@ -27,7 +27,7 @@ where
     pub(crate) resolution_method: ResolutionMethod,
 
     #[cfg(debug_assertions)]
-    pub cost: u32
+    pub cost: u32,
 }
 
 impl<E> Reachable<E>

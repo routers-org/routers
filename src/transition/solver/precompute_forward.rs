@@ -210,7 +210,8 @@ where
                         let some = found
                             .into_iter()
                             .map(|(mut reachable, edge)| {
-                                #[cfg(debug_assertions)] {
+                                #[cfg(debug_assertions)]
+                                {
                                     reachable.cost = edge.weight;
                                 }
 
@@ -281,16 +282,17 @@ where
 
         // Update candidate graph with calculated weights
         #[cfg(debug_assertions)]
-        self.reachable_hash.scan(|&(a_idx, b_idx), &Reachable { cost, .. }| {
-            let a = CandidateId::new(a_idx);
-            let b = CandidateId::new(b_idx);
+        self.reachable_hash
+            .scan(|&(a_idx, b_idx), &Reachable { cost, .. }| {
+                let a = CandidateId::new(a_idx);
+                let b = CandidateId::new(b_idx);
 
-            if let Some(edge_idx) = transition.candidates.graph.find_edge(a, b) {
-                if let Some(edge) = transition.candidates.graph.edge_weight_mut(edge_idx) {
-                    edge.weight = cost;
+                if let Some(edge_idx) = transition.candidates.graph.find_edge(a, b) {
+                    if let Some(edge) = transition.candidates.graph.edge_weight_mut(edge_idx) {
+                        edge.weight = cost;
+                    }
                 }
-            }
-        });
+            });
 
         #[cfg(debug_assertions)]
         let mut considered = Vec::new();

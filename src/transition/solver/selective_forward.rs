@@ -130,7 +130,8 @@ where
                     });
 
                     let cost = target.emission.saturating_add(transition_cost);
-                    #[cfg(debug_assertions)] {
+                    #[cfg(debug_assertions)]
+                    {
                         reachable.cost = cost;
                     }
 
