@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.4] - 2026-05-05
+
+### 🚀 Features
+
+- Allow Saving to File ([#109](https://github.com/routers-org/routers/pull/109))
+- Realtime Map-Matching via. RabbitMQ ([#113](https://github.com/routers-org/routers/pull/113))
+- Visualisation Utility ([#111](https://github.com/routers-org/routers/pull/111))
+
+### 🐛 Bug Fixes
+
+- Initial and Final Accuracies ([#98](https://github.com/routers-org/routers/pull/98))
+
+RoutersOrg - 2025
+
 ## [0.2.3] - 2026-03-11
 
 ### 🐛 Bug Fixes
