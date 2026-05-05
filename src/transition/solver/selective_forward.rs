@@ -30,7 +30,7 @@ where
 {
     // Internally holds a successors cache
     predicate: Arc<PredicateCache<E, M, N>>,
-    reachable_hash: RefCell<FxHashMap<(usize, usize), (Reachable<E>, u32)>>,
+    reachable_hash: RefCell<FxHashMap<(usize, usize), Reachable<E>>>,
 
     _phantom: PhantomData<N>,
 }
@@ -141,7 +141,7 @@ where
                         reachable.cost = cost;
                     }
 
-                    hash.insert(reachable.hash(), (reachable.clone(), cost));
+                    hash.insert(reachable.hash(), reachable.clone());
                     Some((reachable.target, CandidateEdge::new(cost)))
                 })
                 .collect::<Vec<_>>()
