@@ -28,9 +28,5 @@ rstar = { workspace = true }
 rustc-hash = { workspace = true }
 pathfinding = "4.14.0"
 
-[profile.dev]
-opt-level = 0
-lto = "off"
-
-[profile.dev.package."*"]
-opt-level = 3
+[lints]
+workspace = true
