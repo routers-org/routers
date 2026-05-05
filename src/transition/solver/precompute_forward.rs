@@ -25,7 +25,7 @@ where
 {
     // Internally holds a successors cache
     predicate: Arc<PredicateCache<E, M, N>>,
-    reachable_hash: scc::HashMap<(usize, usize), (Reachable<E>, u32)>,
+    reachable_hash: scc::HashMap<(usize, usize), Reachable<E>>,
 
     _phantom: PhantomData<N>,
 }
@@ -222,7 +222,7 @@ where
                                 }
 
                                 self.reachable_hash
-                                    .insert(reachable.hash(), (reachable.clone(), edge.weight))
+                                    .insert(reachable.hash(), reachable.clone())
                                     .expect("hash collision, must insert correctly.");
                                 (reachable.target, edge)
                             })
@@ -279,7 +279,7 @@ where
                 if let [a, b] = nodes {
                     self.reachable_hash
                         .get(&(a.index(), b.index()))
-                        .map(|entry| entry.get().0.clone())
+                        .map(|entry| entry.get().clone())
                 } else {
                     None
                 }
