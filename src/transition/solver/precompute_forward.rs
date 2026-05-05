@@ -209,7 +209,12 @@ where
 
                         let some = found
                             .into_iter()
-                            .map(|(reachable, edge)| {
+                            .map(|(mut reachable, edge)| {
+                                #[cfg(debug_assertions)]
+                                {
+                                    reachable.cost = edge.weight;
+                                }
+
                                 self.reachable_hash
                                     .insert(reachable.hash(), reachable.clone())
                                     .expect("hash collision, must insert correctly.");
@@ -275,11 +280,32 @@ where
             })
             .collect::<Vec<_>>();
 
+        // Update candidate graph with calculated weights
+        #[cfg(debug_assertions)]
+        self.reachable_hash
+            .scan(|&(a_idx, b_idx), &Reachable { cost, .. }| {
+                let a = CandidateId::new(a_idx);
+                let b = CandidateId::new(b_idx);
+
+                if let Some(edge_idx) = transition.candidates.graph.find_edge(a, b) {
+                    if let Some(edge) = transition.candidates.graph.edge_weight_mut(edge_idx) {
+                        edge.weight = cost;
+                    }
+                }
+            });
+
+        #[cfg(debug_assertions)]
+        let mut considered = Vec::new();
+        #[cfg(debug_assertions)]
+        self.reachable_hash.scan(|_, v| considered.push(v.clone()));
+
         Ok(CollapsedPath::new(
             cost.weight,
             reached,
             path,
             transition.candidates,
+            #[cfg(debug_assertions)]
+            considered,
         ))
     }
 }

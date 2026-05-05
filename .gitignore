@@ -12,7 +12,7 @@ todo.md
 
 libs/routers_fixtures/resources/*
 
-!district-of-columbia-minified*
-!los-angeles-minified*
-!zurich-minified*
-!sydney-minified*
+!district-of-columbia-minified.osm.pbf
+!los-angeles-minified.osm.pbf
+!zurich-minified.osm.pbf
+!sydney-minified.osm.pbf
