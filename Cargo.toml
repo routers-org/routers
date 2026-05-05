@@ -3,7 +3,7 @@ resolver = "2"
 members = [
     "libs/routers_codec", "libs/routers_geo", "libs/routers_grpc",
     "libs/routers_shard", "libs/routers_tiles", "libs/routers_fixtures",
-    "libs/routers_network", "libs/routers_viewer"
+    "libs/routers_network", "libs/routers_viewer", "libs/routers_realtime"
 ]
 
 [workspace.lints.rust]
