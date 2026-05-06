@@ -2,6 +2,8 @@
 name = "routers_realtime"
 version = "0.1.0"
 edition = "2024"
+description = "A Demonstration for Real-Time Map Matching"
+license = "GPL-3.0-or-later"
 
 [dependencies]
 lapin = "4.7.0"
