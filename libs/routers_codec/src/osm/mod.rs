@@ -13,8 +13,6 @@ pub mod parsers;
 pub mod error;
 #[doc(hidden)]
 pub mod parallel;
-#[doc(hidden)]
-pub mod test;
 
 // Inlined structs
 #[doc(inline)]

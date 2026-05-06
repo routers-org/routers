@@ -28,7 +28,7 @@ routers_fixtures = { path = "libs/routers_fixtures" }
 [workspace.dependencies]
 # Private Members
 routers_shard = { path = "libs/routers_shard", version = "0.1.0" }
-routers_fixtures = { path = "libs/routers_fixtures", version = "0.1.0" }
+routers_fixtures = { path = "libs/routers_fixtures" }
 
 # Members
 routers_codec = "0.1.2"
