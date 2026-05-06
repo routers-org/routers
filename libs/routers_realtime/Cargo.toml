@@ -18,8 +18,10 @@ geo = { workspace = true, features = ["serde"] }
 
 routers = { workspace = true }
 routers_codec = { workspace = true }
-routers_fixtures = { workspace = true }
 routers_network = { workspace = true }
+
+[dev-dependencies]
+routers_fixtures = { workspace = true }
 
 [lints]
 workspace = true
