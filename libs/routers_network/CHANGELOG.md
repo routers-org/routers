@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.2] - 2026-05-06
+
+### 🚀 Features
+
+- Allow Saving to File ([#109](https://github.com/routers-org/routers/pull/109))
+
+### 🐛 Bug Fixes
+
+- Initial and Final Accuracies ([#98](https://github.com/routers-org/routers/pull/98))
+
+RoutersOrg - 2025
+
 ## [0.1.1] - 2026-03-01
 
 ### 🚀 Features
