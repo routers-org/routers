@@ -1,5 +1,5 @@
 use geo::Point;
-use geo::{Coord, Distance, Haversine, Length, LineString};
+use geo::{Coord, Distance, Haversine, LineString};
 use lapin::options::{BasicAckOptions, BasicNackOptions};
 use routers::{Match, PredicateCache};
 use routers_realtime::event::Payload;
@@ -8,7 +8,7 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::Instant;
 
-use routers::r#match::{MatchOptions, MatchSimpleExt};
+use routers::r#match::MatchOptions;
 use routers_codec::osm::{OsmEdgeMetadata, OsmEntryId, OsmNetwork};
 use routers_fixtures::{SYDNEY, SYDNEY_SAVED, fixture};
 use routers_network::Metadata;

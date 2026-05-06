@@ -1,6 +1,6 @@
 use chrono::NaiveDateTime;
 use csv::ReaderBuilder;
-use geo::{Coord, Point};
+use geo::Coord;
 use routers_realtime::event::{CsvReplayEvent, Payload};
 use routers_realtime::{Topic, TopicOpts};
 use std::error::Error;
