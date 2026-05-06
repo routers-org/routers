@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.2.4] - 2026-05-06
+## [0.2.4] - 2026-05-05
 
 ### 🚀 Features
 
@@ -13,9 +13,6 @@ All notable changes to this project will be documented in this file.
 ### 🐛 Bug Fixes
 
 - Initial and Final Accuracies ([#98](https://github.com/routers-org/routers/pull/98))
-- Caching in CI ([#110](https://github.com/routers-org/routers/pull/110))
-- *(viewer)* Convert to lib, make fixture a dev dependency
-- *(viewer)* Format and clippy fixes
 
 RoutersOrg - 2025
 

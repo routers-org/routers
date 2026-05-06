@@ -2,15 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.1.4] - 2026-05-06
+## [0.1.4] - 2026-05-05
 
 ### 🚀 Features
 
 - Allow Saving to File ([#109](https://github.com/routers-org/routers/pull/109))
-
-### 🐛 Bug Fixes
-
-- *(viewer)* Format and clippy fixes
 
 RoutersOrg - 2025
 
