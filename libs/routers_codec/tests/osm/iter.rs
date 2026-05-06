@@ -1,12 +1,10 @@
-#![cfg(test)]
-
 use log::error;
 use rayon::iter::{ParallelBridge, ParallelIterator};
 use std::time::Instant;
 
-use crate::osm::blob::iterator::BlobIterator;
-use crate::osm::block::item::BlockItem;
-use crate::osm::block::iterator::BlockIterator;
+use routers_codec::osm::blob::iterator::BlobIterator;
+use routers_codec::osm::block::item::BlockItem;
+use routers_codec::osm::block::iterator::BlockIterator;
 
 use routers_fixtures::{BADEN_WUERTTEMBERG, DISTRICT_OF_COLUMBIA, fixture_path};
 

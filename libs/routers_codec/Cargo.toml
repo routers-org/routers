@@ -3,11 +3,7 @@ name = "routers_codec"
 version = "0.1.4"
 edition = "2024"
 include = ["docs/**", "build.rs", "proto/**", "src/**"]
-exclude = [
-    "**/test.rs",
-    "**/*_test.rs",
-    "benches/**",
-]
+exclude = ["benches/**","tests/**"]
 description = "Encoding and Decoding Primitives for Routers"
 license = "GPL-3.0-or-later"
 repository = "https://github.com/routers-org/routers"

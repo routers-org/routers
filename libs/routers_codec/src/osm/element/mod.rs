@@ -5,8 +5,6 @@ pub mod iterator;
 pub mod processed_iterator;
 
 #[doc(hidden)]
-mod test;
-#[doc(hidden)]
 pub mod variants;
 
 #[doc(inline)]
