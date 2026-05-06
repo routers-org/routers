@@ -50404,202 +50404,6 @@ expression: result.interpolated.elements
   ),
   PathElement(
     point: Coord(
-      x: -118.44841,
-      y: 34.156982,
-    ),
-    edge: Edge(
-      source: Node(
-        id: OsmEntryId(
-          identifier: 15298174,
-        ),
-        position: Point(Coord(
-          x: -118.448278,
-          y: 34.156931,
-        )),
-      ),
-      target: Node(
-        id: OsmEntryId(
-          identifier: 370197579,
-        ),
-        position: Point(Coord(
-          x: -118.448423,
-          y: 34.156987,
-        )),
-      ),
-      weight: 1,
-      id: DirectionAwareEdgeId(
-        id: Node(
-          id: OsmEntryId(
-            identifier: 607788521,
-          ),
-          position: Point(Coord(
-            x: 0.0,
-            y: 0.0,
-          )),
-        ),
-        direction: Outgoing,
-      ),
-    ),
-    metadata: OsmEdgeMetadata(
-      lane_count: Some(5),
-      speed_limit: Some(SpeedLimitCollection([
-        SpeedLimitEntry(
-          restriction: RestrictionOptionals(
-            transport_mode: None,
-            directionality: None,
-          ),
-          limit: Blanket(PossiblyConditionalSpeedLimit(
-            speed: Mph(55),
-            condition: None,
-          )),
-        ),
-        SpeedLimitEntry(
-          restriction: RestrictionOptionals(
-            transport_mode: None,
-            directionality: None,
-          ),
-          limit: Blanket(PossiblyConditionalSpeedLimit(
-            speed: Mph(65),
-            condition: None,
-          )),
-        ),
-        SpeedLimitEntry(
-          restriction: RestrictionOptionals(
-            transport_mode: Some(Hgv),
-            directionality: None,
-          ),
-          limit: Blanket(PossiblyConditionalSpeedLimit(
-            speed: Mph(55),
-            condition: None,
-          )),
-        ),
-      ])),
-      access: [
-        AccessTag(
-          restriction: Restriction(
-            transport_mode: Hgv,
-            directionality: BothWays,
-          ),
-          access: Yes,
-        ),
-        AccessTag(
-          restriction: Restriction(
-            transport_mode: Bicycle,
-            directionality: BothWays,
-          ),
-          access: No,
-        ),
-        AccessTag(
-          restriction: Restriction(
-            transport_mode: Hgv,
-            directionality: BothWays,
-          ),
-          access: Designated,
-        ),
-      ],
-      road_class: Some(Motorway),
-    ),
-  ),
-  PathElement(
-    point: Coord(
-      x: -118.448278,
-      y: 34.156931,
-    ),
-    edge: Edge(
-      source: Node(
-        id: OsmEntryId(
-          identifier: 15298174,
-        ),
-        position: Point(Coord(
-          x: -118.448278,
-          y: 34.156931,
-        )),
-      ),
-      target: Node(
-        id: OsmEntryId(
-          identifier: 370197579,
-        ),
-        position: Point(Coord(
-          x: -118.448423,
-          y: 34.156987,
-        )),
-      ),
-      weight: 1,
-      id: DirectionAwareEdgeId(
-        id: Node(
-          id: OsmEntryId(
-            identifier: 607788521,
-          ),
-          position: Point(Coord(
-            x: 0.0,
-            y: 0.0,
-          )),
-        ),
-        direction: Outgoing,
-      ),
-    ),
-    metadata: OsmEdgeMetadata(
-      lane_count: Some(5),
-      speed_limit: Some(SpeedLimitCollection([
-        SpeedLimitEntry(
-          restriction: RestrictionOptionals(
-            transport_mode: None,
-            directionality: None,
-          ),
-          limit: Blanket(PossiblyConditionalSpeedLimit(
-            speed: Mph(55),
-            condition: None,
-          )),
-        ),
-        SpeedLimitEntry(
-          restriction: RestrictionOptionals(
-            transport_mode: None,
-            directionality: None,
-          ),
-          limit: Blanket(PossiblyConditionalSpeedLimit(
-            speed: Mph(65),
-            condition: None,
-          )),
-        ),
-        SpeedLimitEntry(
-          restriction: RestrictionOptionals(
-            transport_mode: Some(Hgv),
-            directionality: None,
-          ),
-          limit: Blanket(PossiblyConditionalSpeedLimit(
-            speed: Mph(55),
-            condition: None,
-          )),
-        ),
-      ])),
-      access: [
-        AccessTag(
-          restriction: Restriction(
-            transport_mode: Hgv,
-            directionality: BothWays,
-          ),
-          access: Yes,
-        ),
-        AccessTag(
-          restriction: Restriction(
-            transport_mode: Bicycle,
-            directionality: BothWays,
-          ),
-          access: No,
-        ),
-        AccessTag(
-          restriction: Restriction(
-            transport_mode: Hgv,
-            directionality: BothWays,
-          ),
-          access: Designated,
-        ),
-      ],
-      road_class: Some(Motorway),
-    ),
-  ),
-  PathElement(
-    point: Coord(
       x: -118.448423,
       y: 34.156987,
     ),
@@ -77928,20 +77732,20 @@ expression: result.interpolated.elements
     edge: Edge(
       source: Node(
         id: OsmEntryId(
-          identifier: 123355675,
-        ),
-        position: Point(Coord(
-          x: -118.671992,
-          y: 34.149273,
-        )),
-      ),
-      target: Node(
-        id: OsmEntryId(
           identifier: 6336921116,
         ),
         position: Point(Coord(
           x: -118.672501,
           y: 34.149276,
+        )),
+      ),
+      target: Node(
+        id: OsmEntryId(
+          identifier: 123355677,
+        ),
+        position: Point(Coord(
+          x: -118.673028,
+          y: 34.149312,
         )),
       ),
       weight: 1,
@@ -78020,26 +77824,26 @@ expression: result.interpolated.elements
   ),
   PathElement(
     point: Coord(
-      x: -118.671992,
-      y: 34.149273,
+      x: -118.672501,
+      y: 34.149276,
     ),
     edge: Edge(
       source: Node(
-        id: OsmEntryId(
-          identifier: 123355675,
-        ),
-        position: Point(Coord(
-          x: -118.671992,
-          y: 34.149273,
-        )),
-      ),
-      target: Node(
         id: OsmEntryId(
           identifier: 6336921116,
         ),
         position: Point(Coord(
           x: -118.672501,
           y: 34.149276,
+        )),
+      ),
+      target: Node(
+        id: OsmEntryId(
+          identifier: 123355677,
+        ),
+        position: Point(Coord(
+          x: -118.673028,
+          y: 34.149312,
         )),
       ),
       weight: 1,

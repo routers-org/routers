@@ -82,10 +82,24 @@ impl TransitionLengths {
     #[inline]
     pub fn deviance(&self) -> f64 {
         if self.route_length <= 0.0 {
-            return 0.0;
+            return 1.0;
         }
 
         self.straightline_distance / self.route_length
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_deviance_zero_length() {
+        let lengths = TransitionLengths {
+            straightline_distance: 0.0,
+            route_length: 0.0,
+        };
+        assert_eq!(lengths.deviance(), 1.0);
     }
 }
 
