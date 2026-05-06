@@ -1,4 +1,4 @@
-use eframe::{App, Frame, NativeOptions, egui};
+use eframe::{App, Frame, egui};
 use egui::{CentralPanel, Color32, Context, Response, SidePanel, Stroke, TextEdit, Widget};
 use walkers::{HttpTiles, Map, MapMemory, Plugin, Projector, lon_lat, sources::Mapbox};
 
@@ -12,7 +12,6 @@ use routers::transition::entity::Transition;
 use routers::transition::layer::generation::StandardGenerator;
 use routers::transition::solver::selective_forward::SelectiveForwardSolver;
 use routers_codec::osm::{OsmEntryId, OsmNetwork, OsmTripConfiguration};
-use routers_fixtures::{SYDNEY, SYDNEY_SAVED, VENTURA_TRIP, fixture};
 use routers_network::{Discovery, Entry, Network, Node};
 use std::time::{Duration, Instant};
 use walkers::sources::MapboxStyle;
@@ -26,7 +25,7 @@ struct MatchState {
     time: Duration,
 }
 
-struct ViewerApp {
+pub struct ViewerApp {
     tiles: HttpTiles,
     map_memory: MapMemory,
     network: OsmNetwork,
@@ -40,22 +39,8 @@ struct ViewerApp {
 }
 
 impl ViewerApp {
-    fn new(egui_ctx: Context) -> Self {
+    pub fn new(egui_ctx: Context, network: OsmNetwork) -> Self {
         dotenv().expect("Must load env");
-
-        let pbf_path = fixture!(SYDNEY);
-        let saved_path = fixture!(SYDNEY_SAVED);
-
-        if !saved_path.exists() {
-            let graph = OsmNetwork::from_pbf(pbf_path).expect("Graph must be created");
-            graph.save_to_file(saved_path).expect("must save to file");
-        }
-
-        let network =
-            OsmNetwork::from_saved(fixture!(SYDNEY_SAVED)).expect("Graph must be created");
-
-        // Default LineString from VENTURA_TRIP fixture
-        let default_wkt = VENTURA_TRIP;
 
         Self {
             tiles: HttpTiles::new(
@@ -69,7 +54,7 @@ impl ViewerApp {
             ),
             map_memory: MapMemory::default(),
             network,
-            wkt_input: default_wkt.to_string(),
+            wkt_input: "WKT Here...".into(),
             match_state: None,
             selected_layer: None,
             selected_candidate: None,
@@ -670,15 +655,4 @@ impl Plugin for CandidatePlugin {
             }
         }
     }
-}
-
-#[tokio::main]
-async fn main() -> eframe::Result<()> {
-    env_logger::init();
-    let native_options = NativeOptions::default();
-    eframe::run_native(
-        "Routers Map Matcher",
-        native_options,
-        Box::new(|cc| Ok(Box::new(ViewerApp::new(cc.egui_ctx.clone())))),
-    )
 }
