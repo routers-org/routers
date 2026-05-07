@@ -4,7 +4,7 @@ use core::cmp::Ordering;
 use core::fmt::Debug;
 use geo::Point;
 use rstar::AABB;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 pub type Weight = u32;
 
@@ -13,7 +13,7 @@ pub type Weight = u32;
 /// Since the transition graph is a directed graph, it does not support bidirectional edges.
 /// Meaning, any edge which is bidirectional must therefore be converted into two edges, each
 /// with a different direction.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 // TODO: Restructure, Rename or Revisit (Confusing)
 pub struct DirectionAwareEdgeId<E>
 where
@@ -86,7 +86,7 @@ where
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Serialize)]
+#[derive(Debug, Copy, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Edge<E>
 where
     E: Entry,

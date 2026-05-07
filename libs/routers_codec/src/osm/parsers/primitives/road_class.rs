@@ -1,7 +1,9 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use strum::{AsRefStr, Display, EnumString};
 
-#[derive(Serialize, Debug, Clone, Copy, PartialEq, Eq, Hash, Display, EnumString, AsRefStr)]
+#[derive(
+    Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Hash, Display, EnumString, AsRefStr,
+)]
 #[strum(serialize_all = "snake_case")]
 #[repr(u8)]
 pub enum RoadClass {

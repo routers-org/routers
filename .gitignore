@@ -6,15 +6,17 @@
 # Fixtures
 *.wkt
 *.geojson
+*.rt
 
 todo.md
 
 /libs/routers_fixtures/resources/*
 /libs/timezone/routers_tz_build/data/*
 
-!district-of-columbia-minified*
-!los-angeles-minified*
-!zurich-minified*
-!sydney-minified*
 
 *-local.osm.pbf
+
+!district-of-columbia-minified.osm.pbf
+!los-angeles-minified.osm.pbf
+!zurich-minified.osm.pbf
+!sydney-minified.osm.pbf

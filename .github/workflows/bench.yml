@@ -38,8 +38,11 @@ jobs:
         uses: moonrepo/setup-rust@v1
         with:
           channel: stable
-          cache-target: release
+          cache: false
           bins: cargo-codspeed
+
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
 
       - name: 🔨Build (workspace)
         run: cargo codspeed build --workspace

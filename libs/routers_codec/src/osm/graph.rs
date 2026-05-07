@@ -8,12 +8,13 @@ use routers_network::{
 use log::{debug, info};
 use rstar::{AABB, RTree};
 use rustc_hash::{FxHashMap, FxHasher};
+use serde::{Deserialize, Serialize};
 
-use core::error::Error;
 use core::fmt::Debug;
 use core::hash::BuildHasherDefault;
 use geo::Point;
-use std::path::PathBuf;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use crate::osm::element::ProcessedElement;
@@ -22,6 +23,7 @@ use crate::osm::*;
 pub type GraphStructure<E> =
     DiGraphMap<E, (Weight, DirectionAwareEdgeId<E>), BuildHasherDefault<FxHasher>>;
 
+#[derive(Serialize, Deserialize)]
 pub struct OsmNetwork {
     pub graph: GraphStructure<OsmEntryId>,
     pub hash: FxHashMap<OsmEntryId, Node<OsmEntryId>>,
@@ -33,13 +35,26 @@ pub struct OsmNetwork {
 
 impl OsmNetwork {
     /// Creates a graph from a `.osm.pbf` file, using the `ProcessedElementIterator`
-    pub fn new(filename: std::ffi::OsString) -> Result<Self, Box<dyn Error>> {
+    pub fn from_saved(filename: &PathBuf) -> Result<Self, String> {
+        let mut bytes = std::fs::read(filename).map_err(|v| v.to_string())?;
+        postcard::from_bytes::<Self>(&mut bytes).map_err(|v| v.to_string())
+    }
+
+    pub fn save_to_file(&self, path: &Path) -> Result<(), String> {
+        let mut file = std::fs::File::create(path).map_err(|e| e.to_string())?;
+
+        let output: Vec<u8> =
+            postcard::to_allocvec(self).map_err(|e| format!("failed to serialise value: {e}"))?;
+
+        file.write_all(&output).map_err(|e| e.to_string())
+    }
+
+    pub fn from_pbf(filename: &PathBuf) -> Result<Self, Box<dyn std::error::Error>> {
         let mut start_time = Instant::now();
         let fixed_start_time = Instant::now();
 
-        let path = PathBuf::from(filename);
-
-        let reader = ProcessedElementIterator::new(path).map_err(|err| format!("{err:?}"))?;
+        let reader =
+            ProcessedElementIterator::new(filename.clone()).map_err(|err| format!("{err:?}"))?;
 
         debug!("Iterator warming took: {:?}", start_time.elapsed());
         start_time = Instant::now();

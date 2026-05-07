@@ -1,0 +1,44 @@
+[package]
+name = "routers_viewer"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+name = "routers_viewer"
+path = "src/lib.rs"
+bench = false
+
+[dependencies]
+routers = { workspace = true }
+routers_network = { workspace = true }
+routers_codec = { workspace = true }
+
+geo = { workspace = true }
+wkt = { workspace = true }
+dotenv = { workspace = true }
+env_logger = "0.11"
+
+# UI Dependencies
+eframe = "0.33.0"
+egui = "0.33.0"
+walkers = "0.47" # Version compatible with egui 0.33
+
+# Async runtime for any background tile fetching
+tokio = { workspace = true }
+
+# Mock Network Dependencies
+petgraph = { workspace = true }
+rstar = { workspace = true }
+rustc-hash = { workspace = true }
+pathfinding = "4.14.0"
+
+[dev-dependencies]
+routers_fixtures = { workspace = true }
+
+[lints]
+workspace = true
+
+[[example]]
+name = "viewer"
+path = "examples/viewer.rs"

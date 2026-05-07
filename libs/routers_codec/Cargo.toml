@@ -1,8 +1,8 @@
 [package]
 name = "routers_codec"
-version = "0.1.3"
+version = "0.1.4"
 edition = "2024"
-include = ["docs/**", "build.rs", "proto/**", "src/**", "benches/**"]
+include = ["docs/**", "build.rs", "proto/**", "src/**"]
 description = "Encoding and Decoding Primitives for Routers"
 license = "GPL-3.0-or-later"
 repository = "https://github.com/routers-org/routers"
@@ -24,10 +24,11 @@ serde = { workspace = true }
 # GeoRust
 geo = { workspace = true, features = ["serde"] }
 rstar = { workspace = true }
-petgraph = { workspace = true }
+petgraph = { workspace = true, features = ["serde"] }
 
 rayon = { workspace = true }
 log = { workspace = true }
+postcard = { workspace = true }
 rustc-hash = "2.1.1"
 
 # Tracing
@@ -37,7 +38,7 @@ strum = { workspace = true }
 itertools = { workspace = true }
 
 # Compression
-flate2 = { version = "1.1.2", features = ["zlib-rs"] }
+flate2 = { version = "1.1.9" }
 mimalloc = { version = "0.1.46", optional = true }
 
 # Misc.
@@ -53,7 +54,7 @@ test-log = { workspace = true }
 criterion = { workspace = true }
 
 # Used to compare performance to ensure no large regression
-osmpbf = { version = "0.3.5", features = ["zlib-ng"], default-features = false }
+osmpbf = { version = "0.3.5", features = ["rust-zlib"], default-features = false }
 
 [build-dependencies]
 prost-build = { workspace = true }

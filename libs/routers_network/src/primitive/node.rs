@@ -6,12 +6,12 @@ use core::hash::{Hash, Hasher};
 use core::ops::Deref;
 use geo::{Destination, Distance, Euclidean, Geodesic, Point};
 use rstar::{AABB, Envelope};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// The standardised node primitive containing a generic
 /// identifier which must implement [Entry], and contain
 /// some given [Point].
-#[derive(Debug, Copy, Clone, Serialize)]
+#[derive(Debug, Copy, Clone, Serialize, Deserialize)]
 pub struct Node<E>
 where
     E: Entry,

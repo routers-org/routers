@@ -1,12 +1,10 @@
-#![cfg(test)]
-
 use routers_fixtures::{DISTRICT_OF_COLUMBIA, fixture_path};
 
-use crate::osm::element::item::Element;
-use crate::osm::element::item::ProcessedElement;
-use crate::osm::element::iterator::ElementIterator;
-use crate::osm::element::processed_iterator::ProcessedElementIterator;
-use crate::osm::parallel::Parallel;
+use routers_codec::osm::element::item::Element;
+use routers_codec::osm::element::item::ProcessedElement;
+use routers_codec::osm::element::iterator::ElementIterator;
+use routers_codec::osm::element::processed_iterator::ProcessedElementIterator;
+use routers_codec::osm::parallel::Parallel;
 
 use log::info;
 use std::time::Instant;

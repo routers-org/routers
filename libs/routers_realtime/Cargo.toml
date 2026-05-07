@@ -1,0 +1,37 @@
+[package]
+name = "routers_realtime"
+version = "0.1.0"
+edition = "2024"
+description = "A Demonstration for Real-Time Map Matching"
+license = "GPL-3.0-or-later"
+
+[dependencies]
+lapin = "4.7.0"
+futures = "0.3.32"
+tokio = { workspace = true }
+
+anyhow = "1.0.102"
+chrono = "0.4.44"
+serde = { workspace = true, features = ["derive"] }
+csv = "1.4.0"
+serde_json = "1.0.149"
+
+geo = { workspace = true, features = ["serde"] }
+
+routers = { workspace = true }
+routers_codec = { workspace = true }
+routers_network = { workspace = true }
+
+[dev-dependencies]
+routers_fixtures = { workspace = true }
+
+[lints]
+workspace = true
+
+[[example]]
+name = "process"
+path = "examples/process.rs"
+
+[[example]]
+name = "replay"
+path = "examples/replay.rs"

@@ -1,14 +1,12 @@
 use geo::LineString;
 use routers_codec::osm::OsmNetwork;
 use routers_fixtures::fixture;
-use std::path::Path;
 use wkt::TryFromWkt;
 
 use crate::r#match::MatchSimpleExt;
 
 fn setup(source: &str, linestring: &str) -> (OsmNetwork, LineString<f64>) {
-    let path = Path::new(fixture!(source)).as_os_str().to_ascii_lowercase();
-    let graph = OsmNetwork::new(path).expect("Graph must be created");
+    let graph = OsmNetwork::from_pbf(fixture!(source)).expect("Graph must be created");
 
     // Yield the transition layers of each level
     // & Collapse the layers into a final vector
