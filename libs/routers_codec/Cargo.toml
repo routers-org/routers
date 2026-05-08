@@ -38,7 +38,7 @@ strum = { workspace = true }
 itertools = { workspace = true }
 
 # Compression
-flate2 = { version = "1.1.9" }
+flate2 = { version = "1.1.9", features = ["zlib-rs"] }
 mimalloc = { version = "0.1.46", optional = true }
 
 # Misc.
