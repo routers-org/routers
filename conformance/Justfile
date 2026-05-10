@@ -1,0 +1,10 @@
+mod conform 'conform.just'
+mod setup 'setup.just'
+
+# Start the Valhalla HTTP service (blocks; run in a separate terminal)
+start-valhalla:
+    bash scripts/start-valhalla.sh
+
+# Start the FMM HTTP server (blocks; run in a separate terminal)
+start-fmm:
+    bash scripts/start-fmm.sh

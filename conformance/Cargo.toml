@@ -1,0 +1,36 @@
+[package]
+name = "routers-conformance"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "routers-conformance"
+path = "src/main.rs"
+
+[dependencies]
+routers = { path = ".." }
+routers_fixtures = { path = "../libs/routers_fixtures" }
+routers_codec = { workspace = true }
+routers_network = { workspace = true }
+
+# Config + serialisation
+toml = "0.8"
+serde = { workspace = true, features = ["derive"] }
+serde_json = "1"
+
+# HTTP client for external matchers
+reqwest = { version = "0.12", features = ["blocking", "json"] }
+
+# Geospatial
+geo = { workspace = true }
+wkt = { workspace = true }
+
+# Reporting
+tabled = "0.17"
+
+# Error handling
+anyhow = "1"
+
+[lints]
+workspace = true

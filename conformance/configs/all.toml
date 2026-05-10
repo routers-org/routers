@@ -1,0 +1,39 @@
+# Conformance: routers vs all external matchers
+# Start external services first:
+#   just start-valhalla
+#   just start-fmm
+
+[run]
+iterations = 50
+warmup = 5
+output = "table"
+
+[matchers.routers]
+enabled = true
+network = "los-angeles-minified.osm.pbf"
+search_distance = 50.0
+
+[matchers.valhalla]
+enabled = true
+url = "http://localhost:8002"
+costing = "auto"
+shape_match = "map_snap"
+gps_accuracy = 5
+
+[matchers.graphhopper]
+enabled = false
+
+[matchers.fmm]
+enabled = true
+url = "http://localhost:9090"
+k = 8
+radius = 300.0
+error = 50.0
+
+[[traces]]
+id = "ventura"
+file = "data/traces/ventura.geojson"
+
+[[traces]]
+id = "lax_lynwood"
+file = "data/traces/lax_lynwood.geojson"
