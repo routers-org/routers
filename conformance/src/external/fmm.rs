@@ -31,6 +31,22 @@ impl FmmMatcher {
 impl Matcher for FmmMatcher {
     fn name(&self) -> &str { "fmm" }
 
+    fn health_check(&self) -> anyhow::Result<()> {
+        let base = self.url.trim_end_matches("/match");
+        self.client
+            .get(format!("{base}/health"))
+            .send()
+            .with_context(|| {
+                format!(
+                    "FMM server is not reachable at {base}. \
+                     Start it with: nix run .#start-fmm"
+                )
+            })?
+            .error_for_status()
+            .with_context(|| "FMM /health returned an error")?;
+        Ok(())
+    }
+
     /// POST to the FMM C++ HTTP server with a JSON body.
     ///
     /// The server (`fmm_server/main.cpp`) wraps the FMM C++ library with a

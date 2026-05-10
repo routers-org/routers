@@ -48,7 +48,7 @@
         };
 
         # ── per-app runtime dependency sets ───────────────────────────────
-        valhallaDeps = [ pkgs.valhalla pkgs.osmium-tool ];
+        valhallaDeps = [ pkgs.valhalla pkgs.osmium-tool pkgs.jq ];
 
         fmmBuildDeps = [
           pkgs.cmake

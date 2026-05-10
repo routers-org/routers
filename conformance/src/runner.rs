@@ -20,6 +20,9 @@ impl<'a> ConformanceRunner<'a> {
         let mut out = BTreeMap::new();
 
         for matcher in &self.matchers {
+            eprintln!("[{}] checking service readiness…", matcher.name());
+            matcher.health_check()?;
+
             eprintln!("[{}] warming up ({} pass(es))…", matcher.name(), self.warmup);
             self.warmup_matcher(matcher.as_ref())?;
 

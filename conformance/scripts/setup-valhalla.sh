@@ -32,6 +32,18 @@ valhalla_build_config \
   --mjolnir-timezone   "$VALHALLA_DIR/tz_world.sqlite" \
   > "$CFG"
 
+# valhalla_build_config injects Docker-default /data/valhalla/ paths for optional
+# features (tile extract, traffic, landmarks, transit, elevation) that we don't
+# have.  Remove them so valhalla_service falls back cleanly to tile_dir.
+jq 'del(
+      .mjolnir.tile_extract,
+      .mjolnir.traffic_extract,
+      .mjolnir.landmarks,
+      .mjolnir.transit_dir,
+      .mjolnir.transit_feeds_dir,
+      .additional_data.elevation
+    )' "$CFG" > "$CFG.tmp" && mv "$CFG.tmp" "$CFG"
+
 echo "[setup-valhalla] Building tiles from $(basename "$CONFORMANCE_PBF")…"
 valhalla_build_tiles -c "$CFG" "$CONFORMANCE_PBF"
 

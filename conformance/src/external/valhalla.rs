@@ -31,6 +31,22 @@ impl ValhallaMatcher {
 impl Matcher for ValhallaMatcher {
     fn name(&self) -> &str { "valhalla" }
 
+    fn health_check(&self) -> anyhow::Result<()> {
+        let base = self.url.trim_end_matches("/trace_route");
+        self.client
+            .get(format!("{base}/status"))
+            .send()
+            .with_context(|| {
+                format!(
+                    "Valhalla service is not reachable at {base}. \
+                     Start it with: nix run .#start-valhalla"
+                )
+            })?
+            .error_for_status()
+            .with_context(|| "Valhalla /status returned an error")?;
+        Ok(())
+    }
+
     /// POST to `/trace_route` with Valhalla's standard JSON format.
     ///
     /// The full round-trip (serialise → TCP → deserialise) is timed so that
