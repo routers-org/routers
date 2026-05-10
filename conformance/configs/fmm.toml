@@ -1,0 +1,33 @@
+# Conformance: routers vs FMM
+# Start FMM first: just start-fmm
+
+[run]
+iterations = 50
+warmup = 5
+output = "table"
+
+[matchers.routers]
+enabled = true
+network = "los-angeles-minified.osm.pbf"
+search_distance = 50.0
+
+[matchers.valhalla]
+enabled = false
+
+[matchers.graphhopper]
+enabled = false
+
+[matchers.fmm]
+enabled = true
+url = "http://localhost:9090"
+k = 8
+radius = 300.0
+error = 50.0
+
+[[traces]]
+id = "ventura"
+file = "data/traces/ventura.geojson"
+
+[[traces]]
+id = "lax_lynwood"
+file = "data/traces/lax_lynwood.geojson"
