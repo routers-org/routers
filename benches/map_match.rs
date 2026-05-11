@@ -96,6 +96,26 @@ fn target_benchmark(c: &mut criterion::Criterion) {
                 }
             );
 
+            let node_ids = result
+                .interpolated
+                .elements
+                .iter()
+                .map(|e| e.edge.source.id.identifier().to_string())
+                .collect::<Vec<_>>()
+                .join("\n");
+
+            insta::assert_snapshot!(format!("{}_nodes", sc.name), node_ids);
+
+            let coords = result
+                .interpolated
+                .elements
+                .iter()
+                .map(|e| format!("{:.6} {:.6}", e.point.x, e.point.y))
+                .collect::<Vec<_>>()
+                .join("\n");
+
+            insta::assert_snapshot!(format!("{}_coords", sc.name), coords);
+
             group.bench_function(format!("layer-gen: {}", sc.name), |b| {
                 let points = coordinates.clone().into_points();
 
