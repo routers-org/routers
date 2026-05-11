@@ -39,8 +39,8 @@ fn main() -> Result<()> {
             }
             let mut combined = std::collections::BTreeMap::new();
             for path in files {
-                let json = std::fs::read_to_string(path)
-                    .with_context(|| format!("reading {path}"))?;
+                let json =
+                    std::fs::read_to_string(path).with_context(|| format!("reading {path}"))?;
                 let parsed: serde_json::Value = serde_json::from_str(&json)
                     .with_context(|| format!("parsing JSON from {path}"))?;
                 if let Some(obj) = parsed.as_object() {
@@ -97,7 +97,9 @@ fn main() -> Result<()> {
         std::process::exit(1);
     }
 
-    let network_label = cfg.matchers.routers
+    let network_label = cfg
+        .matchers
+        .routers
         .as_ref()
         .filter(|r| r.enabled)
         .map(|r| network_label_from_path(&r.network))
@@ -116,8 +118,8 @@ fn main() -> Result<()> {
     let output = output_override.as_deref().unwrap_or(&cfg.run.output);
     match output {
         "json" => println!("{}", report::to_json(&results)),
-        "csv"  => print!("{}", report::to_csv(&results)),
-        _      => report::print_table(&results, cfg.run.iterations, traces.len()),
+        "csv" => print!("{}", report::to_csv(&results)),
+        _ => report::print_table(&results, cfg.run.iterations, traces.len()),
     }
 
     Ok(())
@@ -128,17 +130,17 @@ fn metrics_from_json(v: &serde_json::Value) -> metrics::MatcherMetrics {
     use std::time::Duration;
     let us = |key: &str| Duration::from_micros(v[key].as_u64().unwrap_or(0));
     metrics::MatcherMetrics {
-        total_points:          v["total_points"].as_u64().unwrap_or(0) as usize,
-        total_duration:        us("total_duration_us"),
+        total_points: v["total_points"].as_u64().unwrap_or(0) as usize,
+        total_duration: us("total_duration_us"),
         throughput_pts_per_sec: v["throughput_pts_per_sec"].as_f64().unwrap_or(0.0),
-        mean:   us("mean_us"),
+        mean: us("mean_us"),
         median: us("median_us"),
-        p15:    us("p15_us"),
-        lq:     us("lq_us"),
-        uq:     us("uq_us"),
-        p85:    us("p85_us"),
-        min:    us("min_us"),
-        max:    us("max_us"),
+        p15: us("p15_us"),
+        lq: us("lq_us"),
+        uq: us("uq_us"),
+        p85: us("p85_us"),
+        min: us("min_us"),
+        max: us("max_us"),
     }
 }
 

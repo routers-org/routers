@@ -29,7 +29,9 @@ impl ValhallaMatcher {
 }
 
 impl Matcher for ValhallaMatcher {
-    fn name(&self) -> &str { "valhalla" }
+    fn name(&self) -> &str {
+        "valhalla"
+    }
 
     fn health_check(&self) -> anyhow::Result<()> {
         let base = self.url.trim_end_matches("/trace_route");
@@ -82,6 +84,9 @@ impl Matcher for ValhallaMatcher {
             bail!("Valhalla returned HTTP {status}: {text}");
         }
 
-        Ok(MatchResult { point_count: trace.point_count(), duration })
+        Ok(MatchResult {
+            point_count: trace.point_count(),
+            duration,
+        })
     }
 }

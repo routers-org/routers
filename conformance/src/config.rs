@@ -32,9 +32,15 @@ impl Default for RunConfig {
     }
 }
 
-fn default_iterations() -> usize { 50 }
-fn default_warmup() -> usize { 5 }
-fn default_output() -> String { "table".to_string() }
+fn default_iterations() -> usize {
+    50
+}
+fn default_warmup() -> usize {
+    5
+}
+fn default_output() -> String {
+    "table".to_string()
+}
 
 #[derive(Debug, Deserialize)]
 pub struct MatchersConfig {
@@ -70,8 +76,12 @@ impl Default for RoutersConfig {
     }
 }
 
-fn default_network() -> String { "los-angeles-minified.osm.pbf".to_string() }
-fn default_search_distance() -> f64 { 50.0 }
+fn default_network() -> String {
+    "los-angeles-minified.osm.pbf".to_string()
+}
+fn default_search_distance() -> f64 {
+    50.0
+}
 
 /// Valhalla map matching via its `/trace_route` HTTP endpoint.
 ///
@@ -97,10 +107,18 @@ pub struct ValhallaConfig {
     pub gps_accuracy: u32,
 }
 
-fn default_valhalla_url() -> String { "http://localhost:8002".to_string() }
-fn default_valhalla_costing() -> String { "auto".to_string() }
-fn default_shape_match() -> String { "map_snap".to_string() }
-fn default_gps_accuracy() -> u32 { 5 }
+fn default_valhalla_url() -> String {
+    "http://localhost:8002".to_string()
+}
+fn default_valhalla_costing() -> String {
+    "auto".to_string()
+}
+fn default_shape_match() -> String {
+    "map_snap".to_string()
+}
+fn default_gps_accuracy() -> u32 {
+    5
+}
 
 /// GraphHopper map matching via its `/match` HTTP endpoint.
 ///
@@ -119,9 +137,15 @@ pub struct GraphHopperConfig {
     pub gps_accuracy: u32,
 }
 
-fn default_gh_url() -> String { "http://localhost:8989".to_string() }
-fn default_gh_profile() -> String { "car".to_string() }
-fn default_gh_gps_accuracy() -> u32 { 5 }
+fn default_gh_url() -> String {
+    "http://localhost:8989".to_string()
+}
+fn default_gh_profile() -> String {
+    "car".to_string()
+}
+fn default_gh_gps_accuracy() -> u32 {
+    5
+}
 
 /// FMM (Fast Map Matching) via its C++ HTTP service.
 ///
@@ -146,12 +170,22 @@ pub struct FmmConfig {
     pub error: f64,
 }
 
-fn default_fmm_url() -> String { "http://localhost:9090".to_string() }
-fn default_fmm_k() -> u32 { 8 }
-fn default_fmm_radius() -> f64 { 0.003 }
-fn default_fmm_error() -> f64 { 0.0005 }
+fn default_fmm_url() -> String {
+    "http://localhost:9090".to_string()
+}
+fn default_fmm_k() -> u32 {
+    8
+}
+fn default_fmm_radius() -> f64 {
+    0.003
+}
+fn default_fmm_error() -> f64 {
+    0.0005
+}
 
-fn default_enabled() -> bool { true }
+fn default_enabled() -> bool {
+    true
+}
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct TraceEntry {

@@ -29,7 +29,9 @@ impl FmmMatcher {
 }
 
 impl Matcher for FmmMatcher {
-    fn name(&self) -> &str { "fmm" }
+    fn name(&self) -> &str {
+        "fmm"
+    }
 
     fn health_check(&self) -> anyhow::Result<()> {
         let base = self.url.trim_end_matches("/match");
@@ -56,11 +58,7 @@ impl Matcher for FmmMatcher {
     /// Parameters (k, radius, error) are passed per-request so the server can
     /// be shared across different benchmark configurations without restart.
     fn match_trace(&self, trace: &GpsTrace) -> Result<MatchResult> {
-        let points: Vec<[f64; 2]> = trace
-            .points
-            .iter()
-            .map(|&(lon, lat)| [lon, lat])
-            .collect();
+        let points: Vec<[f64; 2]> = trace.points.iter().map(|&(lon, lat)| [lon, lat]).collect();
 
         let body = json!({
             "points": points,
@@ -84,13 +82,20 @@ impl Matcher for FmmMatcher {
             bail!("FMM server returned HTTP {http_status}: {text}");
         }
 
-        let body: serde_json::Value = resp.json()
+        let body: serde_json::Value = resp
+            .json()
             .with_context(|| "FMM response was not valid JSON")?;
         if body.get("status").and_then(|s| s.as_str()) == Some("failed") {
-            bail!("FMM could not match trace '{}' (server returned failed — \
-                   check UBODT delta covers GPS gaps and trace lies within network)", trace.id);
+            bail!(
+                "FMM could not match trace '{}' (server returned failed — \
+                   check UBODT delta covers GPS gaps and trace lies within network)",
+                trace.id
+            );
         }
 
-        Ok(MatchResult { point_count: trace.point_count(), duration })
+        Ok(MatchResult {
+            point_count: trace.point_count(),
+            duration,
+        })
     }
 }

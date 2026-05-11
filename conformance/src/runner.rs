@@ -28,7 +28,11 @@ impl<'a> ConformanceRunner<'a> {
             eprintln!("[{}] checking service readiness…", matcher.name());
             matcher.health_check()?;
 
-            eprintln!("[{}] warming up ({} pass(es))…", matcher.name(), self.warmup);
+            eprintln!(
+                "[{}] warming up ({} pass(es))…",
+                matcher.name(),
+                self.warmup
+            );
             self.warmup_matcher(matcher.as_ref())?;
 
             eprintln!(
@@ -64,7 +68,11 @@ impl<'a> ConformanceRunner<'a> {
         Ok(())
     }
 
-    fn time_trace(&self, matcher: &dyn Matcher, trace: &GpsTrace) -> Result<(Vec<Duration>, usize)> {
+    fn time_trace(
+        &self,
+        matcher: &dyn Matcher,
+        trace: &GpsTrace,
+    ) -> Result<(Vec<Duration>, usize)> {
         let mut samples = Vec::with_capacity(self.iterations);
         let mut total_points = 0usize;
 
