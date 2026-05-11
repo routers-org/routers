@@ -243,7 +243,8 @@ where
     pub fn angular_complexity(&self) -> f64 {
         // The maximum knowable rotation in differential angles is between [-180, +180].
         const MAX_ANGLE: f64 = 180.0;
-        const COST_DAMPING: f64 = 0.8; // 80% cost dampening
+        // Compresses the angle range so that turns ≥ 112.5° map to cos ≤ 0 → clamped to 0.
+        const COST_DAMPING: f64 = 0.8;
 
         let angles = self.delta_angle();
         let length = angles.len();
@@ -252,13 +253,21 @@ where
             return 1.0;
         }
 
-        let costs = angles
+        let costs: Vec<f64> = angles
             .into_iter()
             .map(|angle| angle.clamp(-MAX_ANGLE, MAX_ANGLE))
             .map(|angle| (angle.mul(PI).div(MAX_ANGLE).mul(COST_DAMPING).cos()).clamp(0.0, 1.0))
-            .sum::<f64>();
+            .collect();
 
-        (costs / length as f64).clamp(0.0, 1.0)
+        // Any zero contribution (turns ≥ 112.5°) makes the whole path cost zero.
+        // Harmonic mean is used for non-zero segments: it penalises the worst turns
+        // more strongly than arithmetic mean, giving better A* discrimination.
+        if costs.iter().any(|&c| c <= 0.0) {
+            return 0.0;
+        }
+
+        let harmonic_sum: f64 = costs.iter().map(|&c| 1.0 / c).sum();
+        (length as f64 / harmonic_sum).clamp(0.0, 1.0)
     }
 
     /// Returns the length of the trip in meters, calculated

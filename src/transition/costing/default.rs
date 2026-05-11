@@ -67,7 +67,13 @@ pub mod emission {
             const Z: f64 = 0.5;
             const C: f64 = 1.0 / (Z * ROOT_PI);
 
-            Some(C * context.distance.sqrt().neg().exp())
+            // Prefer higher-class roads (weight=1=motorway) over lower-class ones.
+            // Capped at weight=2 so secondary/residential roads are all treated equally
+            // (preserving distance discrimination within the same road class while ensuring
+            // motorway beats motorway_link even when the link is physically closer).
+            let class_factor = 1.0 / (context.weight as f64).min(2.0);
+
+            Some(C * context.distance.sqrt().neg().exp() * class_factor)
         }
     }
 }
@@ -168,27 +174,24 @@ pub mod transition {
                     .map(|Edge { weight, .. }| weight as f64)
                     .collect::<Vec<_>>();
 
-                let avg_weight = {
-                    if weights.is_empty() {
-                        // Distance-only transition (same edge): fall back to the
-                        // better (lower-weight) of the two candidate edges to avoid
-                        // a division-by-zero NaN propagating through the rest of the
-                        // calculation.  Choosing the minimum gives the most
-                        // favourable distinct_cost for a same-edge transition, which
-                        // is the correct baseline when the path has zero routing edges.
-                        src_weight.min(tgt_weight)
-                    } else {
-                        weights.iter().sum::<f64>() / weights.len() as f64
-                    }
+                let avg_weight = if weights.is_empty() {
+                    // Distance-only transition (same edge): use the better of the two
+                    // candidate edges to avoid division-by-zero.
+                    src_weight.min(tgt_weight)
+                } else {
+                    weights.iter().sum::<f64>() / weights.len() as f64
                 };
 
-                (1.0 / avg_weight).powi(2).clamp(0.0, 1.0)
+                (1.0 / avg_weight).clamp(0.0, 1.0)
             };
 
-            // Use multiplication instead of averaging to ensure that if either
-            // heuristic is highly improbable, the entire transition is penalized
-            // heavily.
-            Some(turn_cost * deviance * travel_weight_cost)
+            // Additive weighted combination instead of multiplication. The product formula
+            // floors all secondary-road costs above ~2400 (since travel_weight_cost ≤ 0.2),
+            // which removes the cost gradient that A* needs to prune the candidate graph.
+            // With additive combination, a perfect secondary transition returns ~0.80, giving
+            // a cost near zero via 1/(β·v)-1, while a bad one returns ~0.27 → cost ~270.
+            // That 28× ratio is sufficient for the selective solver to prune aggressively.
+            Some(0.25 * travel_weight_cost + 0.25 * deviance + 0.5 * turn_cost)
         }
     }
 }
