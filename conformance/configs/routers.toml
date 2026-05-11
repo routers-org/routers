@@ -1,0 +1,29 @@
+# Conformance: routers only — used by `just conform::all` to benchmark the
+# native matcher independently before merging results with external services.
+
+[run]
+iterations = 50
+warmup = 5
+output = "table"
+
+[matchers.routers]
+enabled = true
+network = "los-angeles-minified.osm.pbf"
+search_distance = 50.0
+
+[matchers.valhalla]
+enabled = false
+
+[matchers.graphhopper]
+enabled = false
+
+[matchers.fmm]
+enabled = false
+
+[[traces]]
+id = "ventura"
+file = "data/traces/ventura.geojson"
+
+[[traces]]
+id = "lax_lynwood"
+file = "data/traces/lax_lynwood.geojson"
