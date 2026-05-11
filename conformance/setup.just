@@ -8,9 +8,13 @@ init:
 valhalla:
     bash {{justfile_directory()}}/scripts/setup-valhalla.sh
 
+# Pre-import GraphHopper graph from the PBF (optional — start-graphhopper does this automatically)
+graphhopper:
+    bash {{justfile_directory()}}/scripts/setup-graphhopper.sh
+
 # Build FMM from source and prepare the road network (run once before start-fmm)
 fmm:
     bash {{justfile_directory()}}/scripts/setup-fmm.sh
 
 # Run all setup steps in order
-all: init valhalla fmm
+all: init valhalla graphhopper fmm

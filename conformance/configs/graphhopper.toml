@@ -1,5 +1,5 @@
 # Conformance: routers vs GraphHopper
-# Start GraphHopper first: docker compose -f external/docker/docker-compose.yml up graphhopper
+# `just conform::graphhopper` starts/stops GraphHopper automatically via nix.
 
 [run]
 iterations = 50
