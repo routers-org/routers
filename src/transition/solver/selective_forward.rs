@@ -290,7 +290,7 @@ where
                     self.reachable_hash
                         .borrow()
                         .get(&(a.index(), b.index()))
-                        .map(|(r, _)| r.clone())
+                        .map(|r| r.clone())
                 } else {
                     None
                 }
@@ -298,9 +298,11 @@ where
             .collect::<Vec<_>>();
 
         // Update candidate graph with calculated weights
-        for (&(a_idx, b_idx), &(_, cost)) in self.reachable_hash.borrow().iter() {
+        #[cfg(debug_assertions)]
+        for (&(a_idx, b_idx), &Reachable { cost, .. }) in self.reachable_hash.borrow().iter() {
             let a = CandidateId::new(a_idx);
             let b = CandidateId::new(b_idx);
+
             if let Some(edge_idx) = transition.candidates.graph.find_edge(a, b) {
                 if let Some(edge) = transition.candidates.graph.edge_weight_mut(edge_idx) {
                     edge.weight = cost;
