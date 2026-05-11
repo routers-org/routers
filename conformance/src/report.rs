@@ -49,13 +49,22 @@ impl Row {
     }
 }
 
+/// Print a combined table produced by merging multiple per-matcher JSON results.
+pub fn print_merged_table(results: &BTreeMap<String, MatcherMetrics>) {
+    println!("\nConformance Results — all matchers\n");
+    print_rows(results);
+}
+
 /// Print results as a terminal table.
 pub fn print_table(results: &BTreeMap<String, MatcherMetrics>, iterations: usize, trace_count: usize) {
     println!(
         "\nConformance Results — {} iterations × {} trace(s)\n",
         iterations, trace_count
     );
+    print_rows(results);
+}
 
+fn print_rows(results: &BTreeMap<String, MatcherMetrics>) {
     let rows: Vec<Row> = results
         .iter()
         .map(|(name, m)| Row::from(name, m))
