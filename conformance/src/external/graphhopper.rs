@@ -26,7 +26,9 @@ impl GraphHopperMatcher {
 }
 
 impl Matcher for GraphHopperMatcher {
-    fn name(&self) -> &str { "graphhopper" }
+    fn name(&self) -> &str {
+        "graphhopper"
+    }
 
     fn health_check(&self) -> anyhow::Result<()> {
         self.client
@@ -77,7 +79,10 @@ impl Matcher for GraphHopperMatcher {
             bail!("GraphHopper returned HTTP {status}: {text}");
         }
 
-        Ok(MatchResult { point_count: trace.point_count(), duration })
+        Ok(MatchResult {
+            point_count: trace.point_count(),
+            duration,
+        })
     }
 }
 
@@ -96,9 +101,7 @@ fn build_gpx(trace_id: &str, points: &[(f64, f64)]) -> String {
     gpx.push_str("</name><trkseg>\n");
 
     for &(lon, lat) in points {
-        gpx.push_str(&format!(
-            r#"    <trkpt lat="{lat:.8}" lon="{lon:.8}"/>"#
-        ));
+        gpx.push_str(&format!(r#"    <trkpt lat="{lat:.8}" lon="{lon:.8}"/>"#));
         gpx.push('\n');
     }
 

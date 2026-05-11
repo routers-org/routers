@@ -37,14 +37,14 @@ impl Row {
         Self {
             matcher: matcher.to_string(),
             throughput: fmt_throughput(m.throughput_pts_per_sec),
-            mean:   fmt_duration(m.mean),
+            mean: fmt_duration(m.mean),
             median: fmt_duration(m.median),
-            p15:    fmt_duration(m.p15),
-            lq:     fmt_duration(m.lq),
-            uq:     fmt_duration(m.uq),
-            p85:    fmt_duration(m.p85),
-            min:    fmt_duration(m.min),
-            max:    fmt_duration(m.max),
+            p15: fmt_duration(m.p15),
+            lq: fmt_duration(m.lq),
+            uq: fmt_duration(m.uq),
+            p85: fmt_duration(m.p85),
+            min: fmt_duration(m.min),
+            max: fmt_duration(m.max),
         }
     }
 }
@@ -56,7 +56,11 @@ pub fn print_merged_table(results: &BTreeMap<String, MatcherMetrics>) {
 }
 
 /// Print results as a terminal table.
-pub fn print_table(results: &BTreeMap<String, MatcherMetrics>, iterations: usize, trace_count: usize) {
+pub fn print_table(
+    results: &BTreeMap<String, MatcherMetrics>,
+    iterations: usize,
+    trace_count: usize,
+) {
     println!(
         "\nConformance Results — {} iterations × {} trace(s)\n",
         iterations, trace_count
@@ -75,7 +79,9 @@ fn print_rows(results: &BTreeMap<String, MatcherMetrics>) {
     let multi_group = groups.len() > 1;
     for (i, (network, entries)) in groups.iter().enumerate() {
         if multi_group && !network.is_empty() {
-            if i > 0 { println!(); }
+            if i > 0 {
+                println!();
+            }
             println!("  {network}");
             println!();
         }
@@ -119,7 +125,7 @@ pub fn to_json(results: &BTreeMap<String, MatcherMetrics>) -> String {
 /// Serialise results to CSV.
 pub fn to_csv(results: &BTreeMap<String, MatcherMetrics>) -> String {
     let mut out = String::from(
-        "matcher,throughput_pts_per_sec,mean_us,median_us,p15_us,lq_us,uq_us,p85_us,min_us,max_us\n"
+        "matcher,throughput_pts_per_sec,mean_us,median_us,p15_us,lq_us,uq_us,p85_us,min_us,max_us\n",
     );
     for (name, m) in results {
         out.push_str(&format!(

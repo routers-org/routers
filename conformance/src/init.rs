@@ -12,24 +12,29 @@ struct TraceSource {
 }
 
 const SOURCES: &[TraceSource] = &[
-    TraceSource { id: "ventura",    wkt: VENTURA_TRIP },
-    TraceSource { id: "lax_lynwood", wkt: LAX_LYNWOOD_TRIP },
-    TraceSource { id: "sydney",     wkt: SYNDEY_TRIP },
+    TraceSource {
+        id: "ventura",
+        wkt: VENTURA_TRIP,
+    },
+    TraceSource {
+        id: "lax_lynwood",
+        wkt: LAX_LYNWOOD_TRIP,
+    },
+    TraceSource {
+        id: "sydney",
+        wkt: SYNDEY_TRIP,
+    },
 ];
 
 /// Convert the bundled WKT fixture strings into GeoJSON files under `out_dir`.
 pub fn init_traces(out_dir: &Path) -> Result<()> {
-    std::fs::create_dir_all(out_dir)
-        .with_context(|| format!("creating {}", out_dir.display()))?;
+    std::fs::create_dir_all(out_dir).with_context(|| format!("creating {}", out_dir.display()))?;
 
     for src in SOURCES {
         let ls: LineString<f64> = LineString::try_from_wkt_str(src.wkt)
             .map_err(|e| anyhow::anyhow!("WKT parse error for {}: {e:?}", src.id))?;
 
-        let coords: Vec<[f64; 2]> = ls
-            .coords()
-            .map(|c| [c.x, c.y])
-            .collect();
+        let coords: Vec<[f64; 2]> = ls.coords().map(|c| [c.x, c.y]).collect();
 
         let feature = json!({
             "type": "Feature",

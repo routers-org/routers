@@ -10,16 +10,16 @@ pub struct MatcherMetrics {
     /// Points matched per second.
     pub throughput_pts_per_sec: f64,
 
-    pub mean:   Duration,
+    pub mean: Duration,
     pub median: Duration,
-    pub p15:    Duration,
+    pub p15: Duration,
     /// Lower quartile (25th percentile).
-    pub lq:     Duration,
+    pub lq: Duration,
     /// Upper quartile (75th percentile).
-    pub uq:     Duration,
-    pub p85:    Duration,
-    pub min:    Duration,
-    pub max:    Duration,
+    pub uq: Duration,
+    pub p85: Duration,
+    pub min: Duration,
+    pub max: Duration,
 }
 
 impl MatcherMetrics {
@@ -28,7 +28,10 @@ impl MatcherMetrics {
     /// `total_points` is the sum of GPS points across every timed call so that
     /// throughput is computed as `total_points / total_wall_seconds`.
     pub fn compute(mut samples: Vec<Duration>, total_points: usize) -> Self {
-        assert!(!samples.is_empty(), "cannot compute metrics on an empty sample set");
+        assert!(
+            !samples.is_empty(),
+            "cannot compute metrics on an empty sample set"
+        );
 
         samples.sort_unstable();
 
@@ -49,12 +52,12 @@ impl MatcherMetrics {
             throughput_pts_per_sec: throughput,
             mean,
             median: percentile(&samples, 50),
-            p15:    percentile(&samples, 15),
-            lq:     percentile(&samples, 25),
-            uq:     percentile(&samples, 75),
-            p85:    percentile(&samples, 85),
-            min:    samples[0],
-            max:    samples[n - 1],
+            p15: percentile(&samples, 15),
+            lq: percentile(&samples, 25),
+            uq: percentile(&samples, 75),
+            p85: percentile(&samples, 85),
+            min: samples[0],
+            max: samples[n - 1],
         }
     }
 }
@@ -91,7 +94,9 @@ pub fn fmt_throughput(pts_per_sec: f64) -> String {
     let s = v.to_string();
     let mut out = String::with_capacity(s.len() + s.len() / 3);
     for (i, ch) in s.chars().rev().enumerate() {
-        if i != 0 && i % 3 == 0 { out.push(','); }
+        if i != 0 && i % 3 == 0 {
+            out.push(',');
+        }
         out.push(ch);
     }
     out.chars().rev().collect::<String>() + " pts/s"

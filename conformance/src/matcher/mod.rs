@@ -23,5 +23,7 @@ pub trait Matcher: Send + Sync {
     /// Optional pre-benchmark readiness check.  Default is a no-op; HTTP
     /// matchers override this to verify the service is reachable before the
     /// timed run begins.
-    fn health_check(&self) -> Result<()> { Ok(()) }
+    fn health_check(&self) -> Result<()> {
+        Ok(())
+    }
 }
