@@ -1,5 +1,6 @@
 use geo::{Bearing, Distance, Haversine, LineString};
 use routers_network::{Entry, Metadata, Network, Node};
+use rustc_hash::FxHashSet;
 use std::f64::consts::PI;
 use std::ops::{Div, Mul, Rem};
 
@@ -59,13 +60,13 @@ where
     ) -> Self {
         let resolved = map.line(nodes);
         let mut nodes_vec = Vec::with_capacity(resolved.len() + 2);
+        let mut seen: FxHashSet<E> = FxHashSet::default();
 
         nodes_vec.push(Node::new(source_pos, E::default()));
 
         for (point, id) in resolved.into_iter().zip(nodes) {
-            let node = Node::new(point, *id);
-            if !nodes_vec.contains(&node) {
-                nodes_vec.push(node);
+            if seen.insert(*id) {
+                nodes_vec.push(Node::new(point, *id));
             }
         }
 
@@ -254,12 +255,10 @@ where
         let costs = angles
             .into_iter()
             .map(|angle| angle.clamp(-MAX_ANGLE, MAX_ANGLE))
-            .map(|angle| angle.mul(PI).div(MAX_ANGLE).mul(COST_DAMPING).cos())
-            .map(|cost| cost.clamp(0.0, 1.0).recip())
+            .map(|angle| (angle.mul(PI).div(MAX_ANGLE).mul(COST_DAMPING).cos()).clamp(0.0, 1.0))
             .sum::<f64>();
 
-        let average = costs / length as f64;
-        average.recip().clamp(0.0, 1.0)
+        (costs / length as f64).clamp(0.0, 1.0)
     }
 
     /// Returns the length of the trip in meters, calculated
