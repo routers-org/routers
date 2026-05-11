@@ -48,7 +48,8 @@
         };
 
         # ── per-app runtime dependency sets ───────────────────────────────
-        valhallaDeps = [ pkgs.valhalla pkgs.osmium-tool pkgs.jq ];
+        valhallaDeps     = [ pkgs.valhalla pkgs.osmium-tool pkgs.jq ];
+        graphhopperDeps  = [ pkgs.graphhopper ];
 
         fmmBuildDeps = [
           pkgs.cmake
@@ -86,7 +87,7 @@
       in {
         # ── dev shell: all tools in one place ─────────────────────────────
         devShells.default = pkgs.mkShell {
-          buildInputs = valhallaDeps ++ fmmBuildDeps ++ fmmRunDeps;
+          buildInputs = valhallaDeps ++ graphhopperDeps ++ fmmBuildDeps ++ fmmRunDeps;
 
           shellHook = ''
             export CONFORMANCE_DIR="$PWD"
@@ -99,12 +100,14 @@
             echo "  WORK: $CONFORMANCE_WORK"
             echo ""
             echo "  One-time setup:"
-            echo "    nix run .#setup-valhalla    build Valhalla tiles"
-            echo "    nix run .#setup-fmm         clone+build FMM, generate UBODT"
+            echo "    nix run .#setup-valhalla      build Valhalla tiles"
+            echo "    nix run .#setup-graphhopper   import GraphHopper graph (optional)"
+            echo "    nix run .#setup-fmm           clone+build FMM, generate UBODT"
             echo ""
             echo "  Per-session (each in its own terminal):"
-            echo "    nix run .#start-valhalla    port 8002"
-            echo "    nix run .#start-fmm         port 9090"
+            echo "    nix run .#start-valhalla      port 8002"
+            echo "    nix run .#start-graphhopper   port 8989"
+            echo "    nix run .#start-fmm           port 9090"
             echo ""
             echo "  Benchmark:"
             echo "    cargo run --release -p routers-conformance -- conformance.toml"
@@ -126,6 +129,18 @@
             name           = "start-valhalla";
             runtimeInputs  = valhallaDeps;
             scriptFile     = ./scripts/start-valhalla.sh;
+          };
+
+          setup-graphhopper = mkScriptApp {
+            name           = "setup-graphhopper";
+            runtimeInputs  = graphhopperDeps;
+            scriptFile     = ./scripts/setup-graphhopper.sh;
+          };
+
+          start-graphhopper = mkScriptApp {
+            name           = "start-graphhopper";
+            runtimeInputs  = graphhopperDeps;
+            scriptFile     = ./scripts/start-graphhopper.sh;
           };
 
           setup-fmm =

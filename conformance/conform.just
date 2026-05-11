@@ -4,9 +4,10 @@
 # automatically.  Service-backed matchers (Valhalla, FMM) spin up their daemon
 # for the duration of the run and shut it down on exit.
 
-_traces_sentinel   := justfile_directory() / "data/traces/ventura.geojson"
-_valhalla_sentinel := justfile_directory() / ".work/valhalla/config.json"
-_fmm_sentinel      := justfile_directory() / ".work/network/ubodt.csv"
+_traces_sentinel      := justfile_directory() / "data/traces/ventura.geojson"
+_valhalla_sentinel    := justfile_directory() / ".work/valhalla/config.json"
+_graphhopper_sentinel := justfile_directory() / ".work/graphhopper/graph-cache/properties.txt"
+_fmm_sentinel         := justfile_directory() / ".work/network/ubodt.csv"
 
 # Ensure trace files exist, prompt to run setup::init if not.
 _ensure-init:
@@ -18,6 +19,21 @@ _ensure-init:
         case "$ans" in
             [yY]*) just --justfile "{{justfile()}}" setup::init ;;
             *) echo "Aborting."; exit 1 ;;
+        esac
+    fi
+
+# Ensure GraphHopper graph is pre-built; prompt to run setup::graphhopper if not.
+# (Skippable — the server auto-imports on first start, but pre-building avoids
+#  a ~1 min wait inside the conform run.)
+_ensure-graphhopper:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ ! -f "{{_graphhopper_sentinel}}" ]; then
+        printf "GraphHopper graph not pre-built. Run 'just setup::graphhopper' now? [y/N] "
+        read -r ans < /dev/tty
+        case "$ans" in
+            [yY]*) just --justfile "{{justfile()}}" setup::graphhopper ;;
+            *) echo "Skipping — GraphHopper will import on first start (adds ~1 min)." ;;
         esac
     fi
 
@@ -117,6 +133,36 @@ fmm: _ensure-init _ensure-fmm
 
     cargo run --release -p routers-conformance -- configs/fmm.toml
 
-# Run routers vs GraphHopper (requires Docker — see external/docker/docker-compose.yml)
-graphhopper: _ensure-init
+# Run routers vs GraphHopper — starts and stops the service automatically.
+graphhopper: _ensure-init _ensure-graphhopper
+    #!/usr/bin/env bash
+    set -euo pipefail
+    PORT="${GH_PORT:-8989}"
+    LOG="/tmp/gh-conform.log"
+
+    echo "[conform] Starting GraphHopper on port ${PORT}..."
+    nix run "{{justfile_directory()}}#start-graphhopper" >"$LOG" 2>&1 &
+    GH_PID=$!
+    trap "echo '[conform] Stopping GraphHopper...'; kill $GH_PID 2>/dev/null; wait $GH_PID 2>/dev/null || true" EXIT
+
+    # GH imports the PBF on first start — allow up to 5 minutes.
+    echo "[conform] Waiting for GraphHopper to be ready (up to 5 min if first run)..."
+    for i in $(seq 1 60); do
+        if curl -sf "http://localhost:${PORT}/info" >/dev/null 2>&1; then
+            echo "[conform] GraphHopper ready."
+            break
+        fi
+        if ! kill -0 "$GH_PID" 2>/dev/null; then
+            echo "[conform] GraphHopper exited unexpectedly — see $LOG"
+            cat "$LOG" >&2
+            exit 1
+        fi
+        sleep 5
+    done
+    if ! curl -sf "http://localhost:${PORT}/info" >/dev/null 2>&1; then
+        echo "[conform] GraphHopper did not respond within 5 min — see $LOG"
+        cat "$LOG" >&2
+        exit 1
+    fi
+
     cargo run --release -p routers-conformance -- configs/graphhopper.toml

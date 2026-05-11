@@ -28,6 +28,22 @@ impl GraphHopperMatcher {
 impl Matcher for GraphHopperMatcher {
     fn name(&self) -> &str { "graphhopper" }
 
+    fn health_check(&self) -> anyhow::Result<()> {
+        self.client
+            .get(format!("{}/info", self.base_url))
+            .send()
+            .with_context(|| {
+                format!(
+                    "GraphHopper is not reachable at {}. \
+                     Start it with: just conform::graphhopper",
+                    self.base_url
+                )
+            })?
+            .error_for_status()
+            .with_context(|| "GraphHopper /info returned an error")?;
+        Ok(())
+    }
+
     /// POST to `/match` with a GPX XML body.
     ///
     /// GraphHopper's map-matching API accepts GPX as its primary input format.
