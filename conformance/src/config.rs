@@ -127,7 +127,8 @@ fn default_gh_gps_accuracy() -> u32 { 5 }
 ///
 /// The service is a thin cpp-httplib wrapper around the FMM C++ library;
 /// see `fmm_server/` for the source and `docker/` for the Dockerfile.
-/// Parameters match FMM's recommended defaults for urban GPS data.
+/// The road network shapefile is in WGS84 (EPSG:4326), so radius and error
+/// are in degrees (~0.003° ≈ 300 m, ~0.0005° ≈ 50 m at LA latitude).
 #[derive(Debug, Deserialize)]
 pub struct FmmConfig {
     #[serde(default = "default_enabled")]
@@ -137,18 +138,18 @@ pub struct FmmConfig {
     /// Number of candidate edges per GPS point (FMM k-nearest).
     #[serde(default = "default_fmm_k")]
     pub k: u32,
-    /// Candidate search radius in metres.
+    /// Candidate search radius in degrees (network is WGS84).
     #[serde(default = "default_fmm_radius")]
     pub radius: f64,
-    /// Assumed GPS measurement error in metres.
+    /// Assumed GPS measurement error in degrees (network is WGS84).
     #[serde(default = "default_fmm_error")]
     pub error: f64,
 }
 
 fn default_fmm_url() -> String { "http://localhost:9090".to_string() }
 fn default_fmm_k() -> u32 { 8 }
-fn default_fmm_radius() -> f64 { 300.0 }
-fn default_fmm_error() -> f64 { 50.0 }
+fn default_fmm_radius() -> f64 { 0.003 }
+fn default_fmm_error() -> f64 { 0.0005 }
 
 fn default_enabled() -> bool { true }
 
