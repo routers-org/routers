@@ -97,11 +97,18 @@ fn main() -> Result<()> {
         std::process::exit(1);
     }
 
+    let network_label = cfg.matchers.routers
+        .as_ref()
+        .filter(|r| r.enabled)
+        .map(|r| network_label_from_path(&r.network))
+        .unwrap_or_else(|| "network".to_string());
+
     let runner = ConformanceRunner {
         matchers,
         traces: &traces,
         iterations: cfg.run.iterations,
         warmup: cfg.run.warmup,
+        network_label,
     };
 
     let results = runner.run()?;
@@ -133,6 +140,15 @@ fn metrics_from_json(v: &serde_json::Value) -> metrics::MatcherMetrics {
         min:    us("min_us"),
         max:    us("max_us"),
     }
+}
+
+fn network_label_from_path(network: &str) -> String {
+    let name = Path::new(network)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or(network);
+    let name = name.strip_suffix(".osm.pbf").unwrap_or(name);
+    name.strip_suffix("-minified").unwrap_or(name).to_string()
 }
 
 fn load_config(path: &Path) -> Result<Config> {

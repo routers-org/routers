@@ -65,17 +65,27 @@ pub fn print_table(results: &BTreeMap<String, MatcherMetrics>, iterations: usize
 }
 
 fn print_rows(results: &BTreeMap<String, MatcherMetrics>) {
-    let rows: Vec<Row> = results
-        .iter()
-        .map(|(name, m)| Row::from(name, m))
-        .collect();
+    // Group by the network label (first segment of "network / matcher / trace" key).
+    let mut groups: BTreeMap<&str, Vec<(&str, &MatcherMetrics)>> = BTreeMap::new();
+    for (key, m) in results {
+        let (network, rest) = key.split_once(" / ").unwrap_or(("", key.as_str()));
+        groups.entry(network).or_default().push((rest, m));
+    }
 
-    let mut table = Table::new(&rows);
-    table
-        .with(Style::modern())
-        .modify(Columns::new(1..), Alignment::right());
-
-    println!("{table}");
+    let multi_group = groups.len() > 1;
+    for (i, (network, entries)) in groups.iter().enumerate() {
+        if multi_group && !network.is_empty() {
+            if i > 0 { println!(); }
+            println!("  {network}");
+            println!();
+        }
+        let rows: Vec<Row> = entries.iter().map(|(name, m)| Row::from(name, m)).collect();
+        let mut table = Table::new(&rows);
+        table
+            .with(Style::modern())
+            .modify(Columns::new(1..), Alignment::right());
+        println!("{table}");
+    }
 }
 
 /// Serialise results to a JSON string.

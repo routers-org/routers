@@ -6,6 +6,10 @@ FMM-compatible ESRI Shapefile with integer id / source / target fields.
 Source/target node IDs are derived from rounded endpoint coordinates so
 that topologically shared points get the same ID.
 
+Bidirectional roads (no oneway=yes/1/-1 tag, and not a roundabout) are
+written as TWO directed edges so FMM can match GPS traces in either
+direction.  One-way roads contribute a single directed edge.
+
 Usage:
   pbf_to_shp.py <input.geojson> <output.shp>
 or via env vars GEOJSON_IN / SHP_OUT.
@@ -14,6 +18,22 @@ import json
 import os
 import sys
 from osgeo import ogr, osr
+
+
+def is_oneway(props):
+    """Return True if the OSM way is one-directional (forward only)."""
+    oneway = props.get("oneway", "")
+    if str(oneway).lower() in ("yes", "1", "true"):
+        return True
+    # Roundabouts are implicitly one-way
+    if props.get("junction", "").lower() == "roundabout":
+        return True
+    return False
+
+
+def is_reverse_only(props):
+    """Return True if the OSM way is one-directional in REVERSE."""
+    return str(props.get("oneway", "")).strip() == "-1"
 
 
 def main():
@@ -28,9 +48,8 @@ def main():
         driver.DeleteDataSource(shp_path)
 
     # Keep coordinates in WGS84 (EPSG:4326, lon/lat degrees).  FMM reads raw
-    # OGR coordinate values without reprojecting; the radius/error parameters
-    # passed to STMATCH must therefore also be in degrees.  ~0.003° ≈ 300 m at
-    # LA latitude, which is what the Rust client sends.
+    # OGR coordinate values without reprojecting; radius/error parameters must
+    # therefore be in degrees (0.003° ≈ 300 m at Sydney latitude).
     srs = osr.SpatialReference()
     srs.ImportFromEPSG(4326)
     srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)  # lon/lat order
@@ -50,13 +69,24 @@ def main():
             nodes[key] = len(nodes)
         return nodes[key]
 
+    def add_edge(coords, src, tgt):
+        nonlocal edge_id
+        geom_json = {"type": "LineString", "coordinates": coords}
+        geom      = ogr.CreateGeometryFromJson(json.dumps(geom_json))
+        ogr_feat  = ogr.Feature(defn)
+        ogr_feat.SetGeometry(geom)
+        ogr_feat.SetField("id",     edge_id)
+        ogr_feat.SetField("source", src)
+        ogr_feat.SetField("target", tgt)
+        layer.CreateFeature(ogr_feat)
+        edge_id += 1
+
     # Accept both regular GeoJSON and newline-delimited GeoJSON (geojsonl).
     def iter_features(path):
         with open(path) as f:
             first_char = f.read(1)
             f.seek(0)
             if first_char == "{":
-                # Try full GeoJSON first, fall back to ndjson
                 content = f.read()
                 try:
                     obj = json.loads(content)
@@ -68,7 +98,6 @@ def main():
                         return
                 except json.JSONDecodeError:
                     pass
-                # Newline-delimited
                 for line in content.splitlines():
                     line = line.strip()
                     if not line:
@@ -81,6 +110,8 @@ def main():
                         pass
 
     edge_id = 0
+    fwd_count = rev_count = bidir_count = 0
+
     for feat in iter_features(geojson_path):
         geom_json = feat.get("geometry", {})
         if geom_json.get("type") != "LineString":
@@ -89,20 +120,27 @@ def main():
         if len(coords) < 2:
             continue
 
-        src = node_id(coords[0])
-        tgt = node_id(coords[-1])
+        props   = feat.get("properties") or {}
+        forward = not is_reverse_only(props)
+        reverse = not is_oneway(props) and not is_reverse_only(props)
 
-        geom     = ogr.CreateGeometryFromJson(json.dumps(geom_json))
-        ogr_feat = ogr.Feature(defn)
-        ogr_feat.SetGeometry(geom)
-        ogr_feat.SetField("id",     edge_id)
-        ogr_feat.SetField("source", src)
-        ogr_feat.SetField("target", tgt)
-        layer.CreateFeature(ogr_feat)
-        edge_id += 1
+        fwd_coords = coords
+        rev_coords = list(reversed(coords))
+        src = node_id(fwd_coords[0])
+        tgt = node_id(fwd_coords[-1])
+
+        if forward:
+            add_edge(fwd_coords, src, tgt)
+            fwd_count += 1
+        if reverse:
+            add_edge(rev_coords, tgt, src)
+            rev_count += 1
+        if forward and reverse:
+            bidir_count += 1
 
     ds.Destroy()
-    print(f"[pbf_to_shp] {edge_id} edges, {len(nodes)} nodes → {shp_path}")
+    print(f"[pbf_to_shp] {edge_id} edges ({fwd_count} fwd, {rev_count} rev, "
+          f"{bidir_count} bidirectional), {len(nodes)} nodes → {shp_path}")
 
 
 if __name__ == "__main__":

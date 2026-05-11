@@ -12,10 +12,15 @@ pub struct ConformanceRunner<'a> {
     pub traces: &'a [GpsTrace],
     pub iterations: usize,
     pub warmup: usize,
+    pub network_label: String,
 }
 
 impl<'a> ConformanceRunner<'a> {
-    /// Run the full suite and return per-matcher [MatcherMetrics].
+    /// Run the full suite and return per-(matcher, trace) [MatcherMetrics].
+    ///
+    /// The map key is `"matcher / trace_id"` so each trace appears as its own
+    /// row in the results table.  This avoids bimodal distributions caused by
+    /// mixing short and long traces in a single percentile calculation.
     pub fn run(&self) -> Result<BTreeMap<String, MatcherMetrics>> {
         let mut out = BTreeMap::new();
 
@@ -33,16 +38,18 @@ impl<'a> ConformanceRunner<'a> {
                 self.traces.len()
             );
 
-            let (samples, total_points) = self.time_matcher(matcher.as_ref())?;
-            let metrics = MatcherMetrics::compute(samples, total_points);
-
-            eprintln!(
-                "[{}] done — {:.2} pts/s",
-                matcher.name(),
-                metrics.throughput_pts_per_sec
-            );
-
-            out.insert(matcher.name().to_string(), metrics);
+            for trace in self.traces {
+                let (samples, pts) = self.time_trace(matcher.as_ref(), trace)?;
+                let metrics = MatcherMetrics::compute(samples, pts);
+                eprintln!(
+                    "[{}] done '{}' — {}",
+                    matcher.name(),
+                    trace.id,
+                    crate::metrics::fmt_throughput(metrics.throughput_pts_per_sec),
+                );
+                let key = format!("{} / {} / {}", self.network_label, matcher.name(), trace.id);
+                out.insert(key, metrics);
+            }
         }
 
         Ok(out)
@@ -57,17 +64,14 @@ impl<'a> ConformanceRunner<'a> {
         Ok(())
     }
 
-    fn time_matcher(&self, matcher: &dyn Matcher) -> Result<(Vec<Duration>, usize)> {
-        let total_calls = self.iterations * self.traces.len();
-        let mut samples = Vec::with_capacity(total_calls);
+    fn time_trace(&self, matcher: &dyn Matcher, trace: &GpsTrace) -> Result<(Vec<Duration>, usize)> {
+        let mut samples = Vec::with_capacity(self.iterations);
         let mut total_points = 0usize;
 
         for _ in 0..self.iterations {
-            for trace in self.traces {
-                let result = matcher.match_trace(trace)?;
-                samples.push(result.duration);
-                total_points += result.point_count;
-            }
+            let result = matcher.match_trace(trace)?;
+            samples.push(result.duration);
+            total_points += result.point_count;
         }
 
         Ok((samples, total_points))
