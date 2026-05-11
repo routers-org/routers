@@ -49,14 +49,15 @@ gps_accuracy = 5
 
 [matchers.fmm]
 # Start with: nix run .#setup-fmm && nix run .#start-fmm
+# Use configs/fmm.toml (Sydney network) for the dedicated FMM benchmark.
 enabled = false
 url = "http://localhost:9090"
 # k-nearest candidate edges per GPS point.
 k = 8
-# Candidate search radius (metres).
-radius = 300.0
-# Assumed GPS measurement error (metres).
-error = 50.0
+# Candidate search radius in degrees (WGS84 network): 0.003° ≈ 300 m.
+radius = 0.003
+# Assumed GPS measurement error in degrees: 0.0005° ≈ 50 m.
+error = 0.0005
 
 # ---------------------------------------------------------------------------
 # Traces

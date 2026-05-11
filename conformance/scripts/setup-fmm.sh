@@ -5,29 +5,43 @@
 #   1. Clone cyang-kth/fmm from GitHub into .work/fmm-src/
 #   2. Build and install FMM into .work/fmm/
 #   3. Build the fmm_server HTTP wrapper (fmm_server/main.cpp)
-#   4. Convert the PBF road network to Shapefile (via osmium + ogr2ogr)
+#   4. Convert the Sydney PBF road network to Shapefile
+#   5. Generate the UBODT precomputed shortest-path table (binary format)
 #
-# Uses the STMATCH algorithm — no UBODT pre-computation needed.
+# Uses the FastMapMatch algorithm with a precomputed UBODT.  The Sydney
+# dataset is used because its smaller network keeps UBODT generation fast
+# and the output file compact (<100 MB); the LA network would produce an
+# order-of-magnitude larger table that is impractical to generate locally.
+#
 # All outputs land in .work/ and are fully reproducible by re-running this script.
 #
 # Environment variables (all have defaults):
-#   CONFORMANCE_PBF   path to the .osm.pbf file
+#   CONFORMANCE_PBF   path to the .osm.pbf file (default: sydney-minified)
 #   CONFORMANCE_WORK  writable work directory (default: $PWD/.work)
+#   UBODT_DELTA       UBODT upper-bound in degrees (default: 0.008 ≈ 800 m)
 #   FMM_REPO          git repository URL for FMM (default: official GitHub)
 #   FMM_REVISION      git ref to check out (default: master)
 set -euo pipefail
 
 _CONFORM_DIR="${CONFORMANCE_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
-CONFORMANCE_PBF="${CONFORMANCE_PBF:-$_CONFORM_DIR/../libs/routers_fixtures/resources/los-angeles-minified.osm.pbf}"
+CONFORMANCE_PBF="${CONFORMANCE_PBF:-$_CONFORM_DIR/../libs/routers_fixtures/resources/sydney-minified.osm.pbf}"
 CONFORMANCE_WORK="${CONFORMANCE_WORK:-$_CONFORM_DIR/.work}"
 FMM_REPO="${FMM_REPO:-https://github.com/cyang-kth/fmm.git}"
 FMM_REVISION="${FMM_REVISION:-master}"
+# delta in WGS84 degrees: 0.02° ≈ 1850 m east-west / 2220 m north-south at
+# Sydney's latitude (-33.9°).  Must exceed the road-path distance between
+# consecutive GPS candidate edges, not just the straight-line GPS gap.
+# The Sydney trace's max consecutive gap is ~0.006° straight-line, but road
+# detour (one-way streets, block layout) can push the actual road path to
+# ~0.015°.  0.02° gives comfortable headroom (~3× the observed gap).
+UBODT_DELTA="${UBODT_DELTA:-0.02}"
 
 FMM_SRC="$CONFORMANCE_WORK/fmm-src"
 FMM_PREFIX="$CONFORMANCE_WORK/fmm"
 FMM_SERVER_BUILD="${FMM_SERVER_BUILD:-$_CONFORM_DIR/external/fmm_server/build}"
 NETWORK_DIR="$CONFORMANCE_WORK/network"
-FMM_NETWORK="$NETWORK_DIR/roads.shp"
+FMM_NETWORK="$NETWORK_DIR/sydney-roads.shp"
+FMM_UBODT="$NETWORK_DIR/sydney-ubodt.bin"
 
 if [ ! -f "$CONFORMANCE_PBF" ]; then
   echo "Error: PBF not found at $CONFORMANCE_PBF"
@@ -134,9 +148,19 @@ else
 fi
 
 # ── 3. Build fmm_server ─────────────────────────────────────────────────────
+# Always rebuild if main.cpp is newer than the binary — the switch from
+# STMATCH to FastMapMatch requires a fresh compile.
+NEEDS_BUILD=true
 if [ -f "$FMM_SERVER_BUILD/fmm_server" ]; then
-  echo "[setup-fmm] fmm_server already built — skipping."
-else
+  SRC_TS="$_CONFORM_DIR/external/fmm_server/main.cpp"
+  if [ "$FMM_SERVER_BUILD/fmm_server" -nt "$SRC_TS" ]; then
+    echo "[setup-fmm] fmm_server up to date — skipping."
+    NEEDS_BUILD=false
+  else
+    echo "[setup-fmm] main.cpp changed — rebuilding fmm_server…"
+  fi
+fi
+if [ "$NEEDS_BUILD" = "true" ]; then
   echo "[setup-fmm] Building fmm_server HTTP wrapper…"
   cmake \
     -S "$_CONFORM_DIR/external/fmm_server" \
@@ -147,16 +171,14 @@ else
   echo "[setup-fmm] fmm_server built at $FMM_SERVER_BUILD/fmm_server"
 fi
 
-# ── 4. Convert PBF → Shapefile ──────────────────────────────────────────────
+# ── 4. Convert Sydney PBF → Shapefile ───────────────────────────────────────
 mkdir -p "$NETWORK_DIR"
 
 if [ -f "$FMM_NETWORK" ]; then
-  echo "[setup-fmm] Shapefile already exists — skipping conversion."
+  echo "[setup-fmm] Sydney shapefile already exists — skipping conversion."
 else
-  echo "[setup-fmm] Filtering car-routable highway ways from PBF…"
-  HIGHWAYS_PBF="$NETWORK_DIR/highways.pbf"
-  # Restrict to car-driveable road types; excludes footways, cycleways, paths,
-  # steps, tracks etc. which would bloat the network.
+  echo "[setup-fmm] Filtering car-routable highway ways from Sydney PBF…"
+  HIGHWAYS_PBF="$NETWORK_DIR/sydney-highways.pbf"
   osmium tags-filter \
     "$CONFORMANCE_PBF" \
     "w/highway=motorway,motorway_link,trunk,trunk_link,primary,primary_link,secondary,secondary_link,tertiary,tertiary_link,residential,unclassified,service" \
@@ -164,7 +186,7 @@ else
     --overwrite
 
   echo "[setup-fmm] Exporting highway linestrings to GeoJSON…"
-  GEOJSON_TMP="$NETWORK_DIR/roads_tmp.geojson"
+  GEOJSON_TMP="$NETWORK_DIR/sydney-roads-tmp.geojson"
   osmium export \
     --geometry-types=linestring \
     --output-format=geojson \
@@ -178,6 +200,74 @@ else
 
   rm -f "$HIGHWAYS_PBF" "$GEOJSON_TMP"
   echo "[setup-fmm] Shapefile written to $FMM_NETWORK"
+fi
+
+# ── 5. Generate UBODT ────────────────────────────────────────────────────────
+# The UBODT pre-computes shortest paths between all edge pairs within UBODT_DELTA
+# degrees.  Binary format (.bin) loads ~5× faster than CSV and is more compact.
+#
+# Sydney-specific sizing:
+#   delta = 0.008° ≈ 740 m east-west / 890 m north-south at lat -33.9°.
+#   The largest consecutive GPS gap in the Sydney trace is ~0.006° diagonal,
+#   so this bound provides ~30% headroom before FMM must fall back to Dijkstra.
+#
+# Safety limits: abort if generation takes > 5 min or the output exceeds 10 GB.
+if [ -f "$FMM_UBODT" ]; then
+  echo "[setup-fmm] UBODT already exists — skipping generation."
+else
+  echo "[setup-fmm] Generating UBODT (delta=${UBODT_DELTA}°, binary output)…"
+  echo "[setup-fmm] Limits: 5 min timeout, 10 GB max size."
+
+  "$FMM_PREFIX/bin/ubodt_gen" \
+    --network    "$FMM_NETWORK" \
+    --network_id id \
+    --source     source \
+    --target     target \
+    --delta      "$UBODT_DELTA" \
+    --output     "$FMM_UBODT" \
+    --use_omp &
+  UBODT_PID=$!
+
+  TIMEOUT_S=1800         # 30 minutes (delta=0.02° needs ~6× more Dijkstra work)
+  LIMIT_BYTES=10737418240  # 10 GiB
+  ELAPSED=0
+  POLL_S=10
+
+  while kill -0 "$UBODT_PID" 2>/dev/null; do
+    sleep "$POLL_S"
+    ELAPSED=$((ELAPSED + POLL_S))
+
+    # Portable byte count (macOS stat -f%z / GNU stat -c%s)
+    if [ -f "$FMM_UBODT" ]; then
+      SIZE=$(stat -f%z "$FMM_UBODT" 2>/dev/null || stat -c%s "$FMM_UBODT" 2>/dev/null || echo 0)
+      SIZE_MB=$(( SIZE / 1048576 ))
+      printf "[setup-fmm] %3ds elapsed — UBODT size: %d MB\n" "$ELAPSED" "$SIZE_MB"
+
+      if [ "$SIZE" -gt "$LIMIT_BYTES" ]; then
+        echo "[setup-fmm] UBODT exceeds 10 GB limit — aborting generation."
+        kill "$UBODT_PID" 2>/dev/null; wait "$UBODT_PID" 2>/dev/null || true
+        rm -f "$FMM_UBODT"
+        exit 1
+      fi
+    fi
+
+    if [ "$ELAPSED" -ge "$TIMEOUT_S" ]; then
+      echo "[setup-fmm] UBODT generation exceeded 5 min timeout — aborting."
+      kill "$UBODT_PID" 2>/dev/null; wait "$UBODT_PID" 2>/dev/null || true
+      rm -f "$FMM_UBODT"
+      exit 1
+    fi
+  done
+
+  wait "$UBODT_PID"
+  STATUS=$?
+  if [ "$STATUS" -ne 0 ]; then
+    echo "[setup-fmm] ubodt_gen exited with status $STATUS"
+    rm -f "$FMM_UBODT"
+    exit 1
+  fi
+
+  echo "[setup-fmm] UBODT written to $FMM_UBODT ($(du -sh "$FMM_UBODT" | cut -f1))"
 fi
 
 echo ""

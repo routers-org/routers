@@ -3,7 +3,7 @@
 
 [run]
 iterations = 50
-warmup = 5
+warmup = 50
 output = "table"
 
 [matchers.routers]

@@ -87,8 +87,8 @@ impl Matcher for FmmMatcher {
         let body: serde_json::Value = resp.json()
             .with_context(|| "FMM response was not valid JSON")?;
         if body.get("status").and_then(|s| s.as_str()) == Some("failed") {
-            bail!("FMM could not match trace '{}' (no candidate edges found — \
-                   check that the trace lies within the loaded network)", trace.id);
+            bail!("FMM could not match trace '{}' (server returned failed — \
+                   check UBODT delta covers GPS gaps and trace lies within network)", trace.id);
         }
 
         Ok(MatchResult { point_count: trace.point_count(), duration })

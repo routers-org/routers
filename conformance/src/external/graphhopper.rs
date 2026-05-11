@@ -53,19 +53,20 @@ impl Matcher for GraphHopperMatcher {
     /// Using `points_encoded=false` to get plain coordinate arrays avoids a
     /// decoding step and keeps the response format straightforward.
     fn match_trace(&self, trace: &GpsTrace) -> Result<MatchResult> {
-        let gpx = build_gpx(&trace.id, &trace.points);
-
         let url = format!(
             "{}/match?profile={}&gps_accuracy={}&points_encoded=false",
             self.base_url, self.profile, self.gps_accuracy
         );
 
+        // GPX body is built inside the timer so that serialisation cost is
+        // measured consistently with Valhalla/FMM, whose reqwest .json() call
+        // (which serialises to wire bytes) also falls inside the timed region.
         let t0 = Instant::now();
         let resp = self
             .client
             .post(&url)
             .header("Content-Type", "application/gpx+xml")
-            .body(gpx)
+            .body(build_gpx(&trace.id, &trace.points))
             .send()
             .with_context(|| format!("GraphHopper request to {url}"))?;
         let duration = t0.elapsed();

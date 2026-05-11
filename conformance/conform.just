@@ -7,7 +7,8 @@
 _traces_sentinel      := justfile_directory() / "data/traces/ventura.geojson"
 _valhalla_sentinel    := justfile_directory() / ".work/valhalla/config.json"
 _graphhopper_sentinel := justfile_directory() / ".work/graphhopper/graph-cache/properties.txt"
-_fmm_network          := justfile_directory() / ".work/network/roads.shp"
+_fmm_network          := justfile_directory() / ".work/network/sydney-roads.shp"
+_fmm_ubodt            := justfile_directory() / ".work/network/sydney-ubodt.bin"
 _fmm_server           := justfile_directory() / "external/fmm_server/build/fmm_server"
 
 # ── Setup guards ──────────────────────────────────────────────────────────────
@@ -60,8 +61,9 @@ _ensure-fmm:
     #!/usr/bin/env bash
     set -euo pipefail
     MISSING=()
-    [ ! -f "{{_fmm_network}}" ] && MISSING+=("road network shapefile (.work/network/roads.shp)")
-    [ ! -f "{{_fmm_server}}" ] && MISSING+=("fmm_server binary (external/fmm_server/build/fmm_server)")
+    [ ! -f "{{_fmm_network}}" ] && MISSING+=("Sydney road network shapefile (.work/network/sydney-roads.shp)")
+    [ ! -f "{{_fmm_ubodt}}" ]   && MISSING+=("UBODT table (.work/network/sydney-ubodt.bin)")
+    [ ! -f "{{_fmm_server}}" ]  && MISSING+=("fmm_server binary (external/fmm_server/build/fmm_server)")
     if [ "${#MISSING[@]}" -gt 0 ]; then
         echo "FMM setup incomplete. Missing:"
         for item in "${MISSING[@]}"; do printf "  • %s\n" "$item"; done

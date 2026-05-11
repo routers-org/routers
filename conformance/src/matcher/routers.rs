@@ -45,6 +45,14 @@ impl Matcher for RoutersMatcher {
     }
 
     fn match_trace(&self, trace: &GpsTrace) -> Result<MatchResult> {
+        let opts = MatchOptions::<OsmEntryId, OsmEdgeMetadata, OsmNetwork>::new()
+            .with_search_distance(Some(self.search_distance))
+            .with_cache(self.cache.clone());
+
+        // LineString construction is inside the timer: it is the routers
+        // equivalent of the JSON/GPX serialisation that HTTP matchers perform
+        // inside their timed region (via reqwest's .json()/.body() chain).
+        let t0 = Instant::now();
         let linestring = LineString::new(
             trace
                 .points
@@ -52,12 +60,6 @@ impl Matcher for RoutersMatcher {
                 .map(|&(lon, lat)| Coord { x: lon, y: lat })
                 .collect(),
         );
-
-        let opts = MatchOptions::<OsmEntryId, OsmEdgeMetadata, OsmNetwork>::new()
-            .with_search_distance(Some(self.search_distance))
-            .with_cache(self.cache.clone());
-
-        let t0 = Instant::now();
         let _ = self
             .graph
             .r#match(linestring, opts)
