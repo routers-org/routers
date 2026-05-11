@@ -13,7 +13,6 @@ All notable changes to this project will be documented in this file.
 - *(deps)* Lint according to global linting rules
 - *(deps)* Format code to match rules
 
-RoutersOrg - 2025
 
 ## [0.1.0] - 2025-06-24
 
@@ -42,4 +41,3 @@ RoutersOrg - 2025
 - *(workflow)* Add audit
 - Tracer working
 
-RoutersOrg - 2025

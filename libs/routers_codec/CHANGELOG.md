@@ -8,7 +8,6 @@ All notable changes to this project will be documented in this file.
 
 - *(flate.)* Use zlib
 
-RoutersOrg - 2025
 
 ## [0.1.4] - 2026-05-05
 
@@ -16,7 +15,6 @@ RoutersOrg - 2025
 
 - Allow Saving to File ([#109](https://github.com/routers-org/routers/pull/109))
 
-RoutersOrg - 2025
 
 ## [0.1.3] - 2026-03-01
 
@@ -47,7 +45,6 @@ RoutersOrg - 2025
 - Use generics to allow monomorphising the network trait
 - As iterators to take adv. of parallelism
 
-RoutersOrg - 2025
 
 ## [0.1.2] - 2025-06-24
 
@@ -128,4 +125,3 @@ RoutersOrg - 2025
 - *(cache)* Move filter up a layer to preserve successor purity
 - *(trace)* Remove trace-log
 
-RoutersOrg - 2025
