@@ -8,7 +8,6 @@ All notable changes to this project will be documented in this file.
 
 - Allow Saving to File ([#109](https://github.com/routers-org/routers/pull/109))
 
-RoutersOrg - 2025
 
 ## [0.1.1] - 2026-03-01
 
@@ -32,7 +31,6 @@ RoutersOrg - 2025
 - *(grpc)* Update grpc bindings to use network definitions
 - As iterators to take adv. of parallelism
 
-RoutersOrg - 2025
 
 ## [0.1.0] - 2025-06-24
 
@@ -86,4 +84,3 @@ RoutersOrg - 2025
 - *(proto)* Re-define costing heuristics
 - *(cfg)* Staged configurations with adapters
 
-RoutersOrg - 2025

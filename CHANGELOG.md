@@ -14,7 +14,6 @@ All notable changes to this project will be documented in this file.
 
 - Initial and Final Accuracies ([#98](https://github.com/routers-org/routers/pull/98))
 
-RoutersOrg - 2025
 
 ## [0.2.3] - 2026-03-11
 
@@ -22,7 +21,6 @@ RoutersOrg - 2025
 
 - Multiple Fixes to Route-Base Costing Heuristics ([#97](https://github.com/routers-org/routers/pull/97))
 
-RoutersOrg - 2025
 
 ## [0.2.2] - 2026-03-01
 
@@ -94,7 +92,6 @@ RoutersOrg - 2025
 
 - Bump codspeed to v3
 
-RoutersOrg - 2025
 
 ## [0.2.1] - 2025-06-24
 
@@ -166,4 +163,3 @@ RoutersOrg - 2025
 - *(test)* Use release mode in tests
 - *(test)* Concurrent hashmap
 
-RoutersOrg - 2025
