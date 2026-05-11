@@ -7,14 +7,19 @@
 _traces_sentinel      := justfile_directory() / "data/traces/ventura.geojson"
 _valhalla_sentinel    := justfile_directory() / ".work/valhalla/config.json"
 _graphhopper_sentinel := justfile_directory() / ".work/graphhopper/graph-cache/properties.txt"
-_fmm_sentinel         := justfile_directory() / ".work/network/ubodt.csv"
+_fmm_network          := justfile_directory() / ".work/network/roads.shp"
+_fmm_server           := justfile_directory() / "external/fmm_server/build/fmm_server"
 
-# Ensure trace files exist, prompt to run setup::init if not.
+# ── Setup guards ──────────────────────────────────────────────────────────────
+# Each _ensure-* recipe checks for required files/binaries and offers to run
+# the relevant setup step automatically if anything is missing.
+
 _ensure-init:
     #!/usr/bin/env bash
     set -euo pipefail
     if [ ! -f "{{_traces_sentinel}}" ]; then
-        printf "Trace files have not been initialised. Run 'just setup::init' now? [y/N] "
+        echo "Missing: GPS trace files (data/traces/)"
+        printf "Run 'just setup::init' now? [y/N] "
         read -r ans < /dev/tty
         case "$ans" in
             [yY]*) just --justfile "{{justfile()}}" setup::init ;;
@@ -22,27 +27,12 @@ _ensure-init:
         esac
     fi
 
-# Ensure GraphHopper graph is pre-built; prompt to run setup::graphhopper if not.
-# (Skippable — the server auto-imports on first start, but pre-building avoids
-#  a ~1 min wait inside the conform run.)
-_ensure-graphhopper:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    if [ ! -f "{{_graphhopper_sentinel}}" ]; then
-        printf "GraphHopper graph not pre-built. Run 'just setup::graphhopper' now? [y/N] "
-        read -r ans < /dev/tty
-        case "$ans" in
-            [yY]*) just --justfile "{{justfile()}}" setup::graphhopper ;;
-            *) echo "Skipping — GraphHopper will import on first start (adds ~1 min)." ;;
-        esac
-    fi
-
-# Ensure Valhalla tiles exist, prompt to run setup::valhalla if not.
 _ensure-valhalla:
     #!/usr/bin/env bash
     set -euo pipefail
     if [ ! -f "{{_valhalla_sentinel}}" ]; then
-        printf "Valhalla has not been set up. Run 'just setup::valhalla' now? [y/N] "
+        echo "Missing: Valhalla routing tiles (.work/valhalla/)"
+        printf "Run 'just setup::valhalla' now? [y/N] "
         read -r ans < /dev/tty
         case "$ans" in
             [yY]*) just --justfile "{{justfile()}}" setup::valhalla ;;
@@ -50,12 +40,32 @@ _ensure-valhalla:
         esac
     fi
 
-# Ensure FMM network and UBODT exist, prompt to run setup::fmm if not.
+# Soft check — GraphHopper imports the PBF automatically on first start, so
+# a missing graph is not fatal.  Prompt to pre-build to avoid a ~1 min delay.
+_ensure-graphhopper:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ ! -f "{{_graphhopper_sentinel}}" ]; then
+        echo "Note: GraphHopper graph not pre-built (.work/graphhopper/graph-cache/)"
+        echo "  GraphHopper will import the PBF on first start (~1 min extra wait)."
+        printf "Pre-build now with 'just setup::graphhopper'? [y/N] "
+        read -r ans < /dev/tty
+        case "$ans" in
+            [yY]*) just --justfile "{{justfile()}}" setup::graphhopper ;;
+            *) echo "Continuing — graph will be built on first start." ;;
+        esac
+    fi
+
 _ensure-fmm:
     #!/usr/bin/env bash
     set -euo pipefail
-    if [ ! -f "{{_fmm_sentinel}}" ]; then
-        printf "FMM has not been set up. Run 'just setup::fmm' now? [y/N] "
+    MISSING=()
+    [ ! -f "{{_fmm_network}}" ] && MISSING+=("road network shapefile (.work/network/roads.shp)")
+    [ ! -f "{{_fmm_server}}" ] && MISSING+=("fmm_server binary (external/fmm_server/build/fmm_server)")
+    if [ "${#MISSING[@]}" -gt 0 ]; then
+        echo "FMM setup incomplete. Missing:"
+        for item in "${MISSING[@]}"; do printf "  • %s\n" "$item"; done
+        printf "Run 'just setup::fmm' now? [y/N] "
         read -r ans < /dev/tty
         case "$ans" in
             [yY]*) just --justfile "{{justfile()}}" setup::fmm ;;

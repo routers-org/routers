@@ -78,10 +78,17 @@ impl Matcher for FmmMatcher {
             .with_context(|| format!("FMM request to {}", self.url))?;
         let duration = t0.elapsed();
 
-        let status = resp.status();
-        if !status.is_success() {
+        let http_status = resp.status();
+        if !http_status.is_success() {
             let text = resp.text().unwrap_or_default();
-            bail!("FMM server returned HTTP {status}: {text}");
+            bail!("FMM server returned HTTP {http_status}: {text}");
+        }
+
+        let body: serde_json::Value = resp.json()
+            .with_context(|| "FMM response was not valid JSON")?;
+        if body.get("status").and_then(|s| s.as_str()) == Some("failed") {
+            bail!("FMM could not match trace '{}' (no candidate edges found — \
+                   check that the trace lies within the loaded network)", trace.id);
         }
 
         Ok(MatchResult { point_count: trace.point_count(), duration })

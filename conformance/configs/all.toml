@@ -1,7 +1,8 @@
-# Conformance: routers vs all external matchers
+# Conformance: routers vs Valhalla + GraphHopper (not FMM).
+# FMM requires a more complete road network than the minified PBF to match
+# the full lax_lynwood trace — run `just conform::fmm` separately (ventura only).
 # Start external services first:
 #   just start-valhalla
-#   just start-fmm
 
 [run]
 iterations = 50
@@ -24,11 +25,7 @@ gps_accuracy = 5
 enabled = false
 
 [matchers.fmm]
-enabled = true
-url = "http://localhost:9090"
-k = 8
-radius = 300.0
-error = 50.0
+enabled = false
 
 [[traces]]
 id = "ventura"

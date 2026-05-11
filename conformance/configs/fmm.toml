@@ -21,13 +21,13 @@ enabled = false
 enabled = true
 url = "http://localhost:9090"
 k = 8
-radius = 300.0
-error = 50.0
+radius = 0.003
+error = 0.0005
 
 [[traces]]
 id = "ventura"
 file = "data/traces/ventura.geojson"
 
-[[traces]]
-id = "lax_lynwood"
-file = "data/traces/lax_lynwood.geojson"
+# lax_lynwood excluded: the minified PBF has disconnected road segments along
+# the LAX→Lynwood corridor, causing STMATCH to fail on that trace.  Use a
+# more complete OSM extract (e.g. full LA county PBF) to enable this trace.

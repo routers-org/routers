@@ -27,9 +27,15 @@ def main():
     if os.path.exists(shp_path):
         driver.DeleteDataSource(shp_path)
 
-    ds    = driver.CreateDataSource(shp_path)
-    srs   = osr.SpatialReference()
+    # Keep coordinates in WGS84 (EPSG:4326, lon/lat degrees).  FMM reads raw
+    # OGR coordinate values without reprojecting; the radius/error parameters
+    # passed to STMATCH must therefore also be in degrees.  ~0.003° ≈ 300 m at
+    # LA latitude, which is what the Rust client sends.
+    srs = osr.SpatialReference()
     srs.ImportFromEPSG(4326)
+    srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)  # lon/lat order
+
+    ds    = driver.CreateDataSource(shp_path)
     layer = ds.CreateLayer("roads", srs=srs, geom_type=ogr.wkbLineString)
 
     for name in ("id", "source", "target"):

@@ -6,22 +6,20 @@
 #   2. Build and install FMM into .work/fmm/
 #   3. Build the fmm_server HTTP wrapper (fmm_server/main.cpp)
 #   4. Convert the PBF road network to Shapefile (via osmium + ogr2ogr)
-#   5. Generate the UBODT precomputation table
 #
+# Uses the STMATCH algorithm — no UBODT pre-computation needed.
 # All outputs land in .work/ and are fully reproducible by re-running this script.
 #
 # Environment variables (all have defaults):
-#   CONFORMANCE_PBF         path to the .osm.pbf file
-#   CONFORMANCE_WORK        writable work directory (default: $PWD/.work)
-#   FMM_UBODT_MAX_DIST      upper-bound distance for UBODT generation in metres (default: 3000)
-#   FMM_REPO                git repository URL for FMM (default: official GitHub)
-#   FMM_REVISION            git ref to check out (default: master)
+#   CONFORMANCE_PBF   path to the .osm.pbf file
+#   CONFORMANCE_WORK  writable work directory (default: $PWD/.work)
+#   FMM_REPO          git repository URL for FMM (default: official GitHub)
+#   FMM_REVISION      git ref to check out (default: master)
 set -euo pipefail
 
 _CONFORM_DIR="${CONFORMANCE_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
 CONFORMANCE_PBF="${CONFORMANCE_PBF:-$_CONFORM_DIR/../libs/routers_fixtures/resources/los-angeles-minified.osm.pbf}"
 CONFORMANCE_WORK="${CONFORMANCE_WORK:-$_CONFORM_DIR/.work}"
-FMM_UBODT_MAX_DIST="${FMM_UBODT_MAX_DIST:-1000}"
 FMM_REPO="${FMM_REPO:-https://github.com/cyang-kth/fmm.git}"
 FMM_REVISION="${FMM_REVISION:-master}"
 
@@ -30,7 +28,6 @@ FMM_PREFIX="$CONFORMANCE_WORK/fmm"
 FMM_SERVER_BUILD="${FMM_SERVER_BUILD:-$_CONFORM_DIR/external/fmm_server/build}"
 NETWORK_DIR="$CONFORMANCE_WORK/network"
 FMM_NETWORK="$NETWORK_DIR/roads.shp"
-FMM_UBODT="$NETWORK_DIR/ubodt.csv"
 
 if [ ! -f "$CONFORMANCE_PBF" ]; then
   echo "Error: PBF not found at $CONFORMANCE_PBF"
@@ -159,7 +156,7 @@ else
   echo "[setup-fmm] Filtering car-routable highway ways from PBF…"
   HIGHWAYS_PBF="$NETWORK_DIR/highways.pbf"
   # Restrict to car-driveable road types; excludes footways, cycleways, paths,
-  # steps, tracks etc. which would bloat the network and slow UBODT generation.
+  # steps, tracks etc. which would bloat the network.
   osmium tags-filter \
     "$CONFORMANCE_PBF" \
     "w/highway=motorway,motorway_link,trunk,trunk_link,primary,primary_link,secondary,secondary_link,tertiary,tertiary_link,residential,unclassified,service" \
@@ -181,21 +178,6 @@ else
 
   rm -f "$HIGHWAYS_PBF" "$GEOJSON_TMP"
   echo "[setup-fmm] Shapefile written to $FMM_NETWORK"
-fi
-
-# ── 5. Generate UBODT ───────────────────────────────────────────────────────
-if [ -f "$FMM_UBODT" ]; then
-  echo "[setup-fmm] UBODT already exists — skipping generation."
-else
-  echo "[setup-fmm] Generating UBODT (max_dist=${FMM_UBODT_MAX_DIST}m) — this may take a while…"
-  # Note: on the full LA PBF (~300×170 km) this can take several hours.
-  # To speed it up, crop the PBF first or increase FMM_UBODT_MAX_DIST downwards.
-  "$FMM_PREFIX/bin/ubodt_gen" \
-    --network  "$FMM_NETWORK" \
-    --output   "$FMM_UBODT" \
-    --delta    "$FMM_UBODT_MAX_DIST" \
-    --use_omp
-  echo "[setup-fmm] UBODT written to $FMM_UBODT"
 fi
 
 echo ""
