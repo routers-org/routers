@@ -42,5 +42,13 @@ jobs:
       - name: Run the benchmarks
         uses: CodSpeedHQ/action@v3
         with:
-          run: cargo codspeed run --workspace
+          run: INSTA_UPDATE=always cargo codspeed run --workspace
           token: ${{ secrets.CODSPEED_TOKEN }}
+
+      - name: Check for snapshot drift
+        run: |
+          if ! git diff --quiet benches/snapshots/; then
+            echo "Benchmark snapshots changed. Run 'just bench' locally and commit the updated files."
+            git diff benches/snapshots/
+            exit 1
+          fi
