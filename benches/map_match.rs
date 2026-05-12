@@ -12,7 +12,7 @@ use routers::{DEFAULT_SEARCH_DISTANCE, Match};
 use routers_codec::osm::{OsmEdgeMetadata, OsmEntryId, OsmNetwork};
 use routers_network::{Entry, Metadata, Network};
 
-use criterion::{black_box, criterion_main};
+use criterion::{BatchSize, black_box, criterion_main};
 use geo::{LineString, Point};
 use routers::generation::{LayerGeneration, StandardGenerator};
 use wkt::TryFromWkt;
@@ -159,7 +159,7 @@ fn target_benchmark(c: &mut criterion::Criterion) {
                 },
             );
 
-            // Benchmark the selective solver
+            // Benchmark the selective solver (warm cache — shared across iterations)
             group.bench_function(
                 format!("selective_forward_solver:match: {}", sc.name),
                 |b| {
@@ -172,6 +172,27 @@ fn target_benchmark(c: &mut criterion::Criterion) {
                         let (linestring, edges) = bench_match(&graph, opts, coordinates.clone());
                         assert_subsequence(sc.expected_linestring, &edges, linestring);
                     })
+                },
+            );
+
+            // Benchmark the selective solver with a cold (empty) cache per iteration.
+            // Each setup call allocates a fresh PredicateCache; the allocation is excluded
+            // from the measurement so only the solve (including parallel pre-warm) is timed.
+            group.bench_function(
+                format!("selective_forward_solver:match:cold: {}", sc.name),
+                |b| {
+                    b.iter_batched(
+                        || Arc::new(PredicateCache::<OsmEntryId, OsmEdgeMetadata, OsmNetwork>::default()),
+                        |cold_cache| {
+                            let opts = MatchOptions::new()
+                                .with_runtime(runtime.clone())
+                                .with_cache(cold_cache)
+                                .with_solver(SolverVariant::Selective);
+
+                            bench_match(&graph, opts, coordinates.clone())
+                        },
+                        BatchSize::SmallInput,
+                    )
                 },
             );
         });
