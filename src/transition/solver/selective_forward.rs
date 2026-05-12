@@ -10,27 +10,21 @@ use routers_network::{Entry, Metadata, Network};
 
 use log::{debug, info};
 
-use core::cell::RefCell;
 use rustc_hash::FxHashMap;
 use std::{marker::PhantomData, sync::Arc};
 
 use geo::{Distance, Haversine};
 use itertools::Itertools;
 use measure_time::debug_time;
+use rayon::prelude::*;
 
-/// A Upper-Bounded Dijkstra (UBD) algorithm.
-///
-/// TODO: Docs
 pub struct SelectiveForwardSolver<E, M, N>
 where
     E: Entry,
     M: Metadata,
     N: Network<E, M>,
 {
-    // Internally holds a successors cache
     predicate: Arc<PredicateCache<E, M, N>>,
-    reachable_hash: RefCell<FxHashMap<(usize, usize), Reachable<E>>>,
-
     _phantom: PhantomData<N>,
 }
 
@@ -43,7 +37,6 @@ where
     fn default() -> Self {
         Self {
             predicate: Arc::new(PredicateCache::default()),
-            reachable_hash: RefCell::new(FxHashMap::default()),
             _phantom: PhantomData,
         }
     }
@@ -150,7 +143,7 @@ impl<N, E, M> Solver<E, M, N> for SelectiveForwardSolver<E, M, N>
 where
     E: Entry,
     M: Metadata,
-    N: Network<E, M>,
+    N: Network<E, M> + Send + Sync,
 {
     fn solve<Emmis, Trans>(
         &self,
@@ -175,8 +168,22 @@ where
 
         let num_layers = transition.layers.layers.len();
 
+        // Pre-warm the predicate cache for every candidate's edge target across all
+        // layers in parallel. Running one Dijkstra per unique road node per thread
+        // eliminates the cold-miss latency that would otherwise serialize them in the
+        // Viterbi pass. scc::HashMap handles concurrent inserts safely, so dedup is
+        // unnecessary — duplicate queries on already-warm entries cost one O(1) lookup.
+        transition.layers.layers.par_iter().for_each(|layer| {
+            for &id in &layer.nodes {
+                if let Some(c) = context.candidate(&id) {
+                    self.predicate.query(&context, c.edge.target);
+                }
+            }
+        });
+
         // dp[id] = (best_cumulative_cost, predecessor_id)
         let mut dp: FxHashMap<CandidateId, (u32, CandidateId)> = FxHashMap::default();
+        let mut reachable_hash: FxHashMap<(usize, usize), Reachable<E>> = FxHashMap::default();
 
         // Initialise layer 0: cost = emission only, predecessor = start.
         if let Some(first_layer) = transition.layers.layers.first() {
@@ -190,87 +197,84 @@ where
         // Top-BEAM_WIDTH candidates by cumulative cost are expanded; the rest are pruned.
         const BEAM_WIDTH: usize = 2;
 
-        {
-            let mut hash = self.reachable_hash.borrow_mut();
+        let layers = &transition.layers.layers;
+        let heuristics = transition.heuristics;
 
-            for layer_idx in 0..num_layers.saturating_sub(1) {
-                let mut sources: Vec<(CandidateId, u32)> = transition.layers.layers[layer_idx]
-                    .nodes
-                    .iter()
-                    .filter_map(|&id| {
-                        let &(cost, _) = dp.get(&id)?;
-                        (cost < u32::MAX).then_some((id, cost))
-                    })
-                    .collect();
-                sources.sort_unstable_by_key(|&(_, cost)| cost);
-                sources.truncate(BEAM_WIDTH);
+        for layer_idx in 0..num_layers.saturating_sub(1) {
+            let mut sources: Vec<(CandidateId, u32)> = layers[layer_idx]
+                .nodes
+                .iter()
+                .filter_map(|&id| {
+                    let &(cost, _) = dp.get(&id)?;
+                    (cost < u32::MAX).then_some((id, cost))
+                })
+                .collect();
+            sources.sort_unstable_by_key(|&(_, cost)| cost);
+            sources.truncate(BEAM_WIDTH);
 
-                let next_nodes = &transition.layers.layers[layer_idx + 1].nodes;
+            let next_nodes = &layers[layer_idx + 1].nodes;
 
-                for (source_id, source_cost) in sources {
-                    let reachable = self
-                        .reachable(&context, &source_id, next_nodes)
-                        .unwrap_or_default();
+            for (source_id, source_cost) in sources {
+                let reachable = self
+                    .reachable(&context, &source_id, next_nodes)
+                    .unwrap_or_default();
 
-                    for mut r in reachable {
-                        let path_vec = r.path_nodes().collect_vec();
+                for mut r in reachable {
+                    let path_vec = r.path_nodes().collect_vec();
 
-                        let Some(src) = context.candidate(&r.source) else {
-                            continue;
-                        };
-                        let Some(tgt) = context.candidate(&r.target) else {
-                            continue;
-                        };
+                    let Some(src) = context.candidate(&r.source) else {
+                        continue;
+                    };
+                    let Some(tgt) = context.candidate(&r.target) else {
+                        continue;
+                    };
 
-                        let optimal_path = Trip::new_with_map_and_offsets(
-                            context.map,
-                            &path_vec,
-                            src.position,
-                            tgt.position,
-                        );
+                    let optimal_path = Trip::new_with_map_and_offsets(
+                        context.map,
+                        &path_vec,
+                        src.position,
+                        tgt.position,
+                    );
 
-                        let (Some(sl), Some(tl)) = (
-                            transition.layers.layers.get(src.location.layer_id),
-                            transition.layers.layers.get(tgt.location.layer_id),
-                        ) else {
-                            continue;
-                        };
-                        let layer_width = Haversine.distance(sl.origin, tl.origin);
+                    let (Some(sl), Some(tl)) = (
+                        layers.get(src.location.layer_id),
+                        layers.get(tgt.location.layer_id),
+                    ) else {
+                        continue;
+                    };
+                    let layer_width = Haversine.distance(sl.origin, tl.origin);
 
-                        let transition_cost = transition.heuristics.transition(TransitionContext {
-                            map_path: &path_vec,
-                            requested_resolution_method: r.resolution_method,
-                            source_candidate: &r.source,
-                            target_candidate: &r.target,
-                            routing_context: &context,
-                            layer_width,
-                            optimal_path,
-                        });
+                    let transition_cost = heuristics.transition(TransitionContext {
+                        map_path: &path_vec,
+                        requested_resolution_method: r.resolution_method,
+                        source_candidate: &r.source,
+                        target_candidate: &r.target,
+                        routing_context: &context,
+                        layer_width,
+                        optimal_path,
+                    });
 
-                        let new_cost = source_cost
-                            .saturating_add(tgt.emission)
-                            .saturating_add(transition_cost);
+                    let new_cost = source_cost
+                        .saturating_add(tgt.emission)
+                        .saturating_add(transition_cost);
 
-                        #[cfg(debug_assertions)]
-                        {
-                            r.cost = tgt.emission.saturating_add(transition_cost);
-                        }
-
-                        let entry = dp.entry(r.target).or_insert((u32::MAX, source_id));
-                        if new_cost < entry.0 {
-                            *entry = (new_cost, source_id);
-                        }
-
-                        hash.insert(r.hash(), r);
+                    #[cfg(debug_assertions)]
+                    {
+                        r.cost = tgt.emission.saturating_add(transition_cost);
                     }
+
+                    let entry = dp.entry(r.target).or_insert((u32::MAX, source_id));
+                    if new_cost < entry.0 {
+                        *entry = (new_cost, source_id);
+                    }
+
+                    reachable_hash.insert(r.hash(), r);
                 }
             }
         }
 
         // Find the lowest-cost candidate in the final layer.
-        let (best_final, best_cost) = transition
-            .layers
-            .layers
+        let (best_final, best_cost) = layers
             .last()
             .and_then(|layer| {
                 layer
@@ -304,10 +308,7 @@ where
             .windows(2)
             .filter_map(|nodes| {
                 if let [a, b] = nodes {
-                    self.reachable_hash
-                        .borrow()
-                        .get(&(a.index(), b.index()))
-                        .cloned()
+                    reachable_hash.get(&(a.index(), b.index())).cloned()
                 } else {
                     None
                 }
@@ -316,7 +317,7 @@ where
 
         // Update candidate graph with calculated weights (debug only).
         #[cfg(debug_assertions)]
-        for (&(a_idx, b_idx), &Reachable { cost, .. }) in self.reachable_hash.borrow().iter() {
+        for (&(a_idx, b_idx), &Reachable { cost, .. }) in reachable_hash.iter() {
             let a = CandidateId::new(a_idx);
             let b = CandidateId::new(b_idx);
 
@@ -333,7 +334,7 @@ where
             path,
             transition.candidates,
             #[cfg(debug_assertions)]
-            self.reachable_hash.borrow().values().cloned().collect(),
+            reachable_hash.values().cloned().collect(),
         ))
     }
 }
