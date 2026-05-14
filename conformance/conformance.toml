@@ -1,0 +1,79 @@
+# routers-conformance configuration
+# Run: cargo run -p routers-conformance -- [conformance.toml]
+# Init trace files: cargo run -p routers-conformance -- init-traces [conformance.toml]
+
+[run]
+# Timed iterations per trace (warm-up excluded).
+iterations = 50
+# Warm-up passes before timing begins; excluded from all metrics.
+warmup = 5
+# Output format: "table" | "json" | "csv"
+output = "table"
+
+# ---------------------------------------------------------------------------
+# Matchers
+# ---------------------------------------------------------------------------
+# Each section can be disabled with `enabled = false`.
+# Routers runs in-process; Valhalla, GraphHopper, and FMM are HTTP services
+# that must be started separately (see docker/docker-compose.yml).
+#
+# All HTTP services should be running against the *same* road-network extract
+# as Routers to ensure a fair comparison.  See docker/docker-compose.yml for
+# the recommended setup.
+
+[matchers.routers]
+enabled = true
+# PBF filename relative to the routers_fixtures resources directory.
+network = "los-angeles-minified.osm.pbf"
+# Candidate search radius in metres — Routers default.
+search_distance = 50.0
+
+[matchers.valhalla]
+# Start with: nix run .#setup-valhalla && nix run .#start-valhalla
+enabled = false
+url = "http://localhost:8002"
+# "auto" ~ generic motor-vehicle routing, equivalent to the Routers default.
+costing = "auto"
+# "map_snap" is Valhalla's recommended mode for raw GPS traces.
+shape_match = "map_snap"
+# Valhalla's default GPS accuracy assumption (metres).
+gps_accuracy = 5
+
+# GraphHopper requires a Java runtime and is excluded from the nix configuration.
+# Enable here if running via Docker (see docker/docker-compose.yml).
+[matchers.graphhopper]
+enabled = false
+url = "http://localhost:8989"
+profile = "car"
+gps_accuracy = 5
+
+[matchers.fmm]
+# Start with: nix run .#setup-fmm && nix run .#start-fmm
+# Use configs/fmm.toml (Sydney network) for the dedicated FMM benchmark.
+enabled = false
+url = "http://localhost:9090"
+# k-nearest candidate edges per GPS point.
+k = 8
+# Candidate search radius in degrees (WGS84 network): 0.003° ≈ 300 m.
+radius = 0.003
+# Assumed GPS measurement error in degrees: 0.0005° ≈ 50 m.
+error = 0.0005
+
+# ---------------------------------------------------------------------------
+# Traces
+# ---------------------------------------------------------------------------
+# Paths are relative to the directory from which the binary is invoked.
+# Run `init-traces` once to generate these files from the built-in fixtures.
+
+[[traces]]
+id = "ventura"
+file = "data/traces/ventura.geojson"
+
+[[traces]]
+id = "lax_lynwood"
+file = "data/traces/lax_lynwood.geojson"
+
+# Sydney trace requires the Sydney network — see conformance.sydney.toml example.
+# [[traces]]
+# id = "sydney"
+# file = "data/traces/sydney.geojson"

@@ -12,7 +12,6 @@ All notable changes to this project will be documented in this file.
 
 - Initial and Final Accuracies ([#98](https://github.com/routers-org/routers/pull/98))
 
-RoutersOrg - 2025
 
 ## [0.1.1] - 2026-03-01
 
@@ -35,4 +34,3 @@ RoutersOrg - 2025
 - Use generics to allow monomorphising the network trait
 - As iterators to take adv. of parallelism
 
-RoutersOrg - 2025

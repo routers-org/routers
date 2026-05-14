@@ -4,7 +4,8 @@ members = [
     "libs/routers_codec", "libs/routers_geo", "libs/routers_grpc",
     "libs/routers_shard", "libs/routers_tiles", "libs/routers_fixtures",
     "libs/timezone/routers_tz", "libs/timezone/routers_tz_build", "libs/timezone/routers_tz_types",
-    "libs/routers_network", "libs/routers_viewer", "libs/routers_realtime"
+    "libs/routers_network", "libs/routers_viewer", "libs/routers_realtime",
+    "conformance"
 ]
 
 [workspace.lints.rust]

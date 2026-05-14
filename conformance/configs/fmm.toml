@@ -1,0 +1,39 @@
+# Conformance: routers vs FMM (FastMapMatch with UBODT)
+#
+# Uses the Sydney network because the smaller geographic extent keeps the
+# UBODT table manageable (<100 MB).  The LA network would produce an
+# order-of-magnitude larger table that is impractical to generate locally.
+#
+# Run setup first:  nix run .#setup-fmm
+# Then benchmark:   just conform::fmm
+
+[run]
+iterations = 50
+warmup = 5
+output = "table"
+
+[matchers.routers]
+enabled = true
+network = "sydney-minified.osm.pbf"
+search_distance = 50.0
+
+[matchers.valhalla]
+enabled = false
+
+[matchers.graphhopper]
+enabled = false
+
+[matchers.fmm]
+enabled = true
+url = "http://localhost:9090"
+k = 8
+# Candidate search radius in degrees (WGS84 network).
+# 0.003° ≈ 300 m at Sydney latitude (-33.9°).
+radius = 0.003
+# Assumed GPS error in degrees.
+# 0.0005° ≈ 50 m.
+error = 0.0005
+
+[[traces]]
+id = "sydney"
+file = "data/traces/sydney.geojson"

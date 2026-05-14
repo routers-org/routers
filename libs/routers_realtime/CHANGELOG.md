@@ -13,4 +13,3 @@ All notable changes to this project will be documented in this file.
 - *(viewer)* Convert to lib, make fixture a dev dependency
 - *(viewer)* Format and clippy fixes
 
-RoutersOrg - 2025
