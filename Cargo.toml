@@ -55,6 +55,14 @@ rustc-hash = "2.1.1"
 log = { version = "0.4.28" }
 test-log = { version = "0.2.18", features = ["log"] }
 
+# ConnectRPC
+buffa = { version = "0.5.2", features = ["json"] }
+buffa-types = { version = "0.5", features = ["json"] }
+connectrpc = { version = "0.4.2" }
+
+serde_json = "1"
+http-body = "1"
+
 # Server/Paralellism
 dotenv = { package = "dotenvy", version = "0.15.7" }
 tower-http = { version = "0.6.6", features = ["cors"] }

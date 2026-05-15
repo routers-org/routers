@@ -1,10 +1,17 @@
 version: v2
 plugins:
   - remote: buf.build/anthropics/buffa
-    out: schema/src
+    out: schema/src/proto
     opt:
       - json=true
   - local: protoc-gen-buffa-packaging
-    out: schema/src
+    out: schema/src/proto
     strategy: all
     include_imports: true
+  - remote: buf.build/anthropics/connect-rust
+    out: schema/src/rpc
+    opt: [buffa_module=crate::proto]
+  - local: protoc-gen-buffa-packaging
+    out: schema/src/rpc
+    strategy: all
+    opt: [filter=services]
