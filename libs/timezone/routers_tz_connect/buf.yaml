@@ -1,0 +1,7 @@
+version: v2
+modules:
+  - path: proto
+    name: buf.build/routers/timezone
+deps:
+  - buf.build/routers/api
+  - buf.build/bufbuild/protovalidate

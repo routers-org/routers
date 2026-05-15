@@ -1,0 +1,53 @@
+syntax = "proto3";
+package routers.api.timezone.v1;
+
+import "routers/model/v1/geo.proto";
+import "routers/model/v1/timezone.proto";
+
+message GetFromPointRequest {
+  routers.model.v1.Coordinate coordinate = 1;
+}
+
+message GetFromPointResponse {
+  repeated routers.model.v1.Timezone timezones = 1;
+}
+
+message BatchGetFromPointsRequest {
+  repeated routers.model.v1.Coordinate coordinates = 1;
+}
+
+message BatchGetFromPointsResponse {
+  repeated routers.model.v1.Timezone timezones = 1;
+}
+
+message GetFromBoundingBoxRequest {
+  routers.model.v1.BoundingBox bounding_box = 1;
+}
+
+message GetFromBoundingBoxResponse {
+  repeated routers.model.v1.Timezone timezones = 1;
+}
+
+message BatchGetFromBoundingBoxRequest {
+  repeated routers.model.v1.BoundingBox bounding_boxes = 1;
+}
+
+message BatchGetFromBoundingBoxResponse {
+  repeated routers.model.v1.Timezone timezones = 1;
+}
+
+message GetFromPolygonRequest {
+  routers.model.v1.Polygon polygon = 1;
+}
+
+message GetFromPolygonResponse {
+  repeated routers.model.v1.Timezone timezones = 1;
+}
+
+message BatchGetFromPolygonRequest {
+  repeated routers.model.v1.Polygon polygons = 1;
+}
+
+message BatchGetFromPolygonResponse {
+  repeated routers.model.v1.Timezone timezones = 1;
+}
