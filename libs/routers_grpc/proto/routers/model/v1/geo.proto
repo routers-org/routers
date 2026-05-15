@@ -2,48 +2,29 @@ syntax = "proto3";
 
 package routers.model.v1;
 
-message NodeIdentifier {
-  int64 id = 1;
-  Coordinate coordinate = 2;
-}
-
-message EdgeIdentifier {
-  int64 id = 1;
-}
-
 message Coordinate {
   double latitude = 1;
   double longitude = 2;
 }
 
-// Optional metadata to provide context for the edge.
-// The values visible here are dependent on the data
-// available in the underlying map.
-message EdgeMetadata {
-  optional uint32 lane_count = 1;
-  optional uint32 speed_limit = 2;
-
-  // Describes all the possible names of the given edge,
-  // including road names. Used to identify or display the edge.
-  repeated string names = 5;
+message BoundingBox {
+  Coordinate top_left = 1;
+  Coordinate bottom_right = 2;
 }
 
-// There is a `source` and `target` node within the edge,
-// with id, `id`. The edge's length is the length the matched
-// vehicle travelled, not its raw length.
-message Edge {
-  // The underlying map identification for the edge.
-  // In OSM for example, this is the Edge-ID.
-  EdgeIdentifier id = 1;
+// Represents an open geometry, as a route.
+// Simply, a string of line geometries.
+message LineString {
+  repeated Coordinate coordinates = 1;
+}
 
-  // The source node the edge begins from
-  NodeIdentifier source = 2;
+// Represents a closed geometry, given by
+// a repeated set of bounding coordinates.
+message Polygon {
+  repeated Coordinate coordinates = 1;
+}
 
-  // The target node the edge ends at
-  NodeIdentifier target = 3;
-
-  // Length of the edge, in meters.
-  double length = 4;
-
-  EdgeMetadata metadata = 5;
+// Represents a repeated set of polygons.
+message MultiPolygon {
+  repeated Polygon polygons = 1;
 }
