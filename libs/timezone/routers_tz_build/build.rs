@@ -236,7 +236,11 @@ impl MultiPolygonRegion {
         let sub_rects: Vec<s2::rect::Rect> = poly
             .0
             .iter()
-            .map(|p| p.bounding_rect().map(make_rect).unwrap_or_else(s2::rect::Rect::empty))
+            .map(|p| {
+                p.bounding_rect()
+                    .map(make_rect)
+                    .unwrap_or_else(s2::rect::Rect::empty)
+            })
             .collect();
 
         let s2_rect = poly
@@ -244,14 +248,20 @@ impl MultiPolygonRegion {
             .map(make_rect)
             .unwrap_or_else(s2::rect::Rect::empty);
 
-        MultiPolygonRegion { poly, sub_rects, s2_rect }
+        MultiPolygonRegion {
+            poly,
+            sub_rects,
+            s2_rect,
+        }
     }
 
     fn poly_contains_point(&self, pt: &geo::Point<f64>, cell_rect: &s2::rect::Rect) -> bool {
         use geo::Contains;
-        self.poly.0.iter().zip(&self.sub_rects).any(|(polygon, sub_rect)| {
-            sub_rect.intersects(cell_rect) && polygon.contains(pt)
-        })
+        self.poly
+            .0
+            .iter()
+            .zip(&self.sub_rects)
+            .any(|(polygon, sub_rect)| sub_rect.intersects(cell_rect) && polygon.contains(pt))
     }
 }
 
@@ -300,16 +310,20 @@ impl s2::region::Region for MultiPolygonRegion {
         // which was too coarse: Germany's bbox covers all of Switzerland, causing Germany to
         // generate cells deep inside Swiss territory. Checking actual polygon vertices avoids
         // false positives — a cell far inside Switzerland has no German polygon vertices.
-        self.poly.0.iter().zip(&self.sub_rects).any(|(polygon, sub_rect)| {
-            if !sub_rect.intersects(&cell_rect) {
-                return false;
-            }
-            polygon.exterior().points().any(|pt| {
-                let ll = LatLng::from_degrees(pt.y(), pt.x());
-                let pt_rect = s2::rect::Rect::from_point_pair(&ll, &ll);
-                cell_rect.intersects(&pt_rect)
+        self.poly
+            .0
+            .iter()
+            .zip(&self.sub_rects)
+            .any(|(polygon, sub_rect)| {
+                if !sub_rect.intersects(&cell_rect) {
+                    return false;
+                }
+                polygon.exterior().points().any(|pt| {
+                    let ll = LatLng::from_degrees(pt.y(), pt.x());
+                    let pt_rect = s2::rect::Rect::from_point_pair(&ll, &ll);
+                    cell_rect.intersects(&pt_rect)
+                })
             })
-        })
     }
 }
 
@@ -347,7 +361,9 @@ fn s2cell_backend(timezones: &[TimezoneBuild]) -> Result<(), Box<dyn std::error:
         fs::copy(&cache_path, &dest_path)?;
     } else {
         let total = timezones.len();
-        eprintln!("[s2cell] computing covering for {total} timezones (l{MIN_LEVEL}–{MAX_LEVEL}, max {MAX_CELLS} cells each)");
+        eprintln!(
+            "[s2cell] computing covering for {total} timezones (l{MIN_LEVEL}–{MAX_LEVEL}, max {MAX_CELLS} cells each)"
+        );
 
         let done = AtomicUsize::new(0);
 
@@ -376,7 +392,10 @@ fn s2cell_backend(timezones: &[TimezoneBuild]) -> Result<(), Box<dyn std::error:
             })
             .collect();
 
-        eprintln!("[s2cell] resolving {} cells across {total} timezones", all_cells.len());
+        eprintln!(
+            "[s2cell] resolving {} cells across {total} timezones",
+            all_cells.len()
+        );
 
         // Resolve cell-ownership conflicts deterministically: when multiple timezones
         // generate the same cell ID (at a shared boundary), assign it to the timezone
@@ -395,8 +414,7 @@ fn s2cell_backend(timezones: &[TimezoneBuild]) -> Result<(), Box<dyn std::error:
                     let ll = LatLng::from(&cell.center());
                     let pt = geo::Point::new(ll.lng.deg(), ll.lat.deg());
                     let new_contains = timezones[*tz_idx as usize].geometry.0.contains(&pt);
-                    let old_contains =
-                        timezones[*existing_tz as usize].geometry.0.contains(&pt);
+                    let old_contains = timezones[*existing_tz as usize].geometry.0.contains(&pt);
                     if new_contains && !old_contains {
                         *existing_tz = *tz_idx;
                     }
@@ -414,10 +432,17 @@ fn s2cell_backend(timezones: &[TimezoneBuild]) -> Result<(), Box<dyn std::error:
             tz_indices.push(idx);
         }
 
-        eprintln!("[s2cell] {} unique cells across {total} timezones", cell_ids.len());
+        eprintln!(
+            "[s2cell] {} unique cells across {total} timezones",
+            cell_ids.len()
+        );
 
         let names: Vec<_> = timezones.iter().map(|tz| tz.name.clone()).collect();
-        let backend = S2StorageBackend { cell_ids, tz_indices, names };
+        let backend = S2StorageBackend {
+            cell_ids,
+            tz_indices,
+            names,
+        };
 
         // Write to OUT_DIR and save a copy to the source-tree cache.
         let mut file = File::create(&dest_path)?;

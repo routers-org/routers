@@ -39,8 +39,15 @@ fn search_sparse() {
     run_singular(&rect);
 }
 
+#[cfg(feature = "rtree")]
+const BACKEND: &str = "rtree";
+#[cfg(feature = "s2cell")]
+const BACKEND: &str = "s2cell";
+#[cfg(feature = "basic")]
+const BACKEND: &str = "basic";
+
 fn discovery_benchmark(c: &mut criterion::Criterion) {
-    let mut group = c.benchmark_group("discovery_benchmark");
+    let mut group = c.benchmark_group(BACKEND);
     group.significance_level(0.1).sample_size(30);
 
     init();
