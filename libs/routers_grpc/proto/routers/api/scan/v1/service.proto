@@ -1,7 +1,7 @@
 syntax = "proto3";
-package api.scan.v1;
+package routers.api.scan.v1;
 
-import "api/scan/v1/definition.proto";
+import "routers/api/scan/v1/definition.proto";
 
 // The scan service, to find elements near or around a given position
 service ScanService {

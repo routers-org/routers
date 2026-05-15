@@ -1,7 +1,8 @@
 syntax = "proto3";
-package api.match.v1;
 
-import "api/match/v1/definition.proto";
+package routers.api.match.v1;
+
+import "routers/api/match/v1/definition.proto";
 
 service MatchService {
   // Matches an input route to a given underlying map.

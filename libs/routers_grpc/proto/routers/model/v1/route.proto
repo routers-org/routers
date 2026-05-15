@@ -1,7 +1,8 @@
 syntax = "proto3";
-package model.v1;
 
-import "model/v1/geo.proto";
+package routers.model.v1;
+
+import "routers/model/v1/geo.proto";
 
 // Describes the edges within the graph that was transitioned.
 // This allows for the evaluation of features such as those derived

@@ -1,9 +1,9 @@
 syntax = "proto3";
-package api.match.v1;
+package routers.api.match.v1;
 
-import "model/v1/costing.proto";
-import "model/v1/geo.proto";
-import "model/v1/route.proto";
+import "routers/model/v1/costing.proto";
+import "routers/model/v1/geo.proto";
+import "routers/model/v1/route.proto";
 
 message MatchRequest {
   // A list of coordinates to match

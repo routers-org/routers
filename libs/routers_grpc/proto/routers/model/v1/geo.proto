@@ -1,5 +1,6 @@
 syntax = "proto3";
-package model.v1;
+
+package routers.model.v1;
 
 message NodeIdentifier {
   int64 id = 1;

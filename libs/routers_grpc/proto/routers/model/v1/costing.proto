@@ -1,5 +1,6 @@
 syntax = "proto3";
-package model.v1;
+
+package routers.model.v1;
 
 message CostOptions {
   // The vehicle costing method to use for map matching.
