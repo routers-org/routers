@@ -1,0 +1,18 @@
+syntax = "proto3";
+package routers.api.scan.v1;
+
+import "routers/api/scan/v1/definition.proto";
+
+// The scan service, to find elements near or around a given position
+service ScanService {
+  // Provides the coordinate of the closest point on the map to the input
+  rpc Point(PointRequest) returns (PointResponse);
+
+  // Provides the closest coordinate upon the map to the input, which is interpolated.
+  // In such that the input position may exist between edges on the graph, and therefore
+  // is considered a "virtual" or "snapped" point.
+  rpc PointSnapped(PointSnappedRequest) returns (PointSnappedResponse);
+
+  // Returns the edge(s) associated to the closest point to the input coordinate
+  rpc Edge(EdgeRequest) returns (EdgeResponse);
+}

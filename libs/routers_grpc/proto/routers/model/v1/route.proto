@@ -1,0 +1,57 @@
+syntax = "proto3";
+
+package routers.model.v1;
+
+import "routers/model/v1/geo.proto";
+
+// Describes the edges within the graph that was transitioned.
+// This allows for the evaluation of features such as those derived
+// from street names, consistency of edge transitions, etc.
+//
+// The edge is described by the following diagram:
+// ```
+//
+//                             75%
+//                          Departure
+//                              |
+//         + ---- + ---- + ---- + ---- + End of edge
+//   Start of edge       |
+//                     Join
+//                      50%
+// ```
+// The `join_percent` and `depart_percent` describe the percentage
+// of the edge that the vehicle was on when it joined and departed
+// the edge, respectively, see diagram.
+//
+// The `routed_length` is the length of the edge in the match, in meters,
+// not the length of the underlying edge.
+message RouteEdge {
+  // The edge information for the routed component.
+  // Note:
+  //  As seen in the message comment, there is no guarantee the entire edge is utilised.
+  //  Therefore, this message is used to determine the utilised edge segment.
+  Edge edge = 1;
+
+  // TODO: Direction (?)
+
+  // Join %. See message comment.
+  uint32 join_percent = 5;
+
+  // Depart %. See message comment.
+  uint32 depart_percent = 6;
+
+  // Length of the routed segment of the edge, in meters.
+  uint32 routed_length = 7;
+}
+
+message RouteElement {
+  Coordinate coordinate = 1;
+  RouteEdge edge = 2;
+}
+
+message MatchedRoute {
+  repeated RouteElement discretized = 1;
+  repeated RouteElement interpolated = 2;
+
+  uint32 cost = 5;
+}
