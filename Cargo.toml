@@ -4,7 +4,7 @@ members = [
     "libs/routers_codec", "libs/routers_geo", "libs/routers_grpc",
     "libs/routers_shard", "libs/routers_tiles", "libs/routers_fixtures",
     "libs/routers_network", "libs/routers_viewer", "libs/routers_realtime",
-    "conformance"
+    "conformance", "schema"
 ]
 
 [workspace.lints.rust]
@@ -24,12 +24,14 @@ routers_grpc = { path = "libs/routers_grpc" }
 routers_shard = { path = "libs/routers_shard" }
 routers_tiles = { path = "libs/routers_tiles" }
 routers_fixtures = { path = "libs/routers_fixtures" }
+schema = { path = "schema" }
 
 # === Workspace Deps ===
 [workspace.dependencies]
 # Private Members
 routers_shard = { path = "libs/routers_shard", version = "0.1.0" }
 routers_fixtures = { path = "libs/routers_fixtures" }
+schema = { path = "schema" }
 
 # Members
 routers_codec = "0.1.2"

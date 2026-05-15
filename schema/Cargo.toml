@@ -1,0 +1,15 @@
+[package]
+name = "schema"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+buffa = { version = "0.5.2", features = ["json"] }
+serde = "1.0.228"
+
+[lib]
+path = "src/mod.rs"
+
+[lints]
+workspace = true
