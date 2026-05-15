@@ -16,6 +16,19 @@ jobs:
   build:
     runs-on: codspeed-macro
 
+    strategy:
+      matrix:
+        include:
+          # Workspace default — covers every crate, including routers_tz with its default
+          # (s2cell) feature. Add entries below for non-default feature configurations
+          # that should also be benchmarked.
+          - name: workspace
+            args: "--workspace"
+          - name: routers_tz-rtree
+            args: "-p routers_tz --no-default-features --features rtree"
+          - name: routers_tz-basic
+            args: "-p routers_tz --no-default-features --features basic"
+
     steps:
       - uses: actions/checkout@v4
         with:
@@ -44,11 +57,11 @@ jobs:
       - name: Cache
         uses: Swatinem/rust-cache@v2
 
-      - name: 🔨Build (workspace)
-        run: cargo codspeed build --workspace
+      - name: 🔨Build (${{ matrix.name }})
+        run: cargo codspeed build ${{ matrix.args }}
 
-      - name: Run the benchmarks
+      - name: Run the benchmarks (${{ matrix.name }})
         uses: CodSpeedHQ/action@v3
         with:
-          run: cargo codspeed run --workspace
+          run: cargo codspeed run ${{ matrix.args }}
           token: ${{ secrets.CODSPEED_TOKEN }}
