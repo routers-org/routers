@@ -1,0 +1,11 @@
+syntax = "proto3";
+package routers.api.optimise.v1;
+
+import "routers/api/optimise/v1/definition.proto";
+
+// The routing service
+service OptimiseService {
+  // Returns most the appropriate route between the starting and ending locations,
+  // in order to minimise the cost taken to perform the route.
+  rpc Route(RouteRequest) returns (RouteResponse);
+}

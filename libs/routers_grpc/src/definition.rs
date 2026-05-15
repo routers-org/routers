@@ -11,11 +11,11 @@ pub mod proto {
 }
 
 pub mod api {
-    pub use super::proto::api::*;
+    pub use super::proto::routers::api::*;
 }
 
 pub mod model {
-    pub use super::proto::model::v1::*;
+    pub use super::proto::routers::model::v1::*;
 }
 
 pub mod optimise {
