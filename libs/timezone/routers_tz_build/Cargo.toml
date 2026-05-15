@@ -19,7 +19,10 @@ geo = { workspace = true}
 geojson = "0.24.2"
 bincode = { version = "2.0.1", features = ["serde", "bincode_derive"] }
 routers_tz_types = { workspace = true }
+s2 = "0.0.13"
+rayon = "1.10"
 
 [features]
 rtree = []
 basic = []
+s2cell = []

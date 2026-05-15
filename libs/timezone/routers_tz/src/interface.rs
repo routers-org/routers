@@ -9,7 +9,7 @@ pub trait TimezoneResolver {
 }
 
 #[cfg(test)]
-#[cfg(any(feature = "rtree", feature = "basic"))]
+#[cfg(any(feature = "rtree", feature = "basic", feature = "s2cell"))]
 mod tests {
     use crate::TimezoneResolver;
 
@@ -23,6 +23,9 @@ mod tests {
     #[cfg(feature = "basic")]
     pub static RESOLVER: OnceLock<crate::BasicStorage> = OnceLock::new();
 
+    #[cfg(feature = "s2cell")]
+    pub static RESOLVER: OnceLock<crate::S2CellStorage> = OnceLock::new();
+
     #[ctor::ctor]
     fn init() {
         #[cfg(feature = "rtree")]
@@ -30,6 +33,9 @@ mod tests {
 
         #[cfg(feature = "basic")]
         RESOLVER.get_or_init(|| crate::BasicStorage::default());
+
+        #[cfg(feature = "s2cell")]
+        RESOLVER.get_or_init(|| crate::S2CellStorage::default());
     }
 
     // Helpers

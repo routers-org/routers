@@ -6,6 +6,9 @@ use std::sync::OnceLock;
 #[cfg(feature = "rtree")]
 pub static RESOLVER: OnceLock<routers_tz::RTreeStorage> = OnceLock::new();
 
+#[cfg(feature = "s2cell")]
+pub static RESOLVER: OnceLock<routers_tz::S2CellStorage> = OnceLock::new();
+
 #[cfg(feature = "basic")]
 pub static RESOLVER: OnceLock<routers_tz::BasicStorage> = OnceLock::new();
 
@@ -15,6 +18,9 @@ fn init() {
 
     #[cfg(feature = "basic")]
     RESOLVER.get_or_init(|| routers_tz::BasicStorage::default());
+
+    #[cfg(feature = "s2cell")]
+    RESOLVER.get_or_init(|| routers_tz::S2CellStorage::default());
 }
 
 pub fn run_singular(rect: &Rect) {

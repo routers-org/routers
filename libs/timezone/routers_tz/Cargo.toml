@@ -8,6 +8,7 @@ description = "Timezone Resolver"
 [dependencies]
 geo = { workspace = true, features = ["serde"] }
 geo-index = { version = "0.3.1", optional = true }
+s2 = { version = "0.0.13", optional = true }
 
 time-tz = "2.0.0"
 lazy_static = "1.5.0"
@@ -25,7 +26,8 @@ name = "discovery"
 harness = false
 
 [features]
-default = ["basic"]
+default = ["s2cell"]
 
 basic = ["routers_tz_build/basic"]
 rtree = ["routers_tz_build/rtree", "geo-index"]
+s2cell = ["routers_tz_build/s2cell", "dep:s2"]

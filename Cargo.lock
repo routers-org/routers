@@ -307,6 +307,15 @@ checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 
 [[package]]
 name = "approx"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3f2a05fd1bd10b2527e20a2cd32d8873d115b8b39fe219ee25f42a8aca6ba278"
+dependencies = [
+ "num-traits",
+]
+
+[[package]]
+name = "approx"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cab112f0a86d568ea0e627cc1d6be74a1e9cd55214684db5561995f6dad897c6"
@@ -759,6 +768,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
 
 [[package]]
+name = "bigdecimal"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a6773ddc0eafc0e509fb60e48dff7f450f8e674a0686ae8605e8d9901bd5eefa"
+dependencies = [
+ "num-bigint",
+ "num-integer",
+ "num-traits",
+ "serde",
+]
+
+[[package]]
 name = "bigtable_rs"
 version = "0.2.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1067,6 +1088,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0ced0551234e87afee12411d535648dd89d2e7f34c78b753395567aff3d447ff"
 dependencies = [
  "libc",
+]
+
+[[package]]
+name = "cgmath"
+version = "0.18.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1a98d30140e3296250832bbaaff83b27dcd6fa3cc70fb6f1f3e5c9c0023b5317"
+dependencies = [
+ "approx 0.4.0",
+ "num-traits",
 ]
 
 [[package]]
@@ -2212,6 +2243,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "98de4bbd547a563b716d8dfa9aad1cb19bfab00f4fa09a6a4ed21dbcf44ce9c4"
 
 [[package]]
+name = "float_extras"
+version = "0.1.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b22b70f8649ea2315955f1a36d964b0e4da482dfaa5f0d04df0d1fb7c338ab7a"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "float_next_after"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2523,7 +2563,7 @@ version = "0.7.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94776032c45f950d30a13af6113c2ad5625316c9abfbccee4dd5a6695f8fe0f5"
 dependencies = [
- "approx",
+ "approx 0.5.1",
  "num-traits",
  "rayon",
  "rstar 0.10.0",
@@ -4695,7 +4735,7 @@ dependencies = [
  "proc-macro2",
  "proc-macro2-diagnostics",
  "quote",
- "syn",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -5264,7 +5304,7 @@ checksum = "af066a9c399a26e020ada66a034357a868728e72cd426f3adcd35f80d88d88c8"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.117",
  "version_check",
  "yansi",
 ]
@@ -5911,7 +5951,7 @@ dependencies = [
 name = "routers"
 version = "0.2.4"
 dependencies = [
- "approx",
+ "approx 0.5.1",
  "codspeed-criterion-compat",
  "geo",
  "indexmap 2.14.0",
@@ -5954,7 +5994,7 @@ dependencies = [
  "serde_json",
  "tabled",
  "toml",
- "wkt",
+ "wkt 0.14.0",
 ]
 
 [[package]]
@@ -6106,6 +6146,7 @@ dependencies = [
  "routers_tz_build",
  "routers_tz_types",
  "rstest",
+ "s2",
  "time-tz",
 ]
 
@@ -6117,7 +6158,9 @@ dependencies = [
  "geo",
  "geojson",
  "lazy_static",
+ "rayon",
  "routers_tz_types",
+ "s2",
  "time-tz",
  "tz-rs",
  "tzdb_data",
@@ -6252,7 +6295,7 @@ dependencies = [
  "regex",
  "relative-path",
  "rustc_version",
- "syn",
+ "syn 2.0.117",
  "unicode-ident",
 ]
 
@@ -6424,6 +6467,20 @@ name = "ryu"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
+
+[[package]]
+name = "s2"
+version = "0.0.13"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "23434007bcef0196e3f083834576ac004241f354001a22c61d2f2208c780e8df"
+dependencies = [
+ "bigdecimal",
+ "cgmath",
+ "float_extras",
+ "lazy_static",
+ "libm",
+ "serde",
+]
 
 [[package]]
 name = "salsa20"
@@ -6975,7 +7032,7 @@ version = "0.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2a3fe7c28c6512e766b0874335db33c94ad7b8f9054228ae1c2abd47ce7d335e"
 dependencies = [
- "approx",
+ "approx 0.5.1",
  "num-traits",
 ]
 
