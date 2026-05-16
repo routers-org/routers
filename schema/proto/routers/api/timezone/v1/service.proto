@@ -1,0 +1,25 @@
+syntax = "proto3";
+package routers.api.timezone.v1;
+
+import "routers/api/timezone/v1/definition.proto";
+
+// The scan service, to find elements near or around a given position
+service TimezoneService {
+  // Obtains the timezone(s) for a given coordinate
+  rpc GetFromPoint(GetFromPointRequest) returns (GetFromPointResponse);
+
+  // Obtains the timezones associated with a given series of points
+  rpc BatchGetFromPoints(BatchGetFromPointsRequest) returns (BatchGetFromPointsResponse);
+
+  // Obtains the timezone(s) for a given bounding box
+  rpc GetFromBoundingBox(GetFromBoundingBoxRequest) returns (GetFromBoundingBoxResponse);
+
+  // Obtains the timezones associated with a given series of bounding boxes
+  rpc BatchGetFromBoundingBox(BatchGetFromBoundingBoxRequest) returns (BatchGetFromBoundingBoxResponse);
+
+  // Obtains the timezone(s) for a given polygon
+  rpc GetFromPolygon(GetFromPolygonRequest) returns (GetFromPolygonResponse);
+
+  // Obtains the timezones associated with a given series of polygons
+  rpc BatchGetFromPolygon(BatchGetFromPolygonRequest) returns (BatchGetFromPolygonResponse);
+}
