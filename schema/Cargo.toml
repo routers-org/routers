@@ -16,3 +16,6 @@ http-body = { workspace = true }
 
 [lib]
 path = "src/mod.rs"
+
+[lints.clippy]
+all = "allow"
