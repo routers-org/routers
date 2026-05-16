@@ -5,6 +5,13 @@ use crate::osm::primitives::*;
 use crate::osm::speed_limit::restriction::{Restriction, RestrictionOptionals};
 use crate::osm::speed_limit::subtypes;
 
+use std::sync::LazyLock;
+
+static CONDITION_RE: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(subtypes::CONDITION_PATTERN).expect("valid regex"));
+static VALUE_RE: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(subtypes::VALUE_PATTERN).expect("valid regex"));
+
 /// Defines a speed limit which may contain a conditional element.
 /// For example:
 ///  - `maxspeed=50 @ (Mo-Fr 06:00-22:00)`
@@ -34,9 +41,7 @@ impl PossiblyConditionalSpeedLimit {
     /// structure, attempting to parse the content. None is returned if
     /// this operation fails, or no condition exists on the input.
     fn parse_condition(value: &str) -> Option<Condition> {
-        let re = regex::Regex::new(subtypes::CONDITION_PATTERN).ok()?;
-        let condition_str = re.captures(value)?.get(1)?.as_str();
-
+        let condition_str = CONDITION_RE.captures(value)?.get(1)?.as_str();
         Condition::parse(condition_str).ok()
     }
 
@@ -46,8 +51,7 @@ impl PossiblyConditionalSpeedLimit {
     /// attempting to parse the content inside. None is returned if this
     /// operation fails.
     fn parse_speed(value: &str) -> Option<SpeedValue> {
-        let re = regex::Regex::new(subtypes::VALUE_PATTERN).ok()?;
-        let captures = re.captures(value)?;
+        let captures = VALUE_RE.captures(value)?;
 
         let (value, unit) = (
             captures
