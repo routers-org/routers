@@ -16,6 +16,3 @@ http-body = { workspace = true }
 
 [lib]
 path = "src/mod.rs"
-
-[lints]
-workspace = true
