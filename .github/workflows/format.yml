@@ -20,10 +20,10 @@ jobs:
         with:
           lfs: false
 
-      - name: install protoc
-        uses: taiki-e/install-action@v2
+      - name: Install Buf
+        uses: bufbuild/buf-action@v1
         with:
-          tool: protoc@${{ env.PROTOC_VERSION }}
+          setup_only: true
 
       - name: Cache
         uses: Swatinem/rust-cache@v2
@@ -36,6 +36,14 @@ jobs:
 
       - name: Install `clippy`
         run: rustup component add clippy
+
+      - name: Install Packager
+        run: |
+          cargo install --locked protoc-gen-buffa-packaging
+
+      - name: Generate Schema
+        run: |
+          buf generate
 
       - name: 📝 Format
         run: cargo fmt --check

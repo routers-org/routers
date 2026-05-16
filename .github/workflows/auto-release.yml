@@ -26,13 +26,21 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Install Buf
+        uses: bufbuild/buf-action@v1
+        with:
+          setup_only: true
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: install protoc
-        uses: taiki-e/install-action@v2
-        with:
-          tool: protoc@${{ env.PROTOC_VERSION }}
+      - name: Install Packager
+        run: |
+          cargo install --locked protoc-gen-buffa-packaging
+
+      - name: Generate Schema
+        run: |
+          buf generate
 
       - name: Run release-plz
         uses: release-plz/action@v0.5

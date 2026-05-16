@@ -20,10 +20,10 @@ jobs:
         with:
           lfs: true
 
-      - name: Install protoc
-        uses: taiki-e/install-action@v2
+      - name: Install Buf
+        uses: bufbuild/buf-action@v1
         with:
-          tool: protoc@${{ env.PROTOC_VERSION }}
+          setup_only: true
 
       - name: Install nextest
         uses: taiki-e/install-action@v2
@@ -35,6 +35,14 @@ jobs:
 
       - name: Cache
         uses: Swatinem/rust-cache@v2
+
+      - name: Install Packager
+        run: |
+          cargo install --locked protoc-gen-buffa-packaging
+
+      - name: Generate Schema
+        run: |
+          buf generate
 
       - name: 🧪 Test
         run: cargo nextest run --workspace
