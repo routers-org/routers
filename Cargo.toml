@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
-    "libs/routers_codec", "libs/routers_geo", "libs/routers_grpc",
+    "libs/routers_codec", "libs/routers_geo", "libs/routers_rpc",
     "libs/routers_shard", "libs/routers_tiles", "libs/routers_fixtures",
     "libs/routers_network", "libs/routers_viewer", "libs/routers_realtime",
     "conformance", "schema"
@@ -20,7 +20,7 @@ routers = { path = "." }
 routers_network = { path = "libs/routers_network" }
 routers_codec = { path = "libs/routers_codec" }
 routers_geo = { path = "libs/routers_geo" }
-routers_grpc = { path = "libs/routers_grpc" }
+routers_rpc = { path = "libs/routers_rpc" }
 routers_shard = { path = "libs/routers_shard" }
 routers_tiles = { path = "libs/routers_tiles" }
 routers_fixtures = { path = "libs/routers_fixtures" }
@@ -36,7 +36,7 @@ schema = { path = "schema" }
 # Members
 routers_codec = "0.1.2"
 routers_geo = "0.1.0"
-routers_grpc = "0.1.0"
+routers_rpc = "0.1.0"
 routers_tiles = "0.1.0"
 routers_network = "0.1.0"
 routers_viewer = "0.1.0"

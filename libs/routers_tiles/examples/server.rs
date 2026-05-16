@@ -11,7 +11,7 @@ use tower_http::cors::{AllowOrigin, CorsLayer, MaxAge};
 
 use axum::http::StatusCode;
 use futures::future::join_all;
-use routers_grpc::Tracer;
+use routers_rpc::Tracer;
 use routers_tiles::RepositorySet;
 use routers_tiles::datasource::connectors::bigtable::{BigTableRepositorySet, init_bq};
 use routers_tiles::proto::Example;

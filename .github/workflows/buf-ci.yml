@@ -17,7 +17,7 @@ jobs:
 
       - uses: bufbuild/buf-action@v1
         with:
-          input: libs/routers_grpc
+          input: schema
           token: ${{ secrets.BUF_TOKEN }}
           setup_only: false
           github_token: ${{ secrets.GITHUB_TOKEN }}

@@ -1,6 +1,6 @@
 use connectrpc::client::{ClientConfig, HttpClient};
 use routers_fixtures::LAX_LYNWOOD_TRIP;
-use routers_grpc::sdk::r#match::coordinate;
+use routers_rpc::sdk::r#match::coordinate;
 use schema::{
     connect::routers::api::r#match::v1::MatchServiceClient,
     proto::routers::api::r#match::v1::MatchRequest,
@@ -12,9 +12,7 @@ use std::io::Write;
 use geo::{Coord, LineString};
 use wkt::{ToWkt, TryFromWkt};
 
-fn route_to_linestring(
-    elements: &[schema::proto::routers::model::v1::RouteElement],
-) -> LineString {
+fn route_to_linestring(elements: &[schema::proto::routers::model::v1::RouteElement]) -> LineString {
     elements
         .iter()
         .filter_map(|element| element.coordinate.as_option())

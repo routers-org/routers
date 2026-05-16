@@ -5863,31 +5863,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "routers_grpc"
-version = "0.1.2"
-dependencies = [
- "buffa",
- "connectrpc",
- "dotenvy",
- "geo",
- "log",
- "opentelemetry",
- "opentelemetry-otlp",
- "opentelemetry-stdout",
- "opentelemetry_sdk",
- "routers",
- "routers_codec",
- "routers_fixtures",
- "routers_network",
- "schema",
- "tokio",
- "tracing",
- "tracing-opentelemetry",
- "tracing-subscriber",
- "wkt",
-]
-
-[[package]]
 name = "routers_network"
 version = "0.1.2"
 dependencies = [
@@ -5917,6 +5892,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "routers_rpc"
+version = "0.1.2"
+dependencies = [
+ "buffa",
+ "connectrpc",
+ "dotenvy",
+ "geo",
+ "log",
+ "opentelemetry",
+ "opentelemetry-otlp",
+ "opentelemetry-stdout",
+ "opentelemetry_sdk",
+ "routers",
+ "routers_codec",
+ "routers_fixtures",
+ "routers_network",
+ "schema",
+ "tokio",
+ "tracing",
+ "tracing-opentelemetry",
+ "tracing-subscriber",
+ "wkt",
+]
+
+[[package]]
 name = "routers_shard"
 version = "0.1.0"
 
@@ -5936,7 +5936,7 @@ dependencies = [
  "prost 0.14.3",
  "prost-build",
  "routers_geo",
- "routers_grpc",
+ "routers_rpc",
  "serde",
  "serde_qs",
  "strum",

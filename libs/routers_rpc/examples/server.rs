@@ -4,8 +4,8 @@ use alloc::sync::Arc;
 use dotenv::dotenv;
 use routers_codec::osm::{OsmEdgeMetadata, OsmEntryId, OsmNetwork};
 use routers_fixtures::{LOS_ANGELES, LOS_ANGELES_SAVED, fixture};
-use routers_grpc::Tracer;
-use routers_grpc::services::RPCAdapter;
+use routers_rpc::Tracer;
+use routers_rpc::services::RPCAdapter;
 
 use connectrpc::{Router, Server};
 use schema::connect::routers::api::r#match::v1::MatchServiceExt;
