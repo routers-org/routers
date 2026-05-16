@@ -1,0 +1,41 @@
+syntax = "proto3";
+
+package routers.model.v1;
+
+import "buf/validate/validate.proto";
+
+message Timezone {
+  // The seconds, minutes and hours offset from UTC.
+  UtcOffset utc_offset = 1;
+
+  // The IANA time zone code, i.e. "America/New_York".
+  string iana_code = 2;
+
+  // Whether the timezone is currently in Daylight Saving Time.
+  bool is_dst = 3;
+}
+
+// Stores up to ±25:59:59.
+message UtcOffset {
+  // Ensure that hours, minutes, and seconds all share the same sign (or are zero).
+  option (buf.validate.message).cel = {
+    id: "utc_offset_consistent_signs"
+    message: "hours, minutes, and seconds must all have the same sign direction"
+    expression: "(this.hours >= 0 && this.minutes >= 0 && this.seconds >= 0) || (this.hours <= 0 && this.minutes <= 0 && this.seconds <= 0)"
+  };
+
+  int32 seconds = 1 [(buf.validate.field).int32 = {
+    lte: 59
+    gte: -59
+  }];
+
+  int32 minutes = 2 [(buf.validate.field).int32 = {
+    lte: 59
+    gte: -59
+  }];
+
+  int32 hours = 3 [(buf.validate.field).int32 = {
+    lte: 25
+    gte: -25
+  }];
+}
