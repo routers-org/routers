@@ -34,6 +34,16 @@ pub struct OsmNetwork {
 }
 
 impl OsmNetwork {
+    pub fn from_pbf_and_save(pbf_path: &PathBuf, saved_path: &PathBuf) -> Result<Self, String> {
+        if !saved_path.exists() {
+            let graph = OsmNetwork::from_pbf(pbf_path).expect("Graph must be created");
+            graph.save_to_file(saved_path).expect("must save to file");
+        }
+
+        let graph = OsmNetwork::from_saved(saved_path).expect("Graph must be created");
+        Ok(graph)
+    }
+
     /// Creates a graph from a `.osm.pbf` file, using the `ProcessedElementIterator`
     pub fn from_saved(filename: &PathBuf) -> Result<Self, String> {
         let mut bytes = std::fs::read(filename).map_err(|v| v.to_string())?;

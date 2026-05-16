@@ -1,66 +1,47 @@
 extern crate alloc;
 
-use routers_codec::osm::{OsmEdgeMetadata, OsmEntryId, OsmNetwork};
-use routers_fixtures::{LOS_ANGELES, fixture_path};
-use routers_grpc::r#match::MatchServiceServer;
-use routers_grpc::optimise::OptimiseServiceServer;
-use routers_grpc::scan::ScanServiceServer;
-use routers_grpc::services::{GrpcAdapter, OsmService};
-use routers_grpc::{Tracer, proto};
-
-use tonic_web::GrpcWebLayer;
-use tower_http::cors::{Any, CorsLayer};
-
 use alloc::sync::Arc;
 use dotenv::dotenv;
-use tonic::codegen::http::Method;
-use tonic::transport::Server;
+use routers_codec::osm::{OsmEdgeMetadata, OsmEntryId, OsmNetwork};
+use routers_fixtures::{LOS_ANGELES, LOS_ANGELES_SAVED, fixture};
+use routers_grpc::Tracer;
+use routers_grpc::services::RPCAdapter;
+
+use connectrpc::{Router, Server};
+use schema::connect::routers::api::r#match::v1::MatchServiceExt;
+use schema::connect::routers::api::optimise::v1::OptimiseServiceExt;
+use schema::connect::routers::api::scan::v1::ScanServiceExt;
+
+type OsmRPCAdapter = RPCAdapter<OsmNetwork, OsmEntryId, OsmEdgeMetadata>;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn core::error::Error>> {
-    // Load `.env` file
     dotenv()?;
-
-    // Create the tracer first.
     Tracer::init();
 
-    // Create the router
-    tracing::info!("Creating Router");
-    let los_angeles = fixture_path(LOS_ANGELES);
-    let router_base = OsmService::from_file(los_angeles).expect("-");
+    tracing::info!(message = "Loading dataset...");
 
-    let service = GrpcAdapter::<OsmNetwork, OsmEntryId, OsmEdgeMetadata>::new(router_base);
+    let los_angeles = fixture!(LOS_ANGELES);
+    let los_angeles_saved = fixture!(LOS_ANGELES_SAVED);
+    let network = OsmNetwork::from_pbf_and_save(&los_angeles, &los_angeles_saved)?;
 
-    let router = Arc::new(service);
+    tracing::info!(message = "Finished loading dataset.");
 
-    // Initialize the reflector
-    tracing::info!("Router Created");
-    let reflector = tonic_reflection::server::Builder::configure()
-        .register_encoded_file_descriptor_set(proto::FILE_DESCRIPTOR_SET)
-        .build_v1()
-        .unwrap();
+    let network = Arc::new(network);
+    let adapter = Arc::new(OsmRPCAdapter::new(network));
 
-    // Set the address to serve from
-    let addr = "[::1]:9001".parse().unwrap();
+    let router = Router::new();
+    let router = MatchServiceExt::register(adapter.clone(), router);
+    let router = OptimiseServiceExt::register(adapter.clone(), router);
+    let router = ScanServiceExt::register(adapter, router);
+
+    let addr = "[::1]:9001".parse()?;
     tracing::info!(message = "Starting server.", %addr);
 
-    Server::builder()
-        .layer(
-            CorsLayer::new()
-                .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
-                .allow_headers(Any)
-                // allow requests from any origin
-                .allow_origin(Any),
-        )
-        .layer(GrpcWebLayer::new())
-        .accept_http1(true)
-        .tcp_nodelay(true)
-        .add_service(OptimiseServiceServer::from_arc(router.clone()))
-        .add_service(MatchServiceServer::from_arc(router.clone()))
-        .add_service(ScanServiceServer::from_arc(router.clone()))
-        .add_service(reflector)
+    Server::new(router)
         .serve(addr)
-        .await?;
+        .await
+        .map_err(|e| -> Box<dyn core::error::Error> { e.to_string().into() })?;
 
     Ok(())
 }
