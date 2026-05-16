@@ -21,6 +21,11 @@ jobs:
         with:
           lfs: true
 
+      - name: install protoc
+        uses: taiki-e/install-action@v2
+        with:
+          tool: protoc@${{ env.PROTOC_VERSION }}
+
       - name: Install Buf
         uses: bufbuild/buf-action@v1
         with:
