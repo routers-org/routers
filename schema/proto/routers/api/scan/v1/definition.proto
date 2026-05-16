@@ -1,5 +1,4 @@
 syntax = "proto3";
-
 package routers.api.scan.v1;
 
 import "routers/model/v1/geo.proto";

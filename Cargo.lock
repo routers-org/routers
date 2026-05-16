@@ -892,6 +892,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "buffa-descriptor"
+version = "0.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c7b942f9242ea5a79c92486460073a0a36cccc314e69fbc2ff08f55467c47b37"
+dependencies = [
+ "buffa",
+]
+
+[[package]]
 name = "buffa-types"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6245,6 +6254,7 @@ name = "schema"
 version = "0.1.0"
 dependencies = [
  "buffa",
+ "buffa-descriptor",
  "buffa-types",
  "connectrpc",
  "http-body",

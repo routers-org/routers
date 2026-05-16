@@ -1,5 +1,4 @@
 syntax = "proto3";
-
 package routers.api.match.v1;
 
 import "routers/api/match/v1/definition.proto";
