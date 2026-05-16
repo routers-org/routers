@@ -1,12 +1,12 @@
 [package]
-name = "routers_grpc"
+name = "routers_rpc"
 version = "0.1.2"
 edition = "2024"
 license = "GPL-3.0-or-later"
 description = "gRPC Endpoints for Routers"
 
 [lib]
-name = "routers_grpc"
+name = "routers_rpc"
 path = "src/lib.rs"
 bench = false
 

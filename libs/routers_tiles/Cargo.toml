@@ -28,7 +28,7 @@ async-trait = "0.1.88"
 
 [dev-dependencies]
 futures = "0.3.31"
-routers_grpc = { path = "../routers_grpc", features = ["telemetry"] }
+routers_rpc = { path = "../routers_rpc", features = ["telemetry"] }
 
 tokio = { workspace = true }
 dotenv = { workspace = true }
@@ -51,7 +51,7 @@ bigtable = ["dep:bigtable_rs"]
 [[example]]
 name = "server"
 path = "examples/server.rs"
-required-features = ["routers_grpc/telemetry", "tracing", "example"]
+required-features = ["routers_rpc/telemetry", "tracing", "example"]
 
 [lints]
 workspace = true
