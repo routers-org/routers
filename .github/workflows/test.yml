@@ -25,6 +25,11 @@ jobs:
         with:
           tool: protoc@${{ env.PROTOC_VERSION }}
 
+      - name: Install Buf
+        uses: bufbuild/buf-action@v1
+        with:
+          setup_only: true
+
       - name: Install Just
         uses: taiki-e/install-action@v2
         with:
@@ -32,11 +37,6 @@ jobs:
 
       - name: Initialise
         run: just init
-
-      - name: Install Buf
-        uses: bufbuild/buf-action@v1
-        with:
-          setup_only: true
 
       - name: Install nextest
         uses: taiki-e/install-action@v2
