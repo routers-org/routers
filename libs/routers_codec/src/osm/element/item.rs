@@ -3,6 +3,7 @@
 //! derived item, in the primitive entity.
 
 use crate::osm;
+use crate::osm::element::variants::node::{node, nodes};
 use crate::osm::element::variants::{OsmEntryId, Relation, Way};
 use alloc::vec;
 use routers_network::Node;
@@ -39,11 +40,10 @@ impl ProcessedElement {
         let granularity = block.granularity.unwrap_or(100);
 
         match element {
-            Element::DenseNodes(dense_nodes) => dense_nodes
-                .nodes(granularity)
+            Element::DenseNodes(dense_nodes) => nodes(dense_nodes, granularity)
                 .map(ProcessedElement::Node)
                 .collect(),
-            Element::Node(node) => vec![ProcessedElement::Node(Node::from(node))],
+            Element::Node(_node) => vec![ProcessedElement::Node(node(_node))],
             Element::Way(way) => vec![ProcessedElement::Way(Way::from_raw(way, block))],
             Element::Relation(_relation) => {
                 vec![]
@@ -64,7 +64,7 @@ impl<'a> Element<'a> {
         elements.extend(group.nodes.iter().map(Element::Node));
         elements.extend(group.relations.iter().map(Element::Relation));
 
-        if let Some(nodes) = &group.dense {
+        if let Some(nodes) = group.dense.as_option() {
             elements.push(Element::DenseNodes(nodes));
         }
 

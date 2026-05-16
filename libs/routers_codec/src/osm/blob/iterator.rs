@@ -5,8 +5,9 @@ use crate::osm::BlobHeader;
 use crate::osm::BlockItem;
 use crate::osm::blob::item::BlobItem;
 
+use buffa::Message;
+
 use alloc::sync::Arc;
-use prost::Message;
 use std::fs::File;
 use std::io;
 use std::io::{BufReader, Read};
@@ -80,7 +81,7 @@ impl BlobIterator {
         self.offset += blob_header_length as u64;
 
         let start = self.offset;
-        let header = BlobHeader::decode(blob_header_buffer).ok()?;
+        let header = BlobHeader::decode_from_slice(blob_header_buffer).ok()?;
         self.offset += header.datasize as u64;
 
         let blob = BlobItem::new(start as usize, header)?;

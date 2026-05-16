@@ -53,8 +53,7 @@ pub use runtime::OsmTripConfiguration;
 
 // Protocol Buffer Includes
 pub mod model {
-    //! OpenStreetMaps Protobuf Definitions
-    include!(concat!(env!("OUT_DIR"), "/osmpbf.rs"));
+    pub use schema::proto::osmpbf::*;
 }
 
 pub mod meta {
