@@ -27,9 +27,7 @@ pub mod r#match {
     use routers_network::Metadata;
 
     use schema::proto::routers::model::v1::costing::{BusModel, CarModel, TruckModel, Variation};
-    use schema::proto::routers::model::v1::{
-        Coordinate, CoordinateView, Costing, EdgeMetadata,
-    };
+    use schema::proto::routers::model::v1::{Coordinate, CoordinateView, Costing, EdgeMetadata};
 
     pub fn truck_costing(model: &TruckModel) -> TruckCosting {
         TruckCosting {
