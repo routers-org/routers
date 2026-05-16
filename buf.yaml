@@ -1,9 +1,13 @@
 version: v2
 modules:
   - path: schema/proto
-    name: buf.build/routers/api
-    excludes:
+    name: buf.build/osm/model
+    includes:
       - schema/proto/osm
+  - path: schema/proto
+    name: buf.build/routers/api
+    includes:
+      - schema/proto/routers
 lint:
   ignore:
     - schema/proto/osm
