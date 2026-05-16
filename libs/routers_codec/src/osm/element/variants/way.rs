@@ -59,7 +59,7 @@ impl Referential for osm::Way {
             role: &-1i32,
             index: id,
             #[cfg(debug_assertions)]
-            member_type: &(MemberType::Node as i32),
+            member_type: MemberType::NODE as i32,
         })
     }
 }

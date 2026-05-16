@@ -21,6 +21,8 @@ pub mod common {
     use core::str::FromStr;
     use std::collections::HashMap;
 
+    use buffa::Enumeration;
+
     const OSM_NULL_SENTINEL: i64 = -1i64;
 
     const VALID_ROADWAYS: [&str; 16] = [
@@ -48,7 +50,7 @@ pub mod common {
     pub struct OsmEntryId {
         pub identifier: i64,
         #[cfg(debug_assertions)]
-        variant: MemberType,
+        variant: i32,
     }
 
     impl Entry for OsmEntryId {
@@ -69,7 +71,7 @@ pub mod common {
             OsmEntryId {
                 identifier: id,
                 #[cfg(debug_assertions)]
-                variant,
+                variant: variant as i32,
             }
         }
 
@@ -77,7 +79,7 @@ pub mod common {
             OsmEntryId {
                 identifier: OSM_NULL_SENTINEL,
                 #[cfg(debug_assertions)]
-                variant: MemberType::Node,
+                variant: MemberType::NODE as i32,
             }
         }
 
@@ -91,7 +93,7 @@ pub mod common {
             OsmEntryId {
                 identifier,
                 #[cfg(debug_assertions)]
-                variant: MemberType::Node,
+                variant: MemberType::NODE as i32,
             }
         }
 
@@ -100,7 +102,7 @@ pub mod common {
             OsmEntryId {
                 identifier,
                 #[cfg(debug_assertions)]
-                variant: MemberType::Way,
+                variant: MemberType::WAY as i32,
             }
         }
     }
@@ -112,7 +114,7 @@ pub mod common {
             OsmEntryId {
                 identifier: self.identifier + other,
                 #[cfg(debug_assertions)]
-                variant: self.variant,
+                variant: self.variant as i32,
             }
         }
     }
@@ -189,7 +191,7 @@ pub mod common {
         pub(crate) role: &'a i32,
         pub(crate) index: &'a i64,
         #[cfg(debug_assertions)]
-        pub(crate) member_type: &'a i32,
+        pub(crate) member_type: i32,
     }
 
     pub struct IntermediateRole {
@@ -221,8 +223,7 @@ pub mod common {
                     };
 
                     #[cfg(debug_assertions)]
-                    let member_type =
-                        MemberType::try_from(*member_type).unwrap_or(MemberType::Node);
+                    let member_type = MemberType::from_i32(member_type).unwrap_or(MemberType::NODE);
 
                     prior.push(IntermediateRole {
                         role,

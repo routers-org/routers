@@ -2,11 +2,11 @@
 //! providing distinction for header and primitive elements, as well
 //! as decoding fully, to element level.
 
+use buffa::Message;
 use bytes::Buf;
 use either::Either;
 use flate2::read::ZlibDecoder;
 use log::warn;
-use prost::Message;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use std::io::Read;
 
@@ -29,7 +29,7 @@ impl BlockItem {
     #[inline]
     fn from_raw(blob_item: &BlobItem, buf: &[u8]) -> Option<Self> {
         let data = buf.get(blob_item.range.clone())?;
-        let blob = Blob::decode(data).ok()?;
+        let blob = Blob::decode_from_slice(data).ok()?;
 
         // Convert raw into actual. Handles ZLIB encoding.
         let data = BlockItem::from_blob(blob)?;
@@ -50,15 +50,17 @@ impl BlockItem {
     fn from_data(data: &[u8], blob: &BlobItem) -> Option<Self> {
         match blob.header.r#type.as_str() {
             "OSMData" => Some(BlockItem::PrimitiveBlock(
-                PrimitiveBlock::decode(data).ok()?,
+                PrimitiveBlock::decode_from_slice(data).ok()?,
             )),
-            "OSMHeader" => Some(BlockItem::HeaderBlock(HeaderBlock::decode(data).ok()?)),
+            "OSMHeader" => Some(BlockItem::HeaderBlock(
+                HeaderBlock::decode_from_slice(data).ok()?,
+            )),
             _ => None,
         }
     }
 
     #[inline]
-    fn zlib_decode(data: prost::bytes::Bytes, raw_size: usize) -> Option<Vec<u8>> {
+    fn zlib_decode(data: Vec<u8>, raw_size: usize) -> Option<Vec<u8>> {
         let mut decoded = vec![0_u8; raw_size];
         ZlibDecoder::new(data.reader())
             .read_exact(&mut decoded)

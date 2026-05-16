@@ -31,11 +31,11 @@ impl Referential for osm::Relation {
             .iter()
             .zip(self.memids.iter())
             .zip(self.types.iter())
-            .map(|(e, _v)| Intermediate {
+            .map(|(e, &_v)| Intermediate {
                 index: e.1,
                 role: e.0,
                 #[cfg(debug_assertions)]
-                member_type: _v,
+                member_type: _v as i32,
             })
     }
 }
