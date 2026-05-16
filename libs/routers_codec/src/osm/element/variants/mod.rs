@@ -349,13 +349,13 @@ pub mod common {
         #[inline]
         pub fn one_way(&self) -> bool {
             self.get(Tags::ONE_WAY)
-                .is_some_and(|v| *v == "yes" || *v == "-1")
+                .is_some_and(|&v| v == "yes" || v == "-1")
         }
 
         #[inline]
         pub fn roundabout(&self) -> bool {
             self.get(Tags::JUNCTION)
-                .is_some_and(|v| *v == "roundabout" || *v == "circular")
+                .is_some_and(|&v| v == "roundabout" || v == "circular")
         }
 
         // Source: https://wiki.openstreetmap.org/wiki/Default_speed_limits
