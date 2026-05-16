@@ -1,43 +1,53 @@
+use connectrpc::client::{ClientConfig, HttpClient};
 use routers_fixtures::LAX_LYNWOOD_TRIP;
-use routers_grpc::r#match::*;
+use routers_grpc::sdk::r#match::coordinate;
+use schema::{
+    connect::routers::api::r#match::v1::MatchServiceClient,
+    proto::routers::api::r#match::v1::MatchRequest,
+};
 
 use std::fs::File;
 use std::io::Write;
 
-use geo::LineString;
+use geo::{Coord, LineString};
 use wkt::{ToWkt, TryFromWkt};
 
-use routers_grpc::sdk;
-use tonic::Request;
-use tonic::transport::Channel;
+fn route_to_linestring(
+    elements: &[schema::proto::routers::model::v1::RouteElement],
+) -> LineString {
+    elements
+        .iter()
+        .filter_map(|element| element.coordinate.as_option())
+        .map(|c| Coord {
+            x: c.longitude,
+            y: c.latitude,
+        })
+        .collect()
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn core::error::Error>> {
-    let channel = Channel::from_static("http://[::1]:9001").connect().await?;
-    let mut client = MatchServiceClient::new(channel);
+    let http = HttpClient::plaintext();
+    let config = ClientConfig::new("http://[::1]:9001".parse()?);
+
+    let client = MatchServiceClient::new(http, config);
 
     let linestring = LineString::try_from_wkt_str(LAX_LYNWOOD_TRIP)?;
-
-    let route = Request::new(MatchRequest {
-        data: Into::<sdk::Coordinates>::into(linestring).clone(),
+    let request = MatchRequest {
+        data: linestring.into_iter().map(coordinate).collect(),
         ..Default::default()
-    });
+    };
 
-    let response = client.r#match(route).await?;
+    let response = client.r#match(request).await?.into_owned();
+    let first = response.matches.first().ok_or("no matches returned")?;
 
-    let matched = response
-        .get_ref()
-        .discretized()
-        .ok_or("no linestring value")?;
-    let interpolated = response
-        .get_ref()
-        .interpolated()
-        .ok_or("no interpolated value")?;
-    println!("Routed points: {}", matched.linestring().wkt_string());
+    let discretized = route_to_linestring(&first.discretized);
+    let interpolated = route_to_linestring(&first.interpolated);
 
-    let path = "routed.wkt";
-    let mut output = File::create(path).unwrap();
-    write!(output, "{}", interpolated.linestring().wkt_string()).expect("must write");
+    println!("Routed points: {}", discretized.wkt_string());
+
+    let mut output = File::create("routed.wkt")?;
+    write!(output, "{}", interpolated.wkt_string())?;
 
     Ok(())
 }

@@ -1,60 +1,57 @@
-use alloc::sync::Arc;
-use geo::{Point, coord};
-use routers_network::Network;
-use tonic::{Request, Response, Status};
-
-use crate::definition::model::*;
-use crate::definition::optimise::*;
-
-use crate::services::GrpcAdapter;
-use routers_network::{Entry, Metadata};
-
+use buffa::view::OwnedView;
+use connectrpc::{ConnectError, RequestContext, ServiceResult};
+use geo::Point;
+use routers_network::{Entry, Metadata, Network};
+use schema::connect::routers::api::optimise::v1::OptimiseService;
+use schema::proto::routers::api::optimise::v1::{__buffa::view::RouteRequestView, RouteResponse};
 #[cfg(feature = "telemetry")]
 use tracing::Level;
 
-#[tonic::async_trait]
-impl<T, E, M> OptimiseService for GrpcAdapter<T, E, M>
+use crate::sdk::r#match::coordinate;
+use crate::services::RPCAdapter;
+
+#[allow(refining_impl_trait)]
+impl<T, E, M> OptimiseService for RPCAdapter<T, E, M>
 where
     T: Network<E, M> + Send + Sync + 'static,
     M: Metadata + Send + Sync + 'static,
     E: Entry + Send + Sync + 'static,
 {
-    #[cfg_attr(feature="telemetry", tracing::instrument(skip_all, err(level = Level::INFO)))]
+    #[cfg_attr(feature="telemetry", tracing::instrument(skip_all, level = Level::INFO))]
     async fn route(
-        self: Arc<Self>,
-        request: Request<RouteRequest>,
-    ) -> Result<Response<RouteResponse>, Status> {
-        let (_, _, routing) = request.into_parts();
+        &self,
+        _ctx: RequestContext,
+        request: OwnedView<RouteRequestView<'static>>,
+    ) -> ServiceResult<RouteResponse> {
+        let owned = request.to_owned_message();
 
-        let start = routing
+        let start = owned
             .start
-            .map_or(
-                Err(Status::invalid_argument("Missing Start Coordinate")),
-                |v| Ok(coord! { x: v.longitude, y: v.latitude }),
-            )
-            .map_err(|err| Status::internal(format!("{err:?}")))?;
+            .as_option()
+            .map(|c| Point::new(c.longitude, c.latitude))
+            .ok_or_else(|| ConnectError::invalid_argument("Missing Start Coordinate"))?;
 
-        let end = routing
+        let end = owned
             .end
-            .map_or(
-                Err(Status::invalid_argument("Missing End Coordinate")),
-                |v| Ok(coord! { x: v.longitude, y: v.latitude }),
-            )
-            .map_err(|err| Status::internal(format!("{err:?}")))?;
+            .as_option()
+            .map(|c| Point::new(c.longitude, c.latitude))
+            .ok_or_else(|| ConnectError::invalid_argument("Missing End Coordinate"))?;
 
-        self.inner.route_points(&Point(start), &Point(end)).map_or(
-            Err(Status::internal("Could not route")),
-            |(cost, route)| {
-                let shape = route
-                    .iter()
-                    .map(|node| Coordinate {
-                        latitude: node.position.y(),
-                        longitude: node.position.x(),
-                    })
-                    .collect();
+        let (cost, route) = self
+            .inner
+            .route_points(&start, &end)
+            .ok_or_else(|| ConnectError::internal("Could not route"))?;
 
-                Ok(Response::new(RouteResponse { cost, shape }))
-            },
-        )
+        let shape = route
+            .iter()
+            .map(|node| coordinate(node.position.into()))
+            .collect();
+
+        Ok(RouteResponse {
+            cost,
+            shape,
+            ..Default::default()
+        }
+        .into())
     }
 }

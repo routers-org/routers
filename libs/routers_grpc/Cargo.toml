@@ -19,16 +19,9 @@ schema = { workspace = true }
 # Protobuf Handling
 buffa = { workspace = true }
 connectrpc = { workspace = true }
-prost = { workspace = true }
-prost-types = { workspace = true }
-
-# gRPC Server Dependencies
-tonic = { workspace = true }
-tonic-prost = { workspace = true }
 
 # GeoRust
 geo = { workspace = true }
-wkt = { workspace = true }
 
 log = { workspace = true }
 tokio = { workspace = true }
@@ -45,26 +38,17 @@ opentelemetry-stdout = { workspace = true, optional = true }
 
 tracing-opentelemetry = { workspace = true, optional = true }
 
-# Misc.
-derive_builder = "0.20.2"
-
 [dev-dependencies]
-# Server Example
-tower-http = { workspace = true }
-tonic-reflection = { workspace = true }
-tonic-web = { workspace = true }
+# Client + server examples need the corresponding connectrpc features.
+connectrpc = { workspace = true, features = ["client", "server"] }
+
+wkt = { workspace = true }
 
 # Environment Variable Resolution
 dotenv = { workspace = true }
 
 # Workspace Crates
 routers_fixtures = { workspace = true }
-
-[build-dependencies]
-prost-build = { workspace = true }
-tonic-prost-build = { workspace = true }
-tonic-prost = { workspace = true }
-walkdir = "2.5.0"
 
 [features]
 default = []
