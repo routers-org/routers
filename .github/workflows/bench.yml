@@ -26,10 +26,13 @@ jobs:
         with:
           tool: protoc@${{ env.PROTOC_VERSION }}
 
-      - name: Install Buf
-        uses: bufbuild/buf-action@v1
+      - name: Install Just
+        uses: taiki-e/install-action@v2
         with:
-          setup_only: true
+          tool: just
+
+      - name: Initialise
+        run: just init
 
       - name: Toolchain, Cache and Codspeed
         uses: moonrepo/setup-rust@v1
