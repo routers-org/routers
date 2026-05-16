@@ -6,5 +6,5 @@ pub use access_tag::Access;
 pub use speed_limit::SpeedLimit;
 
 pub trait Parser: Sized {
-    fn parse(tags: &crate::osm::Tags) -> Option<Self>;
+    fn parse(tags: &crate::osm::Tags<'_>) -> Option<Self>;
 }

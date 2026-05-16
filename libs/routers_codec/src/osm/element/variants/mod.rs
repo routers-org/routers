@@ -139,8 +139,12 @@ pub mod common {
         }
     }
 
+    /// A relation-member role. Owned because the role string is recovered
+    /// from the block but `References` flows out of the Way/Relation as an
+    /// owned value (Way refs never carry roles — all `role=-1` — so this
+    /// allocation only fires for relations, which aren't on the hot path).
     #[derive(Clone, Debug)]
-    pub struct Role(pub TagString);
+    pub struct Role(pub String);
 
     #[derive(Clone, Debug)]
     pub struct Reference {
@@ -219,7 +223,7 @@ pub mod common {
                     let role = if *role == -1 {
                         None
                     } else {
-                        Some(Role(TagString::recover(*role as usize, block)))
+                        Some(Role(recover_str(*role as usize, block).to_string()))
                     };
 
                     #[cfg(debug_assertions)]
@@ -263,110 +267,95 @@ pub mod common {
         }
     }
 
-    #[derive(Clone, Debug, PartialEq, PartialOrd, Eq, Hash)]
-    pub struct TagString(String);
+    /// Resolve stringtable index `k` to a `&str` that borrows directly into
+    /// the block's bytes. UTF-8 validation runs lazily here — PBF entries
+    /// are valid UTF-8 in practice, so this is allocation-free in the
+    /// happy path. Out-of-range or invalid UTF-8 falls back to `""`.
+    #[inline]
+    pub fn recover_str<'b>(k: usize, block: &'b PrimitiveBlock) -> &'b str {
+        block
+            .stringtable
+            .s
+            .get(k)
+            .and_then(|bytes| core::str::from_utf8(bytes).ok())
+            .unwrap_or("")
+    }
 
-    impl Deref for TagString {
-        type Target = String;
+    /// Tag keys and values borrowed from a block's stringtable.
+    ///
+    /// `Tags<'a>` is a thin wrapper around `HashMap<&'a str, &'a str>` —
+    /// no `String` allocations per tag, no `TagString` indirection. Lookups
+    /// take `&str` directly via the standard HashMap `Borrow` plumbing.
+    #[derive(Clone, Debug)]
+    pub struct Tags<'a>(HashMap<&'a str, &'a str>);
 
-        fn deref(&self) -> &Self::Target {
-            &self.0
+    pub trait Taggable {
+        fn indices(&self) -> impl Iterator<Item = (&u32, &u32)>;
+        fn tags<'b>(&self, block: &'b PrimitiveBlock) -> Tags<'b> {
+            Tags::from_block(self.indices(), block)
         }
     }
 
-    impl From<String> for TagString {
-        fn from(s: String) -> Self {
-            TagString(s)
-        }
-    }
-
-    impl From<&str> for TagString {
-        fn from(s: &str) -> Self {
-            TagString(s.to_string())
-        }
-    }
-
-    impl TagString {
+    impl<'a> Tags<'a> {
         pub(crate) const HIGHWAY: &'static str = "highway";
         pub(crate) const ONE_WAY: &'static str = "oneway";
         pub(crate) const JUNCTION: &'static str = "junction";
         pub(crate) const LANES: &'static str = "lanes";
         pub(crate) const MAX_SPEED: &'static str = "maxspeed";
 
-        pub fn recover(k: usize, block: &PrimitiveBlock) -> TagString {
-            TagString::from(String::from_utf8_lossy(&block.stringtable.s[k]).into_owned())
-        }
-
-        pub fn parse<F: FromStr>(&self) -> Option<F> {
-            FromStr::from_str(self.as_str()).ok()
-        }
-    }
-
-    #[derive(Clone, Debug)]
-    pub struct Tags(HashMap<TagString, TagString>);
-
-    pub trait Taggable {
-        fn indices(&self) -> impl Iterator<Item = (&u32, &u32)>;
-        fn tags(&self, block: &PrimitiveBlock) -> Tags {
-            Tags::from_block(self.indices(), block)
-        }
-    }
-
-    impl Tags {
-        pub fn new(map: HashMap<TagString, TagString>) -> Self {
+        pub fn new(map: HashMap<&'a str, &'a str>) -> Self {
             Tags(map)
         }
 
-        /// Takes an iterator of indicies within the string table of the
-        /// associated block, and recovers the strings at the specified
-        /// indexes, to generate an associative hashmap of the tag keys and values.
+        /// Takes an iterator of indices into the block's stringtable and
+        /// resolves each (key, value) pair as `&str` borrowed straight
+        /// from the block's bytes.
         ///
-        /// The iterator must yield in the order of (KeyIndex, ValueIndex).
-        /// This is most often implemented under the Taggable trait.
-        pub fn from_block<'a>(
-            iter: impl Iterator<Item = (&'a u32, &'a u32)>,
-            block: &PrimitiveBlock,
-        ) -> Self {
+        /// The iterator's items can borrow from any source (typically the
+        /// raw `osm::Way`/`osm::Relation` that owns the index arrays) —
+        /// the resulting `Tags<'a>` only borrows from the block.
+        pub fn from_block<'i, I>(iter: I, block: &'a PrimitiveBlock) -> Self
+        where
+            I: Iterator<Item = (&'i u32, &'i u32)>,
+        {
             Tags(
                 iter.map(|(&k, &v)| {
                     (
-                        TagString::recover(k as usize, block),
-                        TagString::recover(v as usize, block),
+                        recover_str(k as usize, block),
+                        recover_str(v as usize, block),
                     )
                 })
-                .collect::<HashMap<TagString, TagString>>(),
+                .collect(),
             )
         }
 
-        fn r#use(assoc: &str) -> TagString {
-            TagString::from(assoc)
+        #[inline]
+        pub(crate) fn get(&self, assoc: &str) -> Option<&&'a str> {
+            self.0.get(assoc)
         }
 
-        pub(crate) fn get(&self, assoc: &str) -> Option<&TagString> {
-            self.0.get(&Tags::r#use(assoc))
-        }
-
+        #[inline]
         pub(crate) fn r#as<F: FromStr>(&self, assoc: &str) -> Option<F> {
-            self.get(assoc).and_then(TagString::parse::<F>)
+            self.get(assoc).and_then(|v| F::from_str(v).ok())
         }
 
         #[inline]
         pub fn road_tag(&self) -> Option<&str> {
-            self.get(TagString::HIGHWAY)
-                .map(|v| v.as_str())
+            self.get(Tags::HIGHWAY)
+                .copied()
                 .filter(|v| VALID_ROADWAYS.contains(v))
         }
 
         #[inline]
         pub fn one_way(&self) -> bool {
-            self.get(TagString::ONE_WAY)
-                .is_some_and(|v| v.as_str() == "yes" || v.as_str() == "-1")
+            self.get(Tags::ONE_WAY)
+                .is_some_and(|v| *v == "yes" || *v == "-1")
         }
 
         #[inline]
         pub fn roundabout(&self) -> bool {
-            self.get(TagString::JUNCTION)
-                .is_some_and(|v| v.as_str() == "roundabout" || v.as_str() == "circular")
+            self.get(Tags::JUNCTION)
+                .is_some_and(|v| *v == "roundabout" || *v == "circular")
         }
 
         // Source: https://wiki.openstreetmap.org/wiki/Default_speed_limits
@@ -378,8 +367,8 @@ pub mod common {
         }
     }
 
-    impl Deref for Tags {
-        type Target = HashMap<TagString, TagString>;
+    impl<'a> Deref for Tags<'a> {
+        type Target = HashMap<&'a str, &'a str>;
 
         fn deref(&self) -> &Self::Target {
             &self.0

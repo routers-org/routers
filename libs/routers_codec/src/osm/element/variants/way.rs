@@ -11,24 +11,24 @@ use crate::osm::PrimitiveBlock;
 use crate::osm::element::variants::Intermediate;
 
 #[derive(Clone, Debug)]
-pub struct Way {
+pub struct Way<'a> {
     id: OsmEntryId,
     refs: References,
-    tags: Tags,
+    tags: Tags<'a>,
 }
 
-impl Way {
+impl<'a> Way<'a> {
     pub fn id(&self) -> OsmEntryId {
         self.id
     }
 
     #[inline]
-    pub fn tags_owned(self) -> Tags {
+    pub fn tags_owned(self) -> Tags<'a> {
         self.tags
     }
 
     #[inline]
-    pub fn tags(&self) -> &Tags {
+    pub fn tags(&self) -> &Tags<'a> {
         &self.tags
     }
 
@@ -38,7 +38,7 @@ impl Way {
     }
 
     #[inline]
-    pub fn from_raw(value: &osm::Way, block: &PrimitiveBlock) -> Self {
+    pub fn from_raw(value: &'a osm::Way, block: &'a PrimitiveBlock) -> Self {
         Way {
             id: OsmEntryId::way(value.id),
             refs: value.references(block),

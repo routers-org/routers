@@ -1,4 +1,4 @@
-use crate::osm::element::{TagString, Tags};
+use crate::osm::element::Tags;
 use crate::osm::speed_limit::limit::{SpeedLimitEntry, SpeedLimitVariant};
 use crate::osm::speed_limit::subtypes::SpeedLimitConditions;
 use crate::osm::speed_limit::{PossiblyConditionalSpeedLimit, SpeedLimitExt};
@@ -54,11 +54,11 @@ impl SpeedLimitExt for SpeedLimitCollection {
 }
 
 impl Parser for SpeedLimitCollection {
-    fn parse(tags: &Tags) -> Option<Self> {
+    fn parse(tags: &Tags<'_>) -> Option<Self> {
         // Standard structure follows:
         let known_limits = tags
             .iter()
-            .filter(|(key, _)| key.starts_with(TagString::MAX_SPEED))
+            .filter(|(key, _)| key.starts_with(Tags::MAX_SPEED))
             .filter_map(|(l, v)| SpeedLimitEntry::parse_tag(l, v))
             .sorted_by_key(|item| format!("{:?}", item))
             .collect::<Vec<_>>();

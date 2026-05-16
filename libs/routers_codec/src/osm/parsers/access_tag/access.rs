@@ -1,5 +1,5 @@
 use crate::osm::speed_limit::restriction::Restriction;
-use crate::osm::{Parser, TagString, Tags};
+use crate::osm::{Parser, Tags};
 
 use serde::{Deserialize, Serialize};
 use strum::{AsRefStr, Display, EnumIter, EnumString};
@@ -103,7 +103,7 @@ impl AccessTag {
         })
     }
 
-    fn from_tag((key, value): (&TagString, &TagString)) -> Option<Self> {
+    fn from_tag((key, value): (&&str, &&str)) -> Option<Self> {
         Self::from_key_value(key, value).ok()
     }
 
@@ -114,7 +114,7 @@ impl AccessTag {
 }
 
 impl Parser for Vec<AccessTag> {
-    fn parse(tags: &Tags) -> Option<Self> {
+    fn parse(tags: &Tags<'_>) -> Option<Self> {
         let as_vec = tags
             .iter()
             .filter_map(AccessTag::from_tag)
