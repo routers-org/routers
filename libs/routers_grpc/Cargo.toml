@@ -14,8 +14,11 @@ bench = false
 routers = { workspace = true }
 routers_codec = { workspace = true }
 routers_network = { workspace = true }
+schema = { workspace = true }
 
 # Protobuf Handling
+buffa = { workspace = true }
+connectrpc = { workspace = true }
 prost = { workspace = true }
 prost-types = { workspace = true }
 

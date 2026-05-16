@@ -1,149 +1,32 @@
 //! Defines internal translations and relevant utilities
 //! in order to make the model useful as an SDK.
 
-use crate::r#match::{MatchRequest, MatchResponse, SnapRequest};
-use crate::model::costing::{BusModel, CarModel, TruckModel, Variation};
-use crate::model::{
-    Coordinate, CostOptions, EdgeIdentifier, EdgeMetadata, NodeIdentifier, OptimiseFor,
-};
-
-use core::fmt::Error as StdError;
-use core::ops::Deref;
-use geo::{Coord, LineString, coord};
-use routers::SolverVariant;
-use routers_codec::osm::OsmTripConfiguration;
-use routers_codec::osm::meta::OsmEdgeMetadata;
-use routers_codec::osm::speed_limit::{SpeedLimitConditions, SpeedLimitExt};
-use routers_codec::primitive::context::TripContext;
-use routers_codec::primitive::transport::{TransportMode, TruckCosting, VehicleCosting};
+use geo::{Coord};
 use routers_network::{Entry, Metadata, Node};
 
-impl From<Coord> for Coordinate {
-    fn from(value: Coord) -> Self {
-        Coordinate {
-            longitude: value.x,
-            latitude: value.y,
+pub mod optimise {
+    use buffa::EnumValue;
+    use routers::SolverVariant;
+    use schema::proto::routers::model::v1::OptimiseFor;
+
+    pub fn optimise_for(value: EnumValue<OptimiseFor>) -> SolverVariant {
+        match value {
+            OptimiseFor::Unspecified | OptimiseFor::Speed => SolverVariant::Fastest,
+            OptimiseFor::Consistency => SolverVariant::Selective,
+            OptimiseFor::Parallelism => SolverVariant::Precompute,
         }
     }
 }
 
-pub struct Coordinates(Vec<Coordinate>);
+pub mod r#match {
+    use buffa::RepeatedView;
+    use geo::{Coord, LineString};
+    use routers_codec::primitive::{context::TripContext, transport::{TransportMode, TruckCosting, VehicleCosting}};
+    use routers_network::Metadata;
 
-impl From<Coordinates> for LineString {
-    fn from(val: Coordinates) -> Self {
-        val.iter()
-            .map(|c| coord! { x: c.longitude, y: c.latitude })
-            .collect::<LineString>()
-    }
-}
+    use schema::proto::routers::model::v1::{CoordinateView, CostOptions, Costing, costing::{BusModel, CarModel, TruckModel, Variation}};
 
-impl From<LineString> for Coordinates {
-    fn from(value: LineString) -> Self {
-        Coordinates(value.into_iter().map(|point| point.into()).collect())
-    }
-}
-
-impl Coordinates {
-    pub fn linestring(self) -> LineString {
-        LineString::from(self)
-    }
-}
-
-impl Deref for Coordinates {
-    type Target = Vec<Coordinate>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl MatchResponse {
-    pub fn interpolated(&self) -> Option<Coordinates> {
-        let path = self
-            .matches
-            .first()?
-            .interpolated
-            .iter()
-            .filter_map(|element| element.coordinate)
-            .collect::<Vec<_>>();
-
-        Some(Coordinates(path))
-    }
-
-    pub fn discretized(&self) -> Option<Coordinates> {
-        let path = self
-            .matches
-            .first()?
-            .discretized
-            .iter()
-            .filter_map(|element| element.coordinate)
-            .collect::<Vec<_>>();
-
-        Some(Coordinates(path))
-    }
-}
-
-type MetadataAndTraversal<'a> = (&'a OsmEdgeMetadata, &'a OsmTripConfiguration);
-
-impl From<MetadataAndTraversal<'_>> for EdgeMetadata {
-    fn from((meta, cond): MetadataAndTraversal<'_>) -> Self {
-        // TODO: Fill all the information out here...
-        EdgeMetadata {
-            lane_count: meta.lane_count.map(|v| v.get() as u32),
-            speed_limit: meta
-                .speed_limit
-                .as_ref()
-                .map(|v| v.relevant_limits(cond, SpeedLimitConditions::default()))
-                .and_then(|v| v.first().map(|elem| elem.speed))
-                .and_then(|v| v.in_kmh())
-                .map(|speed| speed.get() as u32),
-            names: vec![],
-        }
-    }
-}
-
-impl From<i64> for EdgeIdentifier {
-    fn from(val: i64) -> Self {
-        EdgeIdentifier { id: val }
-    }
-}
-
-impl<E> From<Node<E>> for NodeIdentifier
-where
-    E: Entry,
-{
-    fn from(Node { id, position }: Node<E>) -> Self {
-        NodeIdentifier {
-            id: id.identifier(),
-            coordinate: Some(<geo::Point as Into<Coord>>::into(position).into()),
-        }
-    }
-}
-
-impl MatchRequest {
-    pub fn linestring(&self) -> LineString {
-        Into::<LineString>::into(Coordinates(self.data.clone()))
-    }
-}
-
-impl SnapRequest {
-    pub fn linestring(&self) -> LineString {
-        Into::<LineString>::into(Coordinates(self.data.clone()))
-    }
-}
-
-impl TryFrom<MatchResponse> for LineString {
-    type Error = StdError;
-
-    fn try_from(value: MatchResponse) -> Result<Self, Self::Error> {
-        let linestring = value.discretized().ok_or(StdError)?.into();
-
-        Ok(linestring)
-    }
-}
-
-impl From<TruckModel> for TruckCosting {
-    fn from(model: TruckModel) -> Self {
+    pub fn truck_costing(model: TruckModel) -> TruckCosting {
         TruckCosting {
             vehicle_costing: VehicleCosting {
                 height: model.height,
@@ -155,68 +38,64 @@ impl From<TruckModel> for TruckCosting {
             hazmat_load: model.hazardous_load,
         }
     }
-}
 
-impl From<CarModel> for VehicleCosting {
-    fn from(model: CarModel) -> Self {
+    pub fn car_costing(model: CarModel) -> VehicleCosting {
         VehicleCosting {
             height: model.height,
             width: model.width,
         }
     }
-}
 
-impl From<BusModel> for VehicleCosting {
-    fn from(model: BusModel) -> Self {
+    pub fn bus_costing(model: BusModel) -> VehicleCosting {
         VehicleCosting {
             height: model.height,
             width: model.width,
         }
     }
-}
 
-impl From<CostOptions> for Option<TripContext> {
-    fn from(value: CostOptions) -> Option<TripContext> {
-        let transport_mode = match value.costing_method?.variation? {
-            Variation::Bus(bus) => TransportMode::Bus(Some(VehicleCosting::from(bus))),
-            Variation::Car(car) => TransportMode::Car(Some(VehicleCosting::from(car))),
-            Variation::Truck(truck) => TransportMode::Truck(Some(TruckCosting::from(truck))),
+    pub fn as_linestring<'a>(value: RepeatedView<'a, CoordinateView<'a>>) -> LineString {
+        value.iter()
+            .map(|v| Coord { x: v.latitude, y: v.longitude })
+            .collect::<LineString>()
+    }
+
+    pub fn trip_context<'a, M: Metadata>(costing: &'a Costing) -> M::TripContext
+    where
+        M::TripContext: From<CostOptions>,
+    {
+        let transport_mode = match costing.variation? {
+            Variation::Bus(bus) =>
+                TransportMode::Bus(Some(bus_costing(*bus))),
+            Variation::Car(car) =>
+                TransportMode::Car(Some(car_costing(*car))),
+            Variation::Truck(truck) =>
+                TransportMode::Truck(Some(truck_costing(*truck))),
         };
 
-        Some(TripContext { transport_mode })
+        TripContext { transport_mode }
     }
-}
 
-impl From<Option<CostOptions>> for OptimiseFor {
-    fn from(value: Option<CostOptions>) -> Self {
-        value.unwrap_or_default().optimise_for()
+    pub fn interpolated(out: ) -> Option<LineString> {
+        let path = self
+            .matches
+            .first()?
+            .interpolated
+            .iter()
+            .filter_map(|element| element.coordinate)
+            .collect::<Vec<_>>();
+
+        Some(Coordinates(path))
     }
-}
 
-impl From<OptimiseFor> for SolverVariant {
-    fn from(value: OptimiseFor) -> Self {
-        match value {
-            OptimiseFor::Unspecified | OptimiseFor::Speed => SolverVariant::Fastest,
-            OptimiseFor::Consistency => SolverVariant::Selective,
-            OptimiseFor::Parallelism => SolverVariant::Precompute,
-        }
-    }
-}
+    pub fn discretized(&self) -> Option<LineString> {
+        let path = self
+            .matches
+            .first()?
+            .discretized
+            .iter()
+            .filter_map(|element| element.coordinate)
+            .collect::<Vec<_>>();
 
-impl SnapRequest {
-    pub fn trip_context<M: Metadata>(&self) -> Option<M::TripContext>
-    where
-        Option<M::TripContext>: From<CostOptions>,
-    {
-        self.options.and_then(Option::<M::TripContext>::from)
-    }
-}
-
-impl MatchRequest {
-    pub fn trip_context<M: Metadata>(&self) -> Option<M::TripContext>
-    where
-        Option<M::TripContext>: From<CostOptions>,
-    {
-        self.options.and_then(Option::<M::TripContext>::from)
+        Some(Coordinates(path))
     }
 }

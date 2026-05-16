@@ -5929,6 +5929,7 @@ name = "routers_grpc"
 version = "0.1.2"
 dependencies = [
  "buffa",
+ "connectrpc",
  "derive_builder",
  "dotenvy",
  "geo",
