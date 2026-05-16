@@ -19,15 +19,18 @@ pub enum Element<'a> {
 }
 
 #[derive(Clone)]
-pub enum ProcessedElement {
+pub enum ProcessedElement<'a> {
     Node(Node<OsmEntryId>),
-    Way(Way),
-    Relation(Relation),
+    Way(Way<'a>),
+    Relation(Relation<'a>),
 }
 
-impl ProcessedElement {
+impl<'a> ProcessedElement<'a> {
     #[inline]
-    pub(crate) fn from_raw(element: Element, block: &osm::PrimitiveBlock) -> Vec<ProcessedElement> {
+    pub(crate) fn from_raw(
+        element: Element<'a>,
+        block: &'a osm::PrimitiveBlock,
+    ) -> Vec<ProcessedElement<'a>> {
         #[cfg(feature = "tracing")]
         if block.lat_offset.is_some() || block.lon_offset.is_some() || block.granularity.is_some() {
             debug!(

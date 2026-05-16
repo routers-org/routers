@@ -1,6 +1,5 @@
 use serde::{Deserialize, Serialize};
 
-use crate::osm::element::TagString;
 use crate::osm::primitives::*;
 use crate::osm::speed_limit::restriction::{Restriction, RestrictionOptionals};
 use crate::osm::speed_limit::subtypes;
@@ -121,7 +120,7 @@ pub struct SpeedLimitEntry {
 }
 
 impl SpeedLimitEntry {
-    pub(crate) fn parse_tag(label: &TagString, value: &TagString) -> Option<Self> {
+    pub(crate) fn parse_tag(label: &&str, value: &&str) -> Option<Self> {
         let restriction = Restriction::parse(label);
 
         // Is lane-based (i.e. maxspeed:lanes=50|20|10)
@@ -136,8 +135,7 @@ impl SpeedLimitEntry {
 
             SpeedLimitVariant::PerLane(PerLaneSpeedLimit(per_lane_limit))
         } else {
-            let as_str = value.as_str();
-            let speed_limit = PossiblyConditionalSpeedLimit::parse(as_str)?;
+            let speed_limit = PossiblyConditionalSpeedLimit::parse(value)?;
             SpeedLimitVariant::Blanket(speed_limit)
         };
 

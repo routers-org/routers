@@ -22,11 +22,11 @@ impl ProcessedElementIterator {
 }
 
 impl Parallel for ProcessedElementIterator {
-    type Item<'a> = ProcessedElement;
+    type Item<'a> = ProcessedElement<'a>;
 
     fn for_each<F>(mut self, f: F)
     where
-        F: Fn(ProcessedElement) + Send + Sync,
+        F: for<'a> Fn(ProcessedElement<'a>) + Send + Sync,
     {
         self.iter.par_iter().for_each(|mut block| {
             block.par_iter().for_each(&f);
@@ -40,7 +40,7 @@ impl Parallel for ProcessedElementIterator {
         ident: Identity,
     ) -> T
     where
-        Map: Fn(ProcessedElement) -> T + Send + Sync,
+        Map: for<'a> Fn(ProcessedElement<'a>) -> T + Send + Sync,
         Reduce: Fn(T, T) -> T + Send + Sync,
         Identity: Fn() -> T + Send + Sync,
         T: Send,
@@ -58,7 +58,7 @@ impl Parallel for ProcessedElementIterator {
         ident: Identity,
     ) -> T
     where
-        Reduce: Fn(T, ProcessedElement) -> T + Send + Sync,
+        Reduce: for<'a> Fn(T, ProcessedElement<'a>) -> T + Send + Sync,
         Identity: Fn() -> T + Send + Sync,
         Combine: Fn(T, T) -> T + Send + Sync,
         T: Send,

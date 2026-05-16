@@ -1,7 +1,7 @@
 #![allow(unsafe_code)]
 
 use crate::osm::Parser;
-use crate::osm::element::{TagString, Tags};
+use crate::osm::element::Tags;
 
 use crate::osm::speed_limit::SpeedLimitCollection;
 use crate::osm::speed_limit::limit::SpeedLimitEntry;
@@ -15,9 +15,9 @@ use core::num::NonZeroU16;
 use std::collections::HashMap;
 
 #[cfg(test)]
-fn parse_singular(key: &str, value: &str) -> SpeedLimitEntry {
-    let mut tags = HashMap::new();
-    tags.insert(TagString::from(key), TagString::from(value));
+fn parse_singular<'a>(key: &'a str, value: &'a str) -> SpeedLimitEntry {
+    let mut tags: HashMap<&'a str, &'a str> = HashMap::new();
+    tags.insert(key, value);
 
     let as_tags = Tags::new(tags);
     let limit = SpeedLimitCollection::parse(&as_tags);

@@ -8,7 +8,7 @@ pub trait Access {
     fn access(&self) -> Vec<AccessTag>;
 }
 
-impl Access for Tags {
+impl Access for Tags<'_> {
     fn access(&self) -> Vec<AccessTag> {
         Vec::<AccessTag>::parse(self)
             .unwrap_or_default()

@@ -90,7 +90,7 @@ impl BlockItem {
     }
 
     #[inline]
-    pub fn element_iter(&self) -> impl Iterator<Item = ProcessedElement> + '_ {
+    pub fn element_iter(&self) -> impl Iterator<Item = ProcessedElement<'_>> + '_ {
         match self {
             BlockItem::PrimitiveBlock(primitive) => Either::Left(
                 primitive
@@ -117,7 +117,7 @@ impl BlockItem {
     }
 
     #[inline]
-    pub fn par_iter(&mut self) -> impl ParallelIterator<Item = ProcessedElement> + '_ {
+    pub fn par_iter(&mut self) -> impl ParallelIterator<Item = ProcessedElement<'_>> + '_ {
         match self {
             BlockItem::PrimitiveBlock(primitive) => Either::Left(
                 primitive

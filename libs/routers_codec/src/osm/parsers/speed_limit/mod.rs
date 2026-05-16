@@ -31,7 +31,7 @@ pub trait SpeedLimit {
     fn speed_limit(&self) -> Option<SpeedLimitCollection>;
 }
 
-impl SpeedLimit for Tags {
+impl SpeedLimit for Tags<'_> {
     fn speed_limit(&self) -> Option<SpeedLimitCollection> {
         SpeedLimitCollection::parse(self)
     }

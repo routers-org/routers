@@ -3,14 +3,14 @@ use crate::osm;
 use crate::osm::element::variants::Intermediate;
 
 #[derive(Clone, Debug)]
-pub struct Relation {
+pub struct Relation<'a> {
     pub id: i64,
-    pub tags: Tags,
+    pub tags: Tags<'a>,
     pub refs: References,
 }
 
-impl Relation {
-    pub fn from_raw(relation: &osm::Relation, block: &osm::PrimitiveBlock) -> Self {
+impl<'a> Relation<'a> {
+    pub fn from_raw(relation: &'a osm::Relation, block: &'a osm::PrimitiveBlock) -> Self {
         Self {
             id: relation.id,
             tags: relation.tags(block),

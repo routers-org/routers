@@ -61,7 +61,7 @@ pub mod meta {
 
     use crate::osm::access_tag::AccessTag;
     use crate::osm::access_tag::access::AccessValue;
-    use crate::osm::element::{TagString, Tags};
+    use crate::osm::element::Tags;
     use crate::osm::primitives::condition::VehicleProperty;
     use crate::osm::primitives::*;
     use crate::osm::speed_limit::SpeedLimitCollection;
@@ -81,14 +81,14 @@ pub mod meta {
     }
 
     impl Metadata for OsmEdgeMetadata {
-        type Raw<'a> = &'a Tags;
+        type Raw<'a> = &'a Tags<'a>;
         type Runtime = OsmTripConfiguration;
         type TripContext = primitive::context::TripContext;
 
         fn pick(raw: Self::Raw<'_>) -> Self {
             Self {
-                road_class: raw.r#as::<RoadClass>(TagString::HIGHWAY),
-                lane_count: raw.r#as::<NonZeroU8>(TagString::LANES),
+                road_class: raw.r#as::<RoadClass>(Tags::HIGHWAY),
+                lane_count: raw.r#as::<NonZeroU8>(Tags::LANES),
                 speed_limit: raw.speed_limit(),
                 access: raw.access(),
             }
