@@ -13,6 +13,3 @@ modules:
 lint:
   ignore:
     - schema/proto/osm
-
-deps:
-  - buf.build/bufbuild/protovalidate

@@ -57,7 +57,8 @@ test-log = { version = "0.2.18", features = ["log"] }
 
 # ConnectRPC
 buffa = { version = "0.5.2", features = ["json"] }
-buffa-types = { version = "0.5", features = ["json"] }
+buffa-types = { version = "0.5.2", features = ["json"] }
+buffa-descriptor = { version = "0.5.2" }
 connectrpc = { version = "0.4.2" }
 
 serde_json = "1"
