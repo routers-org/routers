@@ -1,4 +1,5 @@
 [workspace]
 changelog_config = "cliff.toml"
-dependencies_update = true
 repo_url = "https://github.com/routers-org/routers"
+dependencies_update = true
+publish_allow_dirty = true
