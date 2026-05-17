@@ -31,14 +31,6 @@ jobs:
         with:
           setup_only: true
 
-      - name: Install Just
-        uses: taiki-e/install-action@v2
-        with:
-          tool: just
-
-      - name: Initialise
-        run: just init
-
       - name: Toolchain, Cache and Codspeed
         uses: moonrepo/setup-rust@v1
         with:
