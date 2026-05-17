@@ -22,6 +22,9 @@ pub(crate) mod generated {
 // Trait Definition
 pub use interface::TimezoneResolver;
 
+// Timezone Type
+pub use routers_tz_types::TimeZone;
+
 // Basic Storage Impl
 #[cfg(feature = "basic")]
 pub use storage::basic::BasicStorage;
