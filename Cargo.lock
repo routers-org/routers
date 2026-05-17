@@ -6170,6 +6170,7 @@ dependencies = [
  "geo",
  "geo-index",
  "geozero",
+ "itertools 0.14.0",
  "lazy_static",
  "routers_tz_build",
  "routers_tz_types",

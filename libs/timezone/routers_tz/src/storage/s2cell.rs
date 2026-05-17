@@ -3,6 +3,8 @@ use routers_tz_types::storage::s2cell::S2StorageBackend;
 use s2::cellid::CellID;
 use s2::latlng::LatLng;
 
+use itertools::Itertools;
+
 use crate::TimezoneResolver;
 use routers_tz_types::TimeZone;
 use std::fmt::Debug;
@@ -28,6 +30,8 @@ impl Default for S2CellStorage {
     }
 }
 
+impl S2CellStorage {}
+
 impl TimezoneResolver for S2CellStorage {
     type Error = ();
 
@@ -36,15 +40,23 @@ impl TimezoneResolver for S2CellStorage {
         let ll = LatLng::from_degrees(center.y, center.x);
         let leaf = CellID::from(&ll);
 
-        let mut timezones = Vec::new();
-
-        for level in (MIN_LEVEL..=MAX_LEVEL).rev() {
-            let ancestor = leaf.parent(level);
-            if let Ok(pos) = self.backend.cell_ids.binary_search(&ancestor.0) {
+        let timezones = (MIN_LEVEL..=MAX_LEVEL)
+            .rev()
+            .map(|level| leaf.parent(level).0)
+            .filter_map(
+                |ancestor| match self.backend.cell_ids.binary_search(&ancestor) {
+                    Ok(pos) => Some(pos),
+                    _ => None,
+                },
+            )
+            .unique()
+            .map(|pos| {
                 let tz_idx = self.backend.tz_indices[pos] as usize;
-                timezones.push(TimeZone::new(self.backend.names[tz_idx].tz()));
-            }
-        }
+                let tz = self.backend.names[tz_idx].tz();
+
+                TimeZone::new(tz)
+            })
+            .collect::<Vec<_>>();
 
         match timezones[..] {
             [] => Err(()),
