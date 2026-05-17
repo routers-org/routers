@@ -4,7 +4,7 @@ members = [
     "libs/routers_codec", "libs/routers_geo", "libs/routers_rpc",
     "libs/routers_shard", "libs/routers_tiles", "libs/routers_fixtures",
     "libs/routers_network", "libs/routers_viewer", "libs/routers_realtime",
-    "libs/timezone/routers_tz", "libs/timezone/routers_tz_build", "libs/timezone/routers_tz_types",
+    "libs/timezone/routers_tz", "libs/timezone/routers_tz_types",
     "conformance", "schema"
 ]
 
@@ -26,7 +26,6 @@ routers_shard = { path = "libs/routers_shard" }
 routers_tiles = { path = "libs/routers_tiles" }
 routers_fixtures = { path = "libs/routers_fixtures" }
 routers_tz = { path = "libs/timezone/routers_tz" }
-routers_tz_build = { path = "libs/timezone/routers_tz_build" }
 routers_tz_types = { path = "libs/timezone/routers_tz_types" }
 schema = { path = "schema" }
 
@@ -46,7 +45,6 @@ routers_network = "0.1.0"
 routers_viewer = "0.1.0"
 routers_realtime = "0.1.0"
 routers_tz = { version = "0.1.0", features = ["rtree"] }
-routers_tz_build = "0.1.0"
 routers_tz_types = "0.1.0"
 routers = "0.2.1"
 

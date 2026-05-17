@@ -20,7 +20,7 @@ impl Debug for BasicStorage {
 impl Default for BasicStorage {
     fn default() -> Self {
         BasicStorage {
-            backend: routers_tz_build::basic::storage(),
+            backend: crate::generated::basic::storage(),
         }
     }
 }

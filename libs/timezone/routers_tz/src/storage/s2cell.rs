@@ -25,7 +25,7 @@ impl Debug for S2CellStorage {
 impl Default for S2CellStorage {
     fn default() -> Self {
         S2CellStorage {
-            backend: routers_tz_build::s2cell::storage(),
+            backend: crate::generated::s2cell::storage(),
         }
     }
 }

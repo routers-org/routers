@@ -7,17 +7,30 @@ description = "Timezone Resolver"
 
 [dependencies]
 routers_tz_types = { workspace = true }
-routers_tz_build = { workspace = true }
 
 itertools = { workspace = true }
 ctor = { workspace = true }
 lazy_static = { workspace = true }
+postcard = { workspace = true }
 
 geo = { workspace = true, features = ["serde"] }
 geo-index = { workspace = true, optional = true }
 s2 = { workspace = true, optional = true }
 
 time-tz = { workspace = true }
+
+[build-dependencies]
+routers_tz_types = { workspace = true }
+
+geo = { workspace = true }
+geojson = { workspace = true }
+s2 = { workspace = true }
+
+time-tz = { workspace = true }
+
+serde = { workspace = true }
+postcard = { workspace = true }
+rayon = { workspace = true }
 
 [dev-dependencies]
 criterion = { workspace = true }
@@ -29,9 +42,9 @@ harness = false
 [features]
 default = ["basic"]
 
-basic = ["routers_tz_build/basic"]
-rtree = ["routers_tz_build/rtree", "geo-index"]
-s2cell = ["routers_tz_build/s2cell", "dep:s2"]
+basic = []
+rtree = ["geo-index"]
+s2cell = ["dep:s2"]
 
 [lints]
 workspace = true

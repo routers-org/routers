@@ -6123,20 +6123,8 @@ dependencies = [
  "ctor",
  "geo",
  "geo-index",
- "itertools 0.14.0",
- "lazy_static",
- "routers_tz_build",
- "routers_tz_types",
- "s2",
- "time-tz",
-]
-
-[[package]]
-name = "routers_tz_build"
-version = "0.1.0"
-dependencies = [
- "geo",
  "geojson",
+ "itertools 0.14.0",
  "lazy_static",
  "postcard",
  "rayon",

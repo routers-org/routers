@@ -19,7 +19,7 @@ impl Debug for RTreeStorage {
 impl Default for RTreeStorage {
     fn default() -> Self {
         RTreeStorage {
-            backend: routers_tz_build::rtree::storage(),
+            backend: crate::generated::rtree::storage(),
         }
     }
 }
