@@ -3,6 +3,9 @@ name = "routers_schema"
 version = "0.1.0"
 edition = "2024"
 include = ["src/**/*"]
+description = "Protobuf Schema for Routers"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/routers-org/routers"
 
 [dependencies]
 buffa = { workspace = true }
