@@ -5,7 +5,7 @@ members = [
     "libs/routers_shard", "libs/routers_tiles", "libs/routers_fixtures",
     "libs/routers_network", "libs/routers_viewer", "libs/routers_realtime",
     "libs/routers_tz", "libs/routers_tz_types",
-    "conformance", "routers_schema"
+    "conformance", "schema"
 ]
 
 [workspace.lints.rust]
@@ -33,7 +33,7 @@ routers_schema = { path = "schema" }
 [workspace.dependencies]
 # Private Members
 routers_shard = { path = "libs/routers_shard", version = "0.1.0" }
-routers_schema = { path = "schema", version = "0.1.0" }
+schema = { path = "schema", package = "routers_schema", version = "0.1.0" }
 routers_fixtures = { path = "libs/routers_fixtures" }
 
 # Members

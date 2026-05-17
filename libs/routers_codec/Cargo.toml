@@ -15,9 +15,9 @@ bench = false
 [dependencies]
 # Sister Crates
 routers_network = { workspace = true }
+schema = { workspace = true }
 
 # Schema
-schema = { workspace = true }
 bytes = { workspace = true }
 serde = { workspace = true }
 buffa = { workspace = true }
