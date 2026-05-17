@@ -4,7 +4,7 @@ members = [
     "libs/routers_codec", "libs/routers_geo", "libs/routers_rpc",
     "libs/routers_shard", "libs/routers_tiles", "libs/routers_fixtures",
     "libs/routers_network", "libs/routers_viewer", "libs/routers_realtime",
-    "libs/timezone/routers_tz", "libs/timezone/routers_tz_types",
+    "libs/routers_tz", "libs/routers_tz_types",
     "conformance", "schema"
 ]
 
@@ -25,8 +25,8 @@ routers_rpc = { path = "libs/routers_rpc" }
 routers_shard = { path = "libs/routers_shard" }
 routers_tiles = { path = "libs/routers_tiles" }
 routers_fixtures = { path = "libs/routers_fixtures" }
-routers_tz = { path = "libs/timezone/routers_tz" }
-routers_tz_types = { path = "libs/timezone/routers_tz_types" }
+routers_tz = { path = "libs/routers_tz" }
+routers_tz_types = { path = "libs/routers_tz_types" }
 schema = { path = "schema" }
 
 # === Workspace Deps ===
