@@ -44,7 +44,7 @@ routers_tiles = "0.1.0"
 routers_network = "0.1.0"
 routers_viewer = "0.1.0"
 routers_realtime = "0.1.0"
-routers_tz = { version = "0.1.0", features = ["rtree"] }
+routers_tz = { version = "0.1.0" }
 routers_tz_types = "0.1.0"
 routers = "0.2.1"
 
