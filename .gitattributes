@@ -1,2 +1,4 @@
 *.pbf filter=lfs diff=lfs merge=lfs -text
+benches/snapshots/*.snap filter=lfs diff=lfs merge=lfs -text
 src/snapshots/*.snap linguist-generated=true
+benches/snapshots/*.snap linguist-generated=true
