@@ -1,5 +1,5 @@
 use crate::timezone::internal::TimeZoneName;
-use bincode::{Decode, Encode};
+use serde::{Deserialize, Serialize};
 
 /// Storage backend for the S2 cell-based timezone resolver.
 ///
@@ -7,7 +7,7 @@ use bincode::{Decode, Encode};
 /// sorted in ascending order. The parallel `tz_indices` vec maps each cell to a timezone
 /// index into `names`. Lookup walks up the S2 ancestor chain from a leaf cell, doing a
 /// binary search at each level until a stored cell is found.
-#[derive(Encode, Decode, Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct S2StorageBackend {
     /// S2 CellID values (raw u64 with level sentinel) from the covering, sorted ascending.
     pub cell_ids: Vec<u64>,

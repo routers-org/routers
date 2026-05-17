@@ -83,6 +83,9 @@ tokio = { version = "1.47.1", features = [
 
 # GeoRust
 geo = { version = "0.31.0", features = ["use-serde"] }
+geo-index = { version = "0.3.1" }
+geojson = { version = "0.24.2" }
+s2 = { version = "0.0.13" }
 wkt = { version = "0.14.0" }
 rstar = { version = "0.12.2", features = ["serde"] }
 
@@ -106,11 +109,13 @@ criterion = { version = "3.0.5", features = [
     "async_tokio",
 ], package = "codspeed-criterion-compat" }
 insta = { version = "1.43.2", features = ["ron", "redactions"] }
+ctor = "0.4.2"
 
 # Utilities
 strum = { version = "0.27.1", features = ["phf", "derive"] }
 serde = { version = "1.0.228", features = [] }
 postcard = { version = "1.1.3", features = ["alloc"] }
+lazy_static = { version = "1.5.0" }
 
 # Schema
 bytes = { version = "1.10.1", features = ["default", "serde"] }

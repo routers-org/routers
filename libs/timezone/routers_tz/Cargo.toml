@@ -6,19 +6,17 @@ license = "GPL-3.0-or-later"
 description = "Timezone Resolver"
 
 [dependencies]
-geo = { workspace = true, features = ["serde"] }
-geo-index = { version = "0.3.1", optional = true }
-s2 = { version = "0.0.13", optional = true }
-
 routers_tz_types = { workspace = true }
 routers_tz_build = { workspace = true }
 
 itertools = { workspace = true }
+ctor = { workspace = true }
 
-lazy_static = "1.5.0"
-rstest = "0.25.0"
-ctor = "0.4.2"
-geozero = "0.14.0"
+geo = { workspace = true, features = ["serde"] }
+geo-index = { workspace = true, optional = true }
+s2 = { workspace = true, optional = true }
+
+lazy_static = { workspace = true }
 time-tz = "2.0.0"
 
 [dev-dependencies]
@@ -29,7 +27,7 @@ name = "discovery"
 harness = false
 
 [features]
-default = ["s2cell"]
+default = ["basic"]
 
 basic = ["routers_tz_build/basic"]
 rtree = ["routers_tz_build/rtree", "geo-index"]

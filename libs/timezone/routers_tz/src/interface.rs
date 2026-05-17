@@ -53,6 +53,11 @@ mod tests {
             .search(&point.bounding_rect())
             .expect("should have been resolved");
 
+        assert!(
+            possible_timezones.len() == 1,
+            "expected exactly one timezone"
+        );
+
         let tz = possible_timezones
             .first()
             .expect("must have at least one timezone");

@@ -7,10 +7,11 @@ description = "Data Builder for the Routers Timezone Resolver"
 
 [dependencies]
 geo = { workspace = true, features = ["use-serde"] }
-serde = { version = "1.0.219", features = ["derive"] }
-bincode = { version = "2.0.1", features = ["serde"] }
-geo-index = { version = "0.3.1" }
-ouroboros = "0.18.5"
+serde = { workspace = true, features = ["derive"] }
+
+geo-index = { workspace = true }
 geozero = "0.14.0"
+
+ouroboros = "0.18.5"
 time-tz = "2.0.0"
 tz-rs = { version = "0.7.0" }
