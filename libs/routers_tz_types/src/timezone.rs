@@ -1,5 +1,5 @@
 use std::ops::Deref;
-use time_tz::Tz;
+use time_tz::{TimeZone as TimeZoneTrait, Tz};
 
 pub mod internal {
     use geo::{BoundingRect, MultiPolygon, Rect};
@@ -77,6 +77,10 @@ pub struct TimeZone(&'static Tz);
 impl TimeZone {
     pub fn new(tz: &'static Tz) -> Self {
         TimeZone(tz)
+    }
+
+    pub fn name(&self) -> &'static str {
+        self.0.name()
     }
 }
 
