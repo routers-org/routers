@@ -2,8 +2,8 @@ use std::ops::Deref;
 use time_tz::Tz;
 
 pub mod internal {
-    use bincode::{Decode, Encode};
     use geo::{BoundingRect, MultiPolygon, Rect};
+    use serde::{Deserialize, Serialize};
     use std::ops::Deref;
     use time_tz::Tz;
 
@@ -17,8 +17,8 @@ pub mod internal {
     }
 
     #[repr(transparent)]
-    #[derive(Encode, Decode, Clone, Debug)]
-    pub struct TimeZoneGeometry(#[bincode(with_serde)] pub MultiPolygon);
+    #[derive(Serialize, Deserialize, Clone, Debug)]
+    pub struct TimeZoneGeometry(pub MultiPolygon);
 
     impl TimeZoneGeometry {
         pub fn bbox(&self) -> Option<Rect> {
@@ -26,7 +26,7 @@ pub mod internal {
         }
     }
 
-    #[derive(Encode, Decode, Clone, Debug, PartialEq)]
+    #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
     #[repr(transparent)]
     pub struct TimeZoneName(String);
 

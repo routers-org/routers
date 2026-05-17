@@ -1,11 +1,8 @@
 use crate::timezone::internal::{TimeZoneName, TimezoneBuild};
-use bincode::{Decode, Encode};
 use geo_index::rtree::sort::HilbertSort;
 use geo_index::rtree::{RTreeBuilder, RTreeRef};
 use ouroboros::self_referencing;
-use serde::de::{Error, Visitor};
-use serde::{Deserialize, Deserializer};
-use std::fmt;
+use serde::{Deserialize, Deserializer, Serialize};
 
 #[self_referencing]
 pub struct InternalTree {
@@ -31,36 +28,17 @@ impl<'de> Deserialize<'de> for InternalTree {
     where
         D: Deserializer<'de>,
     {
-        struct RTreeVisitor;
-
-        impl<'de> Visitor<'de> for RTreeVisitor {
-            type Value = InternalTree;
-
-            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-                formatter.write_str("internal rtree repr")
-            }
-
-            fn visit_byte_buf<E>(self, v: Vec<u8>) -> Result<Self::Value, E>
-            where
-                E: Error,
-            {
-                let tree = InternalTreeBuilder {
-                    data: v,
-                    tree_builder: |data| RTreeRef::try_new(data).unwrap(),
-                }
-                .build();
-
-                Ok(tree)
-            }
+        let data: Vec<u8> = Vec::deserialize(deserializer)?;
+        Ok(InternalTreeBuilder {
+            data,
+            tree_builder: |data| RTreeRef::try_new(data).unwrap(),
         }
-
-        deserializer.deserialize_byte_buf(RTreeVisitor)
+        .build())
     }
 }
 
-#[derive(Decode)]
+#[derive(Deserialize)]
 pub struct DecodableRTreeStorageBackend {
-    #[bincode(with_serde)]
     pub tree: InternalTree,
     pub names: Vec<TimeZoneName>,
 }
@@ -68,7 +46,7 @@ pub struct DecodableRTreeStorageBackend {
 // Alias.
 pub type RTreeStorageBackend = DecodableRTreeStorageBackend;
 
-#[derive(Encode, Debug)]
+#[derive(Serialize, Debug)]
 pub struct EncodableRTreeStorageBackend {
     pub tree: Vec<u8>,
     pub names: Vec<TimeZoneName>,

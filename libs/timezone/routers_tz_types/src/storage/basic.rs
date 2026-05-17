@@ -1,7 +1,7 @@
 use crate::timezone::internal::{TimeZoneGeometry, TimeZoneName};
-use bincode::{Decode, Encode};
+use serde::{Deserialize, Serialize};
 
-#[derive(Encode, Decode, Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct BasicStorageBackend {
     pub geometries: Vec<TimeZoneGeometry>,
     pub names: Vec<TimeZoneName>,
