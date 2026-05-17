@@ -6008,9 +6008,9 @@ dependencies = [
  "regex",
  "routers_fixtures",
  "routers_network",
+ "routers_schema",
  "rstar 0.12.2",
  "rustc-hash 2.1.2",
- "schema",
  "serde",
  "strum",
  "test-log",
@@ -6078,13 +6078,26 @@ dependencies = [
  "routers_codec",
  "routers_fixtures",
  "routers_network",
+ "routers_schema",
  "routers_tz",
- "schema",
  "tokio",
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",
  "wkt",
+]
+
+[[package]]
+name = "routers_schema"
+version = "0.1.0"
+dependencies = [
+ "buffa",
+ "buffa-descriptor",
+ "buffa-types",
+ "connectrpc",
+ "http-body",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -6452,19 +6465,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "91c1b7e4904c873ef0710c1f407dde2e6287de2bebc1bbbf7d430bb7cbffd939"
 dependencies = [
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "schema"
-version = "0.1.0"
-dependencies = [
- "buffa",
- "buffa-descriptor",
- "buffa-types",
- "connectrpc",
- "http-body",
- "serde",
- "serde_json",
 ]
 
 [[package]]

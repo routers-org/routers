@@ -27,16 +27,16 @@ routers_tiles = { path = "libs/routers_tiles" }
 routers_fixtures = { path = "libs/routers_fixtures" }
 routers_tz = { path = "libs/routers_tz" }
 routers_tz_types = { path = "libs/routers_tz_types" }
-schema = { path = "schema" }
+routers_schema = { path = "schema" }
 
 # === Workspace Deps ===
 [workspace.dependencies]
 # Private Members
 routers_shard = { path = "libs/routers_shard", version = "0.1.0" }
 routers_fixtures = { path = "libs/routers_fixtures" }
-schema = { path = "schema" }
 
 # Members
+schema = { path = "schema", package = "routers_schema", version = "0.1.0" }
 routers_codec = "0.1.2"
 routers_geo = "0.1.0"
 routers_rpc = "0.1.0"
