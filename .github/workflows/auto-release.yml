@@ -50,6 +50,9 @@ jobs:
         run: |
           buf generate
 
+      - name: Generate routers_tz prebuilt backend data
+        run: cargo build -p routers_tz --features rtree,s2cell
+
       - name: Run release-plz
         uses: release-plz/action@v0.5
         with:

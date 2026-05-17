@@ -4,7 +4,6 @@ use routers_tz_types::timezone::internal::TimezoneBuild;
 use s2::region::RegionCoverer;
 use std::collections::HashMap;
 use std::fs;
-use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::BoxError;
@@ -16,33 +15,27 @@ const MAX_LEVEL: u8 = 13;
 const MAX_CELLS: usize = 1000;
 
 pub fn build(timezones: &[TimezoneBuild]) -> Result<(), BoxError> {
-    // Cache filename encodes covering parameters so any change auto-invalidates.
-    let cache_path = format!("data/s2cell_l{MAX_LEVEL}_c{MAX_CELLS}.postcard.bin");
-    println!("cargo:rerun-if-changed={cache_path}");
+    let backend = Backend { module: "s2cell" };
 
-    let backend = Backend {
-        module: "s2cell",
-        type_name: "S2StorageBackend",
-    };
-    let dest_path = backend.data_path()?;
-
-    if cache_is_fresh(&cache_path) {
-        eprintln!("[s2cell] using cached covering from {cache_path}");
-        fs::copy(&cache_path, &dest_path)?;
-    } else {
-        backend.write_data(compute_backend(timezones))?;
-        fs::copy(&dest_path, &cache_path)?;
-        eprintln!("[s2cell] cache saved to {cache_path}");
+    // The pre-built file *is* the cache: if it's newer than the source
+    // geojson, skip the (expensive) covering computation.
+    if prebuilt_is_fresh(&backend) {
+        eprintln!(
+            "[s2cell] pre-built covering at {} is fresh, skipping recompute",
+            backend.data_path().display()
+        );
+        return Ok(());
     }
 
-    backend.write_codegen()
+    backend.emit(compute_backend(timezones))
 }
 
-fn cache_is_fresh(cache_path: &str) -> bool {
+fn prebuilt_is_fresh(backend: &Backend<'_>) -> bool {
+    let path = backend.data_path();
     let geojson_mtime = fs::metadata(geojson_path()).and_then(|m| m.modified()).ok();
-    Path::new(cache_path).exists()
+    path.exists()
         && geojson_mtime.is_some_and(|gj| {
-            fs::metadata(cache_path)
+            fs::metadata(&path)
                 .and_then(|m| m.modified())
                 .is_ok_and(|ct| ct >= gj)
         })

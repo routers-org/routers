@@ -1,10 +1,18 @@
 [package]
 name = "routers_tz"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 license = "GPL-3.0-or-later"
 description = "Timezone Resolver"
-include = ["src/**/*", "data/**/*", "build.rs", "build/**/*"]
+include = [
+    "src/**/*",
+    "build.rs",
+    "build/**/*",
+    # Only the small pre-baked backend binaries ship. The `basic` backend's
+    # prebuilt is ~113 MiB and is intentionally excluded; see lib.rs.
+    "data/prebuilt/rtree_timezone_data.postcard.bin",
+    "data/prebuilt/s2cell_timezone_data.postcard.bin",
+]
 repository = "https://github.com/routers-org/routers"
 
 [dependencies]
@@ -42,7 +50,7 @@ name = "discovery"
 harness = false
 
 [features]
-default = ["basic"]
+default = ["s2cell"]
 
 basic = []
 rtree = ["geo-index"]
