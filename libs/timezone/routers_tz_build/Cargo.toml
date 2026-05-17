@@ -8,7 +8,7 @@ description = "Data Builder for the Routers Timezone Resolver"
 [dependencies]
 routers_tz_types = { workspace = true }
 postcard = { workspace = true }
-lazy_static = "1.5.0"
+lazy_static = { workspace = true }
 
 [build-dependencies]
 routers_tz_types = { workspace = true }
@@ -17,9 +17,7 @@ geo = { workspace = true}
 geojson = { workspace = true }
 s2 = { workspace = true }
 
-tz-rs = "0.7.0"
-tzdb_data = "0.2.2"
-time-tz = "2.0.0"
+time-tz = { workspace = true }
 
 serde = { workspace = true }
 postcard = { workspace = true }
@@ -29,3 +27,6 @@ rayon = { workspace = true }
 rtree = []
 basic = []
 s2cell = []
+
+[lints]
+workspace = true

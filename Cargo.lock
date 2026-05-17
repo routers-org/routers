@@ -2615,20 +2615,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "geozero"
-version = "0.14.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e5f28f34864745eb2f123c990c6ffd92c1584bd39439b3f27ff2a0f4ea5b309b"
-dependencies = [
- "geo-types",
- "geojson",
- "log",
- "serde_json",
- "thiserror 1.0.69",
- "wkt 0.11.1",
-]
-
-[[package]]
 name = "gethostname"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5979,7 +5965,7 @@ dependencies = [
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",
- "wkt 0.14.0",
+ "wkt",
 ]
 
 [[package]]
@@ -5997,7 +5983,7 @@ dependencies = [
  "serde_json",
  "tabled",
  "toml",
- "wkt 0.14.0",
+ "wkt",
 ]
 
 [[package]]
@@ -6097,7 +6083,7 @@ dependencies = [
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",
- "wkt 0.14.0",
+ "wkt",
 ]
 
 [[package]]
@@ -6158,8 +6144,6 @@ dependencies = [
  "s2",
  "serde",
  "time-tz",
- "tz-rs",
- "tzdb_data",
 ]
 
 [[package]]
@@ -6168,11 +6152,9 @@ version = "0.1.0"
 dependencies = [
  "geo",
  "geo-index",
- "geozero",
  "ouroboros",
  "serde",
  "time-tz",
- "tz-rs",
 ]
 
 [[package]]
@@ -6194,7 +6176,7 @@ dependencies = [
  "rustc-hash 2.1.2",
  "tokio",
  "walkers",
- "wkt 0.14.0",
+ "wkt",
 ]
 
 [[package]]
@@ -7855,21 +7837,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tz-rs"
-version = "0.7.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4fc6c929ffa10fb34f4a3c7e9a73620a83ef2e85e47f9ec3381b8289e6762f42"
-
-[[package]]
-name = "tzdb_data"
-version = "0.2.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "125a0a63c4bd75c73f61863463cb400db4b1aa5039b203b0ee1d628a7e3dabb2"
-dependencies = [
- "tz-rs",
-]
-
-[[package]]
 name = "ucd-trie"
 version = "0.1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9132,18 +9099,6 @@ dependencies = [
  "serde_json",
  "unicode-xid",
  "wasmparser",
-]
-
-[[package]]
-name = "wkt"
-version = "0.11.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "54f7f1ff4ea4c18936d6cd26a6fd24f0003af37e951a8e0e8b9e9a2d0bd0a46d"
-dependencies = [
- "geo-types",
- "log",
- "num-traits",
- "thiserror 1.0.69",
 ]
 
 [[package]]
