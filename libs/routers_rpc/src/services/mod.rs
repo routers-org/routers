@@ -19,6 +19,7 @@ impl<T, E, M> RPCAdapter<T, E, M> {
 pub mod matcher;
 pub mod optimise;
 pub mod proximity;
+pub mod timezone;
 
 pub struct OsmService;
 impl OsmService {
