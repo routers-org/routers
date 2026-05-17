@@ -368,7 +368,7 @@ fn s2cell_backend(timezones: &[TimezoneBuild]) -> Result<(), Box<dyn std::error:
         let done = AtomicUsize::new(0);
 
         // Process timezones in parallel; each produces its own (cell_id, tz_idx) pairs.
-        let mut all_cells: Vec<(u64, u32)> = timezones
+        let all_cells: Vec<(u64, u32)> = timezones
             .par_iter()
             .enumerate()
             .flat_map(|(tz_idx, tz)| {

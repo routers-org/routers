@@ -1,11 +1,18 @@
-use geo::Rect;
-use std::fmt::Debug;
+use core::fmt::Debug;
+use geo::{BoundingRect, Polygon, Rect};
+use routers_tz_types::TimeZone;
 
-// todo: docs
 pub trait TimezoneResolver {
-    type Error: Debug;
+    type Error: Debug + From<()>;
 
-    fn search(&self, rect: &Rect) -> Result<routers_tz_types::TimeZone, Self::Error>;
+    fn search(&self, rect: &Rect) -> Result<Vec<TimeZone>, Self::Error>;
+
+    fn search_polygon(&self, polygon: &Polygon) -> Result<Vec<TimeZone>, Self::Error> {
+        polygon
+            .bounding_rect()
+            .ok_or(Self::Error::from(()))
+            .and_then(|rect| self.search(&rect))
+    }
 }
 
 #[cfg(test)]

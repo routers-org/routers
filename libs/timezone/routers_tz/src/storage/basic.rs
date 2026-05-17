@@ -28,13 +28,24 @@ impl Default for BasicStorage {
 impl TimezoneResolver for BasicStorage {
     type Error = ();
 
-    fn search(&self, rect: &Rect) -> Result<TimeZone, Self::Error> {
-        for (index, TimeZoneGeometry(geometry)) in self.backend.geometries.iter().enumerate() {
-            if geometry.contains(rect) {
-                return Ok(TimeZone::new(self.backend.names[index].tz()));
-            }
-        }
+    fn search(&self, rect: &Rect) -> Result<Vec<TimeZone>, Self::Error> {
+        let timezones = self
+            .backend
+            .geometries
+            .iter()
+            .enumerate()
+            .filter_map(|(index, TimeZoneGeometry(geometry))| {
+                if geometry.contains(rect) {
+                    Some(TimeZone::new(self.backend.names[index].tz()))
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<TimeZone>>();
 
-        Err(())
+        match timezones[..] {
+            [] => Err(()),
+            _ => Ok(timezones),
+        }
     }
 }
