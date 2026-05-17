@@ -14,7 +14,9 @@ const DEFAULT_TZ_VERSION: &str = "2026a";
 /// via the `ROUTERS_TZ_VERSION` environment variable (e.g.
 /// `ROUTERS_TZ_VERSION=2026b cargo build`).
 pub fn tz_version() -> String {
-    println!("cargo:rerun-if-env-changed=ROUTERS_TZ_VERSION");
+    if std::env::var_os("ROUTERS_TZ_VERSION").is_some() {
+        println!("cargo:rerun-if-env-changed=ROUTERS_TZ_VERSION");
+    }
     std::env::var("ROUTERS_TZ_VERSION").unwrap_or_else(|_| DEFAULT_TZ_VERSION.to_string())
 }
 
@@ -22,8 +24,14 @@ pub fn geojson_path() -> String {
     format!("data/{}/timezones.geojson", tz_version())
 }
 
-pub fn extract_timezones() -> Result<Vec<TimezoneBuild>, BoxError> {
+pub fn extract_timezones() -> Result<Option<Vec<TimezoneBuild>>, BoxError> {
     let path = geojson_path();
+    if !std::path::Path::new(&path).exists() {
+        // No source geojson present (e.g. published crate using pre-baked
+        // artifacts). Skip extraction entirely and don't emit a rerun hint
+        // for a path that will never exist in this build tree.
+        return Ok(None);
+    }
     println!("cargo:rerun-if-changed={path}");
 
     let geojson: GeoJson = fs::read_to_string(&path)?.parse()?;
@@ -58,7 +66,7 @@ pub fn extract_timezones() -> Result<Vec<TimezoneBuild>, BoxError> {
         });
     }
 
-    Ok(timezones)
+    Ok(Some(timezones))
 }
 
 fn to_multi_polygon(geometry: &Geometry) -> Result<MultiPolygon<f64>, BoxError> {

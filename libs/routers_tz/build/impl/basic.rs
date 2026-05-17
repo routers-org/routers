@@ -10,9 +10,5 @@ pub fn build(timezones: &[TimezoneBuild]) -> Result<(), BoxError> {
         .map(|tz| (tz.name.clone(), tz.geometry.clone()))
         .unzip();
 
-    Backend {
-        module: "basic",
-        type_name: "BasicStorageBackend",
-    }
-    .emit(BasicStorageBackend { geometries, names })
+    Backend { module: "basic" }.emit(BasicStorageBackend { geometries, names })
 }

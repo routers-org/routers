@@ -5,9 +5,5 @@ use crate::BoxError;
 use crate::codegen::Backend;
 
 pub fn build(timezones: &[TimezoneBuild]) -> Result<(), BoxError> {
-    Backend {
-        module: "rtree",
-        type_name: "RTreeStorageBackend",
-    }
-    .emit(EncodableRTreeStorageBackend::new(timezones))
+    Backend { module: "rtree" }.emit(EncodableRTreeStorageBackend::new(timezones))
 }
