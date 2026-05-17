@@ -39,9 +39,7 @@ pub fn build(timezones: &[TimezoneBuild]) -> Result<(), BoxError> {
 }
 
 fn cache_is_fresh(cache_path: &str) -> bool {
-    let geojson_mtime = fs::metadata(geojson_path())
-        .and_then(|m| m.modified())
-        .ok();
+    let geojson_mtime = fs::metadata(geojson_path()).and_then(|m| m.modified()).ok();
     Path::new(cache_path).exists()
         && geojson_mtime.is_some_and(|gj| {
             fs::metadata(cache_path)
