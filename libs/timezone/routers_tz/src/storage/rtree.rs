@@ -27,18 +27,22 @@ impl Default for RTreeStorage {
 impl TimezoneResolver for RTreeStorage {
     type Error = ();
 
-    fn search(&self, rect: &Rect) -> Result<TimeZone, Self::Error> {
+    fn search(&self, rect: &Rect) -> Result<Vec<TimeZone>, Self::Error> {
         let cache_hits =
             self.backend
                 .tree
                 .borrow_this()
                 .neighbors_coord(&rect.center(), Some(1), None);
 
-        cache_hits
+        let timezones = cache_hits
             .into_iter()
             .filter_map(|index| self.backend.names.get(index as usize))
             .map(|name| TimeZone::new(name.tz()))
-            .next()
-            .ok_or(())
+            .collect::<Vec<TimeZone>>();
+
+        match timezones[..] {
+            [] => Err(()),
+            _ => Ok(timezones),
+        }
     }
 }

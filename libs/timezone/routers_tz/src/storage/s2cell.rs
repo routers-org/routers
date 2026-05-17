@@ -31,19 +31,24 @@ impl Default for S2CellStorage {
 impl TimezoneResolver for S2CellStorage {
     type Error = ();
 
-    fn search(&self, rect: &Rect) -> Result<TimeZone, Self::Error> {
+    fn search(&self, rect: &Rect) -> Result<Vec<TimeZone>, Self::Error> {
         let center = rect.center();
         let ll = LatLng::from_degrees(center.y, center.x);
         let leaf = CellID::from(&ll);
+
+        let mut timezones = Vec::new();
 
         for level in (MIN_LEVEL..=MAX_LEVEL).rev() {
             let ancestor = leaf.parent(level);
             if let Ok(pos) = self.backend.cell_ids.binary_search(&ancestor.0) {
                 let tz_idx = self.backend.tz_indices[pos] as usize;
-                return Ok(TimeZone::new(self.backend.names[tz_idx].tz()));
+                timezones.push(TimeZone::new(self.backend.names[tz_idx].tz()));
             }
         }
 
-        Err(())
+        match timezones[..] {
+            [] => Err(()),
+            _ => Ok(timezones),
+        }
     }
 }
