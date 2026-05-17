@@ -17,12 +17,11 @@ pub(crate) mod generated {
         use lazy_static::lazy_static;
         use routers_tz_types::storage::basic::BasicStorageBackend;
 
-        const DATA: &[u8] =
-            include_bytes!("../data/prebuilt/basic_timezone_data.postcard.bin");
+        const DATA: &[u8] = include_bytes!("../data/prebuilt/basic_timezone_data.postcard.bin");
 
         lazy_static! {
-            pub static ref STORAGE: BasicStorageBackend = postcard::from_bytes(DATA)
-                .expect("Failed to deserialize basic timezone data");
+            pub static ref STORAGE: BasicStorageBackend =
+                postcard::from_bytes(DATA).expect("Failed to deserialize basic timezone data");
         }
 
         pub fn storage() -> &'static BasicStorageBackend {
@@ -45,12 +44,11 @@ pub(crate) mod generated {
         use lazy_static::lazy_static;
         use routers_tz_types::storage::rtree::RTreeStorageBackend;
 
-        const DATA: &[u8] =
-            include_bytes!("../data/prebuilt/rtree_timezone_data.postcard.bin");
+        const DATA: &[u8] = include_bytes!("../data/prebuilt/rtree_timezone_data.postcard.bin");
 
         lazy_static! {
-            pub static ref STORAGE: RTreeStorageBackend = postcard::from_bytes(DATA)
-                .expect("Failed to deserialize rtree timezone data");
+            pub static ref STORAGE: RTreeStorageBackend =
+                postcard::from_bytes(DATA).expect("Failed to deserialize rtree timezone data");
         }
 
         pub fn storage() -> &'static RTreeStorageBackend {
@@ -63,12 +61,11 @@ pub(crate) mod generated {
         use lazy_static::lazy_static;
         use routers_tz_types::storage::s2cell::S2StorageBackend;
 
-        const DATA: &[u8] =
-            include_bytes!("../data/prebuilt/s2cell_timezone_data.postcard.bin");
+        const DATA: &[u8] = include_bytes!("../data/prebuilt/s2cell_timezone_data.postcard.bin");
 
         lazy_static! {
-            pub static ref STORAGE: S2StorageBackend = postcard::from_bytes(DATA)
-                .expect("Failed to deserialize s2cell timezone data");
+            pub static ref STORAGE: S2StorageBackend =
+                postcard::from_bytes(DATA).expect("Failed to deserialize s2cell timezone data");
         }
 
         pub fn storage() -> &'static S2StorageBackend {
