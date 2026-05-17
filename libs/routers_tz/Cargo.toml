@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 license = "GPL-3.0-or-later"
 description = "Timezone Resolver"
+repository = "https://github.com/routers-org/routers"
 
 [dependencies]
 routers_tz_types = { workspace = true }
