@@ -11,13 +11,13 @@ routers_tz_build = { workspace = true }
 
 itertools = { workspace = true }
 ctor = { workspace = true }
+lazy_static = { workspace = true }
 
 geo = { workspace = true, features = ["serde"] }
 geo-index = { workspace = true, optional = true }
 s2 = { workspace = true, optional = true }
 
-lazy_static = { workspace = true }
-time-tz = "2.0.0"
+time-tz = { workspace = true }
 
 [dev-dependencies]
 criterion = { workspace = true }
@@ -32,3 +32,6 @@ default = ["basic"]
 basic = ["routers_tz_build/basic"]
 rtree = ["routers_tz_build/rtree", "geo-index"]
 s2cell = ["routers_tz_build/s2cell", "dep:s2"]
+
+[lints]
+workspace = true
