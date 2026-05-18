@@ -1,1 +1,9 @@
-/data
+# Ignore everything in /data (the source geojson is large and reproducible)
+/data/*
+# …except the prebuilt backend indexes, which are tracked via Git LFS so
+# CI consumers can compile routers_tz without re-running the slow build
+# script. See .gitattributes for the LFS filter and build.rs for usage.
+!/data/prebuilt/
+# The `basic` backend's prebuilt is ~113 MiB and is intentionally not
+# committed; regenerate it locally with the source geojson when needed.
+/data/prebuilt/basic_timezone_data.postcard.bin

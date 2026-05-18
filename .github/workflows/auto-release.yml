@@ -25,19 +25,17 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          lfs: true
 
       - name: Install Buf
         uses: bufbuild/buf-action@v1
         with:
           setup_only: true
 
-      - name: Install Just
+      - name: Install protoc
         uses: taiki-e/install-action@v2
         with:
-          tool: just
-
-      - name: Initialise
-        run: just init
+          tool: protoc@${{ env.PROTOC_VERSION }}
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -49,9 +47,6 @@ jobs:
       - name: Generate Schema
         run: |
           buf generate
-
-      - name: Generate routers_tz prebuilt backend data
-        run: cargo build -p routers_tz --features rtree,s2cell
 
       - name: Run release-plz
         uses: release-plz/action@v0.5
