@@ -1,7 +1,6 @@
 use geo::{Bearing, Distance, Haversine, LineString};
 use routers_network::{Entry, Metadata, Network, Node};
-use std::f64::consts::PI;
-use std::ops::{Div, Mul, Rem};
+use rustc_hash::FxHashSet;
 
 /// Utilities to calculate metadata of a trip.
 /// A trip is composed of a collection of [`Node`] entries.
@@ -47,6 +46,31 @@ where
             .map(|(point, id)| Node::new(point, *id));
 
         Trip::new(nodes)
+    }
+
+    /// Creates a new trip from a slice of [`NodeIx`]s, and a map to lookup their location.
+    /// Includes the source and target candidate positions as the first and last entries in the trip.
+    pub fn new_with_map_and_offsets<M: Metadata>(
+        map: &dyn Network<E, M>,
+        nodes: &[E],
+        source_pos: geo::Point,
+        target_pos: geo::Point,
+    ) -> Self {
+        let resolved = map.line(nodes);
+        let mut nodes_vec = Vec::with_capacity(resolved.len() + 2);
+        let mut seen: FxHashSet<E> = FxHashSet::default();
+
+        nodes_vec.push(Node::new(source_pos, E::default()));
+
+        for (point, id) in resolved.into_iter().zip(nodes) {
+            if seen.insert(*id) {
+                nodes_vec.push(Node::new(point, *id));
+            }
+        }
+
+        nodes_vec.push(Node::new(target_pos, E::default()));
+
+        Trip::new(nodes_vec)
     }
 
     /// Computes the angle between each pair of nodes in the trip.

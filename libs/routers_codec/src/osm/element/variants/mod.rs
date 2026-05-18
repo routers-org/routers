@@ -21,8 +21,6 @@ pub mod common {
     use core::str::FromStr;
     use std::collections::HashMap;
 
-    use buffa::Enumeration;
-
     const OSM_NULL_SENTINEL: i64 = -1i64;
 
     const VALID_ROADWAYS: [&str; 16] = [
