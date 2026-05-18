@@ -1,6 +1,6 @@
 [package]
 name = "routers_codec"
-version = "0.1.5"
+version = "0.1.6"
 edition = "2024"
 include = ["docs/**", "build.rs", "proto/**", "src/**"]
 description = "Encoding and Decoding Primitives for Routers"

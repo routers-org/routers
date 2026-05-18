@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.6] - 2026-05-18
+
+### 🚀 Features
+
+- *(routers_grpc)* Migrated to connect-rpc
+- *(codec)* Utilising refs to improve decode perf.
+
+### 🐛 Bug Fixes
+
+- *(routers_codec)* Update osm implementation to use `buffa`
+- *(codec)* Pre-compile regex
+- *(codec)* Use `|&v| v` instead of |v| *v
+- *(autorelease)* Rename schema crate to routers_schema
+
+
+
 ## [0.1.5] - 2026-05-08
 
 ### 🐛 Bug Fixes
