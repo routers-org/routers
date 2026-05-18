@@ -2,6 +2,40 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.5] - 2026-05-18
+
+### 🚀 Features
+
+- *(conf.)* Basic conformance testing for valhalla, grasshopper and fmm
+- *(schema)* Unified schema crate
+- *(routers_grpc)* Migrated to connect-rpc
+- *(routers_grpc)* Rename to routers_rpc
+- *(schema)* Include formatted pbf, along with required crates for future WKT involvement
+- *(timezone)* Base implementation
+- *(timezone)* Type implementations for timezone
+- *(timezone)* Build scripts to create implementation backends
+- *(timezone)* Inline `_build` crate into `_tz` crate
+- *(timezone)* Move crates into base `libs/` directory
+
+### 💼 Other
+
+- *(routers_grpc)* Migration to connectrpc
+
+### 🐛 Bug Fixes
+
+- *(schema)* Use generated connect-rpc spec
+- *(routers_codec)* Update osm implementation to use `buffa`
+- *(timezone)* Iterator for s2 implementation
+- *(timezone)* Prefer postcard to bincode (no longer maintained)
+- *(timezone)* Dependencies provided by workspace
+- *(timezone)* Assign schema crate a version
+- *(autorelease)* Rename schema crate to routers_schema
+- *(autorelease)* Rename schema crate to routers_schema
+- *(autorelease)* Force-include package contents
+- *(routers_tz)* Use a pre-build strategy, only ship the prebuilt indexes
+
+
+
 ## [0.2.4] - 2026-05-05
 
 ### 🚀 Features
