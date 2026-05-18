@@ -37,14 +37,6 @@ jobs:
         with:
           tool: protoc@${{ env.PROTOC_VERSION }}
 
-      - name: Install Just
-        uses: taiki-e/install-action@v2
-        with:
-          tool: just
-
-      - name: Initialise
-        run: just init
-
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
@@ -55,9 +47,6 @@ jobs:
       - name: Generate Schema
         run: |
           buf generate
-
-      - name: Generate routers_tz prebuilt backend data
-        run: cargo build -p routers_tz --features rtree,s2cell
 
       - name: Run release-plz
         uses: release-plz/action@v0.5
