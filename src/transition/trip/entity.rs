@@ -1,5 +1,7 @@
 use geo::{Bearing, Distance, Haversine, LineString};
 use routers_network::{Entry, Metadata, Network, Node};
+use std::f64::consts::PI;
+use std::ops::{Div, Mul, Rem};
 
 /// Utilities to calculate metadata of a trip.
 /// A trip is composed of a collection of [`Node`] entries.
@@ -85,17 +87,17 @@ where
         self.headings()
             .windows(2)
             .map(|bearings| {
+                // Output in range: [-180, +180]
                 if let [prev, curr] = bearings {
-                    let mut turn_angle = (curr - prev).abs();
+                    let delta = (curr - prev).rem(360.0);
 
-                    // Normalize to [-180, 180] degrees
-                    if turn_angle > 180.0 {
-                        turn_angle -= 360.0;
-                    } else if turn_angle < -180.0 {
-                        turn_angle += 360.0;
+                    if delta > 180.0 {
+                        delta - 360.0
+                    } else if delta <= -180.0 {
+                        delta + 360.0
+                    } else {
+                        delta
                     }
-
-                    turn_angle.abs()
                 } else {
                     0.0
                 }
@@ -180,7 +182,7 @@ where
     ///  // # 180
     /// ```
     pub fn total_angle(&self) -> f64 {
-        self.delta_angle().into_iter().sum()
+        self.delta_angle().into_iter().map(|v| v.abs()).sum()
     }
 
     /// Calculates the "immediate" (or average) angle within a trip.
@@ -212,25 +214,34 @@ where
     /// but can be graded against `d` as a common distance such that the heuristic can
     /// understand if the trip taken between the two nodes is theoretically simple or
     /// theoretically complex.
-    pub fn angular_complexity(&self, distance: f64) -> f64 {
-        const U_TURN: f64 = 179.;
-        const DIST_BETWEEN_ZIGZAG: f64 = 100.0; // 100m minimum
-        const ZIG_ZAG: f64 = 180.0;
+    pub fn angular_complexity(&self) -> f64 {
+        // The maximum knowable rotation in differential angles is between [-180, +180].
+        const MAX_ANGLE: f64 = 180.0;
+        // Compresses the angle range so that turns ≥ 112.5° map to cos ≤ 0 → clamped to 0.
+        const COST_DAMPING: f64 = 0.8;
 
-        // At least 1
-        let num_zig_zags: f64 = (distance / DIST_BETWEEN_ZIGZAG).max(1.);
+        let angles = self.delta_angle();
+        let length = angles.len();
 
-        let sum = self.total_angle();
-        if self.delta_angle().iter().any(|v| v.abs() >= U_TURN) {
-            // Should not take this path - but does not exclude it incase it's the only option.
+        if length == 0 {
+            return 1.0;
+        }
+
+        let costs: Vec<f64> = angles
+            .into_iter()
+            .map(|angle| angle.clamp(-MAX_ANGLE, MAX_ANGLE))
+            .map(|angle| (angle.mul(PI).div(MAX_ANGLE).mul(COST_DAMPING).cos()).clamp(0.0, 1.0))
+            .collect();
+
+        // Any zero contribution (turns ≥ 112.5°) makes the whole path cost zero.
+        // Harmonic mean is used for non-zero segments: it penalises the worst turns
+        // more strongly than arithmetic mean, giving better A* discrimination.
+        if costs.iter().any(|&c| c <= 0.0) {
             return 0.0;
         }
 
-        // Complete Zig-Zag
-        let theoretical_max = num_zig_zags * ZIG_ZAG;
-
-        // Sqrt used to create "stretch" to optimality.
-        1.0 - (sum / theoretical_max).sqrt().clamp(0.0, 1.0)
+        let harmonic_sum: f64 = costs.iter().map(|&c| 1.0 / c).sum();
+        (length as f64 / harmonic_sum).clamp(0.0, 1.0)
     }
 
     /// Returns the length of the trip in meters, calculated
