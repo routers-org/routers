@@ -1,8 +1,13 @@
 pub mod emission {
+    use std::ops::Neg;
+
     use crate::transition::*;
 
-    /// 1 meter (1/10th of the 85th% GPS error)
-    const DEFAULT_EMISSION_ERROR: f64 = 1.0;
+    /// 5 meters (85th% GPS error)
+    const DEFAULT_EMISSION_ERROR: f64 = 25.0;
+
+    /// Sqrt of PI
+    const ROOT_PI: f64 = 1.772;
 
     /// Calculates the emission cost of a candidate relative
     /// to its source node.
@@ -53,31 +58,22 @@ pub mod emission {
     impl<'a> Strategy<EmissionContext<'a>> for DefaultEmissionCost {
         type Cost = f64;
 
-        const ZETA: f64 = 0.5;
-        const BETA: f64 = -10.0; // TODO: Maybe allow dynamic parameters based on the GPS drift-?
+        const ZETA: f64 = 1.;
+        const BETA: f64 = 10.;
 
         #[inline(always)]
         fn calculate(&self, context: EmissionContext<'a>) -> Option<Self::Cost> {
-            // Scale the physical distance by the road-class weight to penalise
-            // candidates on lower-quality roads (e.g. MotorwayLink = 2) relative
-            // to those on higher-quality roads at the same physical offset.
-            //
-            // The weight is capped at 2 before squaring (maximum multiplier = 4)
-            // to avoid cost overflow for high-weight urban roads (Secondary = 7,
-            // Residential = 10, etc.).  Without the cap the exp() inside the decay
-            // formula overflows to u32::MAX for any GPS point > ~3 m from the road,
-            // making all secondary-road candidates indistinguishable and causing
-            // erratic matching on urban routes.
-            //
-            // With the cap:
-            //   Motorway  (w=1) → multiplier = 1  (baseline)
-            //   MotorwayLink (w=2) → multiplier = 4  (must be ≤ ¼ distance of Motorway to win)
-            //   Primary+  (w≥3) → multiplier = 4  (same cap; no run-away overflow)
-            //
-            // Zero-cost behaviour is preserved: distance = 0 → cost = 0.
-            let w = (context.weight as f64).min(2.0);
-            let weighted_distance = context.distance * w * w;
-            Some(weighted_distance.sqrt() * weighted_distance)
+            // e^-sqrt(d) * [1 / (z * sqrt(pi))]
+            const Z: f64 = 0.5;
+            const C: f64 = 1.0 / (Z * ROOT_PI);
+
+            // Prefer higher-class roads (weight=1=motorway) over lower-class ones.
+            // Capped at weight=2 so secondary/residential roads are all treated equally
+            // (preserving distance discrimination within the same road class while ensuring
+            // motorway beats motorway_link even when the link is physically closer).
+            let class_factor = 1.0 / (context.weight as f64).min(2.0);
+
+            Some(C * context.distance.sqrt().neg().exp() * class_factor)
         }
     }
 }
@@ -146,8 +142,8 @@ pub mod transition {
     {
         type Cost = f64;
 
-        const ZETA: f64 = 1.0;
-        const BETA: f64 = -1.0;
+        const ZETA: f64 = 5.0;
+        const BETA: f64 = 1.0;
 
         #[inline]
         fn calculate(&self, context: TransitionContext<'a, E, M, N>) -> Option<Self::Cost> {
@@ -155,22 +151,21 @@ pub mod transition {
             let lengths = context.lengths()?;
 
             // Value in range [0, 1] (1=Low Cost, 0=High Cost)
-            let deviance = lengths.deviance();
+            let deviance = lengths.deviance().clamp(0.0, 1.0);
 
-            // Road-class continuity: penalise transitions where the target candidate
-            // is on a lower-quality road than the source candidate.
-            // A motorway (weight=1) → motorway_link (weight=2) transition gives 0.5;
-            // an upgrade (motorway_link → motorway) gives 1.0 (no penalty).
-            let (source, target) = context.candidates();
-            let src_weight = source.edge.weight as f64;
-            let tgt_weight = target.edge.weight as f64;
-            let class_continuity = (src_weight / tgt_weight).min(1.0);
+            // Value in range [0, 1] (1=Low Cost, 0=High Cost)
+            let turn_cost = context
+                .optimal_path
+                .angular_complexity(context.layer_width)
+                .clamp(0.0, 1.0);
 
-            // We calculate by weight, not by distinction of edges since this
-            // would not uphold the invariants we intend. For example, that would
-            // penalise the use of slip-roads which contain different WayIDs, despite
-            // being the more-optimal path to take.
-            let avg_weight = {
+            // Value in range [0, 1] (1=Low Cost, 0=High Cost)
+            let travel_weight_cost = {
+                let (source, target) = context.candidates();
+
+                let src_weight = source.edge.weight as f64;
+                let tgt_weight = target.edge.weight as f64;
+
                 let weights = context
                     .map_path
                     .windows(2)
@@ -182,38 +177,24 @@ pub mod transition {
                     .map(|Edge { weight, .. }| weight as f64)
                     .collect::<Vec<_>>();
 
-                if weights.is_empty() {
-                    // Distance-only transition (same edge): fall back to the
-                    // better (lower-weight) of the two candidate edges to avoid
-                    // a division-by-zero NaN propagating through the rest of the
-                    // calculation.  Choosing the minimum gives the most
-                    // favourable distinct_cost for a same-edge transition, which
-                    // is the correct baseline when the path has zero routing edges.
+                let avg_weight = if weights.is_empty() {
+                    // Distance-only transition (same edge): use the better of the two
+                    // candidate edges to avoid division-by-zero.
                     src_weight.min(tgt_weight)
                 } else {
                     weights.iter().sum::<f64>() / weights.len() as f64
-                }
+                };
+
+                (1.0 / avg_weight).clamp(0.0, 1.0)
             };
 
-            // Value in range [0, 1] (1=Low Cost, 0=High Cost)
-            let distinct_cost = (1.0 / avg_weight).powi(2).clamp(0.0, 1.0);
-
-            // Value in range [0, 1] (1=Low Cost, 0=High Cost)
-            let turn_cost = context
-                .optimal_path
-                .angular_complexity(context.layer_width)
-                .clamp(0.0, 1.0);
-
-            // Value in range [0, 1] (1=Low Cost, 0=High Cost)
-            //  Weighted: 25% Edge Distinction, 25% Class Continuity, 25% Turn Difficulty, 25% Distance Deviance
-            //      Note: Weights must sum to 100%
-            let avg_cost = (0.25 * distinct_cost)
-                + (0.25 * class_continuity)
-                + (0.25 * turn_cost)
-                + (0.25 * deviance);
-
-            // Take the inverse to "span" values
-            Some(avg_cost.recip())
+            // Additive weighted combination instead of multiplication. The product formula
+            // floors all secondary-road costs above ~2400 (since travel_weight_cost ≤ 0.2),
+            // which removes the cost gradient that A* needs to prune the candidate graph.
+            // With additive combination, a perfect secondary transition returns ~0.80, giving
+            // a cost near zero via 1/(β·v)-1, while a bad one returns ~0.27 → cost ~270.
+            // That 28× ratio is sufficient for the selective solver to prune aggressively.
+            Some(0.25 * travel_weight_cost + 0.25 * deviance + 0.5 * turn_cost)
         }
     }
 }
