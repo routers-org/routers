@@ -3,9 +3,8 @@ use std::{
     ops::{Div, Mul, Rem},
 };
 
-use geo::{Bearing, Distance, Haversine, LineString};
+use geo::{Bearing, Distance, Haversine, LineString, Point};
 use routers_network::{Entry, Metadata, Network, Node};
-use rustc_hash::FxHashSet;
 
 /// Utilities to calculate metadata of a trip.
 /// A trip is composed of a collection of [`Node`] entries.
@@ -53,31 +52,6 @@ where
         Trip::new(nodes)
     }
 
-    /// Creates a new trip from a slice of [`NodeIx`]s, and a map to lookup their location.
-    /// Includes the source and target candidate positions as the first and last entries in the trip.
-    pub fn new_with_map_and_offsets<M: Metadata>(
-        map: &dyn Network<E, M>,
-        nodes: &[E],
-        source_pos: geo::Point,
-        target_pos: geo::Point,
-    ) -> Self {
-        let resolved = map.line(nodes);
-        let mut nodes_vec = Vec::with_capacity(resolved.len() + 2);
-        let mut seen: FxHashSet<E> = FxHashSet::default();
-
-        nodes_vec.push(Node::new(source_pos, E::default()));
-
-        for (point, id) in resolved.into_iter().zip(nodes) {
-            if seen.insert(*id) {
-                nodes_vec.push(Node::new(point, *id));
-            }
-        }
-
-        nodes_vec.push(Node::new(target_pos, E::default()));
-
-        Trip::new(nodes_vec)
-    }
-
     /// Computes the angle between each pair of nodes in the trip.
     /// Allows you to understand the change in heading, aggregatable
     /// using [`Trip::total_angle`] to determine the total variation
@@ -113,13 +87,16 @@ where
     ///  // # [0, 90, 180]
     /// ```
     pub fn delta_angle(&self) -> Vec<f64> {
-        self.headings()
-            .windows(2)
-            .map(|bearings| {
-                // Output in range: [-180, +180]
-                if let [prev, curr] = bearings {
-                    let delta = (curr - prev).rem(360.0);
+        Self::deltas_from_headings(&self.headings())
+    }
 
+    fn deltas_from_headings(headings: &[f64]) -> Vec<f64> {
+        headings
+            .windows(2)
+            .map(|bearings| match bearings {
+                [prev, curr] => {
+                    // Output in range: [-180, +180]
+                    let delta = (curr - prev).rem(360.0);
                     if delta > 180.0 {
                         delta - 360.0
                     } else if delta <= -180.0 {
@@ -127,9 +104,8 @@ where
                     } else {
                         delta
                     }
-                } else {
-                    0.0
                 }
+                _ => 0.0,
             })
             .collect()
     }
@@ -167,22 +143,24 @@ where
     /// Trip::from(positions).headings();
     /// ```
     pub fn headings(&self) -> Vec<f64> {
-        self.0
-            .windows(2)
-            .filter_map(|entries| {
-                if let [a, b] = entries {
-                    // Because bearing cannot be calculated for overlapping nodes
-                    if Haversine.distance(a.position, b.position) < 1.0 {
-                        return None;
-                    }
+        Self::headings_from_positions(self.0.iter().map(|n| n.position))
+    }
 
-                    // Returns the bearing relative to due-north
-                    Some(Haversine.bearing(a.position, b.position))
-                } else {
-                    None
+    fn headings_from_positions(positions: impl IntoIterator<Item = Point>) -> Vec<f64> {
+        let pts: Vec<Point> = positions.into_iter().collect();
+        pts.windows(2)
+            .filter_map(|pair| match pair {
+                [a, b] => {
+                    // Bearing is undefined for overlapping points.
+                    if Haversine.distance(*a, *b) < 1.0 {
+                        None
+                    } else {
+                        Some(Haversine.bearing(*a, *b))
+                    }
                 }
+                _ => None,
             })
-            .collect::<Vec<_>>()
+            .collect()
     }
 
     /// Computes the sum of angle differences within a trip.
@@ -244,14 +222,27 @@ where
     /// understand if the trip taken between the two nodes is theoretically simple or
     /// theoretically complex.
     pub fn angular_complexity(&self) -> f64 {
+        Self::complexity_from_deltas(self.delta_angle())
+    }
+
+    /// Like [`angular_complexity`](Self::angular_complexity), but evaluates the trip with
+    /// `source` prepended and `target` appended. Used to account for the turn induced at
+    /// the candidate→edge-endpoint joints of an intra-transition.
+    pub fn angular_complexity_with_endpoints(&self, source: Point, target: Point) -> f64 {
+        let positions = core::iter::once(source)
+            .chain(self.0.iter().map(|n| n.position))
+            .chain(core::iter::once(target));
+        let headings = Self::headings_from_positions(positions);
+        Self::complexity_from_deltas(Self::deltas_from_headings(&headings))
+    }
+
+    fn complexity_from_deltas(angles: Vec<f64>) -> f64 {
         // The maximum knowable rotation in differential angles is between [-180, +180].
         const MAX_ANGLE: f64 = 180.0;
         // Compresses the angle range so that turns ≥ 112.5° map to cos ≤ 0 → clamped to 0.
         const COST_DAMPING: f64 = 0.8;
 
-        let angles = self.delta_angle();
         let length = angles.len();
-
         if length == 0 {
             return 1.0;
         }

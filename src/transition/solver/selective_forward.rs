@@ -108,16 +108,10 @@ where
                 .into_iter()
                 .filter_map(move |mut reachable| {
                     let path_vec = reachable.path_nodes().collect_vec();
+                    let optimal_path = Trip::new_with_map(context.map, &path_vec);
 
                     let source = context.candidate(&reachable.source)?;
                     let target = context.candidate(&reachable.target)?;
-
-                    let optimal_path = Trip::new_with_map_and_offsets(
-                        transition.map,
-                        &path_vec,
-                        source.position,
-                        target.position,
-                    );
 
                     let sl = transition.layers.layers.get(source.location.layer_id)?;
                     let tl = transition.layers.layers.get(target.location.layer_id)?;
@@ -130,6 +124,9 @@ where
                         source_candidate: &reachable.source,
                         target_candidate: &reachable.target,
                         routing_context: context,
+
+                        source_position: source.position,
+                        target_position: target.position,
 
                         layer_width,
                         optimal_path,
