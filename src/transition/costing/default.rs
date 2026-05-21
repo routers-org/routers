@@ -154,10 +154,7 @@ pub mod transition {
             let deviance = lengths.deviance().clamp(0.0, 1.0);
 
             // Value in range [0, 1] (1=Low Cost, 0=High Cost)
-            let turn_cost = context
-                .optimal_path
-                .angular_complexity(context.layer_width)
-                .clamp(0.0, 1.0);
+            let turn_cost = context.optimal_path.angular_complexity().clamp(0.0, 1.0);
 
             // Value in range [0, 1] (1=Low Cost, 0=High Cost)
             let travel_weight_cost = {
