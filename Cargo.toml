@@ -61,10 +61,10 @@ log = { version = "0.4.28" }
 test-log = { version = "0.2.18", features = ["log"] }
 
 # ConnectRPC
-buffa = { version = "0.5.2", features = ["json"] }
-buffa-types = { version = "0.5.2", features = ["json"] }
-buffa-descriptor = { version = "0.5.2" }
-connectrpc = { version = "0.4.2" }
+buffa = { version = "0.6.0", features = ["json"] }
+buffa-types = { version = "0.6.0", features = ["json"] }
+buffa-descriptor = { version = "0.6.0" }
+connectrpc = { version = "0.6.0" }
 
 serde_json = "1"
 http-body = "1"
