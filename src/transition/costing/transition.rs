@@ -1,7 +1,7 @@
 use crate::ResolutionMethod;
 use crate::transition::candidate::{Candidate, CandidateId};
 use crate::transition::{RoutingContext, Strategy, Trip, VirtualTail};
-use geo::{Distance, Haversine};
+use geo::{Distance, Haversine, Point};
 use routers_network::{Entry, Metadata, Network};
 
 pub trait TransitionStrategy<E, M, N>: for<'a> Strategy<TransitionContext<'a, E, M, N>> {}
@@ -22,7 +22,21 @@ where
     /// to determine trip complexity (and therefore
     /// cost) often through heuristics such as
     /// immediate and summative angular rotation.
+    ///
+    /// Contains interior map nodes only — the candidate endpoint positions
+    /// are tracked separately in [`source_position`](Self::source_position)
+    /// and [`target_position`](Self::target_position) so that callers which
+    /// only care about the routed geometry are not forced to special-case
+    /// synthetic endpoints.
     pub optimal_path: Trip<E>,
+
+    /// The source candidate's position on its edge. Used together with
+    /// [`optimal_path`](Self::optimal_path) when evaluating intra-transition
+    /// geometry (e.g. the turn induced at the candidate→edge-endpoint joint).
+    pub source_position: Point,
+
+    /// The target candidate's position on its edge. See [`source_position`](Self::source_position).
+    pub target_position: Point,
 
     /// A list of all OSM nodes pertaining to the optimal trip path.
     pub map_path: &'a [E],
@@ -145,6 +159,15 @@ where
                 Some(Haversine.distance(source.position, target.position))
             }
         }
+    }
+
+    /// Angular complexity of the full intra-transition geometry: the
+    /// candidate source position, the interior map nodes, and the candidate
+    /// target position. This is what cost heuristics should call so that the
+    /// turn at the candidate→edge joints participates in the score.
+    pub fn angular_complexity(&self) -> f64 {
+        self.optimal_path
+            .angular_complexity_with_endpoints(self.source_position, self.target_position)
     }
 
     /// Returns the [`TransitionLengths`] of the context.

@@ -94,6 +94,9 @@ where
                     target_candidate: &reachable.target,
                     routing_context: context,
 
+                    source_position: source.position,
+                    target_position: target.position,
+
                     layer_width,
                     optimal_path,
                 });

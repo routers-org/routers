@@ -1,6 +1,6 @@
 version: v2
 plugins:
-  - remote: buf.build/anthropics/buffa
+  - remote: buf.build/anthropics/buffa:v0.6.0
     out: schema/src/proto
     include_imports: true
     opt:
@@ -13,7 +13,7 @@ plugins:
     strategy: all
     include_imports: true
 
-  - remote: buf.build/anthropics/connect-rust
+  - remote: buf.build/anthropics/connect-rust:v0.6.0
     out: schema/src/rpc
     opt: [buffa_module=crate::proto]
 
