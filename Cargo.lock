@@ -5969,6 +5969,7 @@ dependencies = [
  "routers_codec",
  "routers_fixtures",
  "routers_network",
+ "routers_shard",
  "rstar 0.12.2",
  "rustc-hash 2.1.2",
  "scc",
@@ -6115,6 +6116,20 @@ dependencies = [
 [[package]]
 name = "routers_shard"
 version = "0.1.0"
+dependencies = [
+ "env_logger",
+ "geo",
+ "log",
+ "petgraph",
+ "postcard",
+ "rayon",
+ "routers_codec",
+ "routers_fixtures",
+ "routers_network",
+ "rstar 0.12.2",
+ "rustc-hash 2.1.2",
+ "serde",
+]
 
 [[package]]
 name = "routers_tiles"

@@ -23,31 +23,122 @@ use crate::osm::*;
 pub type GraphStructure<E> =
     DiGraphMap<E, (Weight, DirectionAwareEdgeId<E>), BuildHasherDefault<FxHasher>>;
 
+/// Magic header + format hash stamped at the start of every `.rt` file.
+///
+/// The hash is derived at build time (see `build.rs`) from the source
+/// files that define the serialised payload. Any change to one of those
+/// files automatically rotates the hash, so a stale cache fails fast with
+/// a clear error instead of a cryptic `postcard` varint panic — no manual
+/// version bump required.
+const SAVE_MAGIC: &[u8; 4] = b"OSMN";
+include!(concat!(env!("OUT_DIR"), "/format_hash.rs"));
+const SAVE_VERSION: u64 = FORMAT_HASH;
+
 #[derive(Serialize, Deserialize)]
 pub struct OsmNetwork {
     pub graph: GraphStructure<OsmEntryId>,
     pub hash: FxHashMap<OsmEntryId, Node<OsmEntryId>>,
     pub meta: FxHashMap<OsmEntryId, OsmEdgeMetadata>,
 
+    /// Spatial index of nodes. Rebuilt on load — see [`Self::rebuild_indices`].
+    /// Bulk-loading is faster than letting `postcard` decode the internal
+    /// `rstar` tree, and it also shrinks the on-disk file substantially.
+    #[serde(skip)]
     pub index: RTree<Node<OsmEntryId>>,
+    #[serde(skip)]
     pub index_edge: RTree<Edge<Node<OsmEntryId>>>,
 }
 
 impl OsmNetwork {
     pub fn from_pbf_and_save(pbf_path: &PathBuf, saved_path: &PathBuf) -> Result<Self, String> {
-        if !saved_path.exists() {
-            let graph = OsmNetwork::from_pbf(pbf_path).expect("Graph must be created");
-            graph.save_to_file(saved_path).expect("must save to file");
+        // Try to load the cache first; if it's stale (different format
+        // hash, missing magic, truncated) just rebuild from the PBF and
+        // overwrite. The build-time `FORMAT_HASH` means this branch only
+        // fires when the on-disk layout actually changed, so we still get
+        // fast warm loads on a normal run.
+        if saved_path.exists() {
+            match OsmNetwork::from_saved(saved_path) {
+                Ok(g) => return Ok(g),
+                Err(e) => {
+                    log::warn!(
+                        "OsmNetwork cache at `{}` is unusable ({e}); rebuilding from PBF",
+                        saved_path.display()
+                    );
+                }
+            }
         }
-
-        let graph = OsmNetwork::from_saved(saved_path).expect("Graph must be created");
+        let graph = OsmNetwork::from_pbf(pbf_path).map_err(|e| e.to_string())?;
+        graph.save_to_file(saved_path)?;
         Ok(graph)
     }
 
     /// Creates a graph from a `.osm.pbf` file, using the `ProcessedElementIterator`
     pub fn from_saved(filename: &PathBuf) -> Result<Self, String> {
-        let mut bytes = std::fs::read(filename).map_err(|v| v.to_string())?;
-        postcard::from_bytes::<Self>(&mut bytes).map_err(|v| v.to_string())
+        let read_start = Instant::now();
+        let bytes = std::fs::read(filename).map_err(|v| v.to_string())?;
+
+        const HEADER_LEN: usize = SAVE_MAGIC.len() + 8;
+        if bytes.len() < HEADER_LEN || &bytes[..SAVE_MAGIC.len()] != SAVE_MAGIC {
+            return Err(format!(
+                "cache file `{}` is missing the OsmNetwork magic header — it was likely written by an older version. Delete the file and re-run to rebuild.",
+                filename.display()
+            ));
+        }
+        let version = u64::from_le_bytes(
+            bytes[SAVE_MAGIC.len()..HEADER_LEN]
+                .try_into()
+                .expect("8 bytes"),
+        );
+        if version != SAVE_VERSION {
+            return Err(format!(
+                "cache file `{}` has format hash {version:016x}, expected {SAVE_VERSION:016x}. The codec's serialised layout has changed — delete the file and re-run to rebuild.",
+                filename.display()
+            ));
+        }
+        let payload = &bytes[HEADER_LEN..];
+
+        let deserialise_start = Instant::now();
+        let mut net: Self = postcard::from_bytes(payload).map_err(|v| v.to_string())?;
+        let deserialise = deserialise_start.elapsed();
+        let rebuild_start = Instant::now();
+        net.rebuild_indices();
+        debug!(
+            "OsmNetwork::from_saved: read {} bytes in {:?}, deserialised in {:?}, rebuilt indices in {:?}",
+            bytes.len(),
+            read_start.elapsed() - deserialise - rebuild_start.elapsed(),
+            deserialise,
+            rebuild_start.elapsed()
+        );
+        Ok(net)
+    }
+
+    /// Rebuilds the node and edge spatial indices from `hash` and `graph`.
+    /// Used after loading a serialised `OsmNetwork` (indices are skipped on
+    /// the wire) and is safe to call at any time.
+    pub fn rebuild_indices(&mut self) {
+        // The two `RTree`s are independent — parallelise the bulk-load so
+        // cache-hit cost is dominated by whichever tree is larger rather
+        // than their sum.
+        let nodes: Vec<Node<OsmEntryId>> = self.hash.values().copied().collect();
+        let edges: Vec<Edge<Node<OsmEntryId>>> = self
+            .graph
+            .all_edges()
+            .filter_map(|(s, t, &(weight, id))| {
+                let source = *self.hash.get(&s)?;
+                let target = *self.hash.get(&t)?;
+                Some(Edge {
+                    source,
+                    target,
+                    id: DirectionAwareEdgeId::new(Node::new(Point::new(0., 0.), id.index()))
+                        .with_direction(id.direction()),
+                    weight,
+                })
+            })
+            .collect();
+        let (node_index, edge_index) =
+            rayon::join(|| RTree::bulk_load(nodes), || RTree::bulk_load(edges));
+        self.index = node_index;
+        self.index_edge = edge_index;
     }
 
     pub fn save_to_file(&self, path: &Path) -> Result<(), String> {
@@ -56,7 +147,17 @@ impl OsmNetwork {
         let output: Vec<u8> =
             postcard::to_allocvec(self).map_err(|e| format!("failed to serialise value: {e}"))?;
 
-        file.write_all(&output).map_err(|e| e.to_string())
+        file.write_all(SAVE_MAGIC).map_err(|e| e.to_string())?;
+        file.write_all(&SAVE_VERSION.to_le_bytes())
+            .map_err(|e| e.to_string())?;
+        file.write_all(&output).map_err(|e| e.to_string())?;
+        debug!(
+            "OsmNetwork::save_to_file wrote {} bytes (+12 byte header, format {:016x}) to {}",
+            output.len(),
+            SAVE_VERSION,
+            path.display()
+        );
+        Ok(())
     }
 
     pub fn from_pbf(filename: &PathBuf) -> Result<Self, Box<dyn std::error::Error>> {

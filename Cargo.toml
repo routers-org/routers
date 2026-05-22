@@ -199,6 +199,9 @@ itertools = { workspace = true }
 indexmap = { workspace = true }
 thiserror = "2.0.12"
 
+# Optional crates surfaced through `[features]` for example targets only.
+routers_shard = { workspace = true, optional = true }
+
 [dev-dependencies]
 wkt = { workspace = true }
 insta = { workspace = true }
@@ -214,7 +217,14 @@ harness = false
 name = "total_ingestion"
 harness = false
 
+[[example]]
+name = "shard_match"
+required-features = ["shard"]
+
 [features]
+# Enables `routers_shard`-backed example targets (e.g. `shard_match`).
+shard = ["dep:routers_shard"]
+
 tracing = [
     "dep:tracing",
     "tracing-subscriber",

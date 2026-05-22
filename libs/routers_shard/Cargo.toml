@@ -7,6 +7,26 @@ edition = "2024"
 publish = false
 
 [dependencies]
+routers_network = { workspace = true }
+routers_codec = { workspace = true, optional = true }
+
+geo = { workspace = true }
+rstar = { workspace = true }
+petgraph = { workspace = true }
+rustc-hash = { workspace = true }
+serde = { workspace = true }
+postcard = { workspace = true }
+log = { workspace = true }
+rayon = { workspace = true }
+
+[features]
+default = ["osm"]
+osm = ["dep:routers_codec"]
+
+[dev-dependencies]
+routers_fixtures = { workspace = true }
+routers_codec = { workspace = true }
+env_logger = "0.11"
 
 [lints]
 workspace = true

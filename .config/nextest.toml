@@ -1,4 +1,24 @@
+# Default profile applies whenever `--profile` isn't passed. The
+# `default-filter` excludes the slow OSM PBF ingest tests (which iterate
+# real fixture files and take ~12 s end-to-end) from normal runs.
+#
+# To run only the excluded tests:    cargo nextest run --profile slow
+# To run absolutely everything:      cargo nextest run --profile all
+[profile.default]
+default-filter = "not binary(osm_ingest)"
+
 [profile.ci]
+# CI inherits the slow-test exclusion from `default` (so PR runs stay fast).
+# Override `default-filter` here if CI should ever include them.
+default-filter = "not binary(osm_ingest)"
 # Do not cancel the test run on the first failure.
 fail-fast = false
 slow-timeout = "5m"
+
+# Opt-in profile for the slow OSM ingest tests on their own.
+[profile.slow]
+default-filter = "binary(osm_ingest)"
+
+# Opt-in profile to run *everything*, including the slow tests.
+[profile.all]
+default-filter = "all()"
