@@ -6,9 +6,6 @@ pub mod emission {
     /// 5 meters (85th% GPS error)
     const DEFAULT_EMISSION_ERROR: f64 = 25.0;
 
-    /// Sqrt of PI
-    const ROOT_PI: f64 = 1.772;
-
     /// Calculates the emission cost of a candidate relative
     /// to its source node.
     ///
@@ -59,21 +56,15 @@ pub mod emission {
         type Cost = f64;
 
         const ZETA: f64 = 1.;
-        const BETA: f64 = 10.;
+        const BETA: f64 = 3.;
 
         #[inline(always)]
         fn calculate(&self, context: EmissionContext<'a>) -> Option<Self::Cost> {
-            // e^-sqrt(d) * [1 / (z * sqrt(pi))]
-            const Z: f64 = 0.5;
-            const C: f64 = 1.0 / (Z * ROOT_PI);
-
-            // Prefer higher-class roads (weight=1=motorway) over lower-class ones.
-            // Capped at weight=2 so secondary/residential roads are all treated equally
-            // (preserving distance discrimination within the same road class while ensuring
-            // motorway beats motorway_link even when the link is physically closer).
-            let class_factor = 1.0 / (context.weight as f64).min(2.0);
-
-            Some(C * context.distance.sqrt().neg().exp() * class_factor)
+            // Pure distance: v = exp(−√d), always in (0, 1]; perfect (d=0) → 1.
+            // Road-class preference is handled by the transition cost (where it
+            // belongs — emission is the spatial fit between a GPS point and a
+            // candidate, not a routing preference).
+            Some(context.distance.sqrt().neg().exp())
         }
     }
 }
@@ -142,7 +133,7 @@ pub mod transition {
     {
         type Cost = f64;
 
-        const ZETA: f64 = 5.0;
+        const ZETA: f64 = 1.0;
         const BETA: f64 = 1.0;
 
         #[inline]
@@ -185,12 +176,6 @@ pub mod transition {
                 (1.0 / avg_weight).clamp(0.0, 1.0)
             };
 
-            // Additive weighted combination instead of multiplication. The product formula
-            // floors all secondary-road costs above ~2400 (since travel_weight_cost ≤ 0.2),
-            // which removes the cost gradient that A* needs to prune the candidate graph.
-            // With additive combination, a perfect secondary transition returns ~0.80, giving
-            // a cost near zero via 1/(β·v)-1, while a bad one returns ~0.27 → cost ~270.
-            // That 28× ratio is sufficient for the selective solver to prune aggressively.
             Some(0.25 * travel_weight_cost + 0.25 * deviance + 0.5 * turn_cost)
         }
     }
