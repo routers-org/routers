@@ -9,7 +9,12 @@ use routers_shard::{
     osm::OsmSource,
 };
 
-fn build(mode: SelectionMode) -> (ShardedNetwork<OsmEntryId, OsmEdgeMetadata, QuadKey>, QuadKey) {
+fn build(
+    mode: SelectionMode,
+) -> (
+    ShardedNetwork<OsmEntryId, OsmEdgeMetadata, QuadKey>,
+    QuadKey,
+) {
     let path = fixture_path(SYDNEY);
     let source = OsmSource::new(path);
     let strategy = QuadTreeStrategy::with_depth(10);
@@ -26,7 +31,10 @@ fn build(mode: SelectionMode) -> (ShardedNetwork<OsmEntryId, OsmEdgeMetadata, Qu
 #[test]
 fn owned_only_builds_nonempty_network() {
     let (net, _) = build(SelectionMode::Owned);
-    assert!(net.num_nodes() > 0, "owned shard should contain some road network");
+    assert!(
+        net.num_nodes() > 0,
+        "owned shard should contain some road network"
+    );
     assert!(net.graph.edge_count() > 0);
 }
 
@@ -63,7 +71,10 @@ fn ingested_nodes_are_in_loaded_shards_or_their_halo() {
     }
     assert!(in_loaded > 0);
     // Halo is expected but should be a small fraction of the total.
-    assert!(halo < in_loaded, "halo {halo} dwarfed selection {in_loaded}");
+    assert!(
+        halo < in_loaded,
+        "halo {halo} dwarfed selection {in_loaded}"
+    );
 }
 
 #[test]

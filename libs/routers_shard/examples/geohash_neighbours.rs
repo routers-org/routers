@@ -5,8 +5,7 @@ use geo::Point;
 use routers_fixtures::{SYDNEY, fixture};
 use routers_network::Route;
 use routers_shard::{
-    GeohashStrategy, Selection, SelectionMode, ShardedNetwork, ShardingStrategy,
-    osm::OsmSource,
+    GeohashStrategy, Selection, SelectionMode, ShardedNetwork, ShardingStrategy, osm::OsmSource,
 };
 
 fn main() {
@@ -35,9 +34,17 @@ fn main() {
     if let (Some(start), Some(finish)) = (nodes.next(), nodes.last()) {
         match net.route_nodes(start, finish) {
             Some((weight, path)) => {
-                println!("Route: {} → {} ({} nodes, weight {weight})", start.identifier, finish.identifier, path.len())
+                println!(
+                    "Route: {} → {} ({} nodes, weight {weight})",
+                    start.identifier,
+                    finish.identifier,
+                    path.len()
+                )
             }
-            None => println!("No route between {} and {}", start.identifier, finish.identifier),
+            None => println!(
+                "No route between {} and {}",
+                start.identifier, finish.identifier
+            ),
         }
     }
 }

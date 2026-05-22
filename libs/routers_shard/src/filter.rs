@@ -36,7 +36,10 @@ impl<M: Metadata + 'static> Default for IngestFilter<M> {
 impl<M: Metadata + 'static> Debug for IngestFilter<M> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("IngestFilter")
-            .field("way_predicate", &self.way_predicate.as_ref().map(|_| "<closure>"))
+            .field(
+                "way_predicate",
+                &self.way_predicate.as_ref().map(|_| "<closure>"),
+            )
             .field("strip_metadata", &self.strip_metadata)
             .finish()
     }

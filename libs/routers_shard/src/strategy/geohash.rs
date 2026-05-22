@@ -28,7 +28,10 @@ pub struct GeohashStrategy {
 
 impl GeohashStrategy {
     pub fn with_precision(precision: u8) -> Self {
-        assert!(precision >= 1 && precision <= 12, "geohash precision must be in 1..=12");
+        assert!(
+            precision >= 1 && precision <= 12,
+            "geohash precision must be in 1..=12"
+        );
         Self { precision }
     }
 

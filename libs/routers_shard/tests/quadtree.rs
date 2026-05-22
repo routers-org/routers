@@ -53,7 +53,10 @@ fn bounds_shrink_with_depth() {
         let key = strategy.locate(Point::new(13.4, 52.5));
         let rect = strategy.bounds(&key);
         let area = (rect.max().x - rect.min().x) * (rect.max().y - rect.min().y);
-        assert!(area < prior_area || depth == 0, "depth {depth}: area {area} not < {prior_area}");
+        assert!(
+            area < prior_area || depth == 0,
+            "depth {depth}: area {area} not < {prior_area}"
+        );
         prior_area = area;
     }
 }
@@ -72,7 +75,11 @@ fn neighbours_share_depth_and_excludes_self() {
         let mut sorted = neighbours.clone();
         sorted.sort();
         sorted.dedup();
-        assert_eq!(sorted.len(), neighbours.len(), "neighbours not unique ({name})");
+        assert_eq!(
+            sorted.len(),
+            neighbours.len(),
+            "neighbours not unique ({name})"
+        );
     }
 }
 
@@ -93,7 +100,11 @@ fn edge_cells_have_fewer_neighbours() {
     let strategy = QuadTreeStrategy::with_depth(8);
     let pole = strategy.locate(Point::new(0.0, 89.99));
     let dateline = strategy.locate(Point::new(179.99, 0.0));
-    assert!(strategy.neighbours(&pole).len() < 8, "pole had {} neighbours", strategy.neighbours(&pole).len());
+    assert!(
+        strategy.neighbours(&pole).len() < 8,
+        "pole had {} neighbours",
+        strategy.neighbours(&pole).len()
+    );
     assert!(strategy.neighbours(&dateline).len() < 8);
 }
 
@@ -157,7 +168,10 @@ fn out_of_range_points_clamp() {
     let strategy = QuadTreeStrategy::with_depth(6);
     let inside = strategy.locate(Point::new(180.0, 90.0));
     let outside = strategy.locate(Point::new(1_000.0, 1_000.0));
-    assert_eq!(inside, outside, "out-of-range points should clamp into the world rectangle");
+    assert_eq!(
+        inside, outside,
+        "out-of-range points should clamp into the world rectangle"
+    );
 }
 
 #[test]

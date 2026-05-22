@@ -25,9 +25,7 @@ impl MemSource {
         let mut next_node_id: i64 = 1;
         let mut next_way_id: i64 = 1_000_000;
 
-        let index = |x: u32, y: u32| -> OsmEntryId {
-            OsmEntryId::node(1 + (y * cols + x) as i64)
-        };
+        let index = |x: u32, y: u32| -> OsmEntryId { OsmEntryId::node(1 + (y * cols + x) as i64) };
 
         for y in 0..rows {
             for x in 0..cols {

@@ -44,8 +44,14 @@ fn neighbour_mode_at_boundary_drops_to_fewer_neighbours() {
     // Near the south pole — fewer than 8 neighbours should be loaded.
     let owned = strategy.locate(Point::new(0.0, -89.99));
     let sel = Selection::new(&strategy, owned, SelectionMode::OwnedAndNeighbours);
-    assert!(sel.loaded.len() < 9, "expected boundary cell to load fewer shards");
-    assert!(sel.loaded.len() >= 2, "should at least include some neighbours");
+    assert!(
+        sel.loaded.len() < 9,
+        "expected boundary cell to load fewer shards"
+    );
+    assert!(
+        sel.loaded.len() >= 2,
+        "should at least include some neighbours"
+    );
 }
 
 #[test]

@@ -6,8 +6,7 @@
 use geo::Point;
 use routers_fixtures::{SYDNEY, fixture};
 use routers_shard::{
-    QuadTreeStrategy, Selection, SelectionMode, ShardedNetwork, ShardingStrategy,
-    osm::OsmSource,
+    QuadTreeStrategy, Selection, SelectionMode, ShardedNetwork, ShardingStrategy, osm::OsmSource,
 };
 
 fn main() {

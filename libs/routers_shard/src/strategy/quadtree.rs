@@ -149,13 +149,13 @@ impl super::ShardingStrategy for QuadTreeStrategy {
         let cy = 0.5 * (min_y + max_y);
 
         let probes = [
-            (cx, max_y + eps_y),       // N
+            (cx, max_y + eps_y),            // N
             (max_x + eps_x, max_y + eps_y), // NE
-            (max_x + eps_x, cy),       // E
+            (max_x + eps_x, cy),            // E
             (max_x + eps_x, min_y - eps_y), // SE
-            (cx, min_y - eps_y),       // S
+            (cx, min_y - eps_y),            // S
             (min_x - eps_x, min_y - eps_y), // SW
-            (min_x - eps_x, cy),       // W
+            (min_x - eps_x, cy),            // W
             (min_x - eps_x, max_y + eps_y), // NW
         ];
 

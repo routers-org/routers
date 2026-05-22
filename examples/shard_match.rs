@@ -12,15 +12,17 @@ use geo::{Coord, LineString, Point};
 use routers::r#match::MatchSimpleExt;
 use routers_fixtures::{SYDNEY, SYNDEY_TRIP, fixture};
 use routers_shard::{
-    QuadTreeStrategy, Selection, SelectionMode, ShardedNetwork, ShardingStrategy,
-    osm::OsmSource,
+    QuadTreeStrategy, Selection, SelectionMode, ShardedNetwork, ShardingStrategy, osm::OsmSource,
 };
 use wkt::TryFromWkt;
 
 fn centroid(line: &LineString<f64>) -> Point {
-    let (sx, sy, n) = line.0.iter().fold((0.0, 0.0, 0u32), |(sx, sy, n), Coord { x, y }| {
-        (sx + x, sy + y, n + 1)
-    });
+    let (sx, sy, n) = line
+        .0
+        .iter()
+        .fold((0.0, 0.0, 0u32), |(sx, sy, n), Coord { x, y }| {
+            (sx + x, sy + y, n + 1)
+        });
     Point::new(sx / n as f64, sy / n as f64)
 }
 
@@ -48,11 +50,7 @@ fn main() {
         .r#match_simple(coordinates)
         .expect("match must complete");
 
-    let matched: LineString<f64> = route
-        .discretized
-        .iter()
-        .map(|v| Point(v.point))
-        .collect();
+    let matched: LineString<f64> = route.discretized.iter().map(|v| Point(v.point)).collect();
 
     println!("Matched {} points across sharded network", matched.0.len());
 }

@@ -7,8 +7,7 @@
 use geo::Point;
 use routers_fixtures::{SYDNEY, fixture};
 use routers_shard::{
-    GeohashStrategy, Selection, SelectionMode, ShardedNetwork, ShardingStrategy,
-    osm::OsmSource,
+    GeohashStrategy, Selection, SelectionMode, ShardedNetwork, ShardingStrategy, osm::OsmSource,
 };
 
 fn main() {

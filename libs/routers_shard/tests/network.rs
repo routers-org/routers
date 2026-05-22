@@ -139,7 +139,12 @@ fn neighbour_mode_increases_node_count_when_grid_spans_shards() {
     // ingested graph monotonically.
     let source = MemSource::grid(Point::new(0.0, 0.0), 16, 16, 1.0);
     let net_owned = build(&source, 4, Point::new(0.5, 0.5), SelectionMode::Owned);
-    let net_padded = build(&source, 4, Point::new(0.5, 0.5), SelectionMode::OwnedAndNeighbours);
+    let net_padded = build(
+        &source,
+        4,
+        Point::new(0.5, 0.5),
+        SelectionMode::OwnedAndNeighbours,
+    );
     assert!(net_padded.num_nodes() > net_owned.num_nodes());
     assert!(net_padded.graph.edge_count() > net_owned.graph.edge_count());
     assert!(net_padded.loaded.len() > net_owned.loaded.len());
@@ -157,7 +162,10 @@ fn empty_selection_yields_nothing_useful() {
     let net = ShardedNetwork::from_source(&source, &strategy, &selection).expect("ingest");
     assert_eq!(net.num_nodes(), 0);
     assert_eq!(net.graph.edge_count(), 0);
-    assert!(net.route_nodes(OsmEntryId::node(1), OsmEntryId::node(2)).is_none());
+    assert!(
+        net.route_nodes(OsmEntryId::node(1), OsmEntryId::node(2))
+            .is_none()
+    );
 }
 
 #[test]
@@ -179,8 +187,8 @@ fn filter_keep_ways_where_drops_unwanted_ways() {
     let owned = strategy.locate(Point::new(0.01, 0.01));
     let selection = Selection::new(&strategy, owned, SelectionMode::Owned);
     let filter = IngestFilter::<OsmEdgeMetadata>::new().keep_ways_where(|_| false);
-    let net =
-        ShardedNetwork::from_source_filtered(&source, &strategy, &selection, &filter).expect("ingest");
+    let net = ShardedNetwork::from_source_filtered(&source, &strategy, &selection, &filter)
+        .expect("ingest");
     assert_eq!(net.graph.edge_count(), 0, "filter should drop every way");
     // No edges → no nodes after the retain step.
     assert_eq!(net.num_nodes(), 0);
@@ -197,8 +205,8 @@ fn filter_keep_ways_where_predicates_compose() {
     let filter = IngestFilter::<OsmEdgeMetadata>::new()
         .keep_ways_where(|_| true)
         .keep_ways_where(|_| false);
-    let net =
-        ShardedNetwork::from_source_filtered(&source, &strategy, &selection, &filter).expect("ingest");
+    let net = ShardedNetwork::from_source_filtered(&source, &strategy, &selection, &filter)
+        .expect("ingest");
     assert_eq!(net.graph.edge_count(), 0);
 }
 
@@ -214,8 +222,8 @@ fn filter_without_metadata_drops_meta_map_but_keeps_topology() {
     let baseline =
         ShardedNetwork::from_source(&source, &strategy, &selection).expect("baseline ingest");
     let filter = IngestFilter::<OsmEdgeMetadata>::new().without_metadata();
-    let stripped =
-        ShardedNetwork::from_source_filtered(&source, &strategy, &selection, &filter).expect("ingest");
+    let stripped = ShardedNetwork::from_source_filtered(&source, &strategy, &selection, &filter)
+        .expect("ingest");
 
     // Topology is identical.
     assert_eq!(stripped.num_nodes(), baseline.num_nodes());
@@ -282,10 +290,15 @@ fn from_cached_round_trips_via_disk() {
     // Indices rebuilt — confirm spatial lookups still work.
     let p = Point::new(0.01, 0.01);
     assert!(loaded.nearest_node(&p).is_some());
-    assert!(loaded.nodes_in_box(rstar::AABB::from_corners(
-        Point::new(-1.0, -1.0),
-        Point::new(1.0, 1.0)
-    )).count() > 0);
+    assert!(
+        loaded
+            .nodes_in_box(rstar::AABB::from_corners(
+                Point::new(-1.0, -1.0),
+                Point::new(1.0, 1.0)
+            ))
+            .count()
+            > 0
+    );
 }
 
 #[test]

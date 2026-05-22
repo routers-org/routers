@@ -56,11 +56,14 @@ fn main() {
 
     let full = IngestFilter::<OsmEdgeMetadata>::new();
     let no_meta = IngestFilter::<OsmEdgeMetadata>::new().without_metadata();
-    let trunk = IngestFilter::<OsmEdgeMetadata>::new()
-        .keep_ways_where(|m| matches!(m.road_class, Some(c) if (c as i32) <= RoadClass::Tertiary as i32));
+    let trunk = IngestFilter::<OsmEdgeMetadata>::new().keep_ways_where(
+        |m| matches!(m.road_class, Some(c) if (c as i32) <= RoadClass::Tertiary as i32),
+    );
     let trunk_no_meta = IngestFilter::<OsmEdgeMetadata>::new()
         .without_metadata()
-        .keep_ways_where(|m| matches!(m.road_class, Some(c) if (c as i32) <= RoadClass::Tertiary as i32));
+        .keep_ways_where(
+            |m| matches!(m.road_class, Some(c) if (c as i32) <= RoadClass::Tertiary as i32),
+        );
 
     let variants: [(&str, &IngestFilter<OsmEdgeMetadata>); 4] = [
         ("full", &full),
@@ -80,7 +83,10 @@ fn main() {
             full_size = bytes;
         }
         let pct = if full_size > 0 {
-            format!(" ({:>5.1}% of full)", 100.0 * bytes as f64 / full_size as f64)
+            format!(
+                " ({:>5.1}% of full)",
+                100.0 * bytes as f64 / full_size as f64
+            )
         } else {
             String::new()
         };

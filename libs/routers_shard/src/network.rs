@@ -158,7 +158,13 @@ where
             for r in &way.refs {
                 needed.insert(*r);
             }
-            kept_ways.push((way.id, way.metadata, way.refs, way.weight, way.bidirectional));
+            kept_ways.push((
+                way.id,
+                way.metadata,
+                way.refs,
+                way.weight,
+                way.bidirectional,
+            ));
         })?;
         if dropped_by_filter > 0 {
             debug!(

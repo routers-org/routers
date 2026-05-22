@@ -27,7 +27,11 @@ fn locate_is_deterministic() {
     let strategy = GeohashStrategy::with_precision(7);
     for &(x, y, name) in SAMPLES {
         let p = Point::new(x, y);
-        assert_eq!(strategy.locate(p), strategy.locate(p), "non-deterministic at {name}");
+        assert_eq!(
+            strategy.locate(p),
+            strategy.locate(p),
+            "non-deterministic at {name}"
+        );
     }
 }
 
@@ -54,7 +58,10 @@ fn higher_precision_yields_smaller_bounds() {
         let h = strategy.locate(Point::new(13.4, 52.5));
         let r = strategy.bounds(&h);
         let area = (r.max().x - r.min().x) * (r.max().y - r.min().y);
-        assert!(area < prior_area, "precision {precision}: {area} not < {prior_area}");
+        assert!(
+            area < prior_area,
+            "precision {precision}: {area} not < {prior_area}"
+        );
         prior_area = area;
     }
 }
@@ -77,12 +84,20 @@ fn neighbours_share_precision_and_excludes_self() {
         let neighbours = strategy.neighbours(&h);
         for n in &neighbours {
             assert_ne!(n, &h, "neighbour set must not contain self ({name})");
-            assert_eq!(n.0.len(), h.0.len(), "neighbour precision mismatch ({name})");
+            assert_eq!(
+                n.0.len(),
+                h.0.len(),
+                "neighbour precision mismatch ({name})"
+            );
         }
         let mut sorted = neighbours.clone();
         sorted.sort();
         sorted.dedup();
-        assert_eq!(sorted.len(), neighbours.len(), "neighbours not unique ({name})");
+        assert_eq!(
+            sorted.len(),
+            neighbours.len(),
+            "neighbours not unique ({name})"
+        );
     }
 }
 
