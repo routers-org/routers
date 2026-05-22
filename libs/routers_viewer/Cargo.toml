@@ -19,8 +19,14 @@ wkt = { workspace = true }
 dotenv = { workspace = true }
 env_logger = "0.11"
 
-# UI Dependencies
-eframe = "0.33.0"
+# UI Dependencies — `wgpu` backend instead of the default `glow` so the
+# same code path runs natively (Metal/Vulkan/DX12) and, later, in the
+# browser (WebGPU). `default_fonts` is preserved so we keep the egui font
+# atlas without having to ship one ourselves.
+eframe = { version = "0.33.0", default-features = false, features = [
+    "wgpu",
+    "default_fonts",
+] }
 egui = "0.33.0"
 walkers = "0.47" # Version compatible with egui 0.33
 
