@@ -2,11 +2,15 @@
 
 extern crate alloc;
 
-#[cfg(feature = "mimalloc")]
+// `mimalloc` is only ever compiled on non-WASM targets (see Cargo.toml),
+// so the `global_allocator` registration is gated on the same cfg to keep
+// `cargo check --target wasm32-unknown-unknown --features mimalloc` from
+// trying to reach a dep that simply isn't there.
+#[cfg(all(feature = "mimalloc", not(target_arch = "wasm32")))]
 use mimalloc::MiMalloc;
 
-#[cfg_attr(feature = "mimalloc", global_allocator)]
-#[cfg(feature = "mimalloc")]
+#[cfg(all(feature = "mimalloc", not(target_arch = "wasm32")))]
+#[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
 
 pub mod osm;
