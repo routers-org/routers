@@ -114,25 +114,53 @@ mod web {
         }
     }
 
+    use web_time::{Duration, Instant};
+
+    /// Coalesce a burst of shard arrivals into a single composite
+    /// rebuild. After a pan, the window typically resolves 8 fetches
+    /// inside a few hundred milliseconds; rebuilding eagerly each time
+    /// produces a string of long frames. With the debounce we get one
+    /// rebuild after the burst settles — one stutter instead of eight,
+    /// with the loading overlay explaining why.
+    const COMPOSITE_DEBOUNCE: Duration = Duration::from_millis(150);
+
     /// Outer App wrapper that owns the [`ShardWindow`] alongside the
     /// generic [`ViewerApp`]. Each frame:
     ///
     /// 1. Reads the viewer's current map centre.
-    /// 2. If that's in a different cell than the window currently owns,
-    ///    calls `recenter` and spawns fetches for any new neighbours.
-    /// 3. If the *set* of loaded shards has changed since last frame —
-    ///    a new neighbour finished fetching, or eviction kicked in —
-    ///    rebuilds a [`MultiShardNetwork`] over all loaded shards and
-    ///    swaps it into the viewer. The composite lets the matcher
-    ///    route across shard boundaries naturally.
-    /// 4. Delegates to `ViewerApp::update` for the actual UI.
+    /// 2. `recenter` the window if needed; spawn fetches for new cells.
+    /// 3. If the loaded set has drifted from what the composite was
+    ///    built over, arm a debounce timer. Once it expires, rebuild
+    ///    [`MultiShardNetwork`] and swap it in via `set_network`.
+    /// 4. Paint a bottom-right loading indicator showing how many
+    ///    shards of the current 9-cell window are in memory.
+    /// 5. Delegate to `ViewerApp::update` for the actual UI.
     struct ShardDrivenViewer {
         inner: ViewerApp<Net>,
         window: Window,
-        // Sorted list of geohashes the inner viewer's composite was
-        // built from. Used to detect "what's in memory changed" without
-        // having to compare two Arc-laden composites.
-        loaded: Vec<Geohash>,
+        /// Sorted list of geohashes the inner viewer's composite was
+        /// built from. Compared against `window.loaded_ids()` to detect
+        /// when a rebuild is owed.
+        composite_set: Vec<Geohash>,
+        /// Target shard count for the current centre — owned + its
+        /// strategy-defined neighbours (typically 9, fewer at world
+        /// boundaries). Drives the loading overlay's "X/Y" denominator.
+        expected: usize,
+        /// First time we noticed the loaded set diverging from
+        /// `composite_set`. Cleared once the rebuild is committed.
+        pending_since: Option<Instant>,
+    }
+
+    impl ShardDrivenViewer {
+        fn refresh_expected(&mut self) {
+            // Owned cell may be `None` very briefly during a recenter;
+            // fall back to 1 to avoid showing "0/0" in the overlay.
+            self.expected = self
+                .window
+                .center()
+                .map(|c| 1 + self.window.strategy().neighbours(&c).len())
+                .unwrap_or(1);
+        }
     }
 
     impl eframe::App for ShardDrivenViewer {
@@ -142,38 +170,78 @@ mod web {
             let point = Point::new(pos.x(), pos.y());
 
             // 2. Move the window if necessary; spawn fetches for any
-            //    cells that just came into scope.
+            //    cells that just came into scope. Recompute `expected`
+            //    when the centre changes (cells at the world edge have
+            //    fewer than 8 neighbours).
             let delta = self.window.recenter(point);
-            if !delta.unchanged && !delta.to_fetch.is_empty() {
-                spawn_fetches(self.window.clone(), delta.to_fetch.clone());
+            if !delta.unchanged {
+                self.refresh_expected();
+                if !delta.to_fetch.is_empty() {
+                    spawn_fetches(self.window.clone(), delta.to_fetch.clone());
+                }
             }
 
-            // 3. Track the loaded set. If it differs from what the
-            //    composite was built over, rebuild and swap.
-            let mut loaded_now = self.window.loaded_ids();
-            loaded_now.sort();
-            if loaded_now != self.loaded {
-                let shards: Vec<_> = loaded_now
-                    .iter()
-                    .filter_map(|id| self.window.get(id))
-                    .collect();
-                log::info!(
-                    "composite rebuild: {} → {} loaded shards",
-                    self.loaded.len(),
-                    shards.len()
-                );
-                let composite = MultiShardNetwork::new(shards);
-                let new_net = Arc::new(composite);
-                // Note: `set_network` clears `match_state`. Acceptable
-                // here because the previous matched-route's candidate
-                // ids may now reference nodes that have been evicted
-                // (on far pan) or whose graph context is now richer
-                // (on neighbour fetch resolve).
-                self.inner.set_network(new_net);
-                self.loaded = loaded_now;
+            // 3. Mark a rebuild "owed" whenever the loaded set diverges
+            //    from what we last composited. The actual rebuild waits
+            //    for the debounce window to elapse, so a cascade of
+            //    neighbour fetches turns into a single stutter.
+            let mut current_loaded = self.window.loaded_ids();
+            current_loaded.sort();
+            if current_loaded != self.composite_set && self.pending_since.is_none() {
+                self.pending_since = Some(Instant::now());
+            }
+            if let Some(ts) = self.pending_since {
+                if ts.elapsed() >= COMPOSITE_DEBOUNCE && !current_loaded.is_empty() {
+                    let shards: Vec<_> = current_loaded
+                        .iter()
+                        .filter_map(|id| self.window.get(id))
+                        .collect();
+                    log::info!(
+                        "composite rebuild: {} → {} loaded shards",
+                        self.composite_set.len(),
+                        shards.len()
+                    );
+                    let composite = MultiShardNetwork::new(shards);
+                    // Note: `set_network` clears `match_state`. Acceptable
+                    // here because the previous match's candidate ids
+                    // may now reference nodes whose graph context just
+                    // changed.
+                    self.inner.set_network(Arc::new(composite));
+                    self.composite_set = current_loaded.clone();
+                    self.pending_since = None;
+                } else {
+                    // Tick again so the debounce timer resolves even if
+                    // nothing else triggers a repaint.
+                    ctx.request_repaint_after(COMPOSITE_DEBOUNCE);
+                }
             }
 
+            // 4. Render the inner viewer first so our overlay sits on
+            //    top of the map without being clipped by the central
+            //    panel.
             self.inner.update(ctx, frame);
+
+            // 5. Loading indicator. Fixed in the bottom-right via an
+            //    egui::Area anchored to the viewport. Stays out of the
+            //    way during normal use, narrates the loading state
+            //    during a pan.
+            let loaded_count = current_loaded.len();
+            let is_ready = loaded_count >= self.expected && self.pending_since.is_none();
+            let label = if is_ready {
+                format!("✅ Ready ({}/{})", loaded_count, self.expected)
+            } else {
+                format!("⏳ Loading shards {}/{}", loaded_count, self.expected)
+            };
+            egui::Area::new(egui::Id::new("shard-status"))
+                .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-16.0, -16.0))
+                .order(egui::Order::Foreground)
+                .show(ctx, |ui| {
+                    egui::Frame::popup(ui.style())
+                        .corner_radius(6.0)
+                        .show(ui, |ui| {
+                            ui.label(label);
+                        });
+                });
         }
     }
 
@@ -290,10 +358,18 @@ mod web {
                             initial_net,
                             my_position,
                         );
+                        // Seed `expected` from the starter cell's
+                        // neighbour count so the overlay shows the
+                        // right denominator before the first recenter
+                        // tick runs.
+                        let expected =
+                            1 + shard_window.strategy().neighbours(&starter_key).len();
                         Ok(Box::new(ShardDrivenViewer {
                             inner,
                             window: shard_window,
-                            loaded: initial_loaded,
+                            composite_set: initial_loaded,
+                            expected,
+                            pending_since: None,
                         }) as Box<dyn eframe::App>)
                     }),
                 )

@@ -229,4 +229,11 @@ where
             .get(id)
             .cloned()
     }
+
+    /// Reference to the partitioning strategy this window was built with.
+    /// Useful for callers that want to compute neighbours, locate points,
+    /// etc., without keeping their own copy.
+    pub fn strategy(&self) -> &St {
+        &self.strategy
+    }
 }

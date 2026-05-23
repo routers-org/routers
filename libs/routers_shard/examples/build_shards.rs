@@ -13,11 +13,11 @@
 //! - **5 → ~4.9 km × 4.9 km** (a CBD-sized cell — current default)
 //! - 6 → ~1.2 km × 600 m (too fine — fragmented road network)
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use geo::Point;
-use routers_codec::osm::OsmEdgeMetadata;
+use routers_codec::osm::{OsmEdgeMetadata, OsmEntryId};
 use routers_codec::osm::primitives::RoadClass;
 use routers_fixtures::{SYDNEY, fixture};
 use routers_shard::{
@@ -27,6 +27,33 @@ use routers_shard::{
 
 fn naming(key: &Geohash) -> String {
     format!("{}.shard.rt", key.0)
+}
+
+/// Decide whether the existing cache at `out_dir` is still valid against
+/// this binary's compiled `FORMAT_HASH`. Approach: read the first entry
+/// from `manifest.txt` and `from_cached` it — that exercises the magic-
+/// header + hash check that the wasm side would also do, so a "yes" from
+/// here means the wasm bundle will load the cache cleanly.
+///
+/// Returns `Ok(())` if the cache is fresh, `Err(reason)` otherwise. The
+/// reason is logged for the user; we don't propagate it because the
+/// resolution is always the same — rebuild.
+fn cache_is_fresh(out_dir: &Path) -> Result<(), String> {
+    let manifest_path = out_dir.join("manifest.txt");
+    let manifest = std::fs::read_to_string(&manifest_path)
+        .map_err(|e| format!("manifest at {}: {e}", manifest_path.display()))?;
+    let first = manifest
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .ok_or_else(|| "manifest is empty".to_string())?;
+    let path = out_dir.join(first);
+    // Just decode — we throw the result away. If it succeeds the magic
+    // header and the format hash both checked out, which is exactly
+    // what we want to verify.
+    ShardedNetwork::<OsmEntryId, OsmEdgeMetadata, Geohash>::from_cached(&path)
+        .map(|_| ())
+        .map_err(|e| format!("cache load `{first}`: {e}"))
 }
 
 /// Walk a regular grid of sample points over `[sw, ne]` and dedupe by
@@ -79,6 +106,24 @@ fn main() {
     let _ = RoadClass::Tertiary; // keep the import warning-free while filter is empty
 
     std::fs::create_dir_all(&out_dir).expect("mkdir");
+
+    // Skip the whole build if the cache on disk already matches this
+    // binary's compiled `FORMAT_HASH`. Cheap to verify (one decode of
+    // a single shard), and means `just web serve` can call us
+    // unconditionally without paying the ~2 s PBF parse on every
+    // invocation.
+    match cache_is_fresh(&out_dir) {
+        Ok(()) => {
+            println!(
+                "Shard cache at {} is fresh — skipping rebuild.",
+                out_dir.display()
+            );
+            return;
+        }
+        Err(reason) => {
+            println!("Cache stale or missing ({reason}) — rebuilding.");
+        }
+    }
 
     let source = OsmSource::new(fixture!(SYDNEY).clone());
     let strategy = GeohashStrategy::with_precision(precision);

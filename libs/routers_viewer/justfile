@@ -24,15 +24,13 @@ install:
 build-shards:
     cargo run -p routers_shard --example build_shards --release
 
-# Rebuild the shard cache only if it's missing — useful for `dev` so the
-# loop doesn't pay the PBF parse cost on every run.
+# Always invoke `build_shards` — it self-checks against the binary's
+# compiled `FORMAT_HASH` and exits early when the cache is already
+# fresh. That way `serve`/`build`/`release` never serve stale shards
+# (which manifest as `from_cached_bytes` magic-header failures in the
+# browser) while still skipping the ~2 s PBF parse on hot paths.
 ensure-shards:
-    #!/usr/bin/env bash
-    if [ ! -d "{{ shard_cache }}" ] || [ -z "$(ls -A {{ shard_cache }} 2>/dev/null)" ]; then
-        just web build-shards
-    else
-        echo "shard cache present at {{ shard_cache }} — skipping rebuild"
-    fi
+    just build-shards
 
 # Run a dev server with hot reload. Equivalent to `trunk-ng serve` from
 # `libs/routers_viewer/`. Opens http://127.0.0.1:8080 once ready.
