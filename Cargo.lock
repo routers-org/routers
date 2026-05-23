@@ -5573,6 +5573,7 @@ version = "0.1.0"
 dependencies = [
  "env_logger",
  "geo",
+ "js-sys",
  "log",
  "petgraph",
  "postcard",
@@ -5583,6 +5584,10 @@ dependencies = [
  "rstar 0.12.2",
  "rustc-hash 2.1.2",
  "serde",
+ "tokio",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
 ]
 
 [[package]]
