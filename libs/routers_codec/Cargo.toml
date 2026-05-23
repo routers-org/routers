@@ -41,6 +41,11 @@ itertools = { workspace = true }
 # Compression
 flate2 = { version = "1.1.9", features = ["zlib-rs"] }
 
+# Drop-in for `std::time::Instant` that doesn't panic on
+# `wasm32-unknown-unknown`. Used by the byte-oriented `from_bytes` /
+# `to_bytes` paths that are wasm-reachable.
+web-time = "1"
+
 # Misc.
 # TODO: Remove dependency.
 either = "1.15.0"

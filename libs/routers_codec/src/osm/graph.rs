@@ -11,7 +11,10 @@ use serde::{Deserialize, Serialize};
 use core::fmt::Debug;
 use core::hash::BuildHasherDefault;
 use geo::Point;
-use std::time::Instant;
+// `web_time::Instant` is a drop-in for `std::time::Instant` that doesn't
+// panic on `wasm32-unknown-unknown`. On native it just re-exports the std
+// type; on wasm it's backed by `performance.now()`.
+use web_time::Instant;
 
 // Filesystem + PBF-parsing imports are only reachable from native-only
 // methods, so cfg-gate them to keep `cargo check --target

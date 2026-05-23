@@ -5483,6 +5483,7 @@ dependencies = [
  "test-log",
  "tracing",
  "tracing-subscriber",
+ "web-time",
 ]
 
 [[package]]
@@ -5588,6 +5589,7 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
+ "web-time",
 ]
 
 [[package]]
@@ -5654,12 +5656,14 @@ dependencies = [
  "egui",
  "env_logger",
  "geo",
+ "log",
  "pathfinding",
  "petgraph",
  "routers",
  "routers_codec",
  "routers_fixtures",
  "routers_network",
+ "routers_shard",
  "rstar 0.12.2",
  "rustc-hash 2.1.2",
  "tokio",
@@ -5667,6 +5671,7 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
+ "web-time",
  "wgpu",
  "wkt",
 ]

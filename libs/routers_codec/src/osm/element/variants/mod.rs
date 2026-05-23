@@ -49,7 +49,14 @@ pub mod common {
     #[cfg_attr(not(debug_assertions), repr(transparent))]
     pub struct OsmEntryId {
         pub identifier: i64,
+        // Debug-only sanity tag — kept out of the wire format with
+        // `#[serde(skip)]` so a payload written under one `debug_assertions`
+        // setting decodes cleanly under the other. (Without skip, mixing
+        // release-built shard caches with debug-built consumers caused
+        // postcard to chase a phantom field and fail with
+        // "varint didn't terminate".)
         #[cfg(debug_assertions)]
+        #[serde(skip)]
         variant: i32,
     }
 

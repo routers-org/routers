@@ -19,6 +19,11 @@ postcard = { workspace = true }
 log = { workspace = true }
 rayon = { workspace = true }
 
+# `web_time::Instant` is a drop-in replacement for `std::time::Instant` that
+# works on `wasm32-unknown-unknown` (where `std::time` panics). On native
+# it just re-exports the std type, so there's no cost.
+web-time = "1"
+
 # The browser fetcher uses `web-sys::fetch` directly so we don't drag in a
 # heavy HTTP client just for `Vec<u8>` blob retrieval. Wasm-only.
 [target.'cfg(target_arch = "wasm32")'.dependencies]

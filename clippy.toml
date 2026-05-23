@@ -1,0 +1,16 @@
+# Workspace-wide clippy configuration. Lints declared here apply to every
+# crate in the workspace and run when `clippy::disallowed_methods` /
+# `clippy::disallowed_types` are enabled via `[lints.clippy]`.
+#
+# To activate the bans, the workspace `Cargo.toml`'s `[workspace.lints.clippy]`
+# table needs the matching `disallowed_methods = "deny"` (or "warn") entry.
+
+# `std::time::Instant::now` panics on `wasm32-unknown-unknown` because
+# the std clock source isn't implemented for that target. Using
+# `web_time::Instant::now` instead is a drop-in (it falls back to
+# `std::time::Instant` on native, `performance.now()` on wasm) and keeps
+# us honest if anyone later writes wasm-reachable code that times things.
+disallowed-methods = [
+    { path = "std::time::Instant::now", reason = "use web_time::Instant::now — std::time panics on wasm32-unknown-unknown" },
+    { path = "std::time::SystemTime::now", reason = "use web_time::SystemTime::now — std::time panics on wasm32-unknown-unknown" },
+]

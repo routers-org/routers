@@ -16,7 +16,9 @@ use serde::{Deserialize, Serialize};
 use std::io::Write;
 #[cfg(not(target_arch = "wasm32"))]
 use std::path::Path;
-use std::time::Instant;
+// `web_time::Instant` is a drop-in for `std::time::Instant` that doesn't
+// panic on `wasm32-unknown-unknown` (`std::time` has no clock source there).
+use web_time::Instant;
 
 use routers_network::{
     DirectionAwareEdgeId, Discovery, Edge, Entry, Metadata, Node, Route, Scan,

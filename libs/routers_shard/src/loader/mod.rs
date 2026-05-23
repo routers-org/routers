@@ -18,8 +18,10 @@
 //! (S3, an in-memory test mock, a CDN with auth headers, …).
 
 mod fetcher;
+mod window;
 
 pub use fetcher::ShardFetcher;
+pub use window::{RecenterDelta, ShardWindow};
 
 #[cfg(not(target_arch = "wasm32"))]
 mod file;

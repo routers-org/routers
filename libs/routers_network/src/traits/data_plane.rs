@@ -16,6 +16,7 @@
 //! styles bridge via the blanket impl in `network.rs`.
 
 use core::fmt::Debug;
+use std::sync::Arc;
 
 use crate::{DirectionAwareEdgeId, Edge, Entry, Metadata, Node, edge::Weight};
 use geo::Point;
@@ -56,4 +57,46 @@ pub trait DataPlane: Debug + Send + Sync {
     }
 
     fn fatten(&self, edge: &Edge<Self::Entry>) -> Option<Edge<Node<Self::Entry>>>;
+}
+
+// Blanket forward through `Arc<T>` so consumers (e.g. a viewer that swaps
+// the inner network as shards load) can hold their network behind an
+// `Arc` without losing trait-method access. The body of each call deref's
+// through the Arc to T's own impl.
+impl<T> DataPlane for Arc<T>
+where
+    T: DataPlane,
+{
+    type Entry = <T as DataPlane>::Entry;
+    type Meta = <T as DataPlane>::Meta;
+
+    fn metadata(&self, id: &Self::Entry) -> Option<&Self::Meta> {
+        (**self).metadata(id)
+    }
+
+    fn point(&self, id: &Self::Entry) -> Option<Point> {
+        (**self).point(id)
+    }
+
+    fn edges_outof<'a>(
+        &'a self,
+        id: Self::Entry,
+    ) -> Box<dyn Iterator<Item = GraphEdge<Self::Entry>> + 'a> {
+        (**self).edges_outof(id)
+    }
+
+    fn edges_into<'a>(
+        &'a self,
+        id: Self::Entry,
+    ) -> Box<dyn Iterator<Item = GraphEdge<Self::Entry>> + 'a> {
+        (**self).edges_into(id)
+    }
+
+    fn line(&self, nodes: &[Self::Entry]) -> Vec<Point> {
+        (**self).line(nodes)
+    }
+
+    fn fatten(&self, edge: &Edge<Self::Entry>) -> Option<Edge<Node<Self::Entry>>> {
+        (**self).fatten(edge)
+    }
 }

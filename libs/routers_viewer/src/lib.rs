@@ -1,6 +1,8 @@
 use eframe::{App, Frame, egui};
 use egui::{CentralPanel, Color32, Context, Response, SidePanel, Stroke, TextEdit, Widget};
-use walkers::{HttpTiles, Map, MapMemory, Plugin, Projector, lon_lat, sources::OpenStreetMap};
+use walkers::{
+    HttpTiles, Map, MapMemory, Plugin, Position, Projector, lon_lat, sources::OpenStreetMap,
+};
 
 use geo::{Coord, LineString};
 use routers::Trip;
@@ -12,7 +14,11 @@ use routers::transition::layer::generation::StandardGenerator;
 use routers::transition::solver::selective_forward::SelectiveForwardSolver;
 use routers_network::{DataPlane, Discovery, Entry, Metadata, Node, Route, Scan};
 use std::marker::PhantomData;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+// `web_time::Instant` is a drop-in for `std::time::Instant` that doesn't
+// panic on `wasm32-unknown-unknown`. `Duration` is pure arithmetic so the
+// std version is portable.
+use web_time::Instant;
 use wkt::ToWkt;
 
 struct MatchState<E: Entry> {
@@ -35,6 +41,13 @@ where
 {
     tiles: HttpTiles,
     map_memory: MapMemory,
+    /// Fallback centre used by `Map::new` when the map isn't currently
+    /// detached (i.e. the user hasn't panned manually). Lets the host
+    /// configure where the map "starts" instead of relying on a baked-in
+    /// constant. The same value is also what
+    /// [`current_center`](Self::current_center) returns when the map is
+    /// in "my position" mode.
+    my_position: Position,
     network: N,
     wkt_input: String,
 
@@ -52,7 +65,15 @@ where
         + Scan<<N as DataPlane>::Entry>
         + Route<<N as DataPlane>::Entry>,
 {
+    /// Default initial centre — central Sydney. Override via
+    /// [`new_at`](Self::new_at).
     pub fn new(egui_ctx: Context, network: N) -> Self {
+        Self::new_at(egui_ctx, network, lon_lat(151.2, -33.8))
+    }
+
+    /// Construct with an explicit initial map position (used until the
+    /// user pans the map manually).
+    pub fn new_at(egui_ctx: Context, network: N, my_position: Position) -> Self {
         // Default tile source is OpenStreetMap's standard raster pyramid —
         // no API key, works the same on native and WASM. If you want a
         // different style (e.g. Mapbox), construct the `HttpTiles` yourself
@@ -60,6 +81,7 @@ where
         Self {
             tiles: HttpTiles::new(OpenStreetMap, egui_ctx),
             map_memory: MapMemory::default(),
+            my_position,
             network,
             wkt_input: "WKT Here...".into(),
             match_state: None,
@@ -68,6 +90,36 @@ where
             hovered_transition: None,
             error_msg: None,
         }
+    }
+
+    /// Swap in a new network without losing UI state (input, selected
+    /// layer, etc.). Clears `match_state` because the previous match's
+    /// node ids are no longer guaranteed to resolve against the new
+    /// network.
+    pub fn set_network(&mut self, network: N) {
+        self.network = network;
+        self.match_state = None;
+        self.selected_layer = None;
+        self.selected_candidate = None;
+        self.hovered_transition = None;
+    }
+
+    /// Read-only handle to the underlying network.
+    pub fn network(&self) -> &N {
+        &self.network
+    }
+
+    /// The map's current effective centre — `detached()` if the user has
+    /// panned, otherwise the configured `my_position`.
+    pub fn current_center(&self) -> Position {
+        self.map_memory.detached().unwrap_or(self.my_position)
+    }
+
+    /// Inspect the internal `MapMemory` (zoom, detached state). Useful
+    /// for shard-window drivers that need finer detail than
+    /// [`current_center`](Self::current_center) provides.
+    pub fn map_memory(&self) -> &MapMemory {
+        &self.map_memory
     }
 
     fn perform_match(&mut self) {
@@ -420,7 +472,7 @@ where
             let mut map = Map::new(
                 Some(&mut self.tiles),
                 &mut self.map_memory,
-                lon_lat(-118.49, 34.01), // Near Santa Monica/Ventura
+                self.my_position,
             );
 
             if let Some(state) = &self.match_state {

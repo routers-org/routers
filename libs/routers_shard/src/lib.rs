@@ -18,7 +18,7 @@ pub mod source;
 pub mod strategy;
 
 pub use filter::IngestFilter;
-pub use loader::{LoadError, ShardCache, ShardFetcher, ShardLoader};
+pub use loader::{LoadError, RecenterDelta, ShardCache, ShardFetcher, ShardLoader, ShardWindow};
 pub use network::ShardedNetwork;
 pub use selection::{Selection, SelectionMode};
 pub use source::{NodeRecord, ShardSource, WayRecord};

@@ -1,10 +1,17 @@
-//! Server-side build pipeline: walks a bounding box at a fixed quad-tree
-//! depth and writes one `.shard.rt` per non-empty cell.
+//! Server-side build pipeline: walks a bounding box and writes one
+//! `.shard.rt` per non-empty geohash cell.
 //!
 //! The output directory can then be served as static files; the browser's
 //! `WebShardFetcher` reads from the same URL prefix. The naming convention
-//! used here (`d{depth}_{bits}.shard.rt`) matches the `naming` closure
-//! example in the docs — keep them in sync if you change one.
+//! used here (`<geohash>.shard.rt`, e.g. `r3gx2.shard.rt`) matches the
+//! parser in `libs/routers_viewer/src/bin/web_viewer.rs` — keep them in
+//! sync if you change one.
+//!
+//! Geohash precision picks the cell size:
+//!
+//! - 4 → ~39 km × 19 km (too coarse for a city)
+//! - **5 → ~4.9 km × 4.9 km** (a CBD-sized cell — current default)
+//! - 6 → ~1.2 km × 600 m (too fine — fragmented road network)
 
 use std::path::PathBuf;
 use std::time::Instant;
@@ -14,37 +21,32 @@ use routers_codec::osm::OsmEdgeMetadata;
 use routers_codec::osm::primitives::RoadClass;
 use routers_fixtures::{SYDNEY, fixture};
 use routers_shard::{
-    IngestFilter, QuadKey, QuadTreeStrategy, Selection, SelectionMode, ShardedNetwork,
+    Geohash, GeohashStrategy, IngestFilter, Selection, SelectionMode, ShardedNetwork,
     ShardingStrategy, osm::OsmSource,
 };
 
-fn naming(key: &QuadKey) -> String {
-    format!("d{}_{}.shard.rt", key.depth, key.bits)
+fn naming(key: &Geohash) -> String {
+    format!("{}.shard.rt", key.0)
 }
 
-fn iter_grid(strategy: &QuadTreeStrategy, sw: Point, ne: Point) -> Vec<QuadKey> {
-    // Walk a regular grid of sample points at the cell pitch implied by the
-    // strategy's depth. Dedupe along the way so a single cell only appears
-    // once even when multiple samples land in it.
-    let root_w = 360.0_f64;
-    let root_h = 180.0_f64;
-    let cells = 1u64 << strategy.depth();
-    let cell_w = root_w / cells as f64;
-    let cell_h = root_h / cells as f64;
-
+/// Walk a regular grid of sample points over `[sw, ne]` and dedupe by
+/// the strategy's locate function. The step size doesn't have to match
+/// the cell pitch — finer is just wasted CPU at dedupe time, coarser
+/// risks missing cells.
+fn iter_grid<St: ShardingStrategy>(strategy: &St, sw: Point, ne: Point, step: f64) -> Vec<St::Id> {
     let mut out = Vec::new();
-    let mut seen = rustc_hash::FxHashSet::default();
+    let mut seen: rustc_hash::FxHashSet<St::Id> = rustc_hash::FxHashSet::default();
     let mut y = sw.y();
     while y <= ne.y() {
         let mut x = sw.x();
         while x <= ne.x() {
             let k = strategy.locate(Point::new(x, y));
-            if seen.insert(k) {
+            if seen.insert(k.clone()) {
                 out.push(k);
             }
-            x += cell_w * 0.5;
+            x += step;
         }
-        y += cell_h * 0.5;
+        y += step;
     }
     out
 }
@@ -57,29 +59,35 @@ fn main() {
 
     // Configurable knobs. In a real pipeline these would come from
     // CLI args or a config file.
-    let depth: u8 = 10;
+    let precision: u8 = 5;
     let sw = Point::new(151.10, -33.95);
     let ne = Point::new(151.30, -33.80);
+    // 0.01° ≈ 1.1 km — fine enough to never miss a precision-5 cell
+    // (~4.9 km across), coarse enough that the walk is cheap.
+    let sample_step: f64 = 0.01;
     let out_dir: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../target/shard_cache");
-    // Conservative filter — surface routes only, no per-way metadata —
-    // matches what a WASM bundle would actually want to fetch.
-    let filter = IngestFilter::<OsmEdgeMetadata>::new()
-        .without_metadata()
-        .keep_ways_where(
-            |m| matches!(m.road_class, Some(c) if (c as i32) <= RoadClass::Tertiary as i32),
-        );
+    // Keep the full metadata — the matcher uses `Metadata::accessible`
+    // via `Network::metadata(id)` during candidate transitions, and
+    // stripping it (`without_metadata()`) causes match failures because
+    // every way looks inaccessible. Also keep every road class: trips
+    // happen on residential streets too, not just trunk roads.
+    //
+    // Reintroduce filtering later, but only after the matcher's metadata
+    // dependency is wired up to a sensible default for missing entries.
+    let filter = IngestFilter::<OsmEdgeMetadata>::new();
+    let _ = RoadClass::Tertiary; // keep the import warning-free while filter is empty
 
     std::fs::create_dir_all(&out_dir).expect("mkdir");
 
     let source = OsmSource::new(fixture!(SYDNEY).clone());
-    let strategy = QuadTreeStrategy::with_depth(depth);
+    let strategy = GeohashStrategy::with_precision(precision);
 
-    let shards = iter_grid(&strategy, sw, ne);
+    let shards = iter_grid(&strategy, sw, ne, sample_step);
     println!(
-        "Building {} shards at depth {} into {}",
+        "Building {} shards at geohash precision {} into {}",
         shards.len(),
-        depth,
+        precision,
         out_dir.display(),
     );
 
@@ -88,7 +96,7 @@ fn main() {
     let mut empty = 0usize;
     let mut total_bytes: u64 = 0;
     for key in &shards {
-        let selection = Selection::new(&strategy, *key, SelectionMode::Owned);
+        let selection = Selection::new(&strategy, key.clone(), SelectionMode::Owned);
         let net = ShardedNetwork::from_source_filtered(&source, &strategy, &selection, &filter)
             .expect("build");
         if net.num_nodes() == 0 {
@@ -101,8 +109,8 @@ fn main() {
         total_bytes += sz;
         written += 1;
         println!(
-            "  {:?}: {:>6} nodes / {:>6} edges / {:>6.1} KB",
-            key,
+            "  {}: {:>6} nodes / {:>6} edges / {:>6.1} KB",
+            key.0,
             net.num_nodes(),
             net.graph.edge_count(),
             sz as f64 / 1024.0,
@@ -117,25 +125,26 @@ fn main() {
         started.elapsed(),
     );
 
-    // Drop a small manifest so the browser can discover what's available
-    // without probing every possible cell. JSON keeps it readable; the
-    // browser loader can fetch + parse this once at startup.
-    let manifest_path = out_dir.join("manifest.json");
-    let entries: Vec<String> = shards
+    // Drop a plain-text manifest so the browser can discover what's
+    // available without probing every possible cell. One filename per
+    // line keeps it trivial to parse on the wasm side without dragging
+    // in `serde_json`.
+    //
+    // Sort by file size (ascending) so the densest shard ends up last —
+    // the wasm bootstrap's `pick_starter` takes `.last()` and we want
+    // first paint to land on a populated area rather than an empty
+    // corner cell.
+    let manifest_path = out_dir.join("manifest.txt");
+    let mut entries: Vec<(u64, String)> = shards
         .iter()
         .filter_map(|k| {
             let p = out_dir.join(naming(k));
-            p.exists().then(|| {
-                format!(
-                    "{{\"depth\":{},\"bits\":{},\"file\":\"{}\"}}",
-                    k.depth,
-                    k.bits,
-                    naming(k)
-                )
-            })
+            let size = std::fs::metadata(&p).ok()?.len();
+            Some((size, naming(k)))
         })
         .collect();
-    let manifest = format!("{{\"shards\":[{}]}}", entries.join(","));
-    std::fs::write(&manifest_path, manifest).expect("write manifest");
+    entries.sort_by_key(|(sz, _)| *sz);
+    let lines: Vec<String> = entries.into_iter().map(|(_, name)| name).collect();
+    std::fs::write(&manifest_path, lines.join("\n") + "\n").expect("write manifest");
     println!("Wrote manifest to {}", manifest_path.display());
 }

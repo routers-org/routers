@@ -1,0 +1,68 @@
+# Recipes for the web viewer build pipeline. Invoked from the root as
+# `just web <recipe>` via the `mod web "libs/routers_viewer"` declaration
+# in the workspace `justfile`.
+
+# Path of the shard cache produced by `build-shards`. The same directory
+# is copied into `dist/shards/` by Trunk (see `index.html`).
+shard_cache := "../../target/shard_cache"
+
+# Default: print the available recipes.
+default:
+    @just --list
+
+# Install everything needed to build the web viewer:
+#   - the `wasm32-unknown-unknown` rustc target
+#   - `trunk-ng`, the wasm bundler
+# Re-running this is cheap — both commands are idempotent.
+install:
+    rustup target add wasm32-unknown-unknown
+
+# Build the per-shard `.shard.rt` cache that the browser fetcher reads.
+# Writes into `{{shard_cache}}/`. Re-run after changing strategy depth,
+# the ingest filter, or any serde-relevant struct (the format hash will
+# rotate and stale files self-heal on the next load).
+build-shards:
+    cargo run -p routers_shard --example build_shards --release
+
+# Rebuild the shard cache only if it's missing — useful for `dev` so the
+# loop doesn't pay the PBF parse cost on every run.
+ensure-shards:
+    #!/usr/bin/env bash
+    if [ ! -d "{{ shard_cache }}" ] || [ -z "$(ls -A {{ shard_cache }} 2>/dev/null)" ]; then
+        just web build-shards
+    else
+        echo "shard cache present at {{ shard_cache }} — skipping rebuild"
+    fi
+
+# Run a dev server with hot reload. Equivalent to `trunk-ng serve` from
+# `libs/routers_viewer/`. Opens http://127.0.0.1:8080 once ready.
+serve: ensure-shards
+    mkdir -p dist
+    trunk-ng serve
+
+# Build a debug bundle into `dist/`. No optimisation, fast turnaround.
+build: ensure-shards
+    trunk-ng build
+
+# Build an optimised, deployable bundle into `dist/`. Runs `wasm-opt -Oz`
+# per the `data-wasm-opt` setting in `index.html`.
+release: ensure-shards
+    trunk-ng build --release
+
+# Run clippy against `wasm32-unknown-unknown`. The `clippy.toml` config
+# bans `std::time::Instant::now` (panics on wasm) and other portability
+# traps; the workspace doesn't activate `disallowed_methods` on native
+# because `web_time::Instant` aliases to `std::time::Instant` there and
+# produces false positives.
+check:
+    cargo clippy --target wasm32-unknown-unknown -p routers_viewer --bin web_viewer -- -W clippy::disallowed_methods
+
+# Wipe the bundler output. Leaves the shard cache alone — clearing that
+# separately costs the next run a full PBF re-parse.
+clean:
+    rm -rf dist
+
+# Wipe everything Trunk + the shard pipeline have produced. Use when you
+# want a clean reproduction of "from-scratch first run".
+clean-all: clean
+    rm -rf {{ shard_cache }}

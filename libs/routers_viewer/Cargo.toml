@@ -13,9 +13,16 @@ bench = false
 routers = { workspace = true }
 routers_network = { workspace = true }
 routers_codec = { workspace = true }
+routers_shard = { workspace = true }
 
 geo = { workspace = true }
 wkt = { workspace = true }
+log = { workspace = true }
+
+# `web_time::Instant` keeps timing portable — `std::time::Instant::now()`
+# panics on `wasm32-unknown-unknown`. On native it's a transparent re-export
+# of the std type.
+web-time = "1"
 
 # UI Dependencies — `wgpu` backend instead of the default `glow` so the
 # same code path runs natively (Metal/Vulkan/DX12) and, later, in the
@@ -61,8 +68,10 @@ wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 console_error_panic_hook = "0.1"
 web-sys = { version = "0.3", features = [
+    "CustomEvent",
     "Document",
     "Element",
+    "EventTarget",
     "HtmlCanvasElement",
     "Window",
 ] }
@@ -76,12 +85,3 @@ workspace = true
 [[example]]
 name = "viewer"
 path = "examples/viewer.rs"
-
-# The web viewer example is built as a `cdylib` so wasm-bindgen can pick up
-# the `#[wasm_bindgen(start)]` entry point. On native targets the example
-# still compiles (as a no-op binary stub) so `cargo build --examples` keeps
-# working across the workspace.
-[[example]]
-name = "web_viewer"
-path = "examples/web_viewer.rs"
-crate-type = ["cdylib", "rlib"]

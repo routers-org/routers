@@ -15,6 +15,12 @@ unsafe_code = "deny"
 std_instead_of_core = "warn"
 std_instead_of_alloc = "warn"
 alloc_instead_of_core = "warn"
+# `disallowed_methods` (configured by `clippy.toml`) is intentionally *not*
+# activated workspace-wide: on native `web_time::Instant` is a type alias
+# for `std::time::Instant`, so clippy can't distinguish a legitimate
+# `web_time` call from a banned `std::time` one and we'd get false
+# positives. The lint is meaningful on `wasm32-unknown-unknown` — see
+# `just web check` for the targeted run that activates it.
 
 [patch.crates-io]
 routers = { path = "." }

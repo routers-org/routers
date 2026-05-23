@@ -1,0 +1,35 @@
+# Run with:
+#   cd libs/routers_viewer
+#   trunk serve --open
+#
+# Build a deployable bundle with:
+#   trunk build --release
+#
+# Trunk picks up the `<link data-trunk rel="rust" data-example="web_viewer">`
+# tag in `index.html` and compiles that example as the wasm artefact, plus
+# the `copy-dir` for the shard blobs.
+
+[build]
+# `index.html` lives next to this file.
+target = "index.html"
+# Output goes into `libs/routers_viewer/dist/`.
+dist = "dist"
+# Always produce ES modules — eframe wants them, and they keep the
+# generated boilerplate small.
+public_url = "/"
+
+[watch]
+# Re-build on changes to the viewer crate and its examples. Trunk also
+# watches the index.html and Trunk.toml by default.
+watch = ["src", "examples"]
+# Skip the giant `target/` directory so the file watcher doesn't choke;
+# Trunk already invalidates on cargo's own outputs.
+ignore = ["dist", "../../target"]
+
+[serve]
+# Defaults to 127.0.0.1:8080. Override here if it clashes with anything
+# else on your machine.
+address = "127.0.0.1"
+port = 8080
+# Hot-reload when assets change.
+open = false
