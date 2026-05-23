@@ -40,6 +40,14 @@ serve: ensure-shards
     mkdir -p dist
     trunk-ng serve
 
+# Same as `serve` but builds the wasm in release mode (and runs
+# `wasm-opt -Oz` per `index.html`'s `data-wasm-opt="z"`). First run is
+# slow because cargo has to recompile the whole dependency graph in
+# release; subsequent runs hot-reload as usual.
+serve-release: ensure-shards
+    mkdir -p dist
+    trunk-ng serve --release
+
 # Build a debug bundle into `dist/`. No optimisation, fast turnaround.
 build: ensure-shards
     trunk-ng build

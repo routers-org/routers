@@ -56,7 +56,29 @@ where
     selected_candidate: Option<CandidateId>,
     hovered_transition: Option<(CandidateId, CandidateId)>,
     error_msg: Option<String>,
+
+    // ── Draw tool ───────────────────────────────────────────────────────
+    /// When `true`, map clicks add waypoints to `drawn_path` instead of
+    /// just being absorbed by walkers' pan/zoom.
+    draw_mode: bool,
+    /// Live-updated polyline the user is drawing. Clicks append to it;
+    /// the debounced background match runs against this directly.
+    drawn_path: Vec<Coord>,
+    /// Cursor position projected to lat/lon while drawing — rendered as
+    /// a faded segment from the last waypoint, so the user sees where
+    /// the next click would land.
+    hover_preview: Option<Coord>,
+    /// Last time `drawn_path` changed; the match re-runs once this is
+    /// older than [`DRAW_DEBOUNCE`] and the path differs from the
+    /// previously-matched input.
+    last_draw_change: Option<Instant>,
 }
+
+/// How long to wait after the most recent waypoint edit before re-running
+/// the matcher. Picked so a steady stream of clicks coalesces into a
+/// single match per gesture, while a single drop still lands within a
+/// quarter-second.
+const DRAW_DEBOUNCE: Duration = Duration::from_millis(250);
 
 impl<N> ViewerApp<N>
 where
@@ -89,6 +111,10 @@ where
             selected_candidate: None,
             hovered_transition: None,
             error_msg: None,
+            draw_mode: false,
+            drawn_path: Vec::new(),
+            hover_preview: None,
+            last_draw_change: None,
         }
     }
 
@@ -131,6 +157,25 @@ where
                 return;
             }
         };
+        self.match_linestring(line, /* recenter = */ true);
+    }
+
+    /// Run the matcher against a pre-parsed `LineString`. Used by both
+    /// the manual WKT button and the debounced draw-mode loop.
+    ///
+    /// `recenter` controls whether to re-centre the map on the first
+    /// point — fine for the explicit Match button (one-shot), but
+    /// disruptive when called every 250 ms from the draw loop because
+    /// the user is *currently looking at* the area they're drawing.
+    fn match_linestring(&mut self, line: LineString, recenter: bool) {
+        if line.0.len() < 2 {
+            // The matcher requires at least two points; drop silently
+            // rather than spam an error from the debounce loop.
+            self.error_msg = None;
+            self.match_state = None;
+            return;
+        }
+        self.error_msg = None;
 
         let costing = CostingStrategies::default();
         let generator = StandardGenerator::new(&self.network, &costing.emission, 100.0);
@@ -158,9 +203,10 @@ where
 
                 self.selected_layer = None;
 
-                // Center map on the first point
-                if let Some(pt) = self.match_state.as_ref().unwrap().original_line.0.first() {
-                    self.map_memory.center_at(lon_lat(pt.x, pt.y));
+                if recenter {
+                    if let Some(pt) = self.match_state.as_ref().unwrap().original_line.0.first() {
+                        self.map_memory.center_at(lon_lat(pt.x, pt.y));
+                    }
                 }
             }
             Err(e) => {
@@ -229,6 +275,35 @@ where
 
             if let Some(err) = &self.error_msg {
                 ui.colored_label(Color32::RED, err);
+            }
+
+            ui.separator();
+
+            // ── Draw tool ─────────────────────────────────────────────
+            ui.checkbox(&mut self.draw_mode, "✏ Draw mode");
+            if self.draw_mode {
+                ui.label(format!(
+                    "{} waypoint{}",
+                    self.drawn_path.len(),
+                    if self.drawn_path.len() == 1 { "" } else { "s" }
+                ));
+                ui.horizontal(|ui| {
+                    if ui.button("Clear").clicked() {
+                        self.drawn_path.clear();
+                        self.hover_preview = None;
+                        self.last_draw_change = None;
+                        self.match_state = None;
+                    }
+                    if ui.button("→ WKT").clicked() && self.drawn_path.len() >= 2 {
+                        let line: LineString = LineString::new(self.drawn_path.clone());
+                        self.wkt_input = line.wkt_string();
+                    }
+                });
+                ui.colored_label(
+                    Color32::from_gray(160),
+                    "Click on the map to add waypoints. \
+                     Hold ⌘/Ctrl while dragging to pan instead of drawing.",
+                );
             }
 
             ui.separator();
@@ -475,6 +550,16 @@ where
                 self.my_position,
             );
 
+            // While the draw tool is active, paint the in-flight path so
+            // the user can see what they've laid down and where the next
+            // click would land.
+            if self.draw_mode {
+                map = map.with_plugin(DrawPlugin {
+                    path: self.drawn_path.clone(),
+                    hover: self.hover_preview,
+                });
+            }
+
             if let Some(state) = &self.match_state {
                 // Plugin to draw the lines
                 let line_plugin = LinePlugin {
@@ -546,8 +631,126 @@ where
                 }
             }
 
-            ui.add(map);
+            let response = ui.add(map);
+
+            // Draw-mode interactions: rebuild a `Projector` post-frame so
+            // we can unproject click/hover positions back to lat/lon. The
+            // walkers `Plugin` API runs *during* widget construction and
+            // can't write back to viewer state, so this is the
+            // out-of-band hook.
+            if self.draw_mode {
+                let projector = Projector::new(
+                    response.rect,
+                    &self.map_memory,
+                    self.current_center(),
+                );
+
+                // Hover preview: update every frame the cursor is over
+                // the map. egui's `Pos2` is widget-relative? — projector
+                // wants a `Vec2`, which walkers treats as the same
+                // coordinate space.
+                let new_hover = response.hover_pos().map(|pos| {
+                    let pos = projector.unproject(egui::vec2(pos.x, pos.y));
+                    Coord {
+                        x: pos.x(),
+                        y: pos.y(),
+                    }
+                });
+                if new_hover != self.hover_preview {
+                    self.hover_preview = new_hover;
+                    ctx.request_repaint();
+                }
+
+                // Click commits the current cursor position as a real
+                // waypoint and stamps the dirty flag so the debounce
+                // timer schedules a match. `interact_pointer_pos`
+                // returns the position at the moment of the click,
+                // not the latest hover position — important if the
+                // cursor moved slightly between mousedown and mouseup.
+                if response.clicked() {
+                    if let Some(pos) = response.interact_pointer_pos() {
+                        let p = projector.unproject(egui::vec2(pos.x, pos.y));
+                        self.drawn_path.push(Coord {
+                            x: p.x(),
+                            y: p.y(),
+                        });
+                        self.last_draw_change = Some(Instant::now());
+                    }
+                }
+            } else if self.hover_preview.is_some() {
+                // Tidy up when leaving draw mode.
+                self.hover_preview = None;
+            }
         });
+
+        // Debounced match against the drawn path. Runs at most once per
+        // `DRAW_DEBOUNCE` window of inactivity; that's enough to coalesce
+        // a quick burst of clicks into a single solve while staying
+        // responsive when the user pauses.
+        if let Some(ts) = self.last_draw_change {
+            if ts.elapsed() >= DRAW_DEBOUNCE && self.drawn_path.len() >= 2 {
+                let line: LineString = LineString::new(self.drawn_path.clone());
+                self.match_linestring(line, /* recenter = */ false);
+                self.last_draw_change = None;
+            } else {
+                // Keep the frame loop ticking so the debounce timer
+                // resolves even without other input.
+                ctx.request_repaint_after(DRAW_DEBOUNCE);
+            }
+        }
+    }
+}
+
+/// Renders the user's in-flight drawn path plus a faded "where would my
+/// next click land" preview from the last waypoint to the cursor. Owned
+/// by the wrapper App because plugins can't mutate viewer state from
+/// inside their `run`; the source of truth is `ViewerApp::drawn_path` /
+/// `ViewerApp::hover_preview`, and we just clone it in each frame.
+struct DrawPlugin {
+    path: Vec<Coord>,
+    hover: Option<Coord>,
+}
+
+impl Plugin for DrawPlugin {
+    fn run(
+        self: Box<Self>,
+        ui: &mut egui::Ui,
+        _response: &egui::Response,
+        projector: &Projector,
+        _map_memory: &MapMemory,
+    ) {
+        let painter = ui.painter();
+
+        // Yellow committed path.
+        if self.path.len() >= 2 {
+            let pts: Vec<_> = self
+                .path
+                .iter()
+                .map(|c| projector.project(lon_lat(c.x, c.y)).to_pos2())
+                .collect();
+            painter.line(pts, Stroke::new(3.0, Color32::from_rgb(255, 200, 0)));
+        }
+
+        // Faded preview from the last waypoint to the current cursor.
+        if let (Some(last), Some(hover)) = (self.path.last(), self.hover) {
+            let a = projector.project(lon_lat(last.x, last.y)).to_pos2();
+            let b = projector.project(lon_lat(hover.x, hover.y)).to_pos2();
+            painter.line(
+                vec![a, b],
+                Stroke::new(
+                    2.0,
+                    Color32::from_rgba_unmultiplied_const(255, 200, 0, 90),
+                ),
+            );
+        }
+
+        // Waypoint dots — small filled circle with a black ring so they
+        // remain visible against any tile colour.
+        for c in &self.path {
+            let pos = projector.project(lon_lat(c.x, c.y)).to_pos2();
+            painter.circle_filled(pos, 5.0, Color32::from_rgb(255, 200, 0));
+            painter.circle_stroke(pos, 5.0, Stroke::new(1.0, Color32::BLACK));
+        }
     }
 }
 

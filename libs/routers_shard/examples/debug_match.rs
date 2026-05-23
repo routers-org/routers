@@ -5,6 +5,7 @@
 //! spatial index, or routing.
 
 use std::path::PathBuf;
+use std::time::Instant;
 
 use geo::{LineString, Point};
 use routers::r#match::MatchSimpleExt;
@@ -113,35 +114,36 @@ fn main() {
         }
 
         // 3a. Try matching via `match_simple` (uses PrecomputeForwardSolver).
-        println!("  trying match_simple…");
-        match net.r#match_simple(line.clone()) {
-            Ok(route) => println!(
-                "  ✔ match_simple: {} discrete, {} interpolated",
-                route.discretized.len(),
-                route.interpolated.len()
-            ),
-            Err(e) => println!("  ✘ match_simple failed: {:?}", e),
+        // Warm + 10-run loop so the number isn't dominated by one-off
+        // allocator cost.
+        let _ = net.r#match_simple(line.clone());
+        let n = 10;
+        let t = Instant::now();
+        for _ in 0..n {
+            let _ = net.r#match_simple(line.clone());
         }
+        let avg = t.elapsed() / n;
+        println!("  match_simple (avg of {n}): {:?}", avg);
 
         // 3b. Replicate the *viewer*'s exact path: `Arc<ShardedNetwork>`
         // (via the routers_network Arc blanket impls), explicit
-        // Transition construction, SelectiveForwardSolver. If this
-        // fails while `match_simple` succeeds, the bug is wasm-side
-        // or in the Arc forwarders.
-        println!("  trying viewer flow (Arc<…> + SelectiveForwardSolver)…");
+        // Transition construction, SelectiveForwardSolver.
         let arc_net = std::sync::Arc::new(net);
         let costing = CostingStrategies::default();
-        let generator = StandardGenerator::new(&arc_net, &costing.emission, 100.0);
-        let transition = Transition::new(&arc_net, line.clone(), &costing, generator);
-        let solver = SelectiveForwardSolver::default();
         let runtime = <OsmEdgeMetadata as Metadata>::default_runtime();
-        match transition.solve(solver, &runtime) {
-            Ok(collapsed) => println!(
-                "  ✔ viewer flow: cost={}, route len={}",
-                collapsed.cost,
-                collapsed.route.len()
-            ),
-            Err(e) => println!("  ✘ viewer flow failed: {:?}", e),
+        // Warm
+        {
+            let generator = StandardGenerator::new(&arc_net, &costing.emission, 100.0);
+            let transition = Transition::new(&arc_net, line.clone(), &costing, generator);
+            let _ = transition.solve(SelectiveForwardSolver::default(), &runtime);
         }
+        let t = Instant::now();
+        for _ in 0..n {
+            let generator = StandardGenerator::new(&arc_net, &costing.emission, 100.0);
+            let transition = Transition::new(&arc_net, line.clone(), &costing, generator);
+            let _ = transition.solve(SelectiveForwardSolver::default(), &runtime);
+        }
+        let avg = t.elapsed() / n;
+        println!("  viewer flow  (avg of {n}): {:?}", avg);
     }
 }

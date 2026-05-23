@@ -39,7 +39,7 @@ mod web {
     use geo::Point;
     use routers_codec::osm::{OsmEdgeMetadata, OsmEntryId};
     use routers_shard::{
-        Geohash, GeohashStrategy, ShardFetcher, ShardWindow, ShardedNetwork, ShardingStrategy,
+        Geohash, GeohashStrategy, MultiShardNetwork, ShardFetcher, ShardWindow, ShardingStrategy,
         WebShardFetcher,
     };
     use routers_viewer::ViewerApp;
@@ -59,7 +59,10 @@ mod web {
     /// Geohash precision must match the one the build pipeline used.
     const SHARD_PRECISION: u8 = 5;
 
-    type Net = Arc<ShardedNetwork<OsmEntryId, OsmEdgeMetadata, Geohash>>;
+    /// The viewer holds a composite spanning every currently-loaded
+    /// shard, not just the owned cell. This is what unlocks trips that
+    /// cross shard boundaries — the matcher sees the union graph.
+    type Net = Arc<MultiShardNetwork<OsmEntryId, OsmEdgeMetadata, Geohash>>;
     type Window = ShardWindow<OsmEntryId, OsmEdgeMetadata, GeohashStrategy, WebShardFetcher>;
 
     fn shard_filename(key: &Geohash) -> String {
@@ -117,16 +120,19 @@ mod web {
     /// 1. Reads the viewer's current map centre.
     /// 2. If that's in a different cell than the window currently owns,
     ///    calls `recenter` and spawns fetches for any new neighbours.
-    /// 3. If the cell change brings in a previously-cached neighbour or
-    ///    a newly-fetched shard, swaps it into the viewer via
-    ///    `ViewerApp::set_network`.
+    /// 3. If the *set* of loaded shards has changed since last frame —
+    ///    a new neighbour finished fetching, or eviction kicked in —
+    ///    rebuilds a [`MultiShardNetwork`] over all loaded shards and
+    ///    swaps it into the viewer. The composite lets the matcher
+    ///    route across shard boundaries naturally.
     /// 4. Delegates to `ViewerApp::update` for the actual UI.
     struct ShardDrivenViewer {
         inner: ViewerApp<Net>,
         window: Window,
-        // The shard pointer the inner viewer is currently displaying;
-        // tracked so we only call `set_network` when it actually changes.
-        current: Option<Geohash>,
+        // Sorted list of geohashes the inner viewer's composite was
+        // built from. Used to detect "what's in memory changed" without
+        // having to compare two Arc-laden composites.
+        loaded: Vec<Geohash>,
     }
 
     impl eframe::App for ShardDrivenViewer {
@@ -142,19 +148,29 @@ mod web {
                 spawn_fetches(self.window.clone(), delta.to_fetch.clone());
             }
 
-            // 3. If the owned shard is loaded and differs from what the
-            //    inner viewer currently holds, swap it in.
-            if let Some(net) = self.window.owned() {
-                let center = self.window.center();
-                if center != self.current {
-                    log::info!(
-                        "shard switch: {:?} → {:?}",
-                        self.current,
-                        center
-                    );
-                    self.inner.set_network(net);
-                    self.current = center;
-                }
+            // 3. Track the loaded set. If it differs from what the
+            //    composite was built over, rebuild and swap.
+            let mut loaded_now = self.window.loaded_ids();
+            loaded_now.sort();
+            if loaded_now != self.loaded {
+                let shards: Vec<_> = loaded_now
+                    .iter()
+                    .filter_map(|id| self.window.get(id))
+                    .collect();
+                log::info!(
+                    "composite rebuild: {} → {} loaded shards",
+                    self.loaded.len(),
+                    shards.len()
+                );
+                let composite = MultiShardNetwork::new(shards);
+                let new_net = Arc::new(composite);
+                // Note: `set_network` clears `match_state`. Acceptable
+                // here because the previous matched-route's candidate
+                // ids may now reference nodes that have been evicted
+                // (on far pan) or whose graph context is now richer
+                // (on neighbour fetch resolve).
+                self.inner.set_network(new_net);
+                self.loaded = loaded_now;
             }
 
             self.inner.update(ctx, frame);
@@ -225,7 +241,7 @@ mod web {
                 .fetch_one(&starter_key)
                 .await
                 .unwrap_or_else(|e| panic!("failed to fetch starter shard {starter_filename}: {e:?}"));
-            let initial_net = shard_window
+            let starter_shard = shard_window
                 .owned()
                 .expect("starter shard should be cached after fetch");
             // Log enough about the loaded shard to confirm parity with
@@ -235,10 +251,21 @@ mod web {
             log::info!(
                 "starter shard {} loaded: {} nodes / {} edges / {} ways with metadata",
                 starter_filename,
-                initial_net.num_nodes(),
-                initial_net.graph.edge_count(),
-                initial_net.meta.len(),
+                starter_shard.num_nodes(),
+                starter_shard.graph.edge_count(),
+                starter_shard.meta.len(),
             );
+
+            // Build the initial composite over just the starter shard.
+            // As neighbour fetches resolve, the loaded-set check in
+            // `ShardDrivenViewer::update` will rebuild the composite
+            // to include them.
+            let initial_net: Net = Arc::new(MultiShardNetwork::new(vec![starter_shard]));
+            let initial_loaded: Vec<Geohash> = {
+                let mut v = vec![starter_key.clone()];
+                v.sort();
+                v
+            };
 
             let mut neighbour_keys = delta.to_fetch;
             neighbour_keys.retain(|k| k != &starter_key);
@@ -266,7 +293,7 @@ mod web {
                         Ok(Box::new(ShardDrivenViewer {
                             inner,
                             window: shard_window,
-                            current: Some(starter_key),
+                            loaded: initial_loaded,
                         }) as Box<dyn eframe::App>)
                     }),
                 )

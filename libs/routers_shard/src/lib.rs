@@ -10,6 +10,7 @@
 //! [`Metadata`](routers_network::Metadata) traits. An OSM-specific ingestion
 //! adapter is provided behind the `osm` feature for convenience.
 
+pub mod composite;
 pub mod filter;
 pub mod loader;
 pub mod network;
@@ -17,6 +18,7 @@ pub mod selection;
 pub mod source;
 pub mod strategy;
 
+pub use composite::MultiShardNetwork;
 pub use filter::IngestFilter;
 pub use loader::{LoadError, RecenterDelta, ShardCache, ShardFetcher, ShardLoader, ShardWindow};
 pub use network::ShardedNetwork;
