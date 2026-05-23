@@ -64,7 +64,15 @@ test-log = { version = "0.2.18", features = ["log"] }
 buffa = { version = "0.6.0", features = ["json"] }
 buffa-types = { version = "0.6.0", features = ["json"] }
 buffa-descriptor = { version = "0.6.0" }
-connectrpc = { version = "0.6.0" }
+# `default-features = false` drops the `zstd` compression codec, which pulls
+# in `zstd-sys` — a C library with no `wasm32-unknown-unknown` target. We
+# keep `gzip` (uses the pure-Rust `flate2`) and `streaming` (kept on under
+# defaults). Re-enable `zstd` at the crate level if a specific service
+# genuinely needs that codec and you don't care about WASM.
+connectrpc = { version = "0.6.0", default-features = false, features = [
+    "gzip",
+    "streaming",
+] }
 
 serde_json = "1"
 http-body = "1"

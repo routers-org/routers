@@ -1,11 +1,9 @@
 use petgraph::prelude::DiGraphMap;
 use routers_network::edge::Weight;
 use routers_network::network::GraphEdge;
-use routers_network::{
-    DirectionAwareEdgeId, Discovery, Edge, Metadata, Network, Node, Route, Scan,
-};
+use routers_network::{DirectionAwareEdgeId, Discovery, Edge, Network, Node, Route, Scan};
 
-use log::{debug, info};
+use log::debug;
 use rstar::{AABB, RTree};
 use rustc_hash::{FxHashMap, FxHasher};
 use serde::{Deserialize, Serialize};
@@ -13,10 +11,21 @@ use serde::{Deserialize, Serialize};
 use core::fmt::Debug;
 use core::hash::BuildHasherDefault;
 use geo::Point;
-use std::io::Write;
-use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+// Filesystem + PBF-parsing imports are only reachable from native-only
+// methods, so cfg-gate them to keep `cargo check --target
+// wasm32-unknown-unknown` warning-free.
+#[cfg(not(target_arch = "wasm32"))]
+use log::info;
+#[cfg(not(target_arch = "wasm32"))]
+use routers_network::Metadata;
+#[cfg(not(target_arch = "wasm32"))]
+use std::io::Write;
+#[cfg(not(target_arch = "wasm32"))]
+use std::path::{Path, PathBuf};
+
+#[cfg(not(target_arch = "wasm32"))]
 use crate::osm::element::ProcessedElement;
 use crate::osm::*;
 

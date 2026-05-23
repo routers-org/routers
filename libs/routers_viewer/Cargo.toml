@@ -30,14 +30,31 @@ eframe = { version = "0.33.0", default-features = false, features = [
 egui = "0.33.0"
 walkers = "0.47" # Version compatible with egui 0.33
 
-# Async runtime for any background tile fetching
-tokio = { workspace = true }
-
 # Mock Network Dependencies
 petgraph = { workspace = true }
 rstar = { workspace = true }
 rustc-hash = { workspace = true }
 pathfinding = "4.14.0"
+
+# `tokio` is only used by the native `viewer` example for its `#[tokio::main]`
+# entry. The library itself doesn't touch it, and on `wasm32-unknown-unknown`
+# tokio rejects `rt-multi-thread` / `fs` (which the workspace dep enables).
+# Gate it to native targets and use `wasm-bindgen-futures::spawn_local` for
+# async work on the web.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tokio = { workspace = true }
+
+# eframe 0.33 declares `wgpu` on wasm32 with `default-features = false` and
+# `features = ["std"]`, which leaves wgpu's own `web` cfg gate disabled —
+# `egui-wgpu` then fails to compile because it can't see `wgpu::web_sys`.
+# Pull `wgpu` in directly on the web target with the `web` + `webgpu`
+# features enabled so the `cfg(web)` block in wgpu's `build.rs` activates.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wgpu = { version = "27.0.1", default-features = false, features = [
+    "std",
+    "web",
+    "webgpu",
+] }
 
 [dev-dependencies]
 routers_fixtures = { workspace = true }

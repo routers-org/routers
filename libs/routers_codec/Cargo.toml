@@ -21,7 +21,6 @@ schema = { workspace = true }
 bytes = { workspace = true }
 serde = { workspace = true }
 buffa = { workspace = true }
-connectrpc = { workspace = true }
 
 # GeoRust
 geo = { workspace = true, features = ["serde"] }
