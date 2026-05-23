@@ -228,6 +228,17 @@ mod web {
             let initial_net = shard_window
                 .owned()
                 .expect("starter shard should be cached after fetch");
+            // Log enough about the loaded shard to confirm parity with
+            // the native diagnostic (`cargo run -p routers_shard
+            // --example debug_match`). If `nodes` / `edges` here
+            // differ, the wasm decode is corrupting state.
+            log::info!(
+                "starter shard {} loaded: {} nodes / {} edges / {} ways with metadata",
+                starter_filename,
+                initial_net.num_nodes(),
+                initial_net.graph.edge_count(),
+                initial_net.meta.len(),
+            );
 
             let mut neighbour_keys = delta.to_fetch;
             neighbour_keys.retain(|k| k != &starter_key);

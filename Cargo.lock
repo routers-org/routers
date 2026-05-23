@@ -5579,6 +5579,7 @@ dependencies = [
  "petgraph",
  "postcard",
  "rayon",
+ "routers",
  "routers_codec",
  "routers_fixtures",
  "routers_network",
@@ -5590,6 +5591,7 @@ dependencies = [
  "wasm-bindgen-futures",
  "web-sys",
  "web-time",
+ "wkt",
 ]
 
 [[package]]
