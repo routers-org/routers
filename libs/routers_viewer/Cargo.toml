@@ -16,8 +16,6 @@ routers_codec = { workspace = true }
 
 geo = { workspace = true }
 wkt = { workspace = true }
-dotenv = { workspace = true }
-env_logger = "0.11"
 
 # UI Dependencies — `wgpu` backend instead of the default `glow` so the
 # same code path runs natively (Metal/Vulkan/DX12) and, later, in the
@@ -43,6 +41,7 @@ pathfinding = "4.14.0"
 # async work on the web.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tokio = { workspace = true }
+env_logger = "0.11"
 
 # eframe 0.33 declares `wgpu` on wasm32 with `default-features = false` and
 # `features = ["std"]`, which leaves wgpu's own `web` cfg gate disabled —
@@ -56,6 +55,18 @@ wgpu = { version = "27.0.1", default-features = false, features = [
     "webgpu",
 ] }
 
+# Web-only entry-point machinery — see `examples/web_viewer.rs`. None of
+# these are usable on native targets.
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+console_error_panic_hook = "0.1"
+web-sys = { version = "0.3", features = [
+    "Document",
+    "Element",
+    "HtmlCanvasElement",
+    "Window",
+] }
+
 [dev-dependencies]
 routers_fixtures = { workspace = true }
 
@@ -65,3 +76,12 @@ workspace = true
 [[example]]
 name = "viewer"
 path = "examples/viewer.rs"
+
+# The web viewer example is built as a `cdylib` so wasm-bindgen can pick up
+# the `#[wasm_bindgen(start)]` entry point. On native targets the example
+# still compiles (as a no-op binary stub) so `cargo build --examples` keeps
+# working across the workspace.
+[[example]]
+name = "web_viewer"
+path = "examples/web_viewer.rs"
+crate-type = ["cdylib", "rlib"]

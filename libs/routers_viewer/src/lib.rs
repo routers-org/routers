@@ -1,8 +1,7 @@
 use eframe::{App, Frame, egui};
 use egui::{CentralPanel, Color32, Context, Response, SidePanel, Stroke, TextEdit, Widget};
-use walkers::{HttpTiles, Map, MapMemory, Plugin, Projector, lon_lat, sources::Mapbox};
+use walkers::{HttpTiles, Map, MapMemory, Plugin, Projector, lon_lat, sources::OpenStreetMap};
 
-use dotenv::dotenv;
 use geo::{Coord, LineString};
 use routers::Trip;
 use routers::transition::candidate::collapse::CollapsedPath;
@@ -14,7 +13,6 @@ use routers::transition::solver::selective_forward::SelectiveForwardSolver;
 use routers_codec::osm::{OsmEntryId, OsmNetwork, OsmTripConfiguration};
 use routers_network::{Discovery, Entry, Network, Node};
 use std::time::{Duration, Instant};
-use walkers::sources::MapboxStyle;
 use wkt::ToWkt;
 
 struct MatchState {
@@ -40,18 +38,12 @@ pub struct ViewerApp {
 
 impl ViewerApp {
     pub fn new(egui_ctx: Context, network: OsmNetwork) -> Self {
-        dotenv().expect("Must load env");
-
+        // Default tile source is OpenStreetMap's standard raster pyramid —
+        // no API key, works the same on native and WASM. If you want a
+        // different style (e.g. Mapbox), construct the `HttpTiles` yourself
+        // and pass it in via a constructor variant.
         Self {
-            tiles: HttpTiles::new(
-                Mapbox {
-                    style: MapboxStyle::Light,
-                    high_resolution: true,
-                    access_token: std::env::var("MAPBOX_API_KEY")
-                        .expect("Must have MAPBOX_API_KEY environment variable set"),
-                },
-                egui_ctx,
-            ),
+            tiles: HttpTiles::new(OpenStreetMap, egui_ctx),
             map_memory: MapMemory::default(),
             network,
             wkt_input: "WKT Here...".into(),

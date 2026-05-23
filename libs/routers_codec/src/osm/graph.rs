@@ -329,6 +329,21 @@ impl OsmNetwork {
     pub fn num_nodes(&self) -> usize {
         self.graph.node_count()
     }
+
+    /// An empty network — zero nodes, zero edges, empty spatial indices.
+    ///
+    /// Cheap to construct and useful as a "still loading" placeholder when
+    /// a viewer needs to be wired up before its real data has arrived
+    /// (e.g. before an async shard fetch completes in the browser).
+    pub fn empty() -> Self {
+        Self {
+            graph: GraphStructure::new(),
+            hash: FxHashMap::default(),
+            meta: FxHashMap::default(),
+            index: RTree::new(),
+            index_edge: RTree::new(),
+        }
+    }
 }
 
 impl Discovery<OsmEntryId> for OsmNetwork {
