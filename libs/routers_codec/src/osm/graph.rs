@@ -50,12 +50,62 @@ pub struct OsmNetwork {
 }
 
 impl OsmNetwork {
+    /// Decode a previously-encoded `OsmNetwork` from a byte slice and
+    /// rebuild its spatial indices. Filesystem-free; suitable for WASM
+    /// targets where bytes arrive via `fetch()` or similar.
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, String> {
+        const HEADER_LEN: usize = SAVE_MAGIC.len() + 8;
+        if bytes.len() < HEADER_LEN || &bytes[..SAVE_MAGIC.len()] != SAVE_MAGIC {
+            return Err(
+                "OsmNetwork bytes are missing the magic header — likely from a previous format. Rebuild the cache.".to_string()
+            );
+        }
+        let version = u64::from_le_bytes(
+            bytes[SAVE_MAGIC.len()..HEADER_LEN]
+                .try_into()
+                .expect("8 bytes"),
+        );
+        if version != SAVE_VERSION {
+            return Err(format!(
+                "OsmNetwork bytes have format hash {version:016x}, expected {SAVE_VERSION:016x}. The codec's serialised layout has changed — rebuild the cache."
+            ));
+        }
+        let deserialise_start = Instant::now();
+        let mut net: Self =
+            postcard::from_bytes(&bytes[HEADER_LEN..]).map_err(|v| v.to_string())?;
+        let deserialise = deserialise_start.elapsed();
+        let rebuild_start = Instant::now();
+        net.rebuild_indices();
+        debug!(
+            "OsmNetwork::from_bytes: {} bytes, deserialised in {:?}, rebuilt indices in {:?}",
+            bytes.len(),
+            deserialise,
+            rebuild_start.elapsed()
+        );
+        Ok(net)
+    }
+
+    /// Encode `self` into a `Vec<u8>` with the format header prepended.
+    /// Counterpart to [`from_bytes`](Self::from_bytes); filesystem-free.
+    pub fn to_bytes(&self) -> Result<Vec<u8>, String> {
+        let payload: Vec<u8> =
+            postcard::to_allocvec(self).map_err(|e| format!("failed to serialise value: {e}"))?;
+        let mut out = Vec::with_capacity(SAVE_MAGIC.len() + 8 + payload.len());
+        out.extend_from_slice(SAVE_MAGIC);
+        out.extend_from_slice(&SAVE_VERSION.to_le_bytes());
+        out.extend_from_slice(&payload);
+        Ok(out)
+    }
+
+    /// Build an `OsmNetwork` either from a cached `.rt` file (fast path)
+    /// or, if the cache is missing or stale, from the source PBF (slow
+    /// path, writes the cache for next time).
+    ///
+    /// Filesystem-bound; not available on WASM targets — use
+    /// [`from_bytes`](Self::from_bytes) with HTTP-fetched cache bytes
+    /// instead.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn from_pbf_and_save(pbf_path: &PathBuf, saved_path: &PathBuf) -> Result<Self, String> {
-        // Try to load the cache first; if it's stale (different format
-        // hash, missing magic, truncated) just rebuild from the PBF and
-        // overwrite. The build-time `FORMAT_HASH` means this branch only
-        // fires when the on-disk layout actually changed, so we still get
-        // fast warm loads on a normal run.
         if saved_path.exists() {
             match OsmNetwork::from_saved(saved_path) {
                 Ok(g) => return Ok(g),
@@ -72,44 +122,13 @@ impl OsmNetwork {
         Ok(graph)
     }
 
-    /// Creates a graph from a `.osm.pbf` file, using the `ProcessedElementIterator`
+    /// Read a saved `.rt` from disk into an `OsmNetwork`. Thin wrapper
+    /// around [`from_bytes`](Self::from_bytes); not available on WASM.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn from_saved(filename: &PathBuf) -> Result<Self, String> {
-        let read_start = Instant::now();
         let bytes = std::fs::read(filename).map_err(|v| v.to_string())?;
-
-        const HEADER_LEN: usize = SAVE_MAGIC.len() + 8;
-        if bytes.len() < HEADER_LEN || &bytes[..SAVE_MAGIC.len()] != SAVE_MAGIC {
-            return Err(format!(
-                "cache file `{}` is missing the OsmNetwork magic header — it was likely written by an older version. Delete the file and re-run to rebuild.",
-                filename.display()
-            ));
-        }
-        let version = u64::from_le_bytes(
-            bytes[SAVE_MAGIC.len()..HEADER_LEN]
-                .try_into()
-                .expect("8 bytes"),
-        );
-        if version != SAVE_VERSION {
-            return Err(format!(
-                "cache file `{}` has format hash {version:016x}, expected {SAVE_VERSION:016x}. The codec's serialised layout has changed — delete the file and re-run to rebuild.",
-                filename.display()
-            ));
-        }
-        let payload = &bytes[HEADER_LEN..];
-
-        let deserialise_start = Instant::now();
-        let mut net: Self = postcard::from_bytes(payload).map_err(|v| v.to_string())?;
-        let deserialise = deserialise_start.elapsed();
-        let rebuild_start = Instant::now();
-        net.rebuild_indices();
-        debug!(
-            "OsmNetwork::from_saved: read {} bytes in {:?}, deserialised in {:?}, rebuilt indices in {:?}",
-            bytes.len(),
-            read_start.elapsed() - deserialise - rebuild_start.elapsed(),
-            deserialise,
-            rebuild_start.elapsed()
-        );
-        Ok(net)
+        Self::from_bytes(&bytes)
+            .map_err(|e| format!("cache file `{}`: {e}", filename.display()))
     }
 
     /// Rebuilds the node and edge spatial indices from `hash` and `graph`.
@@ -141,25 +160,25 @@ impl OsmNetwork {
         self.index_edge = edge_index;
     }
 
+    /// Persist this network to disk. Thin wrapper around
+    /// [`to_bytes`](Self::to_bytes); not available on WASM.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn save_to_file(&self, path: &Path) -> Result<(), String> {
+        let bytes = self.to_bytes()?;
         let mut file = std::fs::File::create(path).map_err(|e| e.to_string())?;
-
-        let output: Vec<u8> =
-            postcard::to_allocvec(self).map_err(|e| format!("failed to serialise value: {e}"))?;
-
-        file.write_all(SAVE_MAGIC).map_err(|e| e.to_string())?;
-        file.write_all(&SAVE_VERSION.to_le_bytes())
-            .map_err(|e| e.to_string())?;
-        file.write_all(&output).map_err(|e| e.to_string())?;
+        file.write_all(&bytes).map_err(|e| e.to_string())?;
         debug!(
-            "OsmNetwork::save_to_file wrote {} bytes (+12 byte header, format {:016x}) to {}",
-            output.len(),
+            "OsmNetwork::save_to_file wrote {} bytes (incl. 12-byte header, format {:016x}) to {}",
+            bytes.len(),
             SAVE_VERSION,
             path.display()
         );
         Ok(())
     }
 
+    /// Construct an `OsmNetwork` from a `.osm.pbf` file. Uses memory-mapped
+    /// IO, multithreaded parsing and rayon; not available on WASM.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn from_pbf(filename: &PathBuf) -> Result<Self, Box<dyn std::error::Error>> {
         let mut start_time = Instant::now();
         let fixed_start_time = Instant::now();

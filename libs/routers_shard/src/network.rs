@@ -12,7 +12,9 @@ use petgraph::prelude::DiGraphMap;
 use rstar::{AABB, RTree};
 use rustc_hash::{FxHashMap, FxHashSet, FxHasher};
 use serde::{Deserialize, Serialize};
+#[cfg(not(target_arch = "wasm32"))]
 use std::io::Write;
+#[cfg(not(target_arch = "wasm32"))]
 use std::path::Path;
 use std::time::Instant;
 
@@ -300,46 +302,37 @@ where
         self.index_edge = edge_index;
     }
 
-    /// Serialise the network to `path` using `postcard`.
+    /// Encode `self` into a `Vec<u8>` with the format header prepended.
     ///
-    /// The spatial indices are *not* written to disk; they are rebuilt by
-    /// [`from_cached`](Self::from_cached) on load.
-    pub fn save_to_file(&self, path: &Path) -> Result<(), String> {
-        let started = Instant::now();
-        let bytes = postcard::to_allocvec(self)
+    /// The spatial indices are intentionally not encoded; they are rebuilt
+    /// by [`from_cached_bytes`](Self::from_cached_bytes) on load. This is
+    /// the WASM-friendly counterpart to
+    /// [`save_to_file`](Self::save_to_file).
+    pub fn to_cache_bytes(&self) -> Result<Vec<u8>, String> {
+        let payload = postcard::to_allocvec(self)
             .map_err(|e| format!("failed to serialise sharded network: {e}"))?;
-        let mut file = std::fs::File::create(path).map_err(|e| e.to_string())?;
-        file.write_all(CACHE_MAGIC).map_err(|e| e.to_string())?;
-        file.write_all(&CACHE_VERSION.to_le_bytes())
-            .map_err(|e| e.to_string())?;
-        file.write_all(&bytes).map_err(|e| e.to_string())?;
-        debug!(
-            "ShardedNetwork::save_to_file wrote {} bytes (+12 byte header, format {:016x}) in {:?}",
-            bytes.len(),
-            CACHE_VERSION,
-            started.elapsed()
-        );
-        Ok(())
+        let mut out = Vec::with_capacity(CACHE_MAGIC.len() + 8 + payload.len());
+        out.extend_from_slice(CACHE_MAGIC);
+        out.extend_from_slice(&CACHE_VERSION.to_le_bytes());
+        out.extend_from_slice(&payload);
+        Ok(out)
     }
 
-    /// Load a network previously written by [`save_to_file`](Self::save_to_file),
-    /// rebuilding the spatial indices.
-    pub fn from_cached(path: &Path) -> Result<Self, String>
+    /// Decode a sharded network from a byte slice produced by
+    /// [`to_cache_bytes`](Self::to_cache_bytes), then rebuild the spatial
+    /// indices. Filesystem-free — suitable for WASM consumers fetching the
+    /// blob over HTTP.
+    pub fn from_cached_bytes(bytes: &[u8]) -> Result<Self, String>
     where
         E: serde::de::DeserializeOwned,
         M: serde::de::DeserializeOwned,
         S: serde::de::DeserializeOwned,
     {
-        let read_start = Instant::now();
-        let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
-        let read = read_start.elapsed();
-
         const HEADER_LEN: usize = CACHE_MAGIC.len() + 8;
         if bytes.len() < HEADER_LEN || &bytes[..CACHE_MAGIC.len()] != CACHE_MAGIC {
-            return Err(format!(
-                "shard cache `{}` is missing the SHRD magic header — likely from a previous format. Delete it and rebuild.",
-                path.display()
-            ));
+            return Err(
+                "shard cache bytes are missing the SHRD magic header — likely from a previous format. Rebuild the cache.".to_string()
+            );
         }
         let version = u64::from_le_bytes(
             bytes[CACHE_MAGIC.len()..HEADER_LEN]
@@ -348,14 +341,11 @@ where
         );
         if version != CACHE_VERSION {
             return Err(format!(
-                "shard cache `{}` has format hash {version:016x}, expected {CACHE_VERSION:016x}. The shard layout has changed — delete it and rebuild.",
-                path.display()
+                "shard cache bytes have format hash {version:016x}, expected {CACHE_VERSION:016x}. The shard layout has changed — rebuild the cache."
             ));
         }
-        let payload = &bytes[HEADER_LEN..];
-
         let deser_start = Instant::now();
-        let mut net: Self = postcard::from_bytes(payload)
+        let mut net: Self = postcard::from_bytes(&bytes[HEADER_LEN..])
             .map_err(|e| format!("failed to deserialise sharded network: {e}"))?;
         let deser = deser_start.elapsed();
 
@@ -363,18 +353,61 @@ where
         net.rebuild_indices();
         let rebuild = rebuild_start.elapsed();
         info!(
-            "ShardedNetwork::from_cached {} bytes — read {:?}, decode {:?}, rebuild {:?}",
+            "ShardedNetwork::from_cached_bytes {} bytes — decode {:?}, rebuild {:?}",
             bytes.len(),
-            read,
             deser,
             rebuild
         );
         Ok(net)
     }
 
+    /// Persist this network to a `.shard.rt` file on disk. Thin wrapper
+    /// around [`to_cache_bytes`](Self::to_cache_bytes); not available on
+    /// WASM targets.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn save_to_file(&self, path: &Path) -> Result<(), String> {
+        let started = Instant::now();
+        let bytes = self.to_cache_bytes()?;
+        let mut file = std::fs::File::create(path).map_err(|e| e.to_string())?;
+        file.write_all(&bytes).map_err(|e| e.to_string())?;
+        debug!(
+            "ShardedNetwork::save_to_file wrote {} bytes (incl. 12-byte header, format {:016x}) in {:?}",
+            bytes.len(),
+            CACHE_VERSION,
+            started.elapsed()
+        );
+        Ok(())
+    }
+
+    /// Read a saved `.shard.rt` from disk. Thin wrapper around
+    /// [`from_cached_bytes`](Self::from_cached_bytes); not available on
+    /// WASM targets.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn from_cached(path: &Path) -> Result<Self, String>
+    where
+        E: serde::de::DeserializeOwned,
+        M: serde::de::DeserializeOwned,
+        S: serde::de::DeserializeOwned,
+    {
+        let read_start = Instant::now();
+        let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+        debug!(
+            "ShardedNetwork::from_cached read {} bytes in {:?}",
+            bytes.len(),
+            read_start.elapsed()
+        );
+        Self::from_cached_bytes(&bytes)
+            .map_err(|e| format!("shard cache `{}`: {e}", path.display()))
+    }
+
     /// Build from a source if no cache exists at `cache_path`, otherwise
     /// load from disk. The classic "expensive build → fast subsequent
     /// loads" idiom, mirroring `OsmNetwork::from_pbf_and_save`.
+    ///
+    /// Filesystem-bound; not available on WASM. Browser consumers should
+    /// fetch the cache bytes themselves and call
+    /// [`from_cached_bytes`](Self::from_cached_bytes) directly.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn from_source_or_cache<Src, St>(
         source: &Src,
         strategy: &St,
@@ -404,6 +437,9 @@ where
     /// filtered network and the new predicate will be silently ignored.
     /// Encode the filter into the path (e.g. `sydney_tertiary+_d10.rt`)
     /// when you mix multiple filters in the same workspace.
+    ///
+    /// Filesystem-bound; not available on WASM.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn from_source_or_cache_filtered<Src, St>(
         source: &Src,
         strategy: &St,

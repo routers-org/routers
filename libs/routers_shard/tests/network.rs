@@ -272,6 +272,27 @@ fn filter_makes_smaller_cache() {
 }
 
 #[test]
+fn to_and_from_cache_bytes_round_trips() {
+    let source = MemSource::grid(Point::new(0.0, 0.0), 4, 4, 0.01);
+    let net = build(&source, 1, Point::new(0.01, 0.01), SelectionMode::Owned);
+    let bytes = net.to_cache_bytes().expect("encode");
+    let back = ShardedNetwork::<OsmEntryId, OsmEdgeMetadata, QuadKey>::from_cached_bytes(&bytes)
+        .expect("decode");
+    assert_eq!(back.num_nodes(), net.num_nodes());
+    assert_eq!(back.graph.edge_count(), net.graph.edge_count());
+    assert_eq!(back.owned, net.owned);
+    // Spatial indices rebuilt from the decoded graph.
+    assert!(back.nearest_node(&Point::new(0.01, 0.01)).is_some());
+}
+
+#[test]
+fn from_cached_bytes_rejects_bad_header() {
+    let err = ShardedNetwork::<OsmEntryId, OsmEdgeMetadata, QuadKey>::from_cached_bytes(b"junk")
+        .expect_err("should reject");
+    assert!(err.contains("SHRD"), "error should mention magic: {err}");
+}
+
+#[test]
 fn from_cached_round_trips_via_disk() {
     let source = MemSource::grid(Point::new(0.0, 0.0), 4, 4, 0.01);
     let net = build(&source, 1, Point::new(0.01, 0.01), SelectionMode::Owned);
