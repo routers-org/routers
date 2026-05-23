@@ -3,7 +3,7 @@
 use geo::Point;
 use routers_codec::osm::{OsmEdgeMetadata, OsmEntryId};
 use routers_fixtures::{SYDNEY, fixture_path};
-use routers_network::Network;
+use routers_network::DataPlane;
 use routers_shard::{
     QuadKey, QuadTreeStrategy, Selection, SelectionMode, ShardedNetwork, ShardingStrategy,
     osm::OsmSource,

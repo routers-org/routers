@@ -19,7 +19,7 @@ use std::path::Path;
 use std::time::Instant;
 
 use routers_network::{
-    DirectionAwareEdgeId, Discovery, Edge, Entry, Metadata, Network, Node, Route, Scan,
+    DirectionAwareEdgeId, Discovery, Edge, Entry, Metadata, Node, Route, Scan,
     edge::Weight, network::GraphEdge,
 };
 
@@ -574,12 +574,15 @@ where
     }
 }
 
-impl<E, M, S> Network<E, M> for ShardedNetwork<E, M, S>
+impl<E, M, S> routers_network::DataPlane for ShardedNetwork<E, M, S>
 where
     E: Entry,
     M: Metadata,
     S: ShardId,
 {
+    type Entry = E;
+    type Meta = M;
+
     fn metadata(&self, id: &E) -> Option<&M> {
         self.meta.get(id)
     }

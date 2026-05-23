@@ -31,8 +31,8 @@ use core::hash::BuildHasherDefault;
 use geo::Point;
 use petgraph::prelude::DiGraphMap;
 use routers_network::{
-    Direction, DirectionAwareEdgeId, Discovery, Edge, Entry, Metadata, Network, Node, Route, Scan,
-    edge::Weight, network::GraphEdge,
+    DataPlane, Direction, DirectionAwareEdgeId, Discovery, Edge, Entry, Metadata, Node, Route,
+    Scan, edge::Weight, network::GraphEdge,
 };
 use rstar::{AABB, RTree};
 use rustc_hash::{FxHashMap, FxHasher};
@@ -174,7 +174,10 @@ impl Route<MockEntryId> for MockNetwork {
     }
 }
 
-impl Network<MockEntryId, MockMetadata> for MockNetwork {
+impl routers_network::DataPlane for MockNetwork {
+    type Entry = MockEntryId;
+    type Meta = MockMetadata;
+
     fn metadata(&self, id: &MockEntryId) -> Option<&MockMetadata> {
         self.metadata.get(id)
     }

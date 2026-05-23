@@ -10,34 +10,49 @@ use routers::transition::costing::CostingStrategies;
 use routers::transition::entity::Transition;
 use routers::transition::layer::generation::StandardGenerator;
 use routers::transition::solver::selective_forward::SelectiveForwardSolver;
-use routers_codec::osm::{OsmEntryId, OsmNetwork, OsmTripConfiguration};
-use routers_network::{Discovery, Entry, Network, Node};
+use routers_network::{DataPlane, Discovery, Entry, Metadata, Node, Route, Scan};
+use std::marker::PhantomData;
 use std::time::{Duration, Instant};
 use wkt::ToWkt;
 
-struct MatchState {
+struct MatchState<E: Entry> {
     original_line: LineString,
-    collapsed: CollapsedPath<OsmEntryId>,
+    collapsed: CollapsedPath<E>,
     interpolated_line: LineString,
     discrete_line: LineString,
     time: Duration,
 }
 
-pub struct ViewerApp {
+/// Generic over any routing network — bound on [`DataPlane`] (with the
+/// usual `Discovery + Scan + Route` companions) so we can flip between
+/// `OsmNetwork`, `ShardedNetwork<…>` or any other implementor without
+/// touching the viewer code. The Entry / Metadata types fall out of
+/// `N::Entry` / `N::Meta` via the `DataPlane` associated types — callers
+/// supply only `N`.
+pub struct ViewerApp<N>
+where
+    N: DataPlane,
+{
     tiles: HttpTiles,
     map_memory: MapMemory,
-    network: OsmNetwork,
+    network: N,
     wkt_input: String,
 
-    match_state: Option<MatchState>,
+    match_state: Option<MatchState<<N as DataPlane>::Entry>>,
     selected_layer: Option<usize>,
     selected_candidate: Option<CandidateId>,
     hovered_transition: Option<(CandidateId, CandidateId)>,
     error_msg: Option<String>,
 }
 
-impl ViewerApp {
-    pub fn new(egui_ctx: Context, network: OsmNetwork) -> Self {
+impl<N> ViewerApp<N>
+where
+    N: DataPlane
+        + Discovery<<N as DataPlane>::Entry>
+        + Scan<<N as DataPlane>::Entry>
+        + Route<<N as DataPlane>::Entry>,
+{
+    pub fn new(egui_ctx: Context, network: N) -> Self {
         // Default tile source is OpenStreetMap's standard raster pyramid —
         // no API key, works the same on native and WASM. If you want a
         // different style (e.g. Mapbox), construct the `HttpTiles` yourself
@@ -70,7 +85,9 @@ impl ViewerApp {
         let transition = Transition::new(&self.network, line.clone(), &costing, generator);
 
         let solver = SelectiveForwardSolver::default();
-        let runtime = OsmTripConfiguration::default();
+        // Use the metadata-defined default runtime instead of hard-coding
+        // `OsmTripConfiguration::default()` — generic over `N::Meta`.
+        let runtime = <<N as DataPlane>::Meta as Metadata>::default_runtime();
 
         let now = Instant::now();
 
@@ -101,16 +118,17 @@ impl ViewerApp {
     }
 }
 
-struct TransitionWidget {
+struct TransitionWidget<E: Entry> {
     cost: u32,
 
-    source: Candidate<OsmEntryId>,
-    target: Candidate<OsmEntryId>,
+    #[allow(dead_code)]
+    source: Candidate<E>,
+    target: Candidate<E>,
 
-    nodes: Vec<Node<OsmEntryId>>,
+    nodes: Vec<Node<E>>,
 }
 
-impl Widget for TransitionWidget {
+impl<E: Entry> Widget for TransitionWidget<E> {
     fn ui(self, ui: &mut egui::Ui) -> Response {
         let trip = Trip::from(self.nodes);
         let linestring = trip.linestring();
@@ -119,7 +137,7 @@ impl Widget for TransitionWidget {
             let label = ui.selectable_label(
                 false,
                 format!(
-                    "-> {:?}: Cost {}, R={:.1}m, S={:.1}m",
+                    "-> {}: Cost {}, R={:.1}m, S={:.1}m",
                     self.target.edge.id().identifier(),
                     self.cost,
                     trip.length(),
@@ -137,7 +155,14 @@ impl Widget for TransitionWidget {
     }
 }
 
-impl App for ViewerApp {
+impl<N> App for ViewerApp<N>
+where
+    N: DataPlane
+        + Discovery<<N as DataPlane>::Entry>
+        + Scan<<N as DataPlane>::Entry>
+        + Route<<N as DataPlane>::Entry>
+        + 'static,
+{
     fn update(&mut self, ctx: &Context, _frame: &mut Frame) {
         SidePanel::left("controls").show(ctx, |ui| {
             ui.heading("Routers Map Matcher");
@@ -207,13 +232,13 @@ impl App for ViewerApp {
                                 let is_selected = self.selected_candidate == Some(*id);
 
                                 let text = format!(
-                                    "Candidate {:?}\n Cost={}\n EdgeId={:?}\n EdgeWeight={}\nSource={}\nTarget={}",
+                                    "Candidate {:?}\n Cost={}\n EdgeId={}\n EdgeWeight={}\nSource={}\nTarget={}",
                                     id,
                                     cand.emission,
-                                    cand.edge.id.index().identifier,
+                                    cand.edge.id.index().identifier(),
                                     cand.edge.weight,
-                                    cand.edge.source.identifier,
-                                    cand.edge.target.identifier
+                                    cand.edge.source.identifier(),
+                                    cand.edge.target.identifier()
                                 );
 
                                 if ui
@@ -300,7 +325,7 @@ impl App for ViewerApp {
                                                 let is_hovered =
                                                     self.hovered_transition == Some(hovered_transition);
 
-                                                let resp = ui.add(TransitionWidget {
+                                                let resp = ui.add(TransitionWidget::<<N as DataPlane>::Entry> {
                                                     cost,
 
                                                     source,
@@ -368,7 +393,7 @@ impl App for ViewerApp {
                                             let is_hovered =
                                                 self.hovered_transition == Some(hovered_transition);
 
-                                            let resp = ui.add(TransitionWidget {
+                                            let resp = ui.add(TransitionWidget::<<N as DataPlane>::Entry> {
                                                 cost,
 
                                                 source,
@@ -424,11 +449,12 @@ impl App for ViewerApp {
 
                     let original_coord = state.original_line.0.get(layer_id).copied();
 
-                    let cand_plugin = CandidatePlugin {
+                    let cand_plugin = CandidatePlugin::<<N as DataPlane>::Entry> {
                         candidates,
                         chosen_id,
                         selected_id: self.selected_candidate,
                         original_coord,
+                        _ph: PhantomData,
                     };
                     map = map.with_plugin(cand_plugin);
                 }
@@ -568,14 +594,15 @@ impl Plugin for TransitionPlugin {
     }
 }
 
-struct CandidatePlugin {
-    candidates: Vec<(CandidateId, Candidate<OsmEntryId>)>,
+struct CandidatePlugin<E: Entry> {
+    candidates: Vec<(CandidateId, Candidate<E>)>,
     chosen_id: Option<CandidateId>,
     selected_id: Option<CandidateId>,
     original_coord: Option<Coord>,
+    _ph: PhantomData<E>,
 }
 
-impl Plugin for CandidatePlugin {
+impl<E: Entry> Plugin for CandidatePlugin<E> {
     fn run(
         self: Box<Self>,
         ui: &mut egui::Ui,

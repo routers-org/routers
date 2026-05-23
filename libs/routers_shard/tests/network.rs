@@ -7,7 +7,7 @@ mod common;
 use common::MemSource;
 use geo::Point;
 use routers_codec::osm::{OsmEdgeMetadata, OsmEntryId};
-use routers_network::{Discovery, Network, Route, Scan};
+use routers_network::{DataPlane, Discovery, Route, Scan};
 use routers_shard::{
     QuadKey, QuadTreeStrategy, Selection, SelectionMode, ShardedNetwork, ShardingStrategy,
 };
@@ -212,7 +212,7 @@ fn filter_keep_ways_where_predicates_compose() {
 
 #[test]
 fn filter_without_metadata_drops_meta_map_but_keeps_topology() {
-    use routers_network::Network;
+    use routers_network::DataPlane;
     use routers_shard::IngestFilter;
     let source = MemSource::grid(Point::new(0.0, 0.0), 3, 3, 0.01);
     let strategy = QuadTreeStrategy::with_depth(1);

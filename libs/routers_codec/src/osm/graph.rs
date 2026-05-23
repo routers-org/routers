@@ -1,7 +1,7 @@
 use petgraph::prelude::DiGraphMap;
 use routers_network::edge::Weight;
 use routers_network::network::GraphEdge;
-use routers_network::{DirectionAwareEdgeId, Discovery, Edge, Network, Node, Route, Scan};
+use routers_network::{DirectionAwareEdgeId, Discovery, Edge, Node, Route, Scan};
 
 use log::debug;
 use rstar::{AABB, RTree};
@@ -421,7 +421,10 @@ impl Debug for OsmNetwork {
     }
 }
 
-impl Network<OsmEntryId, OsmEdgeMetadata> for OsmNetwork {
+impl routers_network::DataPlane for OsmNetwork {
+    type Entry = OsmEntryId;
+    type Meta = OsmEdgeMetadata;
+
     fn metadata(&self, id: &OsmEntryId) -> Option<&OsmEdgeMetadata> {
         self.meta.get(id)
     }
