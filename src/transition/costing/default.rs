@@ -1,5 +1,5 @@
 pub mod emission {
-    use std::ops::Neg;
+    use std::ops::{Div, Neg};
 
     use crate::transition::*;
 
@@ -56,7 +56,7 @@ pub mod emission {
         type Cost = f64;
 
         const ZETA: f64 = 1.;
-        const BETA: f64 = 3.;
+        const BETA: f64 = 1.;
 
         #[inline(always)]
         fn calculate(&self, context: EmissionContext<'a>) -> Option<Self::Cost> {
@@ -64,7 +64,7 @@ pub mod emission {
             // Road-class preference is handled by the transition cost (where it
             // belongs — emission is the spatial fit between a GPS point and a
             // candidate, not a routing preference).
-            Some(context.distance.sqrt().neg().exp())
+            Some(context.distance.div(self.emission_error).sqrt().neg().exp())
         }
     }
 }
@@ -145,7 +145,7 @@ pub mod transition {
             let deviance = lengths.deviance().clamp(0.0, 1.0);
 
             // Value in range [0, 1] (1=Low Cost, 0=High Cost)
-            let turn_cost = context.optimal_path.angular_complexity().clamp(0.0, 1.0);
+            let turn_cost = context.angular_complexity().clamp(0.0, 1.0);
 
             // Value in range [0, 1] (1=Low Cost, 0=High Cost)
             let travel_weight_cost = {
@@ -154,7 +154,7 @@ pub mod transition {
                 let src_weight = source.edge.weight as f64;
                 let tgt_weight = target.edge.weight as f64;
 
-                let weights = context
+                let interior_max = context
                     .map_path
                     .windows(2)
                     .filter_map(|node| match node {
@@ -163,20 +163,19 @@ pub mod transition {
                         _ => None,
                     })
                     .map(|Edge { weight, .. }| weight as f64)
-                    .collect::<Vec<_>>();
+                    .fold(0.0f64, f64::max);
 
-                let avg_weight = if weights.is_empty() {
-                    // Distance-only transition (same edge): use the better of the two
-                    // candidate edges to avoid division-by-zero.
-                    src_weight.min(tgt_weight)
-                } else {
-                    weights.iter().sum::<f64>() / weights.len() as f64
-                };
+                // Combine: max over the two candidate edges and every
+                // interior edge. OSM `RoadClass::weighting()` is ordered
+                // so Motorway=1, Residential=10 — higher numeric weight
+                // = lower-quality road class.
+                let worst_weight = src_weight.max(tgt_weight).max(interior_max);
 
-                (1.0 / avg_weight).clamp(0.0, 1.0)
+                (1.0 / worst_weight).powi(2).clamp(0.0, 1.0)
             };
 
-            Some(0.25 * travel_weight_cost + 0.25 * deviance + 0.5 * turn_cost)
+            let geometric_quality = 0.5 * deviance + 0.5 * turn_cost;
+            Some(travel_weight_cost * geometric_quality)
         }
     }
 }
