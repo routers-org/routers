@@ -5,6 +5,7 @@ use walkers::{
 };
 
 use geo::{Coord, LineString};
+use routers::PredicateCache;
 use routers::Trip;
 use routers::transition::candidate::collapse::CollapsedPath;
 use routers::transition::candidate::{Candidate, CandidateId};
@@ -14,6 +15,7 @@ use routers::transition::layer::generation::StandardGenerator;
 use routers::transition::solver::selective_forward::SelectiveForwardSolver;
 use routers_network::{DataPlane, Discovery, Entry, Metadata, Node, Route, Scan};
 use std::marker::PhantomData;
+use std::sync::Arc;
 use std::time::Duration;
 // `web_time::Instant` is a drop-in for `std::time::Instant` that doesn't
 // panic on `wasm32-unknown-unknown`. `Duration` is pure arithmetic so the
@@ -37,7 +39,13 @@ struct MatchState<E: Entry> {
 /// supply only `N`.
 pub struct ViewerApp<N>
 where
-    N: DataPlane,
+    // Same bound set as the impl block — `PredicateCache<E, M, N>`
+    // requires `N: Network<E, M>`, which the blanket impl gives us
+    // from `DataPlane + Scan + Route`.
+    N: DataPlane
+        + Discovery<<N as DataPlane>::Entry>
+        + Scan<<N as DataPlane>::Entry>
+        + Route<<N as DataPlane>::Entry>,
 {
     tiles: HttpTiles,
     map_memory: MapMemory,
@@ -56,6 +64,19 @@ where
     selected_candidate: Option<CandidateId>,
     hovered_transition: Option<(CandidateId, CandidateId)>,
     error_msg: Option<String>,
+
+    /// Predicate-evaluation cache shared across matcher invocations.
+    /// The solver populates this with per-edge accessibility outcomes
+    /// keyed by `(edge_id, runtime)`. Re-using it across matches means
+    /// each edge's predicate is computed at most once — large saving
+    /// in the draw-mode loop, where many consecutive solves traverse
+    /// the same road network with the same runtime.
+    ///
+    /// Wrapped in `Arc` because the solver also takes ownership of an
+    /// `Arc` clone; both sides write through to the same backing store.
+    /// Survives `set_network`: predicate values are keyed by edge id +
+    /// runtime, neither of which changes across a shard swap.
+    predicate_cache: Arc<PredicateCache<<N as DataPlane>::Entry, <N as DataPlane>::Meta, N>>,
 
     // ── Draw tool ───────────────────────────────────────────────────────
     /// When `true`, map clicks add waypoints to `drawn_path` instead of
@@ -125,6 +146,7 @@ where
             hover_preview: None,
             draw_dirty: false,
             last_match_done: None,
+            predicate_cache: Arc::new(PredicateCache::default()),
         }
     }
 
@@ -206,7 +228,13 @@ where
         let generator = StandardGenerator::new(&self.network, &costing.emission, 100.0);
         let transition = Transition::new(&self.network, line.clone(), &costing, generator);
 
-        let solver = SelectiveForwardSolver::default();
+        // Plumb the shared `PredicateCache` into the solver. Each match
+        // run hits the same cache, so per-edge accessibility predicates
+        // (which only depend on `(edge_id, runtime)`) are computed at
+        // most once across the whole session — the dominant saving for
+        // the draw-mode throttle loop where consecutive solves walk
+        // through largely the same edges.
+        let solver = SelectiveForwardSolver::default().use_cache(self.predicate_cache.clone());
         // Use the metadata-defined default runtime instead of hard-coding
         // `OsmTripConfiguration::default()` — generic over `N::Meta`.
         let runtime = <<N as DataPlane>::Meta as Metadata>::default_runtime();
