@@ -1,5 +1,5 @@
 pub mod emission {
-    use std::ops::Neg;
+    use std::ops::{Div, Neg};
 
     use crate::transition::*;
 
@@ -64,7 +64,7 @@ pub mod emission {
             // Road-class preference is handled by the transition cost (where it
             // belongs — emission is the spatial fit between a GPS point and a
             // candidate, not a routing preference).
-            Some(context.distance.sqrt().neg().exp())
+            Some(context.distance.div(self.emission_error).sqrt().neg().exp())
         }
     }
 }
