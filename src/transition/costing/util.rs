@@ -21,7 +21,7 @@ pub trait Strategy<Ctx> {
     /// Converts the `[0, 1]` output of [`calculate`] to a `u32` edge cost.
     ///
     /// ```math
-    /// cost(v) = ζ · (1/v − 1)^β · PRECISION
+    /// cost(v) = ζ · (1/v)^β · PRECISION
     /// ```
     ///
     /// [`calculate`]: Strategy::calculate
@@ -34,7 +34,7 @@ pub trait Strategy<Ctx> {
             .map_or(0.0, |v| v.into())
             .clamp(EPSILON, 1.0);
 
-        let cost = (1.0 / v - 1.0).powf(Self::BETA);
+        let cost = (1.0 / v).powf(Self::BETA);
         (PRECISION * Self::ZETA * cost) as u32
     }
 }

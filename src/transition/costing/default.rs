@@ -133,8 +133,8 @@ pub mod transition {
     {
         type Cost = f64;
 
-        const ZETA: f64 = 1.0;
-        const BETA: f64 = 1.0;
+        const ZETA: f64 = 1.;
+        const BETA: f64 = 1.;
 
         #[inline]
         fn calculate(&self, context: TransitionContext<'a, E, M, N>) -> Option<Self::Cost> {
@@ -147,35 +147,7 @@ pub mod transition {
             // Value in range [0, 1] (1=Low Cost, 0=High Cost)
             let turn_cost = context.angular_complexity().clamp(0.0, 1.0);
 
-            // Value in range [0, 1] (1=Low Cost, 0=High Cost)
-            let travel_weight_cost = {
-                let (source, target) = context.candidates();
-
-                let src_weight = source.edge.weight as f64;
-                let tgt_weight = target.edge.weight as f64;
-
-                let interior_max = context
-                    .map_path
-                    .windows(2)
-                    .filter_map(|node| match node {
-                        [a, b] if a.identifier() == b.identifier() => None,
-                        [a, b] => context.routing_context.edge(a, b),
-                        _ => None,
-                    })
-                    .map(|Edge { weight, .. }| weight as f64)
-                    .fold(0.0f64, f64::max);
-
-                // Combine: max over the two candidate edges and every
-                // interior edge. OSM `RoadClass::weighting()` is ordered
-                // so Motorway=1, Residential=10 — higher numeric weight
-                // = lower-quality road class.
-                let worst_weight = src_weight.max(tgt_weight).max(interior_max);
-
-                (1.0 / worst_weight).powi(2).clamp(0.0, 1.0)
-            };
-
-            let geometric_quality = 0.5 * deviance + 0.5 * turn_cost;
-            Some(travel_weight_cost * geometric_quality)
+            Some((deviance + turn_cost) / 2.)
         }
     }
 }
