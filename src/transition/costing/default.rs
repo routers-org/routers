@@ -149,7 +149,7 @@ pub mod transition {
             // Value in range [0, 1] (1=Low Cost, 0=High Cost)
             let turn_cost = context.angular_complexity().clamp(EPSILON, 1.0);
 
-            Some(deviance * turn_cost)
+            Some((deviance * turn_cost).sqrt())
         }
     }
 }
