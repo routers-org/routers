@@ -138,16 +138,18 @@ pub mod transition {
 
         #[inline]
         fn calculate(&self, context: TransitionContext<'a, E, M, N>) -> Option<Self::Cost> {
+            const EPSILON: f64 = 1e-6;
+
             // Find the transition lengths (shortest path, trip length)
             let lengths = context.lengths()?;
 
             // Value in range [0, 1] (1=Low Cost, 0=High Cost)
-            let deviance = lengths.deviance().clamp(0.0, 1.0);
+            let deviance = lengths.deviance().clamp(EPSILON, 1.0);
 
             // Value in range [0, 1] (1=Low Cost, 0=High Cost)
-            let turn_cost = context.angular_complexity().clamp(0.0, 1.0);
+            let turn_cost = context.angular_complexity().clamp(EPSILON, 1.0);
 
-            Some((deviance + turn_cost) / 2.)
+            Some((deviance * turn_cost).sqrt())
         }
     }
 }
