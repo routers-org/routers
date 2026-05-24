@@ -56,7 +56,7 @@ pub mod emission {
         type Cost = f64;
 
         const ZETA: f64 = 1.;
-        const BETA: f64 = 3.;
+        const BETA: f64 = 1.;
 
         #[inline(always)]
         fn calculate(&self, context: EmissionContext<'a>) -> Option<Self::Cost> {
