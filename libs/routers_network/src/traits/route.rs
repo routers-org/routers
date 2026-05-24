@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use geo::Point;
 
 use crate::{Entry, Node, Scan, edge::Weight};
@@ -18,5 +20,15 @@ where
         let finish_node = self.nearest_node(finish)?;
 
         self.route_nodes(start_node.id, finish_node.id)
+    }
+}
+
+impl<T, E> Route<E> for Arc<T>
+where
+    T: Route<E>,
+    E: Entry,
+{
+    fn route_nodes(&self, start: E, finish: E) -> Option<(Weight, Vec<Node<E>>)> {
+        (**self).route_nodes(start, finish)
     }
 }

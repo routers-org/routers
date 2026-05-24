@@ -21,7 +21,6 @@ schema = { workspace = true }
 bytes = { workspace = true }
 serde = { workspace = true }
 buffa = { workspace = true }
-connectrpc = { workspace = true }
 
 # GeoRust
 geo = { workspace = true, features = ["serde"] }
@@ -41,13 +40,25 @@ itertools = { workspace = true }
 
 # Compression
 flate2 = { version = "1.1.9", features = ["zlib-rs"] }
-mimalloc = { version = "0.1.46", optional = true }
+
+# Drop-in for `std::time::Instant` that doesn't panic on
+# `wasm32-unknown-unknown`. Used by the byte-oriented `from_bytes` /
+# `to_bytes` paths that are wasm-reachable.
+web-time = "1"
 
 # Misc.
 # TODO: Remove dependency.
 either = "1.15.0"
 regex = "1.11.1"
 bitflags = "2.9.1"
+
+# `mimalloc` is a native-only dependency — it has no `wasm32-unknown-unknown`
+# target. We pull it in under a target-cfg so that even a `--features mimalloc`
+# build can be cross-compiled to WASM without the linker exploding. The
+# `[features]` block below still references `dep:mimalloc`; Cargo activates
+# the dep only when the target cfg matches.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+mimalloc = { version = "0.1.46", optional = true }
 
 [dev-dependencies]
 routers_fixtures = { workspace = true }

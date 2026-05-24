@@ -15,6 +15,12 @@ unsafe_code = "deny"
 std_instead_of_core = "warn"
 std_instead_of_alloc = "warn"
 alloc_instead_of_core = "warn"
+# `disallowed_methods` (configured by `clippy.toml`) is intentionally *not*
+# activated workspace-wide: on native `web_time::Instant` is a type alias
+# for `std::time::Instant`, so clippy can't distinguish a legitimate
+# `web_time` call from a banned `std::time` one and we'd get false
+# positives. The lint is meaningful on `wasm32-unknown-unknown` — see
+# `just web check` for the targeted run that activates it.
 
 [patch.crates-io]
 routers = { path = "." }
@@ -64,7 +70,15 @@ test-log = { version = "0.2.18", features = ["log"] }
 buffa = { version = "0.6.0", features = ["json"] }
 buffa-types = { version = "0.6.0", features = ["json"] }
 buffa-descriptor = { version = "0.6.0" }
-connectrpc = { version = "0.6.0" }
+# `default-features = false` drops the `zstd` compression codec, which pulls
+# in `zstd-sys` — a C library with no `wasm32-unknown-unknown` target. We
+# keep `gzip` (uses the pure-Rust `flate2`) and `streaming` (kept on under
+# defaults). Re-enable `zstd` at the crate level if a specific service
+# genuinely needs that codec and you don't care about WASM.
+connectrpc = { version = "0.6.0", default-features = false, features = [
+    "gzip",
+    "streaming",
+] }
 
 serde_json = "1"
 http-body = "1"
@@ -199,6 +213,9 @@ itertools = { workspace = true }
 indexmap = { workspace = true }
 thiserror = "2.0.12"
 
+# Optional crates surfaced through `[features]` for example targets only.
+routers_shard = { workspace = true, optional = true }
+
 [dev-dependencies]
 wkt = { workspace = true }
 insta = { workspace = true }
@@ -214,7 +231,14 @@ harness = false
 name = "total_ingestion"
 harness = false
 
+[[example]]
+name = "shard_match"
+required-features = ["shard"]
+
 [features]
+# Enables `routers_shard`-backed example targets (e.g. `shard_match`).
+shard = ["dep:routers_shard"]
+
 tracing = [
     "dep:tracing",
     "tracing-subscriber",

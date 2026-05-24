@@ -1,4 +1,5 @@
 pub mod calculable;
+pub mod data_plane;
 pub mod discovery;
 pub mod entry;
 pub mod metadata;
@@ -7,6 +8,7 @@ pub mod route;
 pub mod scan;
 
 pub use calculable::Calculable;
+pub use data_plane::DataPlane;
 pub use discovery::Discovery;
 pub use entry::Entry;
 pub use metadata::Metadata;

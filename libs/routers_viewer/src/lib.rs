@@ -1,9 +1,11 @@
 use eframe::{App, Frame, egui};
 use egui::{CentralPanel, Color32, Context, Response, SidePanel, Stroke, TextEdit, Widget};
-use walkers::{HttpTiles, Map, MapMemory, Plugin, Projector, lon_lat, sources::Mapbox};
+use walkers::{
+    HttpTiles, Map, MapMemory, Plugin, Position, Projector, lon_lat, sources::OpenStreetMap,
+};
 
-use dotenv::dotenv;
 use geo::{Coord, LineString};
+use routers::PredicateCache;
 use routers::Trip;
 use routers::transition::candidate::collapse::CollapsedPath;
 use routers::transition::candidate::{Candidate, CandidateId};
@@ -11,48 +13,127 @@ use routers::transition::costing::CostingStrategies;
 use routers::transition::entity::Transition;
 use routers::transition::layer::generation::StandardGenerator;
 use routers::transition::solver::selective_forward::SelectiveForwardSolver;
-use routers_codec::osm::{OsmEntryId, OsmNetwork, OsmTripConfiguration};
-use routers_network::{Discovery, Entry, Network, Node};
-use std::time::{Duration, Instant};
-use walkers::sources::MapboxStyle;
+use routers_network::{DataPlane, Discovery, Entry, Metadata, Node, Route, Scan};
+use std::marker::PhantomData;
+use std::sync::Arc;
+use std::time::Duration;
+// `web_time::Instant` is a drop-in for `std::time::Instant` that doesn't
+// panic on `wasm32-unknown-unknown`. `Duration` is pure arithmetic so the
+// std version is portable.
+use web_time::Instant;
 use wkt::ToWkt;
 
-struct MatchState {
+struct MatchState<E: Entry> {
     original_line: LineString,
-    collapsed: CollapsedPath<OsmEntryId>,
+    collapsed: CollapsedPath<E>,
     interpolated_line: LineString,
     discrete_line: LineString,
     time: Duration,
 }
 
-pub struct ViewerApp {
+/// Generic over any routing network — bound on [`DataPlane`] (with the
+/// usual `Discovery + Scan + Route` companions) so we can flip between
+/// `OsmNetwork`, `ShardedNetwork<…>` or any other implementor without
+/// touching the viewer code. The Entry / Metadata types fall out of
+/// `N::Entry` / `N::Meta` via the `DataPlane` associated types — callers
+/// supply only `N`.
+pub struct ViewerApp<N>
+where
+    // Same bound set as the impl block — `PredicateCache<E, M, N>`
+    // requires `N: Network<E, M>`, which the blanket impl gives us
+    // from `DataPlane + Scan + Route`.
+    N: DataPlane
+        + Discovery<<N as DataPlane>::Entry>
+        + Scan<<N as DataPlane>::Entry>
+        + Route<<N as DataPlane>::Entry>,
+{
     tiles: HttpTiles,
     map_memory: MapMemory,
-    network: OsmNetwork,
+    /// Fallback centre used by `Map::new` when the map isn't currently
+    /// detached (i.e. the user hasn't panned manually). Lets the host
+    /// configure where the map "starts" instead of relying on a baked-in
+    /// constant. The same value is also what
+    /// [`current_center`](Self::current_center) returns when the map is
+    /// in "my position" mode.
+    my_position: Position,
+    network: N,
     wkt_input: String,
 
-    match_state: Option<MatchState>,
+    match_state: Option<MatchState<<N as DataPlane>::Entry>>,
     selected_layer: Option<usize>,
     selected_candidate: Option<CandidateId>,
     hovered_transition: Option<(CandidateId, CandidateId)>,
     error_msg: Option<String>,
+
+    /// Predicate-evaluation cache shared across matcher invocations.
+    /// The solver populates this with per-edge accessibility outcomes
+    /// keyed by `(edge_id, runtime)`. Re-using it across matches means
+    /// each edge's predicate is computed at most once — large saving
+    /// in the draw-mode loop, where many consecutive solves traverse
+    /// the same road network with the same runtime.
+    ///
+    /// Wrapped in `Arc` because the solver also takes ownership of an
+    /// `Arc` clone; both sides write through to the same backing store.
+    /// Survives `set_network`: predicate values are keyed by edge id +
+    /// runtime, neither of which changes across a shard swap.
+    predicate_cache: Arc<PredicateCache<<N as DataPlane>::Entry, <N as DataPlane>::Meta, N>>,
+
+    // ── Draw tool ───────────────────────────────────────────────────────
+    /// When `true`, map clicks add waypoints to `drawn_path` instead of
+    /// just being absorbed by walkers' pan/zoom.
+    draw_mode: bool,
+    /// Live-updated polyline the user is drawing. Clicks append to it;
+    /// the debounced background match runs against this directly.
+    drawn_path: Vec<Coord>,
+    /// Cursor position projected to lat/lon while drawing — rendered as
+    /// a faded segment from the last waypoint, so the user sees where
+    /// the next click would land.
+    hover_preview: Option<Coord>,
+    /// Input has changed (click or cursor move) since the matcher last
+    /// ran — we owe a re-solve.
+    draw_dirty: bool,
+    /// When the matcher's last run finished. Throttles re-runs to at
+    /// most one per [`DRAW_DEBOUNCE`] so the live cursor-tracking
+    /// match converges at a fixed cadence instead of jittering between
+    /// "match never fires" (cursor moving) and "match fires once"
+    /// (cursor still). `None` means "no match has ever run", so the
+    /// next one fires immediately.
+    last_match_done: Option<Instant>,
 }
 
-impl ViewerApp {
-    pub fn new(egui_ctx: Context, network: OsmNetwork) -> Self {
-        dotenv().expect("Must load env");
+/// Minimum time between consecutive matcher invocations from the draw
+/// loop. Treated as a *throttle*, not a debounce: the timer measures
+/// elapsed-since-last-match-completion, not elapsed-since-last-input,
+/// so the matcher fires at this cadence while the cursor is moving —
+/// not just when it pauses. Pick a value at least as large as the
+/// expected matcher latency or the loop will starve waiting on its own
+/// previous run.
+const DRAW_DEBOUNCE: Duration = Duration::from_millis(50);
 
+impl<N> ViewerApp<N>
+where
+    N: DataPlane
+        + Discovery<<N as DataPlane>::Entry>
+        + Scan<<N as DataPlane>::Entry>
+        + Route<<N as DataPlane>::Entry>,
+{
+    /// Default initial centre — central Sydney. Override via
+    /// [`new_at`](Self::new_at).
+    pub fn new(egui_ctx: Context, network: N) -> Self {
+        Self::new_at(egui_ctx, network, lon_lat(151.2, -33.8))
+    }
+
+    /// Construct with an explicit initial map position (used until the
+    /// user pans the map manually).
+    pub fn new_at(egui_ctx: Context, network: N, my_position: Position) -> Self {
+        // Default tile source is OpenStreetMap's standard raster pyramid —
+        // no API key, works the same on native and WASM. If you want a
+        // different style (e.g. Mapbox), construct the `HttpTiles` yourself
+        // and pass it in via a constructor variant.
         Self {
-            tiles: HttpTiles::new(
-                Mapbox {
-                    style: MapboxStyle::Light,
-                    high_resolution: true,
-                    access_token: std::env::var("MAPBOX_API_KEY")
-                        .expect("Must have MAPBOX_API_KEY environment variable set"),
-                },
-                egui_ctx,
-            ),
+            tiles: HttpTiles::new(OpenStreetMap, egui_ctx),
             map_memory: MapMemory::default(),
+            my_position,
             network,
             wkt_input: "WKT Here...".into(),
             match_state: None,
@@ -60,7 +141,58 @@ impl ViewerApp {
             selected_candidate: None,
             hovered_transition: None,
             error_msg: None,
+            draw_mode: false,
+            drawn_path: Vec::new(),
+            hover_preview: None,
+            draw_dirty: false,
+            last_match_done: None,
+            predicate_cache: Arc::new(PredicateCache::default()),
         }
+    }
+
+    /// Swap in a new network. UI state — `match_state` included — is
+    /// retained: the previous match's rendered route lives entirely in
+    /// `MatchState`'s baked LineStrings + the `CollapsedPath`'s
+    /// candidates (positions captured at solve time), so it stays
+    /// visible across swaps even if a node id from the prior network
+    /// is no longer addressable. The debug "considered transitions"
+    /// overlay already `filter_map`s missing nodes, so it degrades
+    /// gracefully too.
+    ///
+    /// To get a fresh match against the new network, call
+    /// [`refresh_match`](Self::refresh_match) explicitly or trigger
+    /// the usual draw / WKT path.
+    pub fn set_network(&mut self, network: N) {
+        self.network = network;
+    }
+
+    /// Re-run the matcher against the current network using the
+    /// previously-matched line as input. No-op if there is no prior
+    /// match. Used when a shard swap brings new data into scope and
+    /// the caller wants to refresh the displayed route accordingly.
+    pub fn refresh_match(&mut self) {
+        if let Some(state) = self.match_state.as_ref() {
+            let line = state.original_line.clone();
+            self.match_linestring(line, /* recenter = */ false);
+        }
+    }
+
+    /// Read-only handle to the underlying network.
+    pub fn network(&self) -> &N {
+        &self.network
+    }
+
+    /// The map's current effective centre — `detached()` if the user has
+    /// panned, otherwise the configured `my_position`.
+    pub fn current_center(&self) -> Position {
+        self.map_memory.detached().unwrap_or(self.my_position)
+    }
+
+    /// Inspect the internal `MapMemory` (zoom, detached state). Useful
+    /// for shard-window drivers that need finer detail than
+    /// [`current_center`](Self::current_center) provides.
+    pub fn map_memory(&self) -> &MapMemory {
+        &self.map_memory
     }
 
     fn perform_match(&mut self) {
@@ -72,13 +204,40 @@ impl ViewerApp {
                 return;
             }
         };
+        self.match_linestring(line, /* recenter = */ true);
+    }
+
+    /// Run the matcher against a pre-parsed `LineString`. Used by both
+    /// the manual WKT button and the debounced draw-mode loop.
+    ///
+    /// `recenter` controls whether to re-centre the map on the first
+    /// point — fine for the explicit Match button (one-shot), but
+    /// disruptive when called every 250 ms from the draw loop because
+    /// the user is *currently looking at* the area they're drawing.
+    fn match_linestring(&mut self, line: LineString, recenter: bool) {
+        if line.0.len() < 2 {
+            // The matcher requires at least two points; drop silently
+            // rather than spam an error from the debounce loop.
+            self.error_msg = None;
+            self.match_state = None;
+            return;
+        }
+        self.error_msg = None;
 
         let costing = CostingStrategies::default();
         let generator = StandardGenerator::new(&self.network, &costing.emission, 100.0);
         let transition = Transition::new(&self.network, line.clone(), &costing, generator);
 
-        let solver = SelectiveForwardSolver::default();
-        let runtime = OsmTripConfiguration::default();
+        // Plumb the shared `PredicateCache` into the solver. Each match
+        // run hits the same cache, so per-edge accessibility predicates
+        // (which only depend on `(edge_id, runtime)`) are computed at
+        // most once across the whole session — the dominant saving for
+        // the draw-mode throttle loop where consecutive solves walk
+        // through largely the same edges.
+        let solver = SelectiveForwardSolver::default().use_cache(self.predicate_cache.clone());
+        // Use the metadata-defined default runtime instead of hard-coding
+        // `OsmTripConfiguration::default()` — generic over `N::Meta`.
+        let runtime = <<N as DataPlane>::Meta as Metadata>::default_runtime();
 
         let now = Instant::now();
 
@@ -97,9 +256,10 @@ impl ViewerApp {
 
                 self.selected_layer = None;
 
-                // Center map on the first point
-                if let Some(pt) = self.match_state.as_ref().unwrap().original_line.0.first() {
-                    self.map_memory.center_at(lon_lat(pt.x, pt.y));
+                if recenter {
+                    if let Some(pt) = self.match_state.as_ref().unwrap().original_line.0.first() {
+                        self.map_memory.center_at(lon_lat(pt.x, pt.y));
+                    }
                 }
             }
             Err(e) => {
@@ -109,16 +269,17 @@ impl ViewerApp {
     }
 }
 
-struct TransitionWidget {
+struct TransitionWidget<E: Entry> {
     cost: u32,
 
-    source: Candidate<OsmEntryId>,
-    target: Candidate<OsmEntryId>,
+    #[allow(dead_code)]
+    source: Candidate<E>,
+    target: Candidate<E>,
 
-    nodes: Vec<Node<OsmEntryId>>,
+    nodes: Vec<Node<E>>,
 }
 
-impl Widget for TransitionWidget {
+impl<E: Entry> Widget for TransitionWidget<E> {
     fn ui(self, ui: &mut egui::Ui) -> Response {
         let trip = Trip::from(self.nodes);
         let linestring = trip.linestring();
@@ -127,7 +288,7 @@ impl Widget for TransitionWidget {
             let label = ui.selectable_label(
                 false,
                 format!(
-                    "-> {:?}: Cost {}, R={:.1}m, S={:.1}m",
+                    "-> {}: Cost {}, R={:.1}m, S={:.1}m",
                     self.target.edge.id().identifier(),
                     self.cost,
                     trip.length(),
@@ -145,7 +306,14 @@ impl Widget for TransitionWidget {
     }
 }
 
-impl App for ViewerApp {
+impl<N> App for ViewerApp<N>
+where
+    N: DataPlane
+        + Discovery<<N as DataPlane>::Entry>
+        + Scan<<N as DataPlane>::Entry>
+        + Route<<N as DataPlane>::Entry>
+        + 'static,
+{
     fn update(&mut self, ctx: &Context, _frame: &mut Frame) {
         SidePanel::left("controls").show(ctx, |ui| {
             ui.heading("Routers Map Matcher");
@@ -160,6 +328,36 @@ impl App for ViewerApp {
 
             if let Some(err) = &self.error_msg {
                 ui.colored_label(Color32::RED, err);
+            }
+
+            ui.separator();
+
+            // ── Draw tool ─────────────────────────────────────────────
+            ui.checkbox(&mut self.draw_mode, "✏ Draw mode");
+            if self.draw_mode {
+                ui.label(format!(
+                    "{} waypoint{}",
+                    self.drawn_path.len(),
+                    if self.drawn_path.len() == 1 { "" } else { "s" }
+                ));
+                ui.horizontal(|ui| {
+                    if ui.button("Clear").clicked() {
+                        self.drawn_path.clear();
+                        self.hover_preview = None;
+                        self.draw_dirty = false;
+                        self.last_match_done = None;
+                        self.match_state = None;
+                    }
+                    if ui.button("→ WKT").clicked() && self.drawn_path.len() >= 2 {
+                        let line: LineString = LineString::new(self.drawn_path.clone());
+                        self.wkt_input = line.wkt_string();
+                    }
+                });
+                ui.colored_label(
+                    Color32::from_gray(160),
+                    "Click on the map to add waypoints. \
+                     Hold ⌘/Ctrl while dragging to pan instead of drawing.",
+                );
             }
 
             ui.separator();
@@ -215,13 +413,13 @@ impl App for ViewerApp {
                                 let is_selected = self.selected_candidate == Some(*id);
 
                                 let text = format!(
-                                    "Candidate {:?}\n Cost={}\n EdgeId={:?}\n EdgeWeight={}\nSource={}\nTarget={}",
+                                    "Candidate {:?}\n Cost={}\n EdgeId={}\n EdgeWeight={}\nSource={}\nTarget={}",
                                     id,
                                     cand.emission,
-                                    cand.edge.id.index().identifier,
+                                    cand.edge.id.index().identifier(),
                                     cand.edge.weight,
-                                    cand.edge.source.identifier,
-                                    cand.edge.target.identifier
+                                    cand.edge.source.identifier(),
+                                    cand.edge.target.identifier()
                                 );
 
                                 if ui
@@ -308,7 +506,7 @@ impl App for ViewerApp {
                                                 let is_hovered =
                                                     self.hovered_transition == Some(hovered_transition);
 
-                                                let resp = ui.add(TransitionWidget {
+                                                let resp = ui.add(TransitionWidget::<<N as DataPlane>::Entry> {
                                                     cost,
 
                                                     source,
@@ -376,7 +574,7 @@ impl App for ViewerApp {
                                             let is_hovered =
                                                 self.hovered_transition == Some(hovered_transition);
 
-                                            let resp = ui.add(TransitionWidget {
+                                            let resp = ui.add(TransitionWidget::<<N as DataPlane>::Entry> {
                                                 cost,
 
                                                 source,
@@ -403,8 +601,18 @@ impl App for ViewerApp {
             let mut map = Map::new(
                 Some(&mut self.tiles),
                 &mut self.map_memory,
-                lon_lat(-118.49, 34.01), // Near Santa Monica/Ventura
+                self.my_position,
             );
+
+            // While the draw tool is active, paint the in-flight path so
+            // the user can see what they've laid down and where the next
+            // click would land.
+            if self.draw_mode {
+                map = map.with_plugin(DrawPlugin {
+                    path: self.drawn_path.clone(),
+                    hover: self.hover_preview,
+                });
+            }
 
             if let Some(state) = &self.match_state {
                 // Plugin to draw the lines
@@ -432,11 +640,12 @@ impl App for ViewerApp {
 
                     let original_coord = state.original_line.0.get(layer_id).copied();
 
-                    let cand_plugin = CandidatePlugin {
+                    let cand_plugin = CandidatePlugin::<<N as DataPlane>::Entry> {
                         candidates,
                         chosen_id,
                         selected_id: self.selected_candidate,
                         original_coord,
+                        _ph: PhantomData,
                     };
                     map = map.with_plugin(cand_plugin);
                 }
@@ -476,8 +685,148 @@ impl App for ViewerApp {
                 }
             }
 
-            ui.add(map);
+            let response = ui.add(map);
+
+            // Draw-mode interactions: rebuild a `Projector` post-frame so
+            // we can unproject click/hover positions back to lat/lon. The
+            // walkers `Plugin` API runs *during* widget construction and
+            // can't write back to viewer state, so this is the
+            // out-of-band hook.
+            if self.draw_mode {
+                let projector =
+                    Projector::new(response.rect, &self.map_memory, self.current_center());
+
+                // Hover preview: update every frame the cursor is over
+                // the map. egui's `Pos2` is widget-relative? — projector
+                // wants a `Vec2`, which walkers treats as the same
+                // coordinate space.
+                let new_hover = response.hover_pos().map(|pos| {
+                    let pos = projector.unproject(egui::vec2(pos.x, pos.y));
+                    Coord {
+                        x: pos.x(),
+                        y: pos.y(),
+                    }
+                });
+                if new_hover != self.hover_preview {
+                    self.hover_preview = new_hover;
+                    ctx.request_repaint();
+                    // Treat the cursor as a tentative next waypoint so
+                    // the live match traces it. Only worth marking dirty
+                    // once a click has happened — otherwise the input
+                    // is a single point the matcher would reject anyway.
+                    if !self.drawn_path.is_empty() {
+                        self.draw_dirty = true;
+                    }
+                }
+
+                // Click commits the current cursor position as a real
+                // waypoint. `interact_pointer_pos` returns the position
+                // at the moment of the click, not the latest hover
+                // position — important if the cursor moved slightly
+                // between mousedown and mouseup.
+                if response.clicked() {
+                    if let Some(pos) = response.interact_pointer_pos() {
+                        let p = projector.unproject(egui::vec2(pos.x, pos.y));
+                        self.drawn_path.push(Coord { x: p.x(), y: p.y() });
+                        self.draw_dirty = true;
+                    }
+                }
+            } else if self.hover_preview.is_some() {
+                // Tidy up when leaving draw mode.
+                self.hover_preview = None;
+            }
         });
+
+        // Throttled match against the drawn path *plus the live cursor*.
+        // The cursor is treated as a tentative final waypoint so the
+        // blue matched line follows it in real time — clicking just
+        // promotes that tentative point to a real one.
+        //
+        // The throttle gates on "elapsed since last match completion",
+        // not "elapsed since last input". The difference matters: with
+        // input-based debounce, a continuously-moving cursor keeps
+        // pushing the timer forward and the matcher never runs until
+        // the cursor pauses. With throttle, it runs at most once per
+        // DRAW_DEBOUNCE while the cursor is moving — smooth cadence,
+        // bounded cost.
+        if self.draw_dirty {
+            let ready = self
+                .last_match_done
+                .map(|t| t.elapsed() >= DRAW_DEBOUNCE)
+                .unwrap_or(true);
+            if ready {
+                let mut points: Vec<Coord> = self.drawn_path.clone();
+                if let Some(h) = self.hover_preview {
+                    points.push(h);
+                }
+                if points.len() >= 2 {
+                    let line: LineString = LineString::new(points);
+                    self.match_linestring(line, /* recenter = */ false);
+                } else {
+                    // Fewer than 2 effective points (no clicks, or just
+                    // one with the cursor off the map). Clear any stale
+                    // route so the canvas doesn't show a lingering line.
+                    self.match_state = None;
+                }
+                self.last_match_done = Some(Instant::now());
+                self.draw_dirty = false;
+            } else {
+                // Keep the frame loop ticking so the throttle timer
+                // resolves even if the cursor stops moving without
+                // any other input.
+                ctx.request_repaint_after(DRAW_DEBOUNCE);
+            }
+        }
+    }
+}
+
+/// Renders the user's in-flight drawn path plus a faded "where would my
+/// next click land" preview from the last waypoint to the cursor. Owned
+/// by the wrapper App because plugins can't mutate viewer state from
+/// inside their `run`; the source of truth is `ViewerApp::drawn_path` /
+/// `ViewerApp::hover_preview`, and we just clone it in each frame.
+struct DrawPlugin {
+    path: Vec<Coord>,
+    hover: Option<Coord>,
+}
+
+impl Plugin for DrawPlugin {
+    fn run(
+        self: Box<Self>,
+        ui: &mut egui::Ui,
+        _response: &egui::Response,
+        projector: &Projector,
+        _map_memory: &MapMemory,
+    ) {
+        let painter = ui.painter();
+
+        // Yellow committed path.
+        if self.path.len() >= 2 {
+            let pts: Vec<_> = self
+                .path
+                .iter()
+                .map(|c| projector.project(lon_lat(c.x, c.y)).to_pos2())
+                .collect();
+            painter.line(pts, Stroke::new(3.0, Color32::from_rgb(255, 200, 0)));
+        }
+
+        // Faded preview from the last waypoint to the current cursor.
+        if let (Some(last), Some(hover)) = (self.path.last(), self.hover) {
+            let a = projector.project(lon_lat(last.x, last.y)).to_pos2();
+            let b = projector.project(lon_lat(hover.x, hover.y)).to_pos2();
+            painter.line(
+                vec![a, b],
+                Stroke::new(2.0, Color32::from_rgba_unmultiplied_const(255, 200, 0, 90)),
+            );
+        }
+
+        // Waypoint dots — small filled circle with a black ring so they
+        // remain visible against any tile colour.
+        for c in &self.path {
+            let pos = projector.project(lon_lat(c.x, c.y)).to_pos2();
+            painter.circle_filled(pos, 5.0, Color32::from_rgb(255, 200, 0));
+            painter.circle_stroke(pos, 5.0, Stroke::new(1.0, Color32::BLACK));
+        }
     }
 }
 
@@ -576,14 +925,15 @@ impl Plugin for TransitionPlugin {
     }
 }
 
-struct CandidatePlugin {
-    candidates: Vec<(CandidateId, Candidate<OsmEntryId>)>,
+struct CandidatePlugin<E: Entry> {
+    candidates: Vec<(CandidateId, Candidate<E>)>,
     chosen_id: Option<CandidateId>,
     selected_id: Option<CandidateId>,
     original_coord: Option<Coord>,
+    _ph: PhantomData<E>,
 }
 
-impl Plugin for CandidatePlugin {
+impl<E: Entry> Plugin for CandidatePlugin<E> {
     fn run(
         self: Box<Self>,
         ui: &mut egui::Ui,

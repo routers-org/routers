@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use geo::{Destination, Geodesic, Point};
 use rstar::AABB;
 
@@ -66,6 +68,42 @@ pub trait Discovery<E: Entry> {
 
     fn node(&self, id: &E) -> Option<&Node<E>>;
     fn edge(&self, source: &E, target: &E) -> Option<Edge<E>>;
+}
+
+// Forward through `Arc<T>` so shard-managed networks can be held behind
+// an `Arc` without losing trait-method access.
+impl<T, E> Discovery<E> for Arc<T>
+where
+    T: Discovery<E>,
+    E: Entry,
+{
+    fn edges_in_box<'a>(
+        &'a self,
+        aabb: AABB<Point>,
+    ) -> Box<dyn Iterator<Item = &'a Edge<Node<E>>> + Send + 'a>
+    where
+        E: 'a,
+    {
+        (**self).edges_in_box(aabb)
+    }
+
+    fn nodes_in_box<'a>(
+        &'a self,
+        aabb: AABB<Point>,
+    ) -> Box<dyn Iterator<Item = &'a Node<E>> + Send + 'a>
+    where
+        E: 'a,
+    {
+        (**self).nodes_in_box(aabb)
+    }
+
+    fn node(&self, id: &E) -> Option<&Node<E>> {
+        (**self).node(id)
+    }
+
+    fn edge(&self, source: &E, target: &E) -> Option<Edge<E>> {
+        (**self).edge(source, target)
+    }
 }
 
 fn square_box(point: &Point, square_radius: f64) -> AABB<Point> {

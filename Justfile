@@ -1,4 +1,5 @@
 mod tz "libs/routers_tz"
+mod web "libs/routers_viewer"
 
 init VERSION="2026a":
     just tz download {{ VERSION }}
