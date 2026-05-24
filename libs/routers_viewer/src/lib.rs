@@ -68,17 +68,26 @@ where
     /// a faded segment from the last waypoint, so the user sees where
     /// the next click would land.
     hover_preview: Option<Coord>,
-    /// Last time `drawn_path` changed; the match re-runs once this is
-    /// older than [`DRAW_DEBOUNCE`] and the path differs from the
-    /// previously-matched input.
-    last_draw_change: Option<Instant>,
+    /// Input has changed (click or cursor move) since the matcher last
+    /// ran — we owe a re-solve.
+    draw_dirty: bool,
+    /// When the matcher's last run finished. Throttles re-runs to at
+    /// most one per [`DRAW_DEBOUNCE`] so the live cursor-tracking
+    /// match converges at a fixed cadence instead of jittering between
+    /// "match never fires" (cursor moving) and "match fires once"
+    /// (cursor still). `None` means "no match has ever run", so the
+    /// next one fires immediately.
+    last_match_done: Option<Instant>,
 }
 
-/// How long to wait after the most recent waypoint edit before re-running
-/// the matcher. Picked so a steady stream of clicks coalesces into a
-/// single match per gesture, while a single drop still lands within a
-/// quarter-second.
-const DRAW_DEBOUNCE: Duration = Duration::from_millis(250);
+/// Minimum time between consecutive matcher invocations from the draw
+/// loop. Treated as a *throttle*, not a debounce: the timer measures
+/// elapsed-since-last-match-completion, not elapsed-since-last-input,
+/// so the matcher fires at this cadence while the cursor is moving —
+/// not just when it pauses. Pick a value at least as large as the
+/// expected matcher latency or the loop will starve waiting on its own
+/// previous run.
+const DRAW_DEBOUNCE: Duration = Duration::from_millis(50);
 
 impl<N> ViewerApp<N>
 where
@@ -114,20 +123,36 @@ where
             draw_mode: false,
             drawn_path: Vec::new(),
             hover_preview: None,
-            last_draw_change: None,
+            draw_dirty: false,
+            last_match_done: None,
         }
     }
 
-    /// Swap in a new network without losing UI state (input, selected
-    /// layer, etc.). Clears `match_state` because the previous match's
-    /// node ids are no longer guaranteed to resolve against the new
-    /// network.
+    /// Swap in a new network. UI state — `match_state` included — is
+    /// retained: the previous match's rendered route lives entirely in
+    /// `MatchState`'s baked LineStrings + the `CollapsedPath`'s
+    /// candidates (positions captured at solve time), so it stays
+    /// visible across swaps even if a node id from the prior network
+    /// is no longer addressable. The debug "considered transitions"
+    /// overlay already `filter_map`s missing nodes, so it degrades
+    /// gracefully too.
+    ///
+    /// To get a fresh match against the new network, call
+    /// [`refresh_match`](Self::refresh_match) explicitly or trigger
+    /// the usual draw / WKT path.
     pub fn set_network(&mut self, network: N) {
         self.network = network;
-        self.match_state = None;
-        self.selected_layer = None;
-        self.selected_candidate = None;
-        self.hovered_transition = None;
+    }
+
+    /// Re-run the matcher against the current network using the
+    /// previously-matched line as input. No-op if there is no prior
+    /// match. Used when a shard swap brings new data into scope and
+    /// the caller wants to refresh the displayed route accordingly.
+    pub fn refresh_match(&mut self) {
+        if let Some(state) = self.match_state.as_ref() {
+            let line = state.original_line.clone();
+            self.match_linestring(line, /* recenter = */ false);
+        }
     }
 
     /// Read-only handle to the underlying network.
@@ -291,7 +316,8 @@ where
                     if ui.button("Clear").clicked() {
                         self.drawn_path.clear();
                         self.hover_preview = None;
-                        self.last_draw_change = None;
+                        self.draw_dirty = false;
+                        self.last_match_done = None;
                         self.match_state = None;
                     }
                     if ui.button("→ WKT").clicked() && self.drawn_path.len() >= 2 {
@@ -639,11 +665,8 @@ where
             // can't write back to viewer state, so this is the
             // out-of-band hook.
             if self.draw_mode {
-                let projector = Projector::new(
-                    response.rect,
-                    &self.map_memory,
-                    self.current_center(),
-                );
+                let projector =
+                    Projector::new(response.rect, &self.map_memory, self.current_center());
 
                 // Hover preview: update every frame the cursor is over
                 // the map. egui's `Pos2` is widget-relative? — projector
@@ -659,22 +682,25 @@ where
                 if new_hover != self.hover_preview {
                     self.hover_preview = new_hover;
                     ctx.request_repaint();
+                    // Treat the cursor as a tentative next waypoint so
+                    // the live match traces it. Only worth marking dirty
+                    // once a click has happened — otherwise the input
+                    // is a single point the matcher would reject anyway.
+                    if !self.drawn_path.is_empty() {
+                        self.draw_dirty = true;
+                    }
                 }
 
                 // Click commits the current cursor position as a real
-                // waypoint and stamps the dirty flag so the debounce
-                // timer schedules a match. `interact_pointer_pos`
-                // returns the position at the moment of the click,
-                // not the latest hover position — important if the
-                // cursor moved slightly between mousedown and mouseup.
+                // waypoint. `interact_pointer_pos` returns the position
+                // at the moment of the click, not the latest hover
+                // position — important if the cursor moved slightly
+                // between mousedown and mouseup.
                 if response.clicked() {
                     if let Some(pos) = response.interact_pointer_pos() {
                         let p = projector.unproject(egui::vec2(pos.x, pos.y));
-                        self.drawn_path.push(Coord {
-                            x: p.x(),
-                            y: p.y(),
-                        });
-                        self.last_draw_change = Some(Instant::now());
+                        self.drawn_path.push(Coord { x: p.x(), y: p.y() });
+                        self.draw_dirty = true;
                     }
                 }
             } else if self.hover_preview.is_some() {
@@ -683,18 +709,43 @@ where
             }
         });
 
-        // Debounced match against the drawn path. Runs at most once per
-        // `DRAW_DEBOUNCE` window of inactivity; that's enough to coalesce
-        // a quick burst of clicks into a single solve while staying
-        // responsive when the user pauses.
-        if let Some(ts) = self.last_draw_change {
-            if ts.elapsed() >= DRAW_DEBOUNCE && self.drawn_path.len() >= 2 {
-                let line: LineString = LineString::new(self.drawn_path.clone());
-                self.match_linestring(line, /* recenter = */ false);
-                self.last_draw_change = None;
+        // Throttled match against the drawn path *plus the live cursor*.
+        // The cursor is treated as a tentative final waypoint so the
+        // blue matched line follows it in real time — clicking just
+        // promotes that tentative point to a real one.
+        //
+        // The throttle gates on "elapsed since last match completion",
+        // not "elapsed since last input". The difference matters: with
+        // input-based debounce, a continuously-moving cursor keeps
+        // pushing the timer forward and the matcher never runs until
+        // the cursor pauses. With throttle, it runs at most once per
+        // DRAW_DEBOUNCE while the cursor is moving — smooth cadence,
+        // bounded cost.
+        if self.draw_dirty {
+            let ready = self
+                .last_match_done
+                .map(|t| t.elapsed() >= DRAW_DEBOUNCE)
+                .unwrap_or(true);
+            if ready {
+                let mut points: Vec<Coord> = self.drawn_path.clone();
+                if let Some(h) = self.hover_preview {
+                    points.push(h);
+                }
+                if points.len() >= 2 {
+                    let line: LineString = LineString::new(points);
+                    self.match_linestring(line, /* recenter = */ false);
+                } else {
+                    // Fewer than 2 effective points (no clicks, or just
+                    // one with the cursor off the map). Clear any stale
+                    // route so the canvas doesn't show a lingering line.
+                    self.match_state = None;
+                }
+                self.last_match_done = Some(Instant::now());
+                self.draw_dirty = false;
             } else {
-                // Keep the frame loop ticking so the debounce timer
-                // resolves even without other input.
+                // Keep the frame loop ticking so the throttle timer
+                // resolves even if the cursor stops moving without
+                // any other input.
                 ctx.request_repaint_after(DRAW_DEBOUNCE);
             }
         }
@@ -737,10 +788,7 @@ impl Plugin for DrawPlugin {
             let b = projector.project(lon_lat(hover.x, hover.y)).to_pos2();
             painter.line(
                 vec![a, b],
-                Stroke::new(
-                    2.0,
-                    Color32::from_rgba_unmultiplied_const(255, 200, 0, 90),
-                ),
+                Stroke::new(2.0, Color32::from_rgba_unmultiplied_const(255, 200, 0, 90)),
             );
         }
 

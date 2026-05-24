@@ -202,11 +202,14 @@ mod web {
                         shards.len()
                     );
                     let composite = MultiShardNetwork::new(shards);
-                    // Note: `set_network` clears `match_state`. Acceptable
-                    // here because the previous match's candidate ids
-                    // may now reference nodes whose graph context just
-                    // changed.
+                    // `set_network` retains the visible match state, so
+                    // the user's drawn or WKT-matched route stays
+                    // on-screen across the swap. If a match was active,
+                    // we re-solve against the new composite so any
+                    // formerly-cross-shard segment can now be matched
+                    // properly without the user having to retrigger.
                     self.inner.set_network(Arc::new(composite));
+                    self.inner.refresh_match();
                     self.composite_set = current_loaded.clone();
                     self.pending_since = None;
                 } else {
