@@ -238,11 +238,17 @@ where
 
     /// Like [`angular_complexity_with_endpoints`](Self::angular_complexity_with_endpoints), but also
     /// explicitly includes the required initial and final vehicle headings at the source and target candidates.
-    pub fn angular_complexity_with_headings(&self, start_heading: Option<f64>, end_heading: Option<f64>, source: Point, target: Point) -> f64 {
+    pub fn angular_complexity_with_headings(
+        &self,
+        start_heading: Option<f64>,
+        end_heading: Option<f64>,
+        source: Point,
+        target: Point,
+    ) -> f64 {
         let positions = core::iter::once(source)
             .chain(self.0.iter().map(|n| n.position))
             .chain(core::iter::once(target));
-        
+
         let mut headings = Vec::new();
         if let Some(h) = start_heading {
             headings.push(h);
@@ -251,7 +257,7 @@ where
         if let Some(h) = end_heading {
             headings.push(h);
         }
-        
+
         Self::complexity_from_deltas(Self::deltas_from_headings(&headings))
     }
 

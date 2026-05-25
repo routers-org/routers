@@ -168,25 +168,39 @@ where
     pub fn angular_complexity(&self) -> f64 {
         let (source_c, target_c) = self.candidates();
 
-        let source_heading = self.routing_context.map.point(&source_c.edge.source).and_then(|s| {
-            self.routing_context.map.point(&source_c.edge.target).and_then(|t| {
-                if Haversine.distance(s, t) < 1.0 {
-                    None
-                } else {
-                    Some(Haversine.bearing(s, t))
-                }
-            })
-        });
+        let source_heading = self
+            .routing_context
+            .map
+            .point(&source_c.edge.source)
+            .and_then(|s| {
+                self.routing_context
+                    .map
+                    .point(&source_c.edge.target)
+                    .and_then(|t| {
+                        if Haversine.distance(s, t) < 1.0 {
+                            None
+                        } else {
+                            Some(Haversine.bearing(s, t))
+                        }
+                    })
+            });
 
-        let target_heading = self.routing_context.map.point(&target_c.edge.source).and_then(|s| {
-            self.routing_context.map.point(&target_c.edge.target).and_then(|t| {
-                if Haversine.distance(s, t) < 1.0 {
-                    None
-                } else {
-                    Some(Haversine.bearing(s, t))
-                }
-            })
-        });
+        let target_heading = self
+            .routing_context
+            .map
+            .point(&target_c.edge.source)
+            .and_then(|s| {
+                self.routing_context
+                    .map
+                    .point(&target_c.edge.target)
+                    .and_then(|t| {
+                        if Haversine.distance(s, t) < 1.0 {
+                            None
+                        } else {
+                            Some(Haversine.bearing(s, t))
+                        }
+                    })
+            });
 
         self.optimal_path.angular_complexity_with_headings(
             source_heading,
