@@ -50,6 +50,7 @@ pub mod common {
     pub struct OsmEntryId {
         pub identifier: i64,
         #[cfg(debug_assertions)]
+        #[serde(skip)]
         variant: i32,
     }
 

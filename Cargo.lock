@@ -6006,7 +6006,6 @@ dependencies = [
  "buffa",
  "bytes",
  "codspeed-criterion-compat",
- "connectrpc",
  "either",
  "flate2",
  "geo",
@@ -6028,6 +6027,7 @@ dependencies = [
  "test-log",
  "tracing",
  "tracing-subscriber",
+ "web-time",
 ]
 
 [[package]]
