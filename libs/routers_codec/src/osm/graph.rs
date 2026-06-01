@@ -1,11 +1,9 @@
 use petgraph::prelude::DiGraphMap;
 use routers_network::edge::Weight;
 use routers_network::network::GraphEdge;
-use routers_network::{
-    DirectionAwareEdgeId, Discovery, Edge, Metadata, Network, Node, Route, Scan,
-};
+use routers_network::{DirectionAwareEdgeId, Discovery, Edge, Node, Route, Scan};
 
-use log::{debug, info};
+use log::debug;
 use rstar::{AABB, RTree};
 use rustc_hash::{FxHashMap, FxHasher};
 use serde::{Deserialize, Serialize};
@@ -13,15 +11,30 @@ use serde::{Deserialize, Serialize};
 use core::fmt::Debug;
 use core::hash::BuildHasherDefault;
 use geo::Point;
-use std::io::Write;
-use std::path::{Path, PathBuf};
-use std::time::Instant;
+use web_time::Instant;
 
+#[cfg(not(target_arch = "wasm32"))]
+use log::info;
+#[cfg(not(target_arch = "wasm32"))]
+use routers_network::Metadata;
+#[cfg(not(target_arch = "wasm32"))]
+use std::io::Write;
+#[cfg(not(target_arch = "wasm32"))]
+use std::path::{Path, PathBuf};
+
+#[cfg(not(target_arch = "wasm32"))]
 use crate::osm::element::ProcessedElement;
 use crate::osm::*;
 
 pub type GraphStructure<E> =
     DiGraphMap<E, (Weight, DirectionAwareEdgeId<E>), BuildHasherDefault<FxHasher>>;
+
+/// Magic header stapled at the start of every `.rt` file.
+const SAVE_MAGIC: &[u8; 4] = b"OSMN";
+
+// Prevent files from being used across build revisions
+include!(concat!(env!("OUT_DIR"), "/format_hash.rs"));
+const SAVE_VERSION: u64 = FORMAT_HASH;
 
 #[derive(Serialize, Deserialize)]
 pub struct OsmNetwork {
@@ -29,36 +42,148 @@ pub struct OsmNetwork {
     pub hash: FxHashMap<OsmEntryId, Node<OsmEntryId>>,
     pub meta: FxHashMap<OsmEntryId, OsmEdgeMetadata>,
 
+    #[serde(skip)]
     pub index: RTree<Node<OsmEntryId>>,
+    #[serde(skip)]
     pub index_edge: RTree<Edge<Node<OsmEntryId>>>,
 }
 
 impl OsmNetwork {
-    pub fn from_pbf_and_save(pbf_path: &PathBuf, saved_path: &PathBuf) -> Result<Self, String> {
-        if !saved_path.exists() {
-            let graph = OsmNetwork::from_pbf(pbf_path).expect("Graph must be created");
-            graph.save_to_file(saved_path).expect("must save to file");
+    /// Decode a previously-encoded `OsmNetwork` from a byte slice and
+    /// rebuild its spatial indices. Filesystem-free; suitable for WASM
+    /// targets where bytes arrive via `fetch()` or similar.
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, String> {
+        const HEADER_LEN: usize = SAVE_MAGIC.len() + 8;
+
+        if bytes.len() < HEADER_LEN || &bytes[..SAVE_MAGIC.len()] != SAVE_MAGIC {
+            return Err("Header bytes are missing, try rebuilding the cache.".to_string());
         }
 
-        let graph = OsmNetwork::from_saved(saved_path).expect("Graph must be created");
+        let version = u64::from_le_bytes(
+            bytes[SAVE_MAGIC.len()..HEADER_LEN]
+                .try_into()
+                .expect("8 bytes"),
+        );
+
+        if version != SAVE_VERSION {
+            return Err(format!(
+                "Header expects {SAVE_VERSION:016x}, got format hash {version:016x}, rebuild the cache."
+            ));
+        }
+
+        let deserialise_start = Instant::now();
+        let mut net: Self =
+            postcard::from_bytes(&bytes[HEADER_LEN..]).map_err(|v| v.to_string())?;
+
+        let deserialise = deserialise_start.elapsed();
+        let rebuild_start = Instant::now();
+        net.rebuild_indices();
+
+        debug!(
+            "OsmNetwork::from_bytes: {} bytes, deserialised in {:?}, rebuilt indices in {:?}",
+            bytes.len(),
+            deserialise,
+            rebuild_start.elapsed()
+        );
+
+        Ok(net)
+    }
+
+    /// Encode `self` into a `Vec<u8>` with the format header prepended.
+    /// Counterpart to [`from_bytes`](Self::from_bytes); filesystem-free.
+    pub fn to_bytes(&self) -> Result<Vec<u8>, String> {
+        let payload: Vec<u8> =
+            postcard::to_allocvec(self).map_err(|e| format!("failed to serialise value: {e}"))?;
+        let mut out = Vec::with_capacity(SAVE_MAGIC.len() + 8 + payload.len());
+
+        out.extend_from_slice(SAVE_MAGIC);
+        out.extend_from_slice(&SAVE_VERSION.to_le_bytes());
+        out.extend_from_slice(&payload);
+
+        Ok(out)
+    }
+
+    /// Build an `OsmNetwork` either from a cached `.rt` file (fast path)
+    /// or, if the cache is missing or stale, from the source PBF (slow
+    /// path, writes the cache for next time).
+    ///
+    /// Filesystem-bound; not available on WASM targets — use
+    /// [`from_bytes`](Self::from_bytes) with HTTP-fetched cache bytes
+    /// instead.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn from_pbf_and_save(pbf_path: &PathBuf, saved_path: &PathBuf) -> Result<Self, String> {
+        if saved_path.exists() {
+            match OsmNetwork::from_saved(saved_path) {
+                Ok(g) => return Ok(g),
+                Err(e) => {
+                    log::warn!(
+                        "OsmNetwork cache at `{}` is unusable ({e}); rebuilding from PBF",
+                        saved_path.display()
+                    );
+                }
+            }
+        }
+        let graph = OsmNetwork::from_pbf(pbf_path).map_err(|e| e.to_string())?;
+        graph.save_to_file(saved_path)?;
         Ok(graph)
     }
 
-    /// Creates a graph from a `.osm.pbf` file, using the `ProcessedElementIterator`
+    /// Read a saved `.rt` from disk into an `OsmNetwork`. Thin wrapper
+    /// around [`from_bytes`](Self::from_bytes); not available on WASM.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn from_saved(filename: &PathBuf) -> Result<Self, String> {
-        let mut bytes = std::fs::read(filename).map_err(|v| v.to_string())?;
-        postcard::from_bytes::<Self>(&mut bytes).map_err(|v| v.to_string())
+        let bytes = std::fs::read(filename).map_err(|v| v.to_string())?;
+        Self::from_bytes(&bytes).map_err(|e| format!("cache file `{}`: {e}", filename.display()))
     }
 
+    /// Rebuilds the node and edge spatial indices from `hash` and `graph`.
+    /// Used after loading a serialised `OsmNetwork` (indices are skipped on
+    /// the wire) and is safe to call at any time.
+    pub fn rebuild_indices(&mut self) {
+        // The two `RTree`s are independent — parallelise the bulk-load so
+        // cache-hit cost is dominated by whichever tree is larger rather
+        // than their sum.
+        let nodes: Vec<Node<OsmEntryId>> = self.hash.values().copied().collect();
+        let edges: Vec<Edge<Node<OsmEntryId>>> = self
+            .graph
+            .all_edges()
+            .filter_map(|(s, t, &(weight, id))| {
+                let source = *self.hash.get(&s)?;
+                let target = *self.hash.get(&t)?;
+                Some(Edge {
+                    source,
+                    target,
+                    id: DirectionAwareEdgeId::new(Node::new(Point::new(0., 0.), id.index()))
+                        .with_direction(id.direction()),
+                    weight,
+                })
+            })
+            .collect();
+        let (node_index, edge_index) =
+            rayon::join(|| RTree::bulk_load(nodes), || RTree::bulk_load(edges));
+        self.index = node_index;
+        self.index_edge = edge_index;
+    }
+
+    /// Persist this network to disk. Thin wrapper around
+    /// [`to_bytes`](Self::to_bytes); not available on WASM.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn save_to_file(&self, path: &Path) -> Result<(), String> {
+        let bytes = self.to_bytes()?;
         let mut file = std::fs::File::create(path).map_err(|e| e.to_string())?;
-
-        let output: Vec<u8> =
-            postcard::to_allocvec(self).map_err(|e| format!("failed to serialise value: {e}"))?;
-
-        file.write_all(&output).map_err(|e| e.to_string())
+        file.write_all(&bytes).map_err(|e| e.to_string())?;
+        debug!(
+            "OsmNetwork::save_to_file wrote {} bytes (incl. 12-byte header, format {:016x}) to {}",
+            bytes.len(),
+            SAVE_VERSION,
+            path.display()
+        );
+        Ok(())
     }
 
+    /// Construct an `OsmNetwork` from a `.osm.pbf` file. Uses memory-mapped
+    /// IO, multithreaded parsing and rayon; not available on WASM.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn from_pbf(filename: &PathBuf) -> Result<Self, Box<dyn std::error::Error>> {
         let mut start_time = Instant::now();
         let fixed_start_time = Instant::now();
@@ -202,6 +327,18 @@ impl OsmNetwork {
     }
 }
 
+impl Default for OsmNetwork {
+    fn default() -> Self {
+        Self {
+            graph: GraphStructure::new(),
+            hash: FxHashMap::default(),
+            meta: FxHashMap::default(),
+            index: RTree::new(),
+            index_edge: RTree::new(),
+        }
+    }
+}
+
 impl Discovery<OsmEntryId> for OsmNetwork {
     fn edges_in_box<'a>(
         &'a self,
@@ -277,7 +414,10 @@ impl Debug for OsmNetwork {
     }
 }
 
-impl Network<OsmEntryId, OsmEdgeMetadata> for OsmNetwork {
+impl routers_network::DataPlane for OsmNetwork {
+    type Entry = OsmEntryId;
+    type Meta = OsmEdgeMetadata;
+
     fn metadata(&self, id: &OsmEntryId) -> Option<&OsmEdgeMetadata> {
         self.meta.get(id)
     }

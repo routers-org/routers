@@ -21,7 +21,6 @@ schema = { workspace = true }
 bytes = { workspace = true }
 serde = { workspace = true }
 buffa = { workspace = true }
-connectrpc = { workspace = true }
 
 # GeoRust
 geo = { workspace = true, features = ["serde"] }
@@ -41,13 +40,18 @@ itertools = { workspace = true }
 
 # Compression
 flate2 = { version = "1.1.9", features = ["zlib-rs"] }
-mimalloc = { version = "0.1.46", optional = true }
+
+# Drop-in for `std::time::Instant`
+web-time = "1"
 
 # Misc.
 # TODO: Remove dependency.
 either = "1.15.0"
 regex = "1.11.1"
 bitflags = "2.9.1"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+mimalloc = { version = "0.1.46", optional = true }
 
 [dev-dependencies]
 routers_fixtures = { workspace = true }

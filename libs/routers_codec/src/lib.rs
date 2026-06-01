@@ -2,11 +2,11 @@
 
 extern crate alloc;
 
-#[cfg(feature = "mimalloc")]
+#[cfg(all(feature = "mimalloc", not(target_arch = "wasm32")))]
 use mimalloc::MiMalloc;
 
-#[cfg_attr(feature = "mimalloc", global_allocator)]
-#[cfg(feature = "mimalloc")]
+#[cfg(all(feature = "mimalloc", not(target_arch = "wasm32")))]
+#[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
 
 pub mod osm;
