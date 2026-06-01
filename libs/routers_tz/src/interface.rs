@@ -22,7 +22,6 @@ mod tests {
 
     use geo::{BoundingRect, Point, point};
     use std::sync::OnceLock;
-    use time_tz::TimeZone;
 
     #[cfg(feature = "rtree")]
     pub static RESOLVER: OnceLock<crate::RTreeStorage> = OnceLock::new();
