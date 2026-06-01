@@ -42,9 +42,6 @@ pub struct OsmNetwork {
     pub hash: FxHashMap<OsmEntryId, Node<OsmEntryId>>,
     pub meta: FxHashMap<OsmEntryId, OsmEdgeMetadata>,
 
-    /// Spatial index of nodes. Rebuilt on load — see [`Self::rebuild_indices`].
-    /// Bulk-loading is faster than letting `postcard` decode the internal
-    /// `rstar` tree, and it also shrinks the on-disk file substantially.
     #[serde(skip)]
     pub index: RTree<Node<OsmEntryId>>,
     #[serde(skip)]
@@ -57,33 +54,38 @@ impl OsmNetwork {
     /// targets where bytes arrive via `fetch()` or similar.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, String> {
         const HEADER_LEN: usize = SAVE_MAGIC.len() + 8;
+
         if bytes.len() < HEADER_LEN || &bytes[..SAVE_MAGIC.len()] != SAVE_MAGIC {
-            return Err(
-                "OsmNetwork bytes are missing the magic header — likely from a previous format. Rebuild the cache.".to_string()
-            );
+            return Err("Header bytes are missing, try rebuilding the cache.".to_string());
         }
+
         let version = u64::from_le_bytes(
             bytes[SAVE_MAGIC.len()..HEADER_LEN]
                 .try_into()
                 .expect("8 bytes"),
         );
+
         if version != SAVE_VERSION {
             return Err(format!(
-                "OsmNetwork bytes have format hash {version:016x}, expected {SAVE_VERSION:016x}. The codec's serialised layout has changed — rebuild the cache."
+                "Header expects {SAVE_VERSION:016x}, got format hash {version:016x}, rebuild the cache."
             ));
         }
+
         let deserialise_start = Instant::now();
         let mut net: Self =
             postcard::from_bytes(&bytes[HEADER_LEN..]).map_err(|v| v.to_string())?;
+
         let deserialise = deserialise_start.elapsed();
         let rebuild_start = Instant::now();
         net.rebuild_indices();
+
         debug!(
             "OsmNetwork::from_bytes: {} bytes, deserialised in {:?}, rebuilt indices in {:?}",
             bytes.len(),
             deserialise,
             rebuild_start.elapsed()
         );
+
         Ok(net)
     }
 
@@ -93,9 +95,11 @@ impl OsmNetwork {
         let payload: Vec<u8> =
             postcard::to_allocvec(self).map_err(|e| format!("failed to serialise value: {e}"))?;
         let mut out = Vec::with_capacity(SAVE_MAGIC.len() + 8 + payload.len());
+
         out.extend_from_slice(SAVE_MAGIC);
         out.extend_from_slice(&SAVE_VERSION.to_le_bytes());
         out.extend_from_slice(&payload);
+
         Ok(out)
     }
 
@@ -321,13 +325,10 @@ impl OsmNetwork {
     pub fn num_nodes(&self) -> usize {
         self.graph.node_count()
     }
+}
 
-    /// An empty network — zero nodes, zero edges, empty spatial indices.
-    ///
-    /// Cheap to construct and useful as a "still loading" placeholder when
-    /// a viewer needs to be wired up before its real data has arrived
-    /// (e.g. before an async shard fetch completes in the browser).
-    pub fn empty() -> Self {
+impl Default for OsmNetwork {
+    fn default() -> Self {
         Self {
             graph: GraphStructure::new(),
             hash: FxHashMap::default(),

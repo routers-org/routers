@@ -1,16 +1,11 @@
 //! Builds a stable fingerprint of the source files that determine the
-//! `OsmNetwork` on-disk layout. The fingerprint becomes part of every
-//! cache file written by [`OsmNetwork::save_to_file`], so any change to
-//! these files automatically invalidates older caches with a clear error
-//! instead of a `postcard` panic.
-//!
-//! Files outside this list (parsers, error types, the iterator machinery)
-//! can change freely without touching cache compatibility — the goal is
-//! "only regenerate when needed", not "regenerate on every recompile".
+//! `OsmNetwork` on-disk layout.
 
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
+
+const HASH_SEED: u64 = 0xcbf29ce484222325;
 
 /// FNV-1a 64-bit. Deterministic across builds and platforms (unlike
 /// `DefaultHasher`, which is randomised). No dependency needed.
@@ -25,6 +20,7 @@ fn fnv1a(bytes: &[u8], h: u64) -> u64 {
 
 fn main() {
     let manifest = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
+
     // Curated list — only files that define types appearing in the
     // serialised payload of `OsmNetwork`.
     let files = [
@@ -35,13 +31,16 @@ fn main() {
         "src/osm/element/variants/relation.rs",
     ];
 
-    let mut h: u64 = 0xcbf29ce484222325;
+    let mut h: u64 = HASH_SEED;
+
     for rel in files {
         let path: &Path = &manifest.join(rel);
         let bytes = fs::read(path)
-            .unwrap_or_else(|e| panic!("build.rs: cannot read {} — {e}", path.display()));
+            .unwrap_or_else(|e| panic!("build.rs: cannot read {}: {e}", path.display()));
+
         h = fnv1a(rel.as_bytes(), h);
         h = fnv1a(&bytes, h);
+
         println!("cargo:rerun-if-changed={}", path.display());
     }
 
