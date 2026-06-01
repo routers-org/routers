@@ -184,8 +184,7 @@ fn target_benchmark(c: &mut criterion::Criterion) {
                     b.iter_batched(
                         || {
                             Arc::new(
-                                PredicateCache::<OsmEntryId, OsmEdgeMetadata, OsmNetwork>::default(
-                                ),
+                                PredicateCache::<OsmEntryId, OsmEdgeMetadata, OsmNetwork>::default()
                             )
                         },
                         |cold_cache| {
