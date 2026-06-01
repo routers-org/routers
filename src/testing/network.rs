@@ -877,69 +877,86 @@ mod tests {
         }
     }
 
-    /// GPS trace that runs along a motorway (weight = 1) while a parallel
-    /// motorway_link (weight = 2) road lies physically closer to the GPS points.
+    /// Test against dip-and-return into side road detours.
+    /// The side road is bidirectional and two segments deep with
+    /// enough graph topology for the matcher to logically execute
+    /// a hairpin turn in the side-street.
     ///
-    /// Without road-class-weighted emission costs the motorway_link candidates
-    /// would win purely on physical proximity.  With the fix, the emission cost
-    /// of a candidate scales by the square of its road-class weight, so the
-    /// motorway (weight 1² × physical distance) beats the motorway_link
-    /// (weight 2² × smaller physical distance).
+    /// Naive emission-minimising would set the drifted layers' matched
+    /// candidates to nodes on the side road. This tests against this
+    /// behaviour to verify it understands the importance of trip momentum.
     ///
     /// ```text
-    ///  1 ──── 2 ──── 3 ──── 4    motorway       (weight=1, ~7 m above GPS)
-    ///  ·  GPS ·  GPS ·  GPS ·    GPS trace       (y = 34.15000)
-    ///  5 ──── 6 ──── 7 ──── 8    motorway_link   (weight=2, ~4 m below GPS)
+    ///   primary  ─── 1 ─ 2 ─ 3 ─ 4 ─ 5 ─ 6 ─ 7 ─ 8 ─ 9 ───
+    ///                              │
+    ///                              10  (residential, weight=10)
+    ///                              │
+    ///                              11
+    ///
+    ///   GPS:        · · · · ··· · · · · ·    (···) = drifted layers
     /// ```
     ///
-    /// The GPS points are ≈ 4.4 m from the motorway_link but ≈ 6.7 m from
-    /// the motorway, so without weighting the motorway_link wins.  After
-    /// quadratic weighting: effective distance for motorway_link =
-    /// 4.4 m × 2² = 17.6 m vs motorway = 6.7 m × 1² = 6.7 m → motorway wins.
     #[test]
-    fn map_match_prefers_motorway_over_motorway_link() {
-        // Motorway nodes at y = 34.15006 (≈ 6.7 m north of GPS line)
-        // MotorwayLink nodes at y = 34.14996 (≈ 4.4 m south of GPS line)
+    fn long_trip_avoids_side_road_dip() {
+        use crate::r#match::{Match, MatchOptions};
+        use crate::transition::solver::variant::SolverVariant;
+
         let net = MockNetworkBuilder::new()
-            .node(1, point!(x: -118.140, y: 34.15006))
-            .node(2, point!(x: -118.141, y: 34.15006))
-            .node(3, point!(x: -118.142, y: 34.15006))
-            .node(4, point!(x: -118.143, y: 34.15006))
-            // MotorwayLink (weight=2): parallel road slightly south
-            .node(5, point!(x: -118.140, y: 34.14996))
-            .node(6, point!(x: -118.141, y: 34.14996))
-            .node(7, point!(x: -118.142, y: 34.14996))
-            .node(8, point!(x: -118.143, y: 34.14996))
+            // Primary road, weight=1, along y=34.150000
+            .node(1, point!(x: -118.140, y: 34.150))
+            .node(2, point!(x: -118.141, y: 34.150))
+            .node(3, point!(x: -118.142, y: 34.150))
+            .node(4, point!(x: -118.143, y: 34.150))
+            .node(5, point!(x: -118.144, y: 34.150)) // intersection
+            .node(6, point!(x: -118.145, y: 34.150))
+            .node(7, point!(x: -118.146, y: 34.150))
+            .node(8, point!(x: -118.147, y: 34.150))
+            .node(9, point!(x: -118.148, y: 34.150))
+            // Two nodes plus bidirectional edges so the matcher can logically hairpin
+            .node(10, point!(x: -118.144, y: 34.14985))
+            .node(11, point!(x: -118.144, y: 34.14972))
             .weighted_edge(1, 2, 1)
             .weighted_edge(2, 3, 1)
             .weighted_edge(3, 4, 1)
-            .weighted_edge(5, 6, 2)
-            .weighted_edge(6, 7, 2)
-            .weighted_edge(7, 8, 2)
+            .weighted_edge(4, 5, 1)
+            .weighted_edge(5, 6, 1)
+            .weighted_edge(6, 7, 1)
+            .weighted_edge(7, 8, 1)
+            .weighted_edge(8, 9, 1)
+            .weighted_edge(5, 10, 10)
+            .weighted_edge(10, 5, 10)
+            .weighted_edge(10, 11, 10)
+            .weighted_edge(11, 10, 10)
             .build();
 
-        // GPS trace runs east, at y = 34.150000 — ≈ 4.4 m above motorway_link
-        // (weight=2) but ≈ 6.7 m below the motorway (weight=1).  Without road-
-        // class weighting the motorway_link wins on proximity alone.
         let linestring: LineString = wkt! {
             LINESTRING(
                 -118.1405 34.150000,
                 -118.1415 34.150000,
-                -118.1425 34.150000
+                -118.1425 34.150000,
+                -118.1435 34.150000,
+                -118.14400 34.149800,
+                -118.14403 34.149725,
+                -118.14406 34.149800,
+                -118.1445 34.150000,
+                -118.1455 34.150000,
+                -118.1465 34.150000,
+                -118.1470 34.150000,
+                -118.1475 34.150000
             )
         };
 
+        let opts = MatchOptions::new().with_solver(SolverVariant::Selective);
+
         let result = net
-            .match_simple(linestring)
+            .r#match(linestring, opts)
             .expect("map match must succeed");
 
-        // All matched edges must be the motorway (weight=1).
-        // A motorway_link (weight=2) match means the road-class penalty
-        // on emission costs is not being applied.
         for element in &result.discretized.elements {
             assert_eq!(
                 element.edge.weight, 1,
-                "matched edge must be the motorway (weight=1), not the motorway_link (weight=2)"
+                "matched edge {:?} has weight {} — matcher dipped onto the side road instead of staying on the primary through the drifted layers (long-trip side-road dip regression)",
+                element.edge.id, element.edge.weight,
             );
         }
     }

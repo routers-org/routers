@@ -237,6 +237,20 @@ mod predicate {
     pub type PredicateCache<E, M, N> =
         LockedMap<E, Predicates<E>, M, N, PredicateMetadata<E, M, N>>;
 
+    impl<E: CacheKey, M: Metadata, N: Network<E, M>> PredicateCache<E, M, N> {
+        pub fn with_threshold(threshold_cm: f64) -> Self {
+            LockedMap(Arc::new(CacheMap {
+                map: HashMap::default(),
+                metadata: PredicateMetadata {
+                    successors: SuccessorsCache::default(),
+                    threshold_distance: threshold_cm,
+                },
+                _marker: core::marker::PhantomData,
+                _marker2: core::marker::PhantomData,
+            }))
+        }
+    }
+
     impl<E: CacheKey, M: Metadata, N: Network<E, M>> Calculable<E, M, N, Predicates<E>>
         for PredicateCache<E, M, N>
     {
