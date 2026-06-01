@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use geo::{Haversine, InterpolatableLine, Line, LineLocatePoint, Point};
 
 use crate::{Discovery, Edge, Entry, Node};
@@ -45,5 +47,18 @@ where
                         .zip(Some(edge))
                 }),
         )
+    }
+}
+
+impl<T, E> Scan<E> for Arc<T>
+where
+    T: Scan<E>,
+    E: Entry,
+{
+    fn nearest_node<'a>(&'a self, point: &Point) -> Option<&'a Node<E>>
+    where
+        E: 'a,
+    {
+        (**self).nearest_node(point)
     }
 }

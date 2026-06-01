@@ -1,30 +1,32 @@
+//! [`Network`] is the umbrella trait pulling together the data plane and
+//! the routing/scan capabilities.
+//!
+//! Pick the bound that matches your needs:
+//!
+//! - `N: DataPlane` is looser; just data access, no routing.
+//! - `N: Network<E, M>` is equivalent to `DataPlane + Scan + Route` with exposed identity types.
+
 use core::fmt::Debug;
 
-use crate::{DirectionAwareEdgeId, Edge, Entry, Metadata, Node, Route, Scan, edge::Weight};
-use geo::Point;
+use crate::{DataPlane, Entry, Metadata, Route, Scan};
 
-pub type EdgeData<E> = (Weight, DirectionAwareEdgeId<E>);
-pub type GraphEdge<E> = (E, E, EdgeData<E>);
+// Re-exported so existing callers of `network::GraphEdge` keep working
+// after the type moved into the data-plane module.
+pub use crate::traits::data_plane::{EdgeData, GraphEdge};
 
-pub trait Network<E, M>: Scan<E> + Route<E> + Debug + Send + Sync
+/// Routing-aware network — data plane + nearest-neighbour + shortest path.
+pub trait Network<E, M>:
+    DataPlane<Entry = E, Meta = M> + Scan<E> + Route<E> + Debug + Send + Sync
 where
     E: Entry,
     M: Metadata,
 {
-    fn metadata(&self, id: &E) -> Option<&M>;
+}
 
-    fn point(&self, id: &E) -> Option<Point>;
-
-    fn edges_outof<'a>(&'a self, id: E) -> Box<dyn Iterator<Item = GraphEdge<E>> + 'a>;
-    fn edges_into<'a>(&'a self, id: E) -> Box<dyn Iterator<Item = GraphEdge<E>> + 'a>;
-
-    /// Produces an iterator of points for a given input.
-    ///
-    /// All provided nodes that do not exist will not be returned, so the iterator's
-    /// length may be smaller than the input slice.
-    fn line(&self, nodes: &[E]) -> Vec<Point> {
-        nodes.iter().filter_map(|node| self.point(node)).collect()
-    }
-
-    fn fatten(&self, edge: &Edge<E>) -> Option<Edge<Node<E>>>;
+impl<T, E, M> Network<E, M> for T
+where
+    T: DataPlane<Entry = E, Meta = M> + Scan<E> + Route<E> + Debug + Send + Sync,
+    E: Entry,
+    M: Metadata,
+{
 }
