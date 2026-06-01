@@ -12,7 +12,7 @@ use routers::transition::entity::Transition;
 use routers::transition::layer::generation::StandardGenerator;
 use routers::transition::solver::selective_forward::SelectiveForwardSolver;
 use routers_codec::osm::{OsmEntryId, OsmNetwork, OsmTripConfiguration};
-use routers_network::{Discovery, Entry, Network, Node};
+use routers_network::{DataPlane, Discovery, Entry, Node};
 use std::time::{Duration, Instant};
 use walkers::sources::MapboxStyle;
 use wkt::ToWkt;
