@@ -1,11 +1,5 @@
 # Not avaliable on WASM
 disallowed-methods = [
-    {
-        path = "std::time::Instant::now",
-        reason = "use web_time::Instant::now"
-    },
-    {
-        path = "std::time::SystemTime::now",
-        reason = "use web_time::SystemTime::now"
-    },
+    { path = "std::time::Instant::now", reason = "use web_time::Instant::now" },
+    { path = "std::time::SystemTime::now", reason = "use web_time::SystemTime::now" },
 ]
