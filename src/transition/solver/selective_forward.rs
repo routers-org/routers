@@ -95,6 +95,18 @@ where
             return vec![(end, CandidateEdge::zero())];
         }
 
+        // Keep only the top-N candidates by pre-computed emission cost before the
+        // expensive per-candidate Dijkstra path lookup. Emission is O(1) to read.
+        const BEAM_WIDTH: usize = 10;
+        let successors = if successors.len() > BEAM_WIDTH {
+            let mut s = successors;
+            s.sort_unstable_by_key(|c| context.candidate(c).map_or(u32::MAX, |c| c.emission));
+            s.truncate(BEAM_WIDTH);
+            s
+        } else {
+            successors
+        };
+
         let reachable = self
             .reachable(context, source, successors.as_slice())
             .unwrap_or_default();
