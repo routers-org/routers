@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.6] - 2026-06-01
+
+### 🚀 Features
+
+- Upgrade to `buffa/0.6.0` ([#145](https://github.com/routers-org/routers/pull/145))
+- WASM Support ([#147](https://github.com/routers-org/routers/pull/147))
+
+### 🐛 Bug Fixes
+
+- Cleanup of Angular Complexity Calculation ([#142](https://github.com/routers-org/routers/pull/142))
+- Consider Intra-Transitions Costs ([#141](https://github.com/routers-org/routers/pull/141))
+
+
+
 ## [0.2.5] - 2026-05-18
 
 ### 🚀 Features
