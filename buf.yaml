@@ -14,3 +14,4 @@ modules:
 lint:
   ignore:
     - schema/proto/osm
+    - schema/proto/mvt
