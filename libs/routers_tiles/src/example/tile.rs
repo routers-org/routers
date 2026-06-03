@@ -3,7 +3,7 @@ use crate::datasource::connectors::bigtable::{
 };
 use crate::datasource::date::format_date;
 use crate::error::TileError;
-use crate::proto::{Example, Tile, Value};
+use crate::proto::Example;
 use crate::query::{DatedRange, MVTTile, QueryParams, Range};
 use crate::{Fragment, Query, Repo, TileQuery, layer, tile};
 use axum::extract::{Path, State};
@@ -16,6 +16,7 @@ use log::info;
 use prost::Message;
 use routers_geo::TileItem;
 use routers_geo::coord::point::FeatureKey;
+use schema::proto::mvt::{Tile, Value};
 use serde::Deserialize;
 use std::sync::Arc;
 use strum::{EnumCount, EnumIter, EnumProperty, VariantArray};
@@ -38,8 +39,8 @@ impl TileItem<Value> for Example {
 
     fn entries<'a>(&self) -> Vec<(Self::Key, Value)> {
         vec![
-            (Self::Key::KeyA, Value::from_int(self.a)),
-            (Self::Key::KeyB, Value::from_int(self.b)),
+            (Self::Key::KeyA, Value::default().with_sint_value(self.a)),
+            (Self::Key::KeyB, Value::default().with_sint_value(self.b)),
         ]
     }
 }

@@ -10,6 +10,7 @@ use crate::error::GeoError;
 
 #[cfg(feature = "tile")]
 use crate::coord::point::TileItem;
+#[cfg(feature = "tile")]
 use schema::proto::mvt::Value;
 
 #[derive(PartialEq, Clone)]

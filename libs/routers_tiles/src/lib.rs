@@ -2,8 +2,6 @@ extern crate alloc;
 
 #[allow(clippy::all)]
 pub mod proto {
-    include!(concat!(env!("OUT_DIR"), "/mvt.rs"));
-
     #[cfg(feature = "example")]
     include!(concat!(env!("OUT_DIR"), "/example.rs"));
 }

@@ -6156,6 +6156,7 @@ dependencies = [
  "prost-build",
  "routers_geo",
  "routers_rpc",
+ "routers_schema",
  "serde",
  "serde_qs",
  "strum",
