@@ -6039,7 +6039,9 @@ dependencies = [
  "geo",
  "geohash",
  "log",
+ "routers_schema",
  "strum",
+ "wkt",
 ]
 
 [[package]]
@@ -6050,6 +6052,7 @@ dependencies = [
  "num-traits",
  "rstar 0.12.2",
  "serde",
+ "tracing",
 ]
 
 [[package]]

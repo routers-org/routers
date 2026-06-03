@@ -1,5 +1,3 @@
-use async_trait::async_trait;
-
 pub struct Query<T, F> {
     pub parameters: T,
     pub filter: F,
@@ -26,7 +24,6 @@ impl<T, F> Query<T, F> {
     }
 }
 
-#[async_trait]
 pub trait TileQuery<In, Filter, Out, Item> {
     type Error;
     type Parameters<'a>
@@ -38,11 +35,12 @@ pub trait TileQuery<In, Filter, Out, Item> {
 
     const QUERY_TABLE: &'static str;
 
-    async fn query(
+    fn query(
         input: Query<In, Option<Filter>>,
         params: Self::Parameters<'_>,
         conn: Self::Connection<'_>,
-    ) -> Result<Out, Self::Error>;
+    ) -> impl std::future::Future<Output = Result<Out, Self::Error>> + Send;
+
     fn batch(query: Query<Self::Parameters<'_>, (u8, u32, u32)>) -> In;
     fn filter(filter: &Self::Parameters<'_>, item: &Item) -> bool;
 }

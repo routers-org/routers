@@ -14,7 +14,7 @@ pub mod layer_macro {
     #[macro_export]
     macro_rules! layer {
         ($c:expr, $z:ident, $t:literal) => {
-            MVTLayer::from(($c, $z, format!("{}", $t))).0
+            crate::MVTLayer::from(($c, $z, format!("{}", $t))).0
         };
         ($c:ident, $z:ident, $t:literal) => {
             MVTLayer::from(($c, $z, format!("{}", $t))).0

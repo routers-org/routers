@@ -5,6 +5,7 @@ modules:
     name: buf.build/osm/model
     includes:
       - schema/proto/osm
+      - schema/proto/mvt
   - path: schema/proto
     name: buf.build/routers/api
     includes:

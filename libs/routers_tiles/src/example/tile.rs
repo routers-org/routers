@@ -3,10 +3,9 @@ use crate::datasource::connectors::bigtable::{
 };
 use crate::datasource::date::format_date;
 use crate::error::TileError;
-use crate::proto::{Example, Feature, Tile, Value};
+use crate::proto::{Example, Tile, Value};
 use crate::query::{DatedRange, MVTTile, QueryParams, Range};
 use crate::{Fragment, Query, Repo, TileQuery, layer, tile};
-use axum::async_trait;
 use axum::extract::{Path, State};
 use bigtable_rs::bigtable::RowCell;
 use bigtable_rs::google::bigtable::v2::row_range::{EndKey, StartKey};
@@ -64,7 +63,6 @@ pub struct ExampleParams {
     filter_b: Range<i64>,
 }
 
-#[async_trait]
 impl TileQuery<Vec<RowRange>, RowFilter, MVTTile, Example> for Example {
     type Error = TileError;
     type Parameters<'a> = (ExampleParams, u8);
