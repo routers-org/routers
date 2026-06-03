@@ -6,8 +6,8 @@ use common::MemSource;
 use geo::Point;
 use routers_codec::osm::{OsmEdgeMetadata, OsmEntryId};
 use routers_shard::{
-    FileShardFetcher, QuadKey, QuadTreeStrategy, Selection, SelectionMode, ShardWindow,
-    ShardedNetwork, ShardingStrategy,
+    FileFetcher, QuadKey, QuadTreeStrategy, Selection, SelectionMode, ShardWindow, ShardedNetwork,
+    ShardingStrategy,
 };
 
 fn naming(key: &QuadKey) -> String {
@@ -48,7 +48,7 @@ fn write_neighbourhood(
 #[tokio::test]
 async fn first_recenter_yields_full_to_fetch_list() {
     let (dir, strategy, owned) = write_neighbourhood(Point::new(0.0, 0.0), 4, "first_recenter");
-    let fetcher = FileShardFetcher::new(&dir);
+    let fetcher = FileFetcher::new(&dir);
     let window =
         ShardWindow::<OsmEntryId, OsmEdgeMetadata, _, _>::new(strategy.clone(), fetcher, naming);
 
@@ -68,7 +68,7 @@ async fn first_recenter_yields_full_to_fetch_list() {
 #[tokio::test]
 async fn fetch_one_populates_cache_and_owned_resolves() {
     let (dir, strategy, owned) = write_neighbourhood(Point::new(0.0, 0.0), 4, "fetch_one");
-    let fetcher = FileShardFetcher::new(&dir);
+    let fetcher = FileFetcher::new(&dir);
     let window =
         ShardWindow::<OsmEntryId, OsmEdgeMetadata, _, _>::new(strategy.clone(), fetcher, naming);
 
@@ -88,7 +88,7 @@ async fn fetch_one_populates_cache_and_owned_resolves() {
 #[tokio::test]
 async fn pan_to_neighbour_promotes_without_refetch() {
     let (dir, strategy, owned) = write_neighbourhood(Point::new(0.0, 0.0), 4, "pan_to_neighbour");
-    let fetcher = FileShardFetcher::new(&dir);
+    let fetcher = FileFetcher::new(&dir);
     let window =
         ShardWindow::<OsmEntryId, OsmEdgeMetadata, _, _>::new(strategy.clone(), fetcher, naming);
 
@@ -122,7 +122,7 @@ async fn pan_to_neighbour_promotes_without_refetch() {
 #[tokio::test]
 async fn recenter_to_same_cell_is_a_noop() {
     let (dir, strategy, owned) = write_neighbourhood(Point::new(0.0, 0.0), 4, "recenter_noop");
-    let fetcher = FileShardFetcher::new(&dir);
+    let fetcher = FileFetcher::new(&dir);
     let window =
         ShardWindow::<OsmEntryId, OsmEdgeMetadata, _, _>::new(strategy.clone(), fetcher, naming);
 
@@ -141,7 +141,7 @@ async fn recenter_to_same_cell_is_a_noop() {
 #[tokio::test]
 async fn far_pan_evicts_old_cells() {
     let (dir, strategy, owned) = write_neighbourhood(Point::new(0.0, 0.0), 4, "far_pan");
-    let fetcher = FileShardFetcher::new(&dir);
+    let fetcher = FileFetcher::new(&dir);
     let window =
         ShardWindow::<OsmEntryId, OsmEdgeMetadata, _, _>::new(strategy.clone(), fetcher, naming);
 

@@ -2,7 +2,7 @@
 //! `.shard.rt` per non-empty geohash cell.
 //!
 //! The output directory can then be served as static files; the browser's
-//! `WebShardFetcher` reads from the same URL prefix. The naming convention
+//! `WebFetcher` reads from the same URL prefix. The naming convention
 //! used here (`<geohash>.shard.rt`, e.g. `r3gx2.shard.rt`) matches the
 //! parser in `libs/routers_viewer/src/bin/web_viewer.rs` — keep them in
 //! sync if you change one.

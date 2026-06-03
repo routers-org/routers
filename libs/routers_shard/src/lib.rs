@@ -31,10 +31,10 @@ pub use strategy::{
 };
 
 #[cfg(not(target_arch = "wasm32"))]
-pub use loader::FileShardFetcher;
+pub use loader::FileFetcher;
 
 #[cfg(target_arch = "wasm32")]
-pub use loader::WebShardFetcher;
+pub use loader::WebFetcher;
 
 #[cfg(feature = "osm")]
 pub mod osm;

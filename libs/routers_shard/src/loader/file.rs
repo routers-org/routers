@@ -1,7 +1,7 @@
-//! Filesystem-backed [`ShardFetcher`] for native targets.
+//! Filesystem-backed [`Fetcher`] for native targets.
 //!
 //! Useful for local development and for the build pipeline's
-//! "round-trip" tests. The browser uses [`WebShardFetcher`](super::WebShardFetcher)
+//! "round-trip" tests. The browser uses [`WebFetcher`](super::WebFetcher)
 //! instead — this file is excluded from the wasm32 build entirely.
 
 use std::path::PathBuf;
@@ -9,11 +9,11 @@ use std::path::PathBuf;
 use super::fetcher::Fetcher;
 
 #[derive(Debug, Clone)]
-pub struct FileShardFetcher {
+pub struct FileFetcher {
     base_dir: PathBuf,
 }
 
-impl FileShardFetcher {
+impl FileFetcher {
     /// Look up keys relative to `base_dir`. Treats the key as a path
     /// suffix, so a key like `"sydney/cbd.shard.rt"` reads
     /// `<base_dir>/sydney/cbd.shard.rt`.
@@ -37,7 +37,7 @@ impl core::fmt::Display for FileFetchError {
     }
 }
 
-impl Fetcher for FileShardFetcher {
+impl Fetcher for FileFetcher {
     type Error = FileFetchError;
 
     async fn fetch(&self, key: &str) -> Result<Vec<u8>, Self::Error> {

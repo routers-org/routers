@@ -1,4 +1,4 @@
-//! The [`ShardFetcher`] abstraction.
+//! The [`Fetcher`] abstraction.
 //!
 //! A fetcher is just "take a key (string), give me back the bytes". Whether
 //! those bytes live on disk, on an HTTP server, or in an in-memory test

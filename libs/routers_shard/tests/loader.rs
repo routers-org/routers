@@ -7,8 +7,8 @@ use common::MemSource;
 use geo::Point;
 use routers_codec::osm::{OsmEdgeMetadata, OsmEntryId};
 use routers_shard::{
-    FileShardFetcher, QuadKey, QuadTreeStrategy, Selection, SelectionMode, ShardLoader,
-    ShardedNetwork, ShardingStrategy,
+    FileFetcher, QuadKey, QuadTreeStrategy, Selection, SelectionMode, ShardLoader, ShardedNetwork,
+    ShardingStrategy,
 };
 
 fn naming(key: &QuadKey) -> String {
@@ -41,7 +41,7 @@ async fn loader_round_trips_via_file_fetcher() {
     let dir = temp_dir("round_trip");
     let owned = write_one_shard(&dir);
 
-    let fetcher = FileShardFetcher::new(&dir);
+    let fetcher = FileFetcher::new(&dir);
     let mut loader =
         ShardLoader::<OsmEntryId, OsmEdgeMetadata, QuadKey, _, _>::new(fetcher, naming);
 
@@ -57,7 +57,7 @@ async fn second_load_hits_the_cache() {
     let dir = temp_dir("cache_hit");
     let owned = write_one_shard(&dir);
 
-    let fetcher = FileShardFetcher::new(&dir);
+    let fetcher = FileFetcher::new(&dir);
     let mut loader =
         ShardLoader::<OsmEntryId, OsmEdgeMetadata, QuadKey, _, _>::new(fetcher, naming);
 
@@ -76,7 +76,7 @@ async fn missing_file_surfaces_fetch_error() {
     let dir = temp_dir("missing");
     let strategy = QuadTreeStrategy::with_depth(1);
     let owned = strategy.locate(Point::new(0.01, 0.01));
-    let fetcher = FileShardFetcher::new(&dir);
+    let fetcher = FileFetcher::new(&dir);
     let mut loader =
         ShardLoader::<OsmEntryId, OsmEdgeMetadata, QuadKey, _, _>::new(fetcher, naming);
     let err = loader.load(&owned).await.expect_err("must fail");
@@ -92,7 +92,7 @@ async fn corrupt_blob_surfaces_decode_error() {
     let owned = strategy.locate(Point::new(0.01, 0.01));
     std::fs::write(dir.join(naming(&owned)), b"not a shard").expect("write");
 
-    let fetcher = FileShardFetcher::new(&dir);
+    let fetcher = FileFetcher::new(&dir);
     let mut loader =
         ShardLoader::<OsmEntryId, OsmEdgeMetadata, QuadKey, _, _>::new(fetcher, naming);
     let err = loader.load(&owned).await.expect_err("must fail");
@@ -105,7 +105,7 @@ async fn corrupt_blob_surfaces_decode_error() {
 async fn load_many_loads_all() {
     let dir = temp_dir("many");
     let owned = write_one_shard(&dir);
-    let fetcher = FileShardFetcher::new(&dir);
+    let fetcher = FileFetcher::new(&dir);
     let mut loader =
         ShardLoader::<OsmEntryId, OsmEdgeMetadata, QuadKey, _, _>::new(fetcher, naming);
     loader

@@ -11,7 +11,7 @@
 //!
 //! - [`FileShardFetcher`] — reads a `.shard.rt` from the local filesystem
 //!   (native-only)
-//! - [`WebShardFetcher`] — fetches the same blob via `window.fetch` in the
+//! - [`WebFetcher`] — fetches the same blob via `window.fetch` in the
 //!   browser (wasm32-only)
 //!
 //! Implement [`ShardFetcher`] yourself to plug in any other transport
@@ -26,12 +26,12 @@ pub use window::{RecenterDelta, ShardWindow};
 #[cfg(not(target_arch = "wasm32"))]
 mod file;
 #[cfg(not(target_arch = "wasm32"))]
-pub use file::FileShardFetcher;
+pub use file::FileFetcher;
 
 #[cfg(target_arch = "wasm32")]
 mod web;
 #[cfg(target_arch = "wasm32")]
-pub use web::WebShardFetcher;
+pub use web::WebFetcher;
 
 use core::fmt::Debug;
 use log::debug;

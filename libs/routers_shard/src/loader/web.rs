@@ -1,4 +1,4 @@
-//! Browser-side [`ShardFetcher`] using `window.fetch`.
+//! Browser-side [`Fetcher`] using `window.fetch`.
 //!
 //! Avoids pulling in `reqwest` (which would balloon the wasm bundle) by
 //! talking directly to `web-sys`. Only built on `wasm32`.
@@ -11,11 +11,11 @@ use web_sys::{Request, RequestInit, Response};
 use super::fetcher::ShardFetcher;
 
 #[derive(Debug, Clone)]
-pub struct WebShardFetcher {
+pub struct WebFetcher {
     base_url: String,
 }
 
-impl WebShardFetcher {
+impl WebFetcher {
     /// Fetch keys relative to `base_url`. A trailing slash on `base_url`
     /// is added if missing so callers can pass either form.
     pub fn new(base_url: impl Into<String>) -> Self {
@@ -52,7 +52,7 @@ fn js_value_to_string(v: &JsValue) -> String {
         .unwrap_or_else(|| "<unprintable JsValue>".to_string())
 }
 
-impl ShardFetcher for WebShardFetcher {
+impl ShardFetcher for WebFetcher {
     type Error = WebFetchError;
 
     async fn fetch(&self, key: &str) -> Result<Vec<u8>, Self::Error> {
