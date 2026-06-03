@@ -12,7 +12,7 @@ use core::future::Future;
 /// The trait is intentionally narrow — it knows nothing about shard IDs,
 /// network types, or transport. [`ShardLoader`](super::ShardLoader) layers
 /// the higher-level concerns on top.
-pub trait ShardFetcher {
+pub trait Fetcher {
     type Error: Debug;
 
     /// Resolve `key` to a byte payload.

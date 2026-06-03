@@ -6,7 +6,7 @@
 
 use std::path::PathBuf;
 
-use super::fetcher::ShardFetcher;
+use super::fetcher::Fetcher;
 
 #[derive(Debug, Clone)]
 pub struct FileShardFetcher {
@@ -37,7 +37,7 @@ impl core::fmt::Display for FileFetchError {
     }
 }
 
-impl ShardFetcher for FileShardFetcher {
+impl Fetcher for FileShardFetcher {
     type Error = FileFetchError;
 
     async fn fetch(&self, key: &str) -> Result<Vec<u8>, Self::Error> {

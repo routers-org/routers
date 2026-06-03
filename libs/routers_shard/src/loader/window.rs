@@ -22,7 +22,7 @@ use geo::Point;
 use routers_network::{Entry, Metadata};
 
 use super::LoadError;
-use super::fetcher::ShardFetcher;
+use super::fetcher::Fetcher;
 use crate::network::ShardedNetwork;
 use crate::strategy::{ShardId, ShardingStrategy};
 
@@ -57,7 +57,7 @@ where
     E: Entry,
     M: Metadata,
     St: ShardingStrategy,
-    F: ShardFetcher,
+    F: Fetcher,
 {
     strategy: St,
     fetcher: F,
@@ -70,7 +70,7 @@ where
     E: Entry,
     M: Metadata,
     St: ShardingStrategy + Clone,
-    F: ShardFetcher + Clone,
+    F: Fetcher + Clone,
 {
     fn clone(&self) -> Self {
         Self {
@@ -87,7 +87,7 @@ where
     E: Entry,
     M: Metadata,
     St: ShardingStrategy,
-    F: ShardFetcher,
+    F: Fetcher,
 {
     /// Construct an empty window. No cells loaded yet — call
     /// [`recenter`](Self::recenter) followed by

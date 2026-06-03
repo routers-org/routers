@@ -6,16 +6,6 @@ use routers_shard::{
 };
 use wkt::TryFromWkt;
 
-fn centroid(line: &LineString<f64>) -> Point {
-    let (sx, sy, n) = line
-        .0
-        .iter()
-        .fold((0.0, 0.0, 0u32), |(sx, sy, n), Coord { x, y }| {
-            (sx + x, sy + y, n + 1)
-        });
-    Point::new(sx / n as f64, sy / n as f64)
-}
-
 fn main() {
     let coordinates: LineString<f64> =
         LineString::try_from_wkt_str(SYNDEY_TRIP).expect("must parse");

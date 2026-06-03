@@ -20,7 +20,7 @@
 mod fetcher;
 mod window;
 
-pub use fetcher::ShardFetcher;
+pub use fetcher::Fetcher;
 pub use window::{RecenterDelta, ShardWindow};
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -151,7 +151,7 @@ where
     E: Entry,
     M: Metadata,
     S: ShardId,
-    F: ShardFetcher,
+    F: Fetcher,
     N: Fn(&S) -> String,
 {
     fetcher: F,
@@ -164,7 +164,7 @@ where
     E: Entry,
     M: Metadata,
     S: ShardId,
-    F: ShardFetcher,
+    F: Fetcher,
     N: Fn(&S) -> String,
 {
     pub fn new(fetcher: F, naming: N) -> Self {
