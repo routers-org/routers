@@ -1,14 +1,4 @@
-//! Integration example: map-match a trip against a *sharded* OSM network.
-//!
-//! This shows the routers_shard crate cooperating with the root `routers`
-//! crate. The network is built from a single quad-tree shard *plus its
-//! neighbours* so that the matched trip — which strays outside any single
-//! cell — still has continuous coverage end-to-end.
-//!
-//! Run with:
-//!   cargo run --example shard_match --features shard
-
-use geo::{Coord, LineString, Point};
+use geo::{Centroid, Coord, LineString, Point, centroid};
 use routers::r#match::MatchSimpleExt;
 use routers_fixtures::{SYDNEY, SYNDEY_TRIP, fixture};
 use routers_shard::{
@@ -29,11 +19,12 @@ fn centroid(line: &LineString<f64>) -> Point {
 fn main() {
     let coordinates: LineString<f64> =
         LineString::try_from_wkt_str(SYNDEY_TRIP).expect("must parse");
-    let anchor = centroid(&coordinates);
+    let anchor = coordinates.centroid().expect("must have a centroid");
 
     let source = OsmSource::new(fixture!(SYDNEY).clone());
     let strategy = QuadTreeStrategy::with_depth(9);
     let owned = strategy.locate(anchor);
+
     let selection = Selection::new(&strategy, owned, SelectionMode::OwnedAndNeighbours);
 
     let started = std::time::Instant::now();
