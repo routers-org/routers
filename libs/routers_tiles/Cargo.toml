@@ -26,6 +26,8 @@ strum = { workspace = true }
 tracing = { version = "0.1.41", optional = true }
 async-trait = "0.1.88"
 
+schema = { workspace = true }
+
 [dev-dependencies]
 futures = "0.3.31"
 routers_rpc = { path = "../routers_rpc", features = ["telemetry"] }

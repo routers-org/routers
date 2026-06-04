@@ -7,8 +7,11 @@ use wkt::ToWkt;
 
 use crate::coord::point::FeatureKey;
 use crate::error::GeoError;
+
 #[cfg(feature = "tile")]
-use crate::{geo::TileItem, routers_codec::mvt::Value};
+use crate::coord::point::TileItem;
+#[cfg(feature = "tile")]
+use schema::proto::mvt::Value;
 
 #[derive(PartialEq, Clone)]
 pub enum Classification {
@@ -62,11 +65,11 @@ impl<T: Clone> TileItem<Value> for Clustered<T> {
         vec![
             (
                 Self::Key::NumberOfPoints,
-                Value::from_int(self.points.len() as i64),
+                Value::default().with_sint_value(self.points.len() as i64),
             ),
             (
                 Self::Key::ConvexHull,
-                Value::from_string(self.convex_hull.wkt_string()),
+                Value::default().with_string_value(self.convex_hull.wkt_string()),
             ),
         ]
     }
