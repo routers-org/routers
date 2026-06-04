@@ -2,10 +2,6 @@ extern crate alloc;
 
 #[allow(clippy::all)]
 pub mod proto {
-    //! MapboxVectorTile Protobuf Definitions
-    include!(concat!(env!("OUT_DIR"), "/mvt.rs"));
-
-    /// Example Service Protobuf
     #[cfg(feature = "example")]
     include!(concat!(env!("OUT_DIR"), "/example.rs"));
 }

@@ -3,6 +3,8 @@ use std::sync::Arc;
 use geo::Point;
 
 use crate::{Entry, Node, Scan, edge::Weight};
+#[cfg(feature = "tracing")]
+use tracing::Level;
 
 pub trait Route<E>: Scan<E>
 where

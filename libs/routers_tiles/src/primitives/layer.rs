@@ -1,4 +1,4 @@
-use crate::proto::{Feature, GeomType, Layer, Value};
+use schema::proto::mvt::{Feature, GeomType, Layer, Value};
 
 use routers_geo::cluster::Clustered;
 use routers_geo::coord::point::TileItem;
@@ -31,6 +31,7 @@ where
             extent: Some(MVT_EXTENT),
             version: MVT_VERSION,
             keys: keys.iter().map(|k| k.to_string()).collect(),
+            ..Default::default()
         })
     }
 }
@@ -57,6 +58,7 @@ where
             extent: Some(MVT_EXTENT),
             version: MVT_VERSION,
             keys: keys.iter().map(|k| k.to_string()).collect(),
+            ..Default::default()
         })
     }
 }
@@ -82,8 +84,9 @@ where
             tags: (0..key_length)
                 .flat_map(|i| [i, (index as u32) * key_length + i])
                 .collect(),
-            r#type: Some(i32::from(GeomType::Point)),
+            r#type: Some(GeomType::POINT),
             geometry: vec![(1 & 0x7) | (1 << 3), zig(px), zig(py)],
+            ..Default::default()
         })
     }
 }

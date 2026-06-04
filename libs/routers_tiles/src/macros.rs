@@ -2,10 +2,10 @@ pub mod tile_macro {
     #[macro_export]
     macro_rules! tile {
         ( $vec:expr ) => {
-            Ok(MVTTile(Tile::from($vec)))
+            Ok(MVTTile(Tile { layers: $vec, ..Default::default() }))
         };
         ( $( $x:expr ),* $(,)? ) => {
-            Ok(MVTTile(Tile::from(vec![ $( $x ),* ])))
+            Ok(MVTTile(Tile { layers: vec![ $( $x ),* ], ..Default::default() }))
         };
     }
 }
@@ -14,7 +14,7 @@ pub mod layer_macro {
     #[macro_export]
     macro_rules! layer {
         ($c:expr, $z:ident, $t:literal) => {
-            MVTLayer::from(($c, $z, format!("{}", $t))).0
+            crate::MVTLayer::from(($c, $z, format!("{}", $t))).0
         };
         ($c:ident, $z:ident, $t:literal) => {
             MVTLayer::from(($c, $z, format!("{}", $t))).0

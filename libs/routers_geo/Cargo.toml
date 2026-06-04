@@ -10,7 +10,10 @@ log = { version = "0.4.27", features = [] }
 strum = { workspace = true }
 
 geo = { workspace = true }
+wkt = { workspace = true }
 geohash = "0.13.1"
+
+schema = { workspace = true }
 
 [features]
 tile = []

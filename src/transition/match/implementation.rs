@@ -11,6 +11,9 @@ use log::info;
 use routers_network::Network;
 use routers_network::{Entry, Metadata};
 
+#[cfg(feature = "tracing")]
+use tracing::Level;
+
 impl<T, E: Entry, M: Metadata> Match<E, M, T> for T
 where
     T: Network<E, M>,

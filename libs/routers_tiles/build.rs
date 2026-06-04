@@ -1,7 +1,7 @@
 use prost_build::Config;
 
 fn main() -> Result<(), Box<dyn core::error::Error>> {
-    let protos = ["proto/mvt/mvt.proto", "proto/example/example.proto"];
+    let protos = ["proto/example/example.proto"];
 
     let includes = ["proto"];
     let mut cfg = Config::new();
