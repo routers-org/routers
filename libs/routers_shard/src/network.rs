@@ -25,22 +25,17 @@ use routers_network::{
     network::GraphEdge,
 };
 
-use crate::{
-    IngestFilter, ShardSource,
-    selection::Selection,
-    strategy::{ShardId, ShardingStrategy},
-};
+use crate::strategy::ShardId;
 
 pub type GraphStructure<E> =
     DiGraphMap<E, (Weight, DirectionAwareEdgeId<E>), BuildHasherDefault<FxHasher>>;
 
 /// Magic header + format fingerprint prepended to every shard cache file.
 ///
-/// `CACHE_VERSION` is computed at build time (see `build.rs`) from the
-/// source files that contribute to the serialised layout — change one and
-/// the hash rotates automatically, so older cache files are rejected with
-/// a useful error instead of a cryptic `postcard` varint panic.
+/// `CACHE_VERSION` is computed at build time (see `build.rs`), to prevent
+/// files from being reused across incompatible code versions.
 const CACHE_MAGIC: &[u8; 4] = b"SHRD";
+
 include!(concat!(env!("OUT_DIR"), "/format_hash.rs"));
 const CACHE_VERSION: u64 = FORMAT_HASH;
 
@@ -85,185 +80,6 @@ where
     M: Metadata,
     S: ShardId,
 {
-    /// Build a sharded network from a [`ShardSource`] by filtering against
-    /// the supplied [`Selection`].
-    ///
-    /// The build runs in two passes:
-    ///
-    /// 1. **Node pass.** Every node's position is recorded; nodes whose
-    ///    position falls in a loaded shard are flagged as "in-selection".
-    /// 2. **Way pass.** A way is kept iff at least one of its referenced
-    ///    nodes is in-selection. Kept ways pull in *all* of their
-    ///    referenced nodes, including those just outside the selection —
-    ///    this gives a one-edge halo around the loaded shards so that
-    ///    boundary edges remain resolvable on both ends.
-    pub fn from_source<Src, St>(
-        source: &Src,
-        strategy: &St,
-        selection: &Selection<S>,
-    ) -> Result<Self, Src::Error>
-    where
-        Src: ShardSource<Entry = E, Metadata = M>,
-        St: ShardingStrategy<Id = S>,
-        M: 'static,
-    {
-        Self::from_source_filtered(source, strategy, selection, &IngestFilter::new())
-    }
-
-    /// Build like [`from_source`](Self::from_source) but consult `filter`
-    /// per-way to drop ways and/or omit their metadata. Filtering at this
-    /// layer (rather than post-build) means dropped data never reaches
-    /// the indices or the cache.
-    pub fn from_source_filtered<Src, St>(
-        source: &Src,
-        strategy: &St,
-        selection: &Selection<S>,
-        filter: &IngestFilter<M>,
-    ) -> Result<Self, Src::Error>
-    where
-        Src: ShardSource<Entry = E, Metadata = M>,
-        St: ShardingStrategy<Id = S>,
-        M: 'static,
-    {
-        let fixed_start = Instant::now();
-        let mut start = Instant::now();
-
-        // Pass 1: node positions and per-shard membership.
-        let mut positions: FxHashMap<E, Point> = FxHashMap::default();
-        let mut in_selection: FxHashSet<E> = FxHashSet::default();
-        source.for_each_node(|n| {
-            let shard = strategy.locate(n.position);
-            if selection.contains(&shard) {
-                in_selection.insert(n.id);
-            }
-            positions.insert(n.id, n.position);
-        })?;
-        debug!(
-            "Sharded ingest pass 1 (nodes): {} positions, {} in-selection, {:?}",
-            positions.len(),
-            in_selection.len(),
-            start.elapsed()
-        );
-        start = Instant::now();
-
-        // Pass 2: ways that touch the selection and pass the user filter.
-        let mut kept_ways: Vec<(E, M, Vec<E>, Weight, bool)> = Vec::new();
-        let mut needed: FxHashSet<E> = FxHashSet::default();
-        let mut dropped_by_filter: usize = 0;
-        source.for_each_way(|way| {
-            let touches = way.refs.iter().any(|r| in_selection.contains(r));
-            if !touches {
-                return;
-            }
-            if !filter.accepts(&way.metadata) {
-                dropped_by_filter += 1;
-                return;
-            }
-            for r in &way.refs {
-                needed.insert(*r);
-            }
-            kept_ways.push((
-                way.id,
-                way.metadata,
-                way.refs,
-                way.weight,
-                way.bidirectional,
-            ));
-        })?;
-        if dropped_by_filter > 0 {
-            debug!(
-                "Sharded ingest filter dropped {dropped_by_filter} ways before graph construction"
-            );
-        }
-        debug!(
-            "Sharded ingest pass 2 (ways): {} kept, {} referenced nodes, {:?}",
-            kept_ways.len(),
-            needed.len(),
-            start.elapsed()
-        );
-        start = Instant::now();
-
-        // Materialise the graph, the node hash, and the edge list.
-        let mut graph = GraphStructure::new();
-        let mut meta: FxHashMap<E, M> = FxHashMap::default();
-        let mut edges: Vec<Edge<E>> = Vec::new();
-        let retain_metadata = filter.keep_metadata();
-        for (way_id, metadata, refs, weight, bidi) in kept_ways {
-            if retain_metadata {
-                meta.insert(way_id, metadata);
-            }
-            for window in refs.windows(2) {
-                let (a, b) = (window[0], window[1]);
-                let dir = DirectionAwareEdgeId::new(way_id);
-                graph.add_edge(a, b, (weight, dir.forward()));
-                edges.push(Edge {
-                    source: a,
-                    target: b,
-                    weight,
-                    id: dir.forward(),
-                });
-                if bidi {
-                    graph.add_edge(b, a, (weight, dir.backward()));
-                    edges.push(Edge {
-                        source: b,
-                        target: a,
-                        weight,
-                        id: dir.backward(),
-                    });
-                }
-            }
-        }
-
-        let mut hash: FxHashMap<E, Node<E>> = FxHashMap::default();
-        for id in &needed {
-            if let Some(pos) = positions.get(id) {
-                hash.insert(*id, Node::new(*pos, *id));
-            }
-        }
-        // Drop nodes that don't actually appear in the graph (e.g. way refs
-        // pointing at IDs we never saw in the node pass — happens at the
-        // edge of clipped extracts).
-        hash.retain(|id, _| graph.contains_node(*id));
-
-        let fat: Vec<Edge<Node<E>>> = edges
-            .iter()
-            .filter_map(|edge| {
-                Some(Edge {
-                    source: *hash.get(&edge.source)?,
-                    target: *hash.get(&edge.target)?,
-                    id: DirectionAwareEdgeId::new(Node::new(Point::new(0., 0.), edge.id.index()))
-                        .with_direction(edge.id.direction()),
-                    weight: edge.weight,
-                })
-            })
-            .collect();
-        debug!("Sharded ingest graph build: {:?}", start.elapsed());
-        start = Instant::now();
-
-        let index = RTree::bulk_load(hash.values().copied().collect());
-        let index_edge = RTree::bulk_load(fat);
-        debug!("Sharded ingest rtree build: {:?}", start.elapsed());
-
-        info!(
-            "Sharded ingest finished: {} nodes, {} edges, owned={:?}, loaded={}, total {}ms",
-            hash.len(),
-            graph.edge_count(),
-            selection.owned,
-            selection.loaded.len(),
-            fixed_start.elapsed().as_millis()
-        );
-
-        Ok(Self {
-            graph,
-            hash,
-            meta,
-            index,
-            index_edge,
-            owned: selection.owned.clone(),
-            loaded: selection.loaded.clone(),
-        })
-    }
-
     pub fn num_nodes(&self) -> usize {
         self.graph.node_count()
     }
@@ -400,83 +216,6 @@ where
         );
         Self::from_cached_bytes(&bytes)
             .map_err(|e| format!("shard cache `{}`: {e}", path.display()))
-    }
-
-    /// Build from a source if no cache exists at `cache_path`, otherwise
-    /// load from disk. The classic "expensive build → fast subsequent
-    /// loads" idiom, mirroring `OsmNetwork::from_pbf_and_save`.
-    ///
-    /// Filesystem-bound; not available on WASM. Browser consumers should
-    /// fetch the cache bytes themselves and call
-    /// [`from_cached_bytes`](Self::from_cached_bytes) directly.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn from_source_or_cache<Src, St>(
-        source: &Src,
-        strategy: &St,
-        selection: &crate::selection::Selection<S>,
-        cache_path: &Path,
-    ) -> Result<Self, String>
-    where
-        Src: ShardSource<Entry = E, Metadata = M>,
-        St: ShardingStrategy<Id = S>,
-        E: serde::de::DeserializeOwned,
-        M: serde::de::DeserializeOwned + 'static,
-        S: serde::de::DeserializeOwned,
-    {
-        Self::from_source_or_cache_filtered(
-            source,
-            strategy,
-            selection,
-            &IngestFilter::new(),
-            cache_path,
-        )
-    }
-
-    /// Filtered cousin of [`from_source_or_cache`](Self::from_source_or_cache).
-    ///
-    /// **Important**: cache files are keyed only by `cache_path`. If you
-    /// reuse a path with a different filter you'll load the previously
-    /// filtered network and the new predicate will be silently ignored.
-    /// Encode the filter into the path (e.g. `sydney_tertiary+_d10.rt`)
-    /// when you mix multiple filters in the same workspace.
-    ///
-    /// Filesystem-bound; not available on WASM.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn from_source_or_cache_filtered<Src, St>(
-        source: &Src,
-        strategy: &St,
-        selection: &crate::selection::Selection<S>,
-        filter: &IngestFilter<M>,
-        cache_path: &Path,
-    ) -> Result<Self, String>
-    where
-        Src: ShardSource<Entry = E, Metadata = M>,
-        St: ShardingStrategy<Id = S>,
-        E: serde::de::DeserializeOwned,
-        M: serde::de::DeserializeOwned + 'static,
-        S: serde::de::DeserializeOwned,
-    {
-        // Self-heal on a stale cache: if the format hash baked into the
-        // file doesn't match the one this binary was built with, the
-        // layout on disk is no longer compatible — silently rebuild.
-        if cache_path.exists() {
-            match Self::from_cached(cache_path) {
-                Ok(net) => return Ok(net),
-                Err(e) => {
-                    log::warn!(
-                        "shard cache `{}` unusable ({e}); rebuilding",
-                        cache_path.display()
-                    );
-                }
-            }
-        }
-        let net = Self::from_source_filtered(source, strategy, selection, filter)
-            .map_err(|e| format!("ingest failed: {e:?}"))?;
-        if let Some(parent) = cache_path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-        }
-        net.save_to_file(cache_path)?;
-        Ok(net)
     }
 }
 

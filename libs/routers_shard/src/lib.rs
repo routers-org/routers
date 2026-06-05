@@ -11,19 +11,15 @@
 //! adapter is provided behind the `osm` feature for convenience.
 
 pub mod composite;
-pub mod filter;
 pub mod loader;
 pub mod network;
 pub mod selection;
-pub mod source;
 pub mod strategy;
 
 pub use composite::MultiShardNetwork;
-pub use filter::IngestFilter;
 pub use loader::{Fetcher, LoadError, ShardCache, ShardLoader, ShardMoveDelta, ShardWindow};
 pub use network::ShardedNetwork;
 pub use selection::{Selection, SelectionMode};
-pub use source::{NodeRecord, ShardSource, WayRecord};
 pub use strategy::{
     ShardId, ShardingStrategy,
     geohash::{Geohash, GeohashStrategy},
@@ -35,6 +31,3 @@ pub use loader::FileFetcher;
 
 #[cfg(target_arch = "wasm32")]
 pub use loader::WebFetcher;
-
-#[cfg(feature = "osm")]
-pub mod osm;
