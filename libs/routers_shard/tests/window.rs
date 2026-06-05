@@ -79,7 +79,7 @@ async fn fetch_one_populates_cache_and_owned_resolves() {
     let _ = window.recenter(center_point);
 
     assert!(window.owned().is_none(), "no shards loaded yet");
-    window.fetch_one(&owned).await.expect("fetch");
+    window.fetch(&owned).await.expect("fetch");
     let net = window.owned().expect("centre now loaded");
     assert!(net.num_nodes() > 0);
     let _ = std::fs::remove_dir_all(&dir);
@@ -99,7 +99,7 @@ async fn pan_to_neighbour_promotes_without_refetch() {
     };
     let delta = window.recenter(center_point);
     for key in &delta.to_fetch {
-        window.fetch_one(key).await.expect("fetch");
+        window.fetch(key).await.expect("fetch");
     }
     assert_eq!(window.loaded_ids().len(), 9);
 
@@ -151,7 +151,7 @@ async fn far_pan_evicts_old_cells() {
     };
     let delta = window.recenter(center_point);
     for key in &delta.to_fetch {
-        window.fetch_one(key).await.expect("fetch");
+        window.fetch(key).await.expect("fetch");
     }
     assert_eq!(window.loaded_ids().len(), 9);
 

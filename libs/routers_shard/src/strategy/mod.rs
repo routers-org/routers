@@ -11,35 +11,32 @@ use core::fmt::Debug;
 use core::hash::Hash;
 use geo::{Point, Rect};
 use serde::{Serialize, de::DeserializeOwned};
+use std::fmt::Display;
 
 /// Identifier for a single shard.
-///
-/// IDs must be cheap to compare and hash so that selections can be assembled
-/// into the standard hashed containers. They must also serialise so that an
-/// upstream orchestrator can hand them to a worker process.
 pub trait ShardId:
-    Clone + Eq + Hash + Ord + Debug + Send + Sync + Serialize + DeserializeOwned + 'static
+    Copy + Clone + Eq + Hash + Ord + Debug + Send + Sync + Serialize + DeserializeOwned + 'static
 {
 }
 
 impl<T> ShardId for T where
-    T: Clone + Eq + Hash + Ord + Debug + Send + Sync + Serialize + DeserializeOwned + 'static
+    T: Clone
+        + Copy
+        + Eq
+        + Hash
+        + Ord
+        + Debug
+        + Send
+        + Sync
+        + Serialize
+        + DeserializeOwned
+        + 'static
 {
 }
 
 /// A spatial partitioning scheme.
-///
-/// Strategies are stateless configuration objects (e.g. "quad-tree of depth
-/// 12"). They expose:
-///
-/// 1. [`locate`](Self::locate): point → shard
-/// 2. [`bounds`](Self::bounds): shard → bounding box (used during ingestion)
-/// 3. [`neighbours`](Self::neighbours): shard → adjacent shards (used to
-///    build padded selections)
-/// 4. [`contains`](Self::contains): a convenience predicate for a point being
-///    inside a shard, implemented in terms of `bounds` by default.
 pub trait ShardingStrategy: Debug + Send + Sync {
-    type Id: ShardId;
+    type Id: ShardId + Display;
 
     fn locate(&self, point: Point) -> Self::Id;
 

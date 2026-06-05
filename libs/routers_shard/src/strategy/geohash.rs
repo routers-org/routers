@@ -8,16 +8,26 @@
 use core::fmt;
 use geo::{Point, Rect, coord};
 use serde::{Deserialize, Serialize};
+use std::fmt::Display;
 
 const BASE32: &[u8; 32] = b"0123456789bcdefghjkmnpqrstuvwxyz";
+const MAX_PRECISION: usize = 12;
 
 /// A geohash, stored as its canonical base-32 string representation.
-#[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
-pub struct Geohash(pub String);
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct Geohash([u8; MAX_PRECISION]);
 
-impl fmt::Debug for Geohash {
+impl Display for Geohash {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Geohash({})", self.0)
+        for &c in &self.0 {
+            if c == 0 {
+                break;
+            }
+
+            write!(f, "{}", BASE32[c as usize] as char)?;
+        }
+
+        Ok(())
     }
 }
 
@@ -55,12 +65,14 @@ impl super::ShardingStrategy for GeohashStrategy {
         let px = px.clamp(min_x, max_x);
         let py = py.clamp(min_y, max_y);
 
-        let mut out = String::with_capacity(self.precision as usize);
+        let mut out = [0u8; MAX_PRECISION];
+        let mut cursor = 0;
+
         let mut bit = 0u8;
         let mut ch: u8 = 0;
         let mut even = true;
 
-        while out.len() < self.precision as usize {
+        while cursor < self.precision as usize {
             if even {
                 let mid = 0.5 * (min_x + max_x);
                 if px >= mid {
@@ -82,11 +94,14 @@ impl super::ShardingStrategy for GeohashStrategy {
             if bit < 4 {
                 bit += 1;
             } else {
-                out.push(BASE32[ch as usize] as char);
+                out[cursor] = ch;
+                cursor += 1;
+
                 bit = 0;
                 ch = 0;
             }
         }
+
         Geohash(out)
     }
 
@@ -94,7 +109,8 @@ impl super::ShardingStrategy for GeohashStrategy {
         let (mut min_x, mut max_x) = (-180.0f64, 180.0f64);
         let (mut min_y, mut max_y) = (-90.0f64, 90.0f64);
         let mut even = true;
-        for c in id.0.bytes() {
+
+        for c in id.0 {
             let Some(idx) = decode_to_index(c) else {
                 continue;
             };

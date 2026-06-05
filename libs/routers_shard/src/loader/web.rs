@@ -1,9 +1,7 @@
 //! Browser-side [`Fetcher`] using `window.fetch`.
-//!
-//! Avoids pulling in `reqwest` (which would balloon the wasm bundle) by
-//! talking directly to `web-sys`. Only built on `wasm32`.
 
 use js_sys::Uint8Array;
+use thiserror::Error;
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
 use web_sys::{Request, RequestInit, Response};
@@ -16,34 +14,27 @@ pub struct WebFetcher {
 }
 
 impl WebFetcher {
-    /// Fetch keys relative to `base_url`. A trailing slash on `base_url`
-    /// is added if missing so callers can pass either form.
+    /// Fetches shards from the given base URL.
     pub fn new(base_url: impl Into<String>) -> Self {
         let mut url = base_url.into();
         if !url.ends_with('/') {
             url.push('/');
         }
+
         Self { base_url: url }
     }
 }
 
-#[derive(Debug)]
+#[derive(Error, Debug)]
 pub enum WebFetchError {
+    #[error("no `window` global variable is available")]
     NoWindow,
+    #[error("request failed: {0}")]
     Request(String),
+    #[error("failed with http code: {0}")]
     Status(u16),
+    #[error("failed to read body: {0}")]
     Body(String),
-}
-
-impl core::fmt::Display for WebFetchError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            WebFetchError::NoWindow => write!(f, "no `window` global available"),
-            WebFetchError::Request(e) => write!(f, "request failed: {e}"),
-            WebFetchError::Status(code) => write!(f, "HTTP {code}"),
-            WebFetchError::Body(e) => write!(f, "failed to read body: {e}"),
-        }
-    }
 }
 
 fn js_value_to_string(v: &JsValue) -> String {

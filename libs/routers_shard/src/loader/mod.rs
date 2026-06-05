@@ -13,7 +13,7 @@ mod fetcher;
 mod window;
 
 pub use fetcher::Fetcher;
-pub use window::{RecenterDelta, ShardWindow};
+pub use window::{ShardMoveDelta, ShardWindow};
 
 #[cfg(not(target_arch = "wasm32"))]
 mod file;

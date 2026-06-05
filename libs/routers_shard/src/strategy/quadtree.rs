@@ -11,6 +11,7 @@
 use core::fmt::{self, Debug};
 use geo::{Point, Rect, coord};
 use serde::{Deserialize, Serialize};
+use std::fmt::Display;
 
 const ROOT_MIN_X: f64 = -180.0;
 const ROOT_MAX_X: f64 = 180.0;
@@ -32,6 +33,16 @@ const MAX_DEPTH: u8 = 31;
 pub struct QuadKey {
     pub depth: u8,
     pub bits: u64,
+}
+
+impl Display for QuadKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "QuadKey(d{}|", self.depth)?;
+        for i in 0..self.depth {
+            write!(f, "{}", self.child_at(i))?;
+        }
+        write!(f, ")")
+    }
 }
 
 impl QuadKey {

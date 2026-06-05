@@ -20,7 +20,7 @@ pub mod strategy;
 
 pub use composite::MultiShardNetwork;
 pub use filter::IngestFilter;
-pub use loader::{Fetcher, LoadError, RecenterDelta, ShardCache, ShardLoader, ShardWindow};
+pub use loader::{Fetcher, LoadError, ShardCache, ShardLoader, ShardMoveDelta, ShardWindow};
 pub use network::ShardedNetwork;
 pub use selection::{Selection, SelectionMode};
 pub use source::{NodeRecord, ShardSource, WayRecord};

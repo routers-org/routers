@@ -1,10 +1,8 @@
 //! Filesystem-backed [`Fetcher`] for native targets.
-//!
-//! Useful for local development and for the build pipeline's
-//! "round-trip" tests. The browser uses [`WebFetcher`](super::WebFetcher)
-//! instead — this file is excluded from the wasm32 build entirely.
 
 use std::path::PathBuf;
+
+use thiserror::Error;
 
 use super::fetcher::Fetcher;
 
@@ -14,9 +12,7 @@ pub struct FileFetcher {
 }
 
 impl FileFetcher {
-    /// Look up keys relative to `base_dir`. Treats the key as a path
-    /// suffix, so a key like `"sydney/cbd.shard.rt"` reads
-    /// `<base_dir>/sydney/cbd.shard.rt`.
+    /// Creates a fetcher with a known base-directory to search from.
     pub fn new(base_dir: impl Into<PathBuf>) -> Self {
         Self {
             base_dir: base_dir.into(),
@@ -24,17 +20,10 @@ impl FileFetcher {
     }
 }
 
-#[derive(Debug)]
+#[derive(Error, Debug)]
 pub enum FileFetchError {
+    #[error("io error: {0}")]
     Io(std::io::Error),
-}
-
-impl core::fmt::Display for FileFetchError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            FileFetchError::Io(e) => write!(f, "I/O error: {e}"),
-        }
-    }
 }
 
 impl Fetcher for FileFetcher {
