@@ -18,6 +18,7 @@ serde = { workspace = true }
 postcard = { workspace = true }
 log = { workspace = true }
 rayon = { workspace = true }
+thiserror = { workspace = true }
 
 # `web_time::Instant` is a drop-in replacement for `std::time::Instant` that
 # works on `wasm32-unknown-unknown` (where `std::time` panics). On native

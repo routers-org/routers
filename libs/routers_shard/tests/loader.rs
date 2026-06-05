@@ -100,18 +100,3 @@ async fn corrupt_blob_surfaces_decode_error() {
     assert!(s.contains("Decode"), "expected Decode variant, got {s}");
     let _ = std::fs::remove_dir_all(&dir);
 }
-
-#[tokio::test]
-async fn load_many_loads_all() {
-    let dir = temp_dir("many");
-    let owned = write_one_shard(&dir);
-    let fetcher = FileFetcher::new(&dir);
-    let mut loader =
-        ShardLoader::<OsmEntryId, OsmEdgeMetadata, QuadKey, _, _>::new(fetcher, naming);
-    loader
-        .load_many(std::iter::once(owned))
-        .await
-        .expect("load many");
-    assert_eq!(loader.cache().len(), 1);
-    let _ = std::fs::remove_dir_all(&dir);
-}

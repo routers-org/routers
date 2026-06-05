@@ -7,11 +7,7 @@
 use core::fmt::Debug;
 use core::future::Future;
 
-/// Async byte-blob lookup keyed by an opaque string.
-///
-/// The trait is intentionally narrow — it knows nothing about shard IDs,
-/// network types, or transport. [`ShardLoader`](super::ShardLoader) layers
-/// the higher-level concerns on top.
+/// Byte-blob fetcher by an opaque key (as a string).
 pub trait Fetcher {
     type Error: Debug;
 

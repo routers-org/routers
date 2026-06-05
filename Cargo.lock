@@ -6131,6 +6131,7 @@ dependencies = [
  "rstar 0.12.2",
  "rustc-hash 2.1.2",
  "serde",
+ "thiserror 2.0.18",
  "tokio",
  "wasm-bindgen",
  "wasm-bindgen-futures",

@@ -1,21 +1,13 @@
-//! Asynchronous shard loading.
-//!
 //! A [`ShardLoader`] is the runtime counterpart to the build-time pipeline:
 //! given a [`ShardId`] it locates the cached blob for that shard, decodes
 //! it into a [`ShardedNetwork`], and keeps the result in a [`ShardCache`]
 //! so subsequent lookups for the same shard are free.
 //!
-//! The trait surface is deliberately generic over the data types
-//! (`<E, M, S>`) and over how blobs are *fetched* (the [`ShardFetcher`]
-//! trait). Concrete fetcher implementations:
+//! - [`FileShardFetcher`] reads a `.shard.rt` from the local filesystem.
+//! - [`WebFetcher`] fetches the shard via `window.fetch` (from the browser).
 //!
-//! - [`FileShardFetcher`] — reads a `.shard.rt` from the local filesystem
-//!   (native-only)
-//! - [`WebFetcher`] — fetches the same blob via `window.fetch` in the
-//!   browser (wasm32-only)
-//!
-//! Implement [`ShardFetcher`] yourself to plug in any other transport
-//! (S3, an in-memory test mock, a CDN with auth headers, …).
+
+use thiserror::Error;
 
 mod fetcher;
 mod window;
@@ -44,10 +36,6 @@ use crate::network::ShardedNetwork;
 use crate::strategy::ShardId;
 
 /// In-memory map of loaded shards.
-///
-/// Networks are stored behind `Arc` so the cache can hand out cheap
-/// references without copying the whole graph. Multiple consumers of the
-/// same shard share a single backing allocation.
 #[derive(Debug)]
 pub struct ShardCache<E, M, S>
 where
@@ -87,7 +75,6 @@ where
         self.map.contains_key(id)
     }
 
-    /// Cloned `Arc` to the loaded shard, if present.
     pub fn get(&self, id: &S) -> Option<Arc<ShardedNetwork<E, M, S>>> {
         self.map.get(id).cloned()
     }
@@ -101,8 +88,7 @@ where
         self.map.insert(id, Arc::new(net))
     }
 
-    /// Drop a shard from the cache. Useful for eviction policies built on
-    /// top — the loader itself doesn't decide when to forget.
+    /// Drop a shard from the cache, by it's [`ShardId`].
     pub fn evict(&mut self, id: &S) -> Option<Arc<ShardedNetwork<E, M, S>>> {
         self.map.remove(id)
     }
@@ -121,31 +107,17 @@ where
 }
 
 /// Errors a [`ShardLoader`] can surface.
-#[derive(Debug)]
+#[derive(Error, Debug)]
 pub enum LoadError<FetchErr> {
+    #[error("fetch failed: {0}")]
     /// The underlying fetcher failed (network error, missing file, etc.).
     Fetch(FetchErr),
+
+    #[error("decode failed: {0}")]
     /// The fetched bytes were not a valid `ShardedNetwork` payload.
     Decode(String),
 }
 
-impl<F: core::fmt::Display> core::fmt::Display for LoadError<F> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            LoadError::Fetch(e) => write!(f, "fetch failed: {e}"),
-            LoadError::Decode(e) => write!(f, "decode failed: {e}"),
-        }
-    }
-}
-
-/// Combines a [`ShardFetcher`] with a [`ShardCache`] and a naming function
-/// that maps a `ShardId` to the key the fetcher expects (e.g. a filename
-/// or URL path segment).
-///
-/// The loader doesn't enforce a particular naming scheme — your build
-/// pipeline picks one and the runtime uses the matching closure. Keeping
-/// this pluggable means you can rotate filenames (versioning, hashing)
-/// without changing the loader code.
 pub struct ShardLoader<E, M, S, F, N>
 where
     E: Entry,
@@ -183,20 +155,17 @@ where
         }
     }
 
-    /// Look up `id` in the cache. Returns `None` if it hasn't been loaded
-    /// yet — call [`load`](Self::load) to fetch it.
+    /// Look up `id` in the cache.
     pub fn get(&self, id: &S) -> Option<Arc<ShardedNetwork<E, M, S>>> {
         self.cache.get(id)
     }
 
-    /// Borrow the cache for read-only iteration (e.g. "what shards do I
-    /// currently have in memory?").
+    /// Borrow the cache for read-only use.
     pub fn cache(&self) -> &ShardCache<E, M, S> {
         &self.cache
     }
 
-    /// Async-load `id` if it isn't already cached, then return a handle
-    /// to the loaded shard.
+    /// Load a shard. If already loaded, will return early.
     pub async fn load(
         &mut self,
         id: &S,
@@ -209,29 +178,17 @@ where
         if let Some(net) = self.cache.get(id) {
             return Ok(net);
         }
+
         let key = (self.naming)(id);
         debug!("ShardLoader fetching {key}");
+
         let bytes = self.fetcher.fetch(&key).await.map_err(LoadError::Fetch)?;
         let net =
             ShardedNetwork::<E, M, S>::from_cached_bytes(&bytes).map_err(LoadError::Decode)?;
-        self.cache.insert(id.clone(), net);
-        Ok(self.cache.get(id).expect("just inserted"))
-    }
 
-    /// Bulk variant: load every id from the iterator concurrently
-    /// (sequentially on wasm — the browser is single-threaded anyway).
-    /// Returns the first error encountered, leaving any already-cached
-    /// shards intact.
-    pub async fn load_many<I>(&mut self, ids: I) -> Result<(), LoadError<F::Error>>
-    where
-        I: IntoIterator<Item = S>,
-        E: serde::de::DeserializeOwned,
-        M: serde::de::DeserializeOwned,
-        S: serde::de::DeserializeOwned,
-    {
-        for id in ids {
-            self.load(&id).await?;
-        }
-        Ok(())
+        self.cache.insert(id.clone(), net);
+        let shard = self.cache.get(id).expect("must have inserted");
+
+        Ok(shard)
     }
 }
