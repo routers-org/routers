@@ -1,12 +1,10 @@
 //! Quad-tree sharding strategy.
 //!
-//! The world is treated as the rectangle `[-180, 180] × [-90, 90]` (the
-//! standard equirectangular extent) and recursively subdivided into four
-//! equal quadrants. A [`QuadKey`] encodes the path from the root to a given
-//! cell as 2 bits per level, packed LSB-first into a `u64`.
+//! The world is treated as the rectangle `[-180, 180] x [-90, 90]`
+//! and recursively subdivided into four equal quadrants.
 //!
-//! At depth 12 this yields 16 777 216 cells of roughly 0.088° × 0.044°,
-//! which is the resolution the orchestrator notes assume.
+//! A [`QuadKey`] encodes the path from the root to a given
+//! cell as 2 bits per level, packed LSB-first into a `u64`.
 
 use core::fmt::{self, Debug};
 use geo::{Point, Rect, coord};
@@ -25,10 +23,10 @@ const MAX_DEPTH: u8 = 31;
 /// Stored as `depth` (number of subdivision steps) plus `bits`, where the
 /// 2 bits at position `2*i` describe which child was taken at level `i`:
 ///
-/// - `0b00` → south-west
-/// - `0b01` → south-east
-/// - `0b10` → north-west
-/// - `0b11` → north-east
+/// - `0b00` -> south-west
+/// - `0b01` -> south-east
+/// - `0b10` -> north-west
+/// - `0b11` -> north-east
 #[derive(Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct QuadKey {
     pub depth: u8,
@@ -91,6 +89,7 @@ impl super::ShardingStrategy for QuadTreeStrategy {
         let (mut min_x, mut max_x) = (ROOT_MIN_X, ROOT_MAX_X);
         let (mut min_y, mut max_y) = (ROOT_MIN_Y, ROOT_MAX_Y);
         let (px, py) = point.x_y();
+
         // Clamp into the root rectangle so that out-of-range points still get
         // a deterministic shard (the edge cells).
         let px = px.clamp(ROOT_MIN_X, ROOT_MAX_X);
@@ -127,6 +126,7 @@ impl super::ShardingStrategy for QuadTreeStrategy {
     fn bounds(&self, id: &QuadKey) -> Rect {
         let (mut min_x, mut max_x) = (ROOT_MIN_X, ROOT_MAX_X);
         let (mut min_y, mut max_y) = (ROOT_MIN_Y, ROOT_MAX_Y);
+
         for level in 0..id.depth {
             let mid_x = 0.5 * (min_x + max_x);
             let mid_y = 0.5 * (min_y + max_y);
@@ -142,6 +142,7 @@ impl super::ShardingStrategy for QuadTreeStrategy {
                 max_y = mid_y;
             }
         }
+
         Rect::new(coord! { x: min_x, y: min_y }, coord! { x: max_x, y: max_y })
     }
 
@@ -150,12 +151,16 @@ impl super::ShardingStrategy for QuadTreeStrategy {
         // each edge of the cell. This works uniformly for any cell of the
         // same depth and avoids hand-rolling the (hairy) Z-order arithmetic.
         let rect = self.bounds(id);
+
         let (min_x, max_x) = (rect.min().x, rect.max().x);
         let (min_y, max_y) = (rect.min().y, rect.max().y);
+
         let w = max_x - min_x;
         let h = max_y - min_y;
+
         let eps_x = w * 0.25;
         let eps_y = h * 0.25;
+
         let cx = 0.5 * (min_x + max_x);
         let cy = 0.5 * (min_y + max_y);
 
@@ -183,6 +188,7 @@ impl super::ShardingStrategy for QuadTreeStrategy {
                 out.push(n);
             }
         }
+
         out
     }
 }
