@@ -116,6 +116,7 @@ postcard = { version = "1.1.3", features = ["alloc"] }
 lazy_static = { version = "1.5.0" }
 ouroboros = { version = "0.18.5" }
 time-tz = { version = "2.0.0" }
+thiserror = { version = "2.0.12" }
 
 # Schema
 bytes = { version = "1.10.1", features = ["default", "serde"] }
@@ -164,6 +165,7 @@ bench = false
 # === Root Dependencies ===
 [dependencies]
 routers_network = { workspace = true }
+routers_shard = { workspace = true, optional = true }
 
 # Algorithm
 rstar = { workspace = true }
@@ -197,7 +199,7 @@ rayon = { workspace = true }
 scc = { workspace = true }
 itertools = { workspace = true }
 indexmap = { workspace = true }
-thiserror = "2.0.12"
+thiserror = { workspace = true }
 
 [dev-dependencies]
 wkt = { workspace = true }
@@ -214,7 +216,12 @@ harness = false
 name = "total_ingestion"
 harness = false
 
+[[example]]
+name = "shard_match"
+required-features = ["shard"]
+
 [features]
+shard = ["dep:routers_shard"]
 tracing = [
     "dep:tracing",
     "tracing-subscriber",

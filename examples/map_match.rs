@@ -1,16 +1,23 @@
+use std::time::Instant;
+
 use geo::{LineString, Point};
 use routers::r#match::MatchSimpleExt;
 use routers_codec::osm::OsmNetwork;
 use wkt::TryFromWkt;
 
-use routers_fixtures::{SYDNEY, SYNDEY_TRIP, fixture};
+use routers_fixtures::{SYDNEY, SYDNEY_SAVED, SYNDEY_TRIP, fixture};
 
 fn main() {
     let coordinates: LineString<f64> =
         LineString::try_from_wkt_str(SYNDEY_TRIP).expect("must parse");
 
+    let now = Instant::now();
+
     let pbf_path = fixture!(SYDNEY);
-    let graph = OsmNetwork::from_pbf(pbf_path).expect("Graph must be created");
+    let save_path = fixture!(SYDNEY_SAVED);
+
+    let graph = OsmNetwork::from_pbf_and_save(pbf_path, save_path).expect("Graph must be created");
+    println!("Starting, ingest took: {:?}", now.elapsed());
 
     let route = graph
         .r#match_simple(coordinates)
@@ -23,4 +30,5 @@ fn main() {
         .collect::<LineString<_>>();
 
     println!("Matched Route: {:?}", linestring);
+    println!("Time taken: {:?}", now.elapsed());
 }
