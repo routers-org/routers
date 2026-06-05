@@ -18,7 +18,7 @@ fn locate_produces_string_of_requested_precision() {
     for precision in 1..=8 {
         let strategy = GeohashStrategy::with_precision(precision);
         let h = strategy.locate(Point::new(13.4, 52.5));
-        assert_eq!(h.0.len(), precision as usize);
+        assert_eq!(usize::from(h.precision), precision as usize);
     }
 }
 
@@ -73,7 +73,7 @@ fn known_geohash_prefix() {
     // floor on encoder correctness.
     let strategy = GeohashStrategy::with_precision(5);
     let h = strategy.locate(Point::new(-5.6, 42.6));
-    assert_eq!(h.0, "ezs42", "expected ezs42, got {}", h.0);
+    assert_eq!(h.to_string(), "ezs42", "expected ezs42, got {}", h.to_string());
 }
 
 #[test]
@@ -85,8 +85,8 @@ fn neighbours_share_precision_and_excludes_self() {
         for n in &neighbours {
             assert_ne!(n, &h, "neighbour set must not contain self ({name})");
             assert_eq!(
-                n.0.len(),
-                h.0.len(),
+                usize::from(n.precision),
+                usize::from(h.precision),
                 "neighbour precision mismatch ({name})"
             );
         }

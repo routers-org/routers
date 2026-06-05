@@ -6,13 +6,9 @@ use common::MemSource;
 use geo::Point;
 use routers_codec::osm::{OsmEdgeMetadata, OsmEntryId};
 use routers_shard::{
-    FileFetcher, QuadKey, QuadTreeStrategy, Selection, SelectionMode, ShardWindow, ShardedNetwork,
-    ShardingStrategy,
+    FileFetcher, QuadKey, QuadTreeStrategy, Selection, SelectionMode, ShardMoveDelta, ShardWindow,
+    ShardedNetwork, ShardingStrategy,
 };
-
-fn naming(key: &QuadKey) -> String {
-    format!("d{}_{}.shard.rt", key.depth, key.bits)
-}
 
 fn temp_dir(tag: &str) -> std::path::PathBuf {
     let mut p = std::env::temp_dir();
@@ -40,7 +36,7 @@ fn write_neighbourhood(
             &source, &strategy, &selection,
         )
         .expect("build");
-        net.save_to_file(&dir.join(naming(&key))).expect("save");
+        net.save_to_file(&dir.join(key.to_string())).expect("save");
     }
     (dir, strategy, owned)
 }
@@ -49,19 +45,23 @@ fn write_neighbourhood(
 async fn first_recenter_yields_full_to_fetch_list() {
     let (dir, strategy, owned) = write_neighbourhood(Point::new(0.0, 0.0), 4, "first_recenter");
     let fetcher = FileFetcher::new(&dir);
-    let window =
-        ShardWindow::<OsmEntryId, OsmEdgeMetadata, _, _>::new(strategy.clone(), fetcher, naming);
+    let mut window =
+        ShardWindow::<OsmEntryId, OsmEdgeMetadata, _, _>::new(strategy.clone(), fetcher);
 
     let center_point = {
         let r = strategy.bounds(&owned);
         Point::new(0.5 * (r.min().x + r.max().x), 0.5 * (r.min().y + r.max().y))
     };
-    let delta = window.recenter(center_point);
-    assert!(!delta.unchanged);
-    assert_eq!(delta.center, owned);
-    assert_eq!(delta.evicted.len(), 0);
+    let ShardMoveDelta::Recentered {
+        scoped: to_fetch,
+        unscoped: evicted,
+    } = window.recenter(center_point)
+    else {
+        panic!("expected Recentered delta on first recenter");
+    };
+    assert_eq!(evicted.len(), 0);
     // owned + 8 neighbours = 9, all not yet loaded.
-    assert_eq!(delta.to_fetch.len(), 9);
+    assert_eq!(to_fetch.len(), 9);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -69,8 +69,8 @@ async fn first_recenter_yields_full_to_fetch_list() {
 async fn fetch_one_populates_cache_and_owned_resolves() {
     let (dir, strategy, owned) = write_neighbourhood(Point::new(0.0, 0.0), 4, "fetch_one");
     let fetcher = FileFetcher::new(&dir);
-    let window =
-        ShardWindow::<OsmEntryId, OsmEdgeMetadata, _, _>::new(strategy.clone(), fetcher, naming);
+    let mut window =
+        ShardWindow::<OsmEntryId, OsmEdgeMetadata, _, _>::new(strategy.clone(), fetcher);
 
     let center_point = {
         let r = strategy.bounds(&owned);
@@ -78,9 +78,10 @@ async fn fetch_one_populates_cache_and_owned_resolves() {
     };
     let _ = window.recenter(center_point);
 
-    assert!(window.owned().is_none(), "no shards loaded yet");
+    assert!(window.get(&owned).is_none(), "no shards loaded yet");
     window.fetch(&owned).await.expect("fetch");
-    let net = window.owned().expect("centre now loaded");
+
+    let net = window.get(&owned).expect("centre now loaded");
     assert!(net.num_nodes() > 0);
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -89,16 +90,18 @@ async fn fetch_one_populates_cache_and_owned_resolves() {
 async fn pan_to_neighbour_promotes_without_refetch() {
     let (dir, strategy, owned) = write_neighbourhood(Point::new(0.0, 0.0), 4, "pan_to_neighbour");
     let fetcher = FileFetcher::new(&dir);
-    let window =
-        ShardWindow::<OsmEntryId, OsmEdgeMetadata, _, _>::new(strategy.clone(), fetcher, naming);
+    let mut window =
+        ShardWindow::<OsmEntryId, OsmEdgeMetadata, _, _>::new(strategy.clone(), fetcher);
 
     // Step 1: recenter on owned, fetch every cell.
     let center_point = {
         let r = strategy.bounds(&owned);
         Point::new(0.5 * (r.min().x + r.max().x), 0.5 * (r.min().y + r.max().y))
     };
-    let delta = window.recenter(center_point);
-    for key in &delta.to_fetch {
+    let ShardMoveDelta::Recentered { scoped, .. } = window.recenter(center_point) else {
+        panic!("expected recentered");
+    };
+    for key in &scoped {
         window.fetch(key).await.expect("fetch");
     }
     assert_eq!(window.loaded_ids().len(), 9);
@@ -109,12 +112,19 @@ async fn pan_to_neighbour_promotes_without_refetch() {
         let r = strategy.bounds(&neighbour);
         Point::new(0.5 * (r.min().x + r.max().x), 0.5 * (r.min().y + r.max().y))
     };
-    let delta = window.recenter(neighbour_point);
-    assert_eq!(delta.center, neighbour);
-    // The previously-loaded neighbour is now the centre — already cached.
-    assert!(!delta.to_fetch.contains(&neighbour));
-    // Some old cells (far side of original centre) should have been
-    // evicted; the new centre is still cached.
+    let ShardMoveDelta::Recentered { unscoped, .. } = window.recenter(neighbour_point) else {
+        panic!("expected recentered");
+    };
+
+    // The previously-loaded neighbour is now the centre — already cached, not in scoped.
+    assert!(
+        !unscoped.contains(&neighbour),
+        "expected {:?} to not be in the unscoped set: {:?}",
+        neighbour,
+        unscoped
+    );
+
+    // The new centre is still cached.
     assert!(window.get(&neighbour).is_some());
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -123,8 +133,8 @@ async fn pan_to_neighbour_promotes_without_refetch() {
 async fn recenter_to_same_cell_is_a_noop() {
     let (dir, strategy, owned) = write_neighbourhood(Point::new(0.0, 0.0), 4, "recenter_noop");
     let fetcher = FileFetcher::new(&dir);
-    let window =
-        ShardWindow::<OsmEntryId, OsmEdgeMetadata, _, _>::new(strategy.clone(), fetcher, naming);
+    let mut window =
+        ShardWindow::<OsmEntryId, OsmEdgeMetadata, _, _>::new(strategy.clone(), fetcher);
 
     let center_point = {
         let r = strategy.bounds(&owned);
@@ -132,9 +142,12 @@ async fn recenter_to_same_cell_is_a_noop() {
     };
     let _ = window.recenter(center_point);
     let delta = window.recenter(center_point);
-    assert!(delta.unchanged);
-    assert!(delta.to_fetch.is_empty());
-    assert!(delta.evicted.is_empty());
+
+    assert!(
+        matches!(delta, ShardMoveDelta::Unchanged),
+        "got {:?}, expected Unchanged",
+        delta,
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -142,23 +155,36 @@ async fn recenter_to_same_cell_is_a_noop() {
 async fn far_pan_evicts_old_cells() {
     let (dir, strategy, owned) = write_neighbourhood(Point::new(0.0, 0.0), 4, "far_pan");
     let fetcher = FileFetcher::new(&dir);
-    let window =
-        ShardWindow::<OsmEntryId, OsmEdgeMetadata, _, _>::new(strategy.clone(), fetcher, naming);
+    let mut window =
+        ShardWindow::<OsmEntryId, OsmEdgeMetadata, _, _>::new(strategy.clone(), fetcher);
 
     let center_point = {
         let r = strategy.bounds(&owned);
         Point::new(0.5 * (r.min().x + r.max().x), 0.5 * (r.min().y + r.max().y))
     };
-    let delta = window.recenter(center_point);
-    for key in &delta.to_fetch {
+    let ShardMoveDelta::Recentered { scoped, .. } = window.recenter(center_point) else {
+        panic!("expected recentered delta");
+    };
+    assert!(!scoped.is_empty(), "expected new elements to fetch");
+
+    for key in &scoped {
         window.fetch(key).await.expect("fetch");
     }
+
     assert_eq!(window.loaded_ids().len(), 9);
 
     // Pan a long way — far outside the original window. Every old cell
     // should be evicted.
-    let delta = window.recenter(Point::new(170.0, 70.0));
-    assert!(!delta.evicted.is_empty(), "expected evictions");
+    let ShardMoveDelta::Recentered { unscoped, .. } = window.recenter(Point::new(170.0, 70.0))
+    else {
+        panic!("expected recentered delta");
+    };
+    assert!(!unscoped.is_empty(), "expected evictions after far pan");
+
+    for key in &unscoped {
+        window.evict(key);
+    }
+
     assert_eq!(
         window.loaded_ids().len(),
         0,

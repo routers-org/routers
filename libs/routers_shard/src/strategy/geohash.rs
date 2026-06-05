@@ -15,15 +15,14 @@ const MAX_PRECISION: usize = 12;
 
 /// A geohash, stored as its canonical base-32 string representation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
-pub struct Geohash([u8; MAX_PRECISION]);
+pub struct Geohash {
+    data: [u8; MAX_PRECISION],
+    pub precision: u8,
+}
 
 impl Display for Geohash {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for &c in &self.0 {
-            if c == 0 {
-                break;
-            }
-
+        for &c in &self.data[..self.precision as usize] {
             write!(f, "{}", BASE32[c as usize] as char)?;
         }
 
@@ -50,9 +49,6 @@ impl GeohashStrategy {
     }
 }
 
-fn decode_to_index(c: u8) -> Option<u8> {
-    BASE32.iter().position(|&b| b == c).map(|p| p as u8)
-}
 
 impl super::ShardingStrategy for GeohashStrategy {
     type Id = Geohash;
@@ -102,7 +98,10 @@ impl super::ShardingStrategy for GeohashStrategy {
             }
         }
 
-        Geohash(out)
+        Geohash {
+            data: out,
+            precision: cursor as u8,
+        }
     }
 
     fn bounds(&self, id: &Geohash) -> Rect {
@@ -110,10 +109,7 @@ impl super::ShardingStrategy for GeohashStrategy {
         let (mut min_y, mut max_y) = (-90.0f64, 90.0f64);
         let mut even = true;
 
-        for c in id.0 {
-            let Some(idx) = decode_to_index(c) else {
-                continue;
-            };
+        for &idx in &id.data[..id.precision as usize] {
             for i in (0..5).rev() {
                 let bit = (idx >> i) & 1;
                 if even {

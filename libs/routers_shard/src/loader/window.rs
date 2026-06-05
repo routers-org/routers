@@ -18,6 +18,7 @@ use super::fetcher::Fetcher;
 use crate::network::ShardedNetwork;
 use crate::strategy::{ShardId, ShardingStrategy};
 
+#[derive(Debug, Clone)]
 pub enum ShardMoveDelta<S: ShardId> {
     Recentered {
         /// Shards now in scope, but not yet in the cache.
@@ -72,11 +73,8 @@ where
 {
     /// Construct an empty window. No cells loaded yet — call
     /// [`recenter`](Self::recenter) followed by
-    /// [`fetch_one`](Self::fetch_one) for each `to_fetch` key.
-    pub fn new<N>(strategy: St, fetcher: F) -> Self
-    where
-        N: Fn(&St::Id) -> String + Send + Sync + 'static,
-    {
+    /// [`fetch`](Self::fetch) for each key in the returned `scoped` list.
+    pub fn new(strategy: St, fetcher: F) -> Self {
         Self {
             strategy,
             fetcher,
@@ -89,19 +87,21 @@ where
     /// in scope and can be evicted.
     ///
     /// This function does not modify the cache.
-    pub fn recenter(&self, point: Point) -> ShardMoveDelta<St::Id> {
+    pub fn recenter(&mut self, point: Point) -> ShardMoveDelta<St::Id> {
         let candidate_center = self.strategy.locate(point);
 
         match self.state.center {
-            Some(center) if center == candidate_center => ShardMoveDelta::Unchanged,
+            Some(center) if center.eq(&candidate_center) => ShardMoveDelta::Unchanged,
             _ => {
                 let neighbours = self.strategy.neighbours(&candidate_center);
                 let existing = self.loaded_ids();
 
-                let all_ids = [&neighbours[..], &existing[..]].concat();
-                let (scoped, unscoped): (Vec<St::Id>, Vec<St::Id>) =
-                    all_ids.into_iter().partition(|k| !neighbours.contains(k));
+                let all_ids = [&neighbours[..], &existing[..], &[candidate_center]].concat();
+                let (unscoped, scoped): (Vec<St::Id>, Vec<St::Id>) = all_ids
+                    .into_iter()
+                    .partition(|k| !neighbours.contains(k) && *k != candidate_center);
 
+                self.state.center = Some(candidate_center);
                 ShardMoveDelta::Recentered { scoped, unscoped }
             }
         }

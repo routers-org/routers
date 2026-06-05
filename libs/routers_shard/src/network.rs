@@ -25,10 +25,22 @@ use routers_network::{
     network::GraphEdge,
 };
 
-use crate::strategy::ShardId;
+use crate::selection::Selection;
+use crate::strategy::{ShardId, ShardingStrategy};
 
 pub type GraphStructure<E> =
     DiGraphMap<E, (Weight, DirectionAwareEdgeId<E>), BuildHasherDefault<FxHasher>>;
+
+/// A data source from which a [`ShardedNetwork`] can be built.
+///
+/// Implement this trait on any type that provides an iterable collection of
+/// nodes (id + position) and directed edges (from, to, weight, metadata).
+/// [`ShardedNetwork::from_source`] then filters and assembles these into the
+/// sharded graph structure.
+pub trait ShardSource<E: Entry, M: Metadata> {
+    fn nodes<'a>(&'a self) -> Box<dyn Iterator<Item = (E, Point)> + 'a>;
+    fn edges<'a>(&'a self) -> Box<dyn Iterator<Item = (E, E, Weight, M)> + 'a>;
+}
 
 /// Magic header + format fingerprint prepended to every shard cache file.
 ///
@@ -82,6 +94,57 @@ where
 {
     pub fn num_nodes(&self) -> usize {
         self.graph.node_count()
+    }
+
+    pub fn num_edges(&self) -> usize {
+        self.graph.edge_count()
+    }
+
+    /// Build a [`ShardedNetwork`] from a generic [`ShardSource`].
+    ///
+    /// Only nodes whose shard (as determined by `strategy.locate`) appears in
+    /// `selection.loaded` are included. Edges are included if both endpoints
+    /// are present in the filtered node set.
+    pub fn from_source<Src, St>(
+        source: &Src,
+        strategy: &St,
+        selection: &Selection<S>,
+    ) -> Result<Self, String>
+    where
+        Src: ShardSource<E, M>,
+        St: ShardingStrategy<Id = S>,
+    {
+        let mut graph: GraphStructure<E> = GraphStructure::new();
+        let mut hash: FxHashMap<E, Node<E>> = FxHashMap::default();
+        let mut meta: FxHashMap<E, M> = FxHashMap::default();
+
+        for (id, pos) in source.nodes() {
+            let shard = strategy.locate(pos);
+            if selection.contains(&shard) {
+                hash.insert(id, Node::new(pos, id));
+                graph.add_node(id);
+            }
+        }
+
+        for (from, to, weight, m) in source.edges() {
+            if hash.contains_key(&from) && hash.contains_key(&to) {
+                let edge_id = DirectionAwareEdgeId::new(from);
+                graph.add_edge(from, to, (weight, edge_id));
+                meta.entry(from).or_insert(m);
+            }
+        }
+
+        let mut net = Self {
+            graph,
+            hash,
+            meta,
+            index: RTree::new(),
+            index_edge: RTree::new(),
+            owned: selection.owned,
+            loaded: selection.loaded.clone(),
+        };
+        net.rebuild_indices();
+        Ok(net)
     }
 
     /// Rebuild the spatial indices (`index` and `index_edge`) from the
