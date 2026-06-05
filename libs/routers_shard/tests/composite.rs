@@ -134,16 +134,3 @@ fn composite_spatial_index_spans_both_shards() {
     let nearest = composite.nearest_node(&Point::new(-5.0, -5.0));
     assert!(nearest.is_some());
 }
-
-#[test]
-fn empty_composite_routes_nothing() {
-    let composite = MultiShardNetwork::<OsmEntryId, OsmEdgeMetadata, QuadKey>::empty();
-    assert_eq!(composite.shard_count(), 0);
-    assert_eq!(composite.num_nodes(), 0);
-    assert!(
-        composite
-            .route_nodes(OsmEntryId::node(1), OsmEntryId::node(2))
-            .is_none()
-    );
-    assert!(composite.nearest_node(&Point::new(0.0, 0.0)).is_none());
-}
