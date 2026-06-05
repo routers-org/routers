@@ -73,7 +73,12 @@ fn known_geohash_prefix() {
     // floor on encoder correctness.
     let strategy = GeohashStrategy::with_precision(5);
     let h = strategy.locate(Point::new(-5.6, 42.6));
-    assert_eq!(h.to_string(), "ezs42", "expected ezs42, got {}", h.to_string());
+    assert_eq!(
+        h.to_string(),
+        "ezs42",
+        "expected ezs42, got {}",
+        h.to_string()
+    );
 }
 
 #[test]

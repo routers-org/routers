@@ -49,7 +49,6 @@ impl GeohashStrategy {
     }
 }
 
-
 impl super::ShardingStrategy for GeohashStrategy {
     type Id = Geohash;
 

@@ -23,8 +23,10 @@ impl MemSource {
         for row in 0..rows {
             for col in 0..cols {
                 let id = OsmEntryId::node((row * cols + col + 1) as i64);
-                let pos =
-                    Point::new(origin.x() + col as f64 * step, origin.y() + row as f64 * step);
+                let pos = Point::new(
+                    origin.x() + col as f64 * step,
+                    origin.y() + row as f64 * step,
+                );
                 nodes.push((id, pos));
             }
         }
