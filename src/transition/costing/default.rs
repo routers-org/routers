@@ -60,10 +60,6 @@ pub mod emission {
 
         #[inline(always)]
         fn calculate(&self, context: EmissionContext<'a>) -> Option<Self::Cost> {
-            // Pure distance: v = exp(−√d), always in (0, 1]; perfect (d=0) → 1.
-            // Road-class preference is handled by the transition cost (where it
-            // belongs — emission is the spatial fit between a GPS point and a
-            // candidate, not a routing preference).
             Some(context.distance.div(self.emission_error).sqrt().neg().exp())
         }
     }
@@ -71,7 +67,7 @@ pub mod emission {
 
 pub mod transition {
     use crate::transition::*;
-    use routers_network::{Entry, Metadata, Network};
+    use routers_network::{Edge, Entry, Metadata, Network};
 
     /// Calculates the transition cost between two candidates.
     ///
@@ -149,7 +145,30 @@ pub mod transition {
             // Value in range [0, 1] (1=Low Cost, 0=High Cost)
             let turn_cost = context.angular_complexity().clamp(EPSILON, 1.0);
 
-            Some((deviance * turn_cost).sqrt())
+            // Value in range [0, 1] (1=Low Cost, 0=High Cost)
+            let class_continuity = {
+                let (
+                    Candidate {
+                        edge:
+                            Edge {
+                                weight: src_weight, ..
+                            },
+                        ..
+                    },
+                    Candidate {
+                        edge:
+                            Edge {
+                                weight: tgt_weight, ..
+                            },
+                        ..
+                    },
+                ) = context.candidates();
+
+                src_weight as f64 / tgt_weight as f64
+            }
+            .clamp(EPSILON, 1.0);
+
+            Some((deviance * turn_cost * class_continuity).sqrt())
         }
     }
 }
