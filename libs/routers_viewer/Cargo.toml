@@ -4,15 +4,15 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 
-[lib]
-name = "routers_viewer"
-path = "src/lib.rs"
-bench = false
-
 [dependencies]
 routers = { workspace = true }
 routers_network = { workspace = true }
 routers_codec = { workspace = true }
+routers_fixtures = { workspace = true }
+
+log = { workspace = true }
+anyhow = { workspace = true }
+quick-error = { workspace = true }
 
 geo = { workspace = true }
 wkt = { workspace = true }
@@ -22,7 +22,7 @@ env_logger = "0.11"
 # UI Dependencies
 eframe = "0.33.0"
 egui = "0.33.0"
-walkers = "0.47" # Version compatible with egui 0.33
+walkers = { version = "0.47", features = ["serde"] } # Version compatible with egui 0.33
 
 # Async runtime for any background tile fetching
 tokio = { workspace = true }
@@ -33,12 +33,16 @@ rstar = { workspace = true }
 rustc-hash = { workspace = true }
 pathfinding = "4.14.0"
 
+serde = { workspace = true }
+serde_json = { workspace = true }
+
 [dev-dependencies]
 routers_fixtures = { workspace = true }
 
 [lints]
 workspace = true
 
-[[example]]
-name = "viewer"
-path = "examples/viewer.rs"
+[features]
+persistence = ["eframe/persistence"]
+
+default = ["persistence"]
