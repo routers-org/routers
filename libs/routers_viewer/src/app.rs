@@ -1,4 +1,4 @@
-use std::{cell::RefCell, path::PathBuf};
+use std::path::PathBuf;
 
 use anyhow::Context as _;
 use eframe::CreationContext;
@@ -10,11 +10,10 @@ use walkers::{
     HttpTiles, MapMemory, Plugin, lon_lat,
     sources::{Mapbox, MapboxStyle, OpenStreetMap},
 };
-use wkt::ToWkt as _;
 
 use crate::{
-    ColourFactory, Component, Context, Input, Map, MatchCache, MatchData, Matcher, Regular,
-    Results, Stack,
+    ColourFactory, Component, Context, Input, Map, MatchCache, Matcher, Regular, Results, Stack,
+    State,
     plugins::{CandidatesPlugin, ChosenPathPlugin, DrawPlugin, LineStringPlugin},
 };
 
@@ -25,15 +24,7 @@ pub struct Application {
     network: OsmNetwork,
     map: Map,
     solver_cache: MatchCache,
-    input_string: RefCell<String>,
-    match_cache: RefCell<Option<MatchData>>,
-    error_msg: RefCell<Option<String>>,
-    selected_layer: RefCell<Option<usize>>,
-    selected_candidate: RefCell<Option<usize>>,
-    draw_mode: RefCell<bool>,
-    drawn_points: RefCell<Vec<Coord>>,
-    cursor_pos: RefCell<Option<Coord>>,
-    cursor_preview: RefCell<Option<MatchData>>,
+    state: State,
 }
 
 impl Application {
@@ -73,38 +64,26 @@ impl Application {
             None => HttpTiles::new(OpenStreetMap, egui_ctx),
         };
 
-        let map = Map::new(tiles, MapMemory::default(), lon_lat(151.12, -33.52));
-
         Ok(Self {
-            map,
+            map: Map::new(tiles, MapMemory::default(), lon_lat(151.12, -33.52)),
             network,
             solver_cache: std::sync::Arc::new(Default::default()),
-            input_string: RefCell::new(String::new()),
-            match_cache: RefCell::new(None),
-            error_msg: RefCell::new(None),
-            selected_layer: RefCell::new(None),
-            selected_candidate: RefCell::new(None),
-            draw_mode: RefCell::new(false),
-            drawn_points: RefCell::new(Vec::new()),
-            cursor_pos: RefCell::new(None),
-            cursor_preview: RefCell::new(None),
+            state: State::default(),
         })
     }
 
     fn build_map_plugins(&self) -> Vec<Box<dyn Plugin + 'static>> {
         let mut plugins: Vec<Box<dyn Plugin + 'static>> = vec![];
 
-        let draw_mode = *self.draw_mode.borrow();
-
-        if draw_mode {
+        if self.state.draw.is_active() {
             plugins.push(Box::new(DrawPlugin {
-                points: self.drawn_points.borrow().clone(),
-                cursor: *self.cursor_pos.borrow(),
+                points: self.state.draw.points.borrow().clone(),
+                cursor: self.state.cursor.pos(),
             }));
         }
 
-        let preview = self.cursor_preview.borrow();
-        let confirmed = self.match_cache.borrow();
+        let preview = self.state.cursor.preview.borrow();
+        let confirmed = self.state.result.data.borrow();
         let Some(data) = preview.as_ref().or(confirmed.as_ref()) else {
             return plugins;
         };
@@ -131,32 +110,16 @@ impl Application {
             layers: data.layers.clone(),
         }));
 
-        if let Some(layer_idx) = *self.selected_layer.borrow() {
+        if let Some(layer_idx) = *self.state.selection.layer.borrow() {
             if let Some(layer) = data.layers.get(layer_idx) {
                 plugins.push(Box::new(CandidatesPlugin {
                     layer: layer.clone(),
-                    selected_idx: *self.selected_candidate.borrow(),
+                    selected_idx: *self.state.selection.candidate.borrow(),
                 }));
             }
         }
 
         plugins
-    }
-
-    fn exit_draw_mode(&self) {
-        if let Some(preview) = self.cursor_preview.borrow_mut().take() {
-            *self.match_cache.borrow_mut() = Some(preview);
-        }
-        *self.draw_mode.borrow_mut() = false;
-        *self.cursor_pos.borrow_mut() = None;
-    }
-
-    fn commit_drawn_point(&self, coord: Coord) {
-        self.drawn_points.borrow_mut().push(coord);
-        let pts = self.drawn_points.borrow();
-        if pts.len() >= 2 {
-            *self.input_string.borrow_mut() = geo::LineString::new(pts.clone()).wkt_string();
-        }
     }
 }
 
@@ -172,36 +135,27 @@ impl eframe::App for Application {
             ui.heading("Routers Map Matcher");
             ui.separator();
 
-            let input = Input::new(&self.input_string);
+            let input = Input::new(&self.state.input);
             let (_, linestring) = input.draw(&context, ui);
 
             ui.horizontal(|ui| {
-                let drawing = *self.draw_mode.borrow();
+                let drawing = self.state.draw.is_active();
 
                 if ui.selectable_label(drawing, "✏  Draw").clicked() {
                     if drawing {
-                        self.exit_draw_mode();
+                        self.state.exit_draw_mode();
                     } else {
-                        *self.draw_mode.borrow_mut() = true;
-                        self.drawn_points.borrow_mut().clear();
+                        self.state.draw.enter();
                     }
                 }
 
                 if ui.button("✕  Clear").clicked() {
-                    *self.input_string.borrow_mut() = String::new();
-                    *self.drawn_points.borrow_mut() = Vec::new();
-                    *self.draw_mode.borrow_mut() = false;
-                    *self.match_cache.borrow_mut() = None;
-                    *self.cursor_pos.borrow_mut() = None;
-                    *self.cursor_preview.borrow_mut() = None;
-                    *self.selected_layer.borrow_mut() = None;
-                    *self.selected_candidate.borrow_mut() = None;
-                    *self.error_msg.borrow_mut() = None;
+                    self.state = State::default();
                 }
             });
 
-            if *self.draw_mode.borrow() {
-                let n = self.drawn_points.borrow().len();
+            if self.state.draw.is_active() {
+                let n = self.state.draw.points.borrow().len();
                 let hint = if n == 0 {
                     "Click the map to add points".to_owned()
                 } else {
@@ -215,11 +169,13 @@ impl eframe::App for Application {
 
             ui.separator();
 
-            let matcher = Matcher::new(&self.network, linestring, self.solver_cache.clone())
-                .drawn(self.drawn_points.borrow().clone(), *self.cursor_pos.borrow());
+            let matcher = Matcher::new(&self.network, linestring, self.solver_cache.clone()).drawn(
+                self.state.draw.points.borrow().clone(),
+                self.state.cursor.pos(),
+            );
             let (_, output) = Stack::new(&matcher).draw(&context, ui);
 
-            *self.cursor_preview.borrow_mut() = output.preview;
+            self.state.cursor.set_preview(output.preview);
 
             match output.confirmed {
                 None => {}
@@ -228,26 +184,26 @@ impl eframe::App for Application {
                         self.map
                             .center_at(lon_lat(first.original.x, first.original.y));
                     }
-                    *self.match_cache.borrow_mut() = Some(data);
-                    *self.error_msg.borrow_mut() = None;
-                    *self.selected_layer.borrow_mut() = None;
-                    *self.selected_candidate.borrow_mut() = None;
+                    self.state.result.set(data);
+                    self.state.selection.clear();
                 }
-                Some(Err(msg)) => {
-                    *self.error_msg.borrow_mut() = Some(msg);
-                }
+                Some(Err(msg)) => self.state.result.set_error(msg),
             }
 
-            if let Some(msg) = self.error_msg.borrow().as_deref() {
+            if let Some(msg) = self.state.result.error.borrow().as_deref() {
                 ui.colored_label(Color32::RED, msg);
             }
 
-            let preview = self.cursor_preview.borrow();
-            let confirmed = self.match_cache.borrow();
+            let preview = self.state.cursor.preview.borrow();
+            let confirmed = self.state.result.data.borrow();
             if let Some(data) = preview.as_ref().or(confirmed.as_ref()) {
                 ui.separator();
-                Results::new(data, &self.selected_layer, &self.selected_candidate)
-                    .draw(&context, ui);
+                Results::new(
+                    data,
+                    &self.state.selection.layer,
+                    &self.state.selection.candidate,
+                )
+                .draw(&context, ui);
             }
         });
 
@@ -256,7 +212,7 @@ impl eframe::App for Application {
         egui::CentralPanel::default().show(ctx, |ui| {
             let (response, _) = self.map.draw(&context, ui);
 
-            if *self.draw_mode.borrow() {
+            if self.state.draw.is_active() {
                 if response.hovered() {
                     ctx.set_cursor_icon(CursorIcon::Crosshair);
                 }
@@ -264,18 +220,21 @@ impl eframe::App for Application {
                 if let Some(screen_pos) = response.hover_pos() {
                     let projector = self.map.projector(response.rect);
                     let geo = projector.unproject(screen_pos.to_vec2());
-                    *self.cursor_pos.borrow_mut() = Some(Coord { x: geo.x(), y: geo.y() });
+                    self.state.cursor.set(Coord {
+                        x: geo.x(),
+                        y: geo.y(),
+                    });
                 } else {
-                    *self.cursor_pos.borrow_mut() = None;
+                    self.state.cursor.clear();
                 }
 
                 if response.double_clicked() {
-                    self.exit_draw_mode();
+                    self.state.exit_draw_mode();
                 } else if response.clicked() {
                     if let Some(screen_pos) = response.interact_pointer_pos() {
                         let projector = self.map.projector(response.rect);
                         let geo = projector.unproject(screen_pos.to_vec2());
-                        self.commit_drawn_point(Coord {
+                        self.state.commit_drawn_point(Coord {
                             x: geo.x(),
                             y: geo.y(),
                         });

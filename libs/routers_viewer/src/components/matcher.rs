@@ -28,7 +28,13 @@ pub struct Matcher<'a> {
 
 impl<'a> Matcher<'a> {
     pub fn new(network: &'a OsmNetwork, input: Option<LineString>, cache: MatchCache) -> Self {
-        Self { network, input, cache, drawn_points: vec![], cursor: None }
+        Self {
+            network,
+            input,
+            cache,
+            drawn_points: vec![],
+            cursor: None,
+        }
     }
 
     pub fn drawn(mut self, pts: Vec<Coord>, cursor: Option<Coord>) -> Self {
@@ -63,7 +69,11 @@ impl<'a> Component for Matcher<'a> {
     }
 }
 
-fn run_match(network: &OsmNetwork, linestring: LineString, cache: MatchCache) -> Result<MatchData, String> {
+fn run_match(
+    network: &OsmNetwork,
+    linestring: LineString,
+    cache: MatchCache,
+) -> Result<MatchData, String> {
     let costing = CostingStrategies::default();
     let generator = StandardGenerator::new(network, &costing.emission, 100.0);
     let transition = Transition::new(network, linestring.clone(), &costing, generator);
@@ -118,7 +128,8 @@ fn run_match(network: &OsmNetwork, linestring: LineString, cache: MatchCache) ->
     for layer in &mut layers {
         let chosen_pos = layer.chosen_idx.map(|i| layer.candidates[i].position);
         layer.candidates.sort_by_key(|c| c.emission);
-        layer.chosen_idx = chosen_pos.and_then(|pos| layer.candidates.iter().position(|c| c.position == pos));
+        layer.chosen_idx =
+            chosen_pos.and_then(|pos| layer.candidates.iter().position(|c| c.position == pos));
     }
 
     Ok(MatchData {

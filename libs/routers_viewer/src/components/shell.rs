@@ -10,7 +10,11 @@ pub struct Shell<'a> {
 
 impl<'a> Shell<'a> {
     pub fn new(network: &'a OsmNetwork, input: &'a Input<'a>, cache: MatchCache) -> Self {
-        Self { network, input, cache }
+        Self {
+            network,
+            input,
+            cache,
+        }
     }
 }
 

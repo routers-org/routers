@@ -45,7 +45,11 @@ impl Plugin for DrawPlugin {
                 );
             }
 
-            painter.circle_filled(cursor_pos, 5.0, Color32::from_rgba_unmultiplied(255, 165, 0, 160));
+            painter.circle_filled(
+                cursor_pos,
+                5.0,
+                Color32::from_rgba_unmultiplied(255, 165, 0, 160),
+            );
             painter.circle_stroke(cursor_pos, 5.0, Stroke::new(1.5, Color32::WHITE));
         }
     }
