@@ -4,15 +4,12 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 
-[lib]
-name = "routers_viewer"
-path = "src/lib.rs"
-bench = false
-
 [dependencies]
 routers = { workspace = true }
 routers_network = { workspace = true }
 routers_codec = { workspace = true }
+
+log = { workspace = true }
 
 geo = { workspace = true }
 wkt = { workspace = true }
@@ -33,6 +30,9 @@ rstar = { workspace = true }
 rustc-hash = { workspace = true }
 pathfinding = "4.14.0"
 
+serde = { workspace = true }
+serde_json = { workspace = true }
+
 [dev-dependencies]
 routers_fixtures = { workspace = true }
 
@@ -42,3 +42,8 @@ workspace = true
 [[example]]
 name = "viewer"
 path = "examples/viewer.rs"
+
+[features]
+persistence = ["eframe/persistence"]
+
+default = ["persistence"]

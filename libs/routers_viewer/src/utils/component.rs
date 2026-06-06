@@ -1,4 +1,6 @@
-use crate::utils::colour::ColourScheme;
+use egui::Response;
+
+use crate::utils::{Layout, colour::ColourScheme};
 
 /// An example of a component that can be drawn using the `Component` trait.
 ///
@@ -24,6 +26,7 @@ pub trait Component {
 
 pub struct Context {
     pub scheme: Box<dyn ColourScheme>,
+    pub layout: Box<dyn Layout>,
 }
 
 impl Context {
@@ -31,7 +34,11 @@ impl Context {
         &*self.scheme
     }
 
-    pub fn draw(&self, ui: &mut egui::Ui, component: impl Component) -> egui::Response {
+    pub fn layout(&self) -> &dyn Layout {
+        &*self.layout
+    }
+
+    pub fn draw(&self, ui: &mut egui::Ui, component: impl Component) -> Response {
         component.draw(self, ui)
     }
 }
