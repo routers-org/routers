@@ -1,8 +1,10 @@
-use std::path::PathBuf;
+use std::{cell::RefCell, path::PathBuf};
 
 use anyhow::Context as _;
 use eframe::CreationContext;
-use log::info;
+use egui::SidePanel;
+use log::{info, log};
+use routers::{Match, MatchError};
 use routers_codec::osm::OsmNetwork;
 use routers_fixtures::{SYDNEY, fixture};
 use walkers::{
@@ -13,11 +15,13 @@ use walkers::{
 const FIXTURE_NETWORK: &'static str = "fixture-network";
 const MAPBOX_API_KEY: &'static str = "mapbox-api-key";
 
-use crate::{ColourFactory, Component, Context, Map, Regular, Shell};
+use crate::{ColourFactory, Component, Context, Input, Map, Regular, Shell};
 
 pub struct Application {
     network: OsmNetwork,
     map: Map,
+
+    input_string: RefCell<String>,
 }
 
 impl Application {
@@ -62,7 +66,11 @@ impl Application {
 
         let map = Map::new(tiles, memory, center);
 
-        Ok(Self { map, network })
+        Ok(Self {
+            map,
+            network,
+            input_string: RefCell::new(String::new()),
+        })
     }
 }
 
@@ -75,8 +83,22 @@ impl eframe::App for Application {
             layout: Box::new(Regular),
         };
 
-        egui::CentralPanel::default().show(ctx, |ui| {
-            Shell::new(&self.network, &self.map).draw(&context, ui);
+        let input = Input::new(&self.input_string);
+
+        SidePanel::left("controls").show(ctx, |ui| {
+            let (_, result) = Shell::new(&self.network, &input).draw(&context, ui);
+
+            match result {
+                Err(MatchError::NoPointsProvided) => {}
+                Ok(_) => {
+                    info!("matched path: {:#?}", result);
+                }
+                Err(err) => {
+                    log::error!("match error: {}", err);
+                }
+            }
         });
+
+        egui::CentralPanel::default().show(ctx, |ui| self.map.draw(&context, ui));
     }
 }
