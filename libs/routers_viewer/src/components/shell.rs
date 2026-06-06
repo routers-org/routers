@@ -1,6 +1,6 @@
 use routers_codec::osm::OsmNetwork;
 
-use crate::{Component, Input, Map, Matcher, Stack, components::matcher::MatchResult};
+use crate::{Component, Input, Matcher, Stack, components::matcher::MatchResult};
 
 pub struct Shell<'a> {
     input: &'a Input<'a>,

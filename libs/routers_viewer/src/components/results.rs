@@ -1,22 +1,29 @@
 use std::cell::RefCell;
 
 use egui::Response;
-use routers::RoutedPath;
-use routers_codec::osm::{OsmEdgeMetadata, OsmEntryId};
 
-use crate::utils::{BaseColour, Component, Context};
+use crate::{
+    match_data::MatchData,
+    utils::{BaseColour, Component, Context},
+};
 
 pub struct Results<'a> {
-    path: &'a RoutedPath<OsmEntryId, OsmEdgeMetadata>,
-    selected: &'a RefCell<Option<usize>>,
+    data: &'a MatchData,
+    selected_layer: &'a RefCell<Option<usize>>,
+    selected_candidate: &'a RefCell<Option<usize>>,
 }
 
 impl<'a> Results<'a> {
     pub fn new(
-        path: &'a RoutedPath<OsmEntryId, OsmEdgeMetadata>,
-        selected: &'a RefCell<Option<usize>>,
+        data: &'a MatchData,
+        selected_layer: &'a RefCell<Option<usize>>,
+        selected_candidate: &'a RefCell<Option<usize>>,
     ) -> Self {
-        Self { path, selected }
+        Self {
+            data,
+            selected_layer,
+            selected_candidate,
+        }
     }
 }
 
@@ -31,48 +38,109 @@ impl<'a> Component for Results<'a> {
             .vertical(|ui| {
                 ui.heading("Match Results");
 
-                let disc = &self.path.discretized.elements;
-                let interp = &self.path.interpolated.elements;
-
+                ui.colored_label(positive, format!("Cost: {}", self.data.cost));
                 ui.colored_label(
-                    positive,
+                    muted,
                     format!(
-                        "{} matched point{}, {} road segment{}",
-                        disc.len(),
-                        if disc.len() == 1 { "" } else { "s" },
-                        interp.len(),
-                        if interp.len() == 1 { "" } else { "s" },
+                        "{} layer{}, {} transition{}",
+                        self.data.layers.len(),
+                        if self.data.layers.len() == 1 { "" } else { "s" },
+                        self.data.transitions.len(),
+                        if self.data.transitions.len() == 1 { "" } else { "s" },
                     ),
                 );
 
                 ui.separator();
-                ui.label("Matched Points:");
+                ui.label("Layers:");
 
                 egui::ScrollArea::vertical()
-                    .id_salt("results_points")
-                    .max_height(200.0)
+                    .id_salt("results_layers")
+                    .max_height(150.0)
                     .show(ui, |ui| {
-                        for (i, element) in disc.iter().enumerate() {
+                        for (i, layer) in self.data.layers.iter().enumerate() {
                             let is_selected =
-                                self.selected.borrow().is_some_and(|v| v == i);
+                                self.selected_layer.borrow().is_some_and(|v| v == i);
 
+                            let n = layer.candidates.len();
                             let text = format!(
-                                "#{i}  ({:.5}, {:.5})",
-                                element.point.x, element.point.y
+                                "Layer {i} — {n} candidate{}",
+                                if n == 1 { "" } else { "s" }
                             );
 
                             if ui.selectable_label(is_selected, text).clicked() {
-                                *self.selected.borrow_mut() = Some(i);
+                                *self.selected_layer.borrow_mut() = Some(i);
+                                // Reset candidate selection when layer changes.
+                                *self.selected_candidate.borrow_mut() = None;
                             }
                         }
                     });
 
-                if let Some(idx) = *self.selected.borrow() {
-                    if let Some(element) = disc.get(idx) {
+                // ── Selected layer ──────────────────────────────────────────
+                if let Some(layer_idx) = *self.selected_layer.borrow() {
+                    if let Some(layer) = self.data.layers.get(layer_idx) {
                         ui.separator();
-                        ui.heading(format!("Point #{idx}"));
-                        ui.colored_label(muted, format!("Lon  {:.6}", element.point.x));
-                        ui.colored_label(muted, format!("Lat  {:.6}", element.point.y));
+                        ui.heading(format!("Layer {layer_idx} Candidates"));
+                        ui.colored_label(
+                            muted,
+                            format!(
+                                "Original: ({:.5}, {:.5})",
+                                layer.original.x, layer.original.y
+                            ),
+                        );
+
+                        egui::ScrollArea::vertical()
+                            .id_salt("results_candidates")
+                            .max_height(150.0)
+                            .show(ui, |ui| {
+                                for (i, cand) in layer.candidates.iter().enumerate() {
+                                    let is_chosen = layer.chosen_idx == Some(i);
+                                    let is_selected = self
+                                        .selected_candidate
+                                        .borrow()
+                                        .is_some_and(|v| v == i);
+
+                                    let label = format!(
+                                        "#{i}  emission={}{} ({:.5}, {:.5})",
+                                        cand.emission,
+                                        if is_chosen { " ✓" } else { "" },
+                                        cand.position.x,
+                                        cand.position.y,
+                                    );
+
+                                    if ui
+                                        .selectable_label(is_selected || is_chosen, label)
+                                        .clicked()
+                                    {
+                                        *self.selected_candidate.borrow_mut() = Some(i);
+                                    }
+                                }
+                            });
+
+                        // ── Selected candidate detail ───────────────────────
+                        if let Some(cand_idx) = *self.selected_candidate.borrow() {
+                            if let Some(cand) = layer.candidates.get(cand_idx) {
+                                ui.separator();
+                                ui.heading(format!("Candidate #{cand_idx}"));
+                                ui.colored_label(
+                                    muted,
+                                    format!("Emission cost:  {}", cand.emission),
+                                );
+                                ui.colored_label(
+                                    muted,
+                                    format!("Lon  {:.6}", cand.position.x),
+                                );
+                                ui.colored_label(
+                                    muted,
+                                    format!("Lat  {:.6}", cand.position.y),
+                                );
+                                if layer.chosen_idx == Some(cand_idx) {
+                                    ui.colored_label(
+                                        positive,
+                                        "This candidate was chosen by the solver.",
+                                    );
+                                }
+                            }
+                        }
                     }
                 }
             })

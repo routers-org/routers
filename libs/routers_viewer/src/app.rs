@@ -4,8 +4,7 @@ use anyhow::Context as _;
 use eframe::CreationContext;
 use egui::{Color32, CursorIcon, SidePanel};
 use geo::Coord;
-use routers::{MatchError, RoutedPath};
-use routers_codec::osm::{OsmEdgeMetadata, OsmEntryId, OsmNetwork};
+use routers_codec::osm::{OsmNetwork};
 use routers_fixtures::{SYDNEY, fixture};
 use walkers::{
     HttpTiles, MapMemory, Plugin,
@@ -16,7 +15,8 @@ use wkt::ToWkt as _;
 
 use crate::{
     ColourFactory, Component, Context, Input, Map, Matcher, Regular, Results, Stack,
-    plugins::{DrawPlugin, LineStringPlugin},
+    match_data::MatchData,
+    plugins::{CandidatesPlugin, ChosenPathPlugin, DrawPlugin, LineStringPlugin},
 };
 
 const FIXTURE_NETWORK: &'static str = "fixture-network";
@@ -29,11 +29,14 @@ pub struct Application {
     input_string: RefCell<String>,
 
     /// Last successful match result, retained across frames.
-    match_cache: RefCell<Option<RoutedPath<OsmEntryId, OsmEdgeMetadata>>>,
+    match_cache: RefCell<Option<MatchData>>,
     /// Error from the most recent failed match attempt.
     error_msg: RefCell<Option<String>>,
-    /// Which discretized point the user has selected in the Results panel.
-    selected_point: RefCell<Option<usize>>,
+
+    /// Which layer (GPS point) is selected in the Results sidebar.
+    selected_layer: RefCell<Option<usize>>,
+    /// Which candidate within the selected layer is highlighted.
+    selected_candidate: RefCell<Option<usize>>,
 
     /// Whether the map-drawing tool is active.
     draw_mode: RefCell<bool>,
@@ -88,7 +91,8 @@ impl Application {
             input_string: RefCell::new(String::new()),
             match_cache: RefCell::new(None),
             error_msg: RefCell::new(None),
-            selected_point: RefCell::new(None),
+            selected_layer: RefCell::new(None),
+            selected_candidate: RefCell::new(None),
             draw_mode: RefCell::new(false),
             drawn_points: RefCell::new(Vec::new()),
         })
@@ -97,7 +101,7 @@ impl Application {
     fn build_map_plugins(&self) -> Vec<Box<dyn Plugin + 'static>> {
         let mut plugins: Vec<Box<dyn Plugin + 'static>> = vec![];
 
-        // In-progress drawn points (shown even before a match is run).
+        // In-progress drawn points (shown before a match is run).
         if *self.draw_mode.borrow() {
             let pts = self.drawn_points.borrow().clone();
             if !pts.is_empty() {
@@ -106,23 +110,67 @@ impl Application {
         }
 
         let cache = self.match_cache.borrow();
-        if let Some(path) = cache.as_ref() {
-            let interp: Vec<_> = path.interpolated.elements.iter().map(|e| e.point).collect();
-            if !interp.is_empty() {
-                plugins.push(Box::new(
-                    LineStringPlugin::new(interp)
-                        .color(Color32::from_rgba_unmultiplied(0, 100, 255, 180))
-                        .stroke_width(4.0),
-                ));
+        let Some(data) = cache.as_ref() else {
+            return plugins;
+        };
+
+        // Original GPS trace (red, thin).
+        let orig_coords: Vec<_> = data.original_line.0.iter().copied().collect();
+        if orig_coords.len() >= 2 {
+            plugins.push(Box::new(
+                LineStringPlugin::new(orig_coords)
+                    .color(Color32::from_rgba_unmultiplied(220, 50, 50, 160))
+                    .stroke_width(2.0),
+            ));
+        }
+
+        // Full interpolated road geometry (blue, prominent).
+        let interp_coords: Vec<_> = data.interpolated_line.0.iter().copied().collect();
+        if interp_coords.len() >= 2 {
+            plugins.push(Box::new(
+                LineStringPlugin::new(interp_coords)
+                    .color(Color32::from_rgba_unmultiplied(0, 100, 255, 200))
+                    .stroke_width(4.0),
+            ));
+        }
+
+        // Chosen-path overlay: dots at original/snapped positions + connectors.
+        plugins.push(Box::new(ChosenPathPlugin {
+            layers: data.layers.clone(),
+        }));
+
+        // When a layer is selected in the sidebar:
+        if let Some(layer_idx) = *self.selected_layer.borrow() {
+            // Highlight the incoming transition in yellow (if not the first layer).
+            if layer_idx > 0 {
+                if let Some(coords) = data.transitions.get(layer_idx - 1) {
+                    if coords.len() >= 2 {
+                        plugins.push(Box::new(
+                            LineStringPlugin::new(coords.clone())
+                                .color(Color32::YELLOW)
+                                .stroke_width(5.0),
+                        ));
+                    }
+                }
             }
 
-            let disc: Vec<_> = path.discretized.elements.iter().map(|e| e.point).collect();
-            if !disc.is_empty() {
-                plugins.push(Box::new(
-                    LineStringPlugin::new(disc)
-                        .color(Color32::from_rgba_unmultiplied(220, 50, 50, 200))
-                        .stroke_width(2.0),
-                ));
+            // Highlight the outgoing transition in orange.
+            if let Some(coords) = data.transitions.get(layer_idx) {
+                if coords.len() >= 2 {
+                    plugins.push(Box::new(
+                        LineStringPlugin::new(coords.clone())
+                            .color(Color32::from_rgb(255, 140, 0))
+                            .stroke_width(5.0),
+                    ));
+                }
+            }
+
+            // All candidates for this layer as coloured dots.
+            if let Some(layer) = data.layers.get(layer_idx) {
+                plugins.push(Box::new(CandidatesPlugin {
+                    layer: layer.clone(),
+                    selected_idx: *self.selected_candidate.borrow(),
+                }));
             }
         }
 
@@ -156,7 +204,7 @@ impl eframe::App for Application {
             let input = Input::new(&self.input_string);
             let (_, linestring) = input.draw(&context, ui);
 
-            // ── [✏ Draw] [✕ Clear] buttons ───────────────────────────────────
+            // ── [✏ Draw] [✕ Clear] ───────────────────────────────────────────
             ui.horizontal(|ui| {
                 let drawing = *self.draw_mode.borrow();
 
@@ -164,7 +212,6 @@ impl eframe::App for Application {
                     let new_mode = !drawing;
                     *self.draw_mode.borrow_mut() = new_mode;
                     if new_mode {
-                        // Fresh session: don't carry over old drawn points.
                         self.drawn_points.borrow_mut().clear();
                     }
                 }
@@ -174,21 +221,18 @@ impl eframe::App for Application {
                     *self.drawn_points.borrow_mut() = Vec::new();
                     *self.draw_mode.borrow_mut() = false;
                     *self.match_cache.borrow_mut() = None;
-                    *self.selected_point.borrow_mut() = None;
+                    *self.selected_layer.borrow_mut() = None;
+                    *self.selected_candidate.borrow_mut() = None;
                     *self.error_msg.borrow_mut() = None;
                 }
             });
 
-            // Status hint while drawing.
             if *self.draw_mode.borrow() {
                 let n = self.drawn_points.borrow().len();
                 let hint = if n == 0 {
                     "Click the map to add points".to_owned()
                 } else {
-                    format!(
-                        "{n} point{} — click to add more",
-                        if n == 1 { "" } else { "s" }
-                    )
+                    format!("{n} point{} — click to add more", if n == 1 { "" } else { "s" })
                 };
                 ui.colored_label(ctx.theme().default_visuals().warn_fg_color, hint);
             }
@@ -200,17 +244,18 @@ impl eframe::App for Application {
             let (_, result) = Stack::new(&matcher).draw(&context, ui);
 
             match result {
-                Ok(path) => {
-                    if let Some(first) = path.discretized.elements.first() {
-                        self.map.center_at(lon_lat(first.point.x, first.point.y));
+                None => {}
+                Some(Ok(data)) => {
+                    if let Some(first) = data.layers.first() {
+                        self.map.center_at(lon_lat(first.original.x, first.original.y));
                     }
-                    *self.match_cache.borrow_mut() = Some(path);
+                    *self.match_cache.borrow_mut() = Some(data);
                     *self.error_msg.borrow_mut() = None;
-                    *self.selected_point.borrow_mut() = None;
+                    *self.selected_layer.borrow_mut() = None;
+                    *self.selected_candidate.borrow_mut() = None;
                 }
-                Err(MatchError::NoPointsProvided) => {}
-                Err(e) => {
-                    *self.error_msg.borrow_mut() = Some(e.to_string());
+                Some(Err(msg)) => {
+                    *self.error_msg.borrow_mut() = Some(msg);
                 }
             }
 
@@ -221,9 +266,10 @@ impl eframe::App for Application {
 
             // ── Results panel ────────────────────────────────────────────────
             let cache = self.match_cache.borrow();
-            if let Some(path) = cache.as_ref() {
+            if let Some(data) = cache.as_ref() {
                 ui.separator();
-                Results::new(path, &self.selected_point).draw(&context, ui);
+                Results::new(data, &self.selected_layer, &self.selected_candidate)
+                    .draw(&context, ui);
             }
         });
 
@@ -234,11 +280,9 @@ impl eframe::App for Application {
             let (response, _) = self.map.draw(&context, ui);
 
             if *self.draw_mode.borrow() {
-                // Switch to a crosshair cursor over the map to signal draw mode.
                 if response.hovered() {
                     ctx.set_cursor_icon(CursorIcon::Crosshair);
                 }
-
                 if response.clicked() {
                     if let Some(screen_pos) = response.interact_pointer_pos() {
                         let projector = self.map.projector(response.rect);
