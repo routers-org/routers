@@ -1,6 +1,6 @@
 use routers_codec::osm::OsmNetwork;
 
-use crate::{Component, Input, MatchCache, Matcher, Stack, components::matcher::MatchResult};
+use crate::{Component, Input, MatchCache, MatchOutput, Matcher, Stack};
 
 pub struct Shell<'a> {
     input: &'a Input<'a>,
@@ -15,7 +15,7 @@ impl<'a> Shell<'a> {
 }
 
 impl<'a> Component for Shell<'a> {
-    type Output = MatchResult;
+    type Output = MatchOutput;
 
     fn draw(&self, ctx: &crate::Context, ui: &mut egui::Ui) -> (egui::Response, Self::Output) {
         let inner = ui.vertical(|ui| {

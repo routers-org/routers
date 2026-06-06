@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use egui::Response;
-use geo::LineString;
+use geo::{Coord, LineString};
 use routers::PredicateCache;
 use routers::transition::{
     costing::CostingStrategies, entity::Transition, layer::generation::StandardGenerator,
@@ -12,33 +12,54 @@ use routers_codec::osm::{OsmEdgeMetadata, OsmEntryId, OsmNetwork, OsmTripConfigu
 use crate::utils::{Component, MatchCandidate, MatchData, MatchLayer};
 
 pub type MatchCache = Arc<PredicateCache<OsmEntryId, OsmEdgeMetadata, OsmNetwork>>;
-pub type MatchResult = Option<Result<MatchData, String>>;
+
+pub struct MatchOutput {
+    pub confirmed: Option<Result<MatchData, String>>,
+    pub preview: Option<MatchData>,
+}
 
 pub struct Matcher<'a> {
     network: &'a OsmNetwork,
-    input: Option<LineString>,
     cache: MatchCache,
+    input: Option<LineString>,
+    drawn_points: Vec<Coord>,
+    cursor: Option<Coord>,
 }
 
 impl<'a> Matcher<'a> {
     pub fn new(network: &'a OsmNetwork, input: Option<LineString>, cache: MatchCache) -> Self {
-        Self { network, input, cache }
+        Self { network, input, cache, drawn_points: vec![], cursor: None }
+    }
+
+    pub fn drawn(mut self, pts: Vec<Coord>, cursor: Option<Coord>) -> Self {
+        self.drawn_points = pts;
+        self.cursor = cursor;
+        self
     }
 }
 
 impl<'a> Component for Matcher<'a> {
-    type Output = MatchResult;
+    type Output = MatchOutput;
 
     fn draw(&self, _ctx: &crate::utils::Context, ui: &mut egui::Ui) -> (Response, Self::Output) {
         let btn = ui.button("Match!");
 
-        if let Some(linestring) = &self.input
-            && btn.clicked()
-        {
-            return (btn, Some(run_match(self.network, linestring.clone(), self.cache.clone())));
-        }
+        let confirmed = btn
+            .clicked()
+            .then(|| self.input.clone())
+            .flatten()
+            .map(|ls| run_match(self.network, ls, self.cache.clone()));
 
-        (btn, None)
+        let preview = self.cursor.and_then(|cursor| {
+            if self.drawn_points.is_empty() {
+                return None;
+            }
+            let mut pts = self.drawn_points.clone();
+            pts.push(cursor);
+            run_match(self.network, LineString::new(pts), self.cache.clone()).ok()
+        });
+
+        (btn, MatchOutput { confirmed, preview })
     }
 }
 

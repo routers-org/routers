@@ -32,6 +32,8 @@ pub struct Application {
     selected_candidate: RefCell<Option<usize>>,
     draw_mode: RefCell<bool>,
     drawn_points: RefCell<Vec<Coord>>,
+    cursor_pos: RefCell<Option<Coord>>,
+    cursor_preview: RefCell<Option<MatchData>>,
 }
 
 impl Application {
@@ -84,21 +86,26 @@ impl Application {
             selected_candidate: RefCell::new(None),
             draw_mode: RefCell::new(false),
             drawn_points: RefCell::new(Vec::new()),
+            cursor_pos: RefCell::new(None),
+            cursor_preview: RefCell::new(None),
         })
     }
 
     fn build_map_plugins(&self) -> Vec<Box<dyn Plugin + 'static>> {
         let mut plugins: Vec<Box<dyn Plugin + 'static>> = vec![];
 
-        if *self.draw_mode.borrow() {
-            let pts = self.drawn_points.borrow().clone();
-            if !pts.is_empty() {
-                plugins.push(Box::new(DrawPlugin { points: pts }));
-            }
+        let draw_mode = *self.draw_mode.borrow();
+
+        if draw_mode {
+            plugins.push(Box::new(DrawPlugin {
+                points: self.drawn_points.borrow().clone(),
+                cursor: *self.cursor_pos.borrow(),
+            }));
         }
 
-        let cache = self.match_cache.borrow();
-        let Some(data) = cache.as_ref() else {
+        let preview = self.cursor_preview.borrow();
+        let confirmed = self.match_cache.borrow();
+        let Some(data) = preview.as_ref().or(confirmed.as_ref()) else {
             return plugins;
         };
 
@@ -136,6 +143,14 @@ impl Application {
         plugins
     }
 
+    fn exit_draw_mode(&self) {
+        if let Some(preview) = self.cursor_preview.borrow_mut().take() {
+            *self.match_cache.borrow_mut() = Some(preview);
+        }
+        *self.draw_mode.borrow_mut() = false;
+        *self.cursor_pos.borrow_mut() = None;
+    }
+
     fn commit_drawn_point(&self, coord: Coord) {
         self.drawn_points.borrow_mut().push(coord);
         let pts = self.drawn_points.borrow();
@@ -164,9 +179,10 @@ impl eframe::App for Application {
                 let drawing = *self.draw_mode.borrow();
 
                 if ui.selectable_label(drawing, "✏  Draw").clicked() {
-                    let new_mode = !drawing;
-                    *self.draw_mode.borrow_mut() = new_mode;
-                    if new_mode {
+                    if drawing {
+                        self.exit_draw_mode();
+                    } else {
+                        *self.draw_mode.borrow_mut() = true;
                         self.drawn_points.borrow_mut().clear();
                     }
                 }
@@ -176,6 +192,8 @@ impl eframe::App for Application {
                     *self.drawn_points.borrow_mut() = Vec::new();
                     *self.draw_mode.borrow_mut() = false;
                     *self.match_cache.borrow_mut() = None;
+                    *self.cursor_pos.borrow_mut() = None;
+                    *self.cursor_preview.borrow_mut() = None;
                     *self.selected_layer.borrow_mut() = None;
                     *self.selected_candidate.borrow_mut() = None;
                     *self.error_msg.borrow_mut() = None;
@@ -197,10 +215,13 @@ impl eframe::App for Application {
 
             ui.separator();
 
-            let matcher = Matcher::new(&self.network, linestring, self.solver_cache.clone());
-            let (_, result) = Stack::new(&matcher).draw(&context, ui);
+            let matcher = Matcher::new(&self.network, linestring, self.solver_cache.clone())
+                .drawn(self.drawn_points.borrow().clone(), *self.cursor_pos.borrow());
+            let (_, output) = Stack::new(&matcher).draw(&context, ui);
 
-            match result {
+            *self.cursor_preview.borrow_mut() = output.preview;
+
+            match output.confirmed {
                 None => {}
                 Some(Ok(data)) => {
                     if let Some(first) = data.layers.first() {
@@ -221,8 +242,9 @@ impl eframe::App for Application {
                 ui.colored_label(Color32::RED, msg);
             }
 
-            let cache = self.match_cache.borrow();
-            if let Some(data) = cache.as_ref() {
+            let preview = self.cursor_preview.borrow();
+            let confirmed = self.match_cache.borrow();
+            if let Some(data) = preview.as_ref().or(confirmed.as_ref()) {
                 ui.separator();
                 Results::new(data, &self.selected_layer, &self.selected_candidate)
                     .draw(&context, ui);
@@ -238,7 +260,18 @@ impl eframe::App for Application {
                 if response.hovered() {
                     ctx.set_cursor_icon(CursorIcon::Crosshair);
                 }
-                if response.clicked() {
+
+                if let Some(screen_pos) = response.hover_pos() {
+                    let projector = self.map.projector(response.rect);
+                    let geo = projector.unproject(screen_pos.to_vec2());
+                    *self.cursor_pos.borrow_mut() = Some(Coord { x: geo.x(), y: geo.y() });
+                } else {
+                    *self.cursor_pos.borrow_mut() = None;
+                }
+
+                if response.double_clicked() {
+                    self.exit_draw_mode();
+                } else if response.clicked() {
                     if let Some(screen_pos) = response.interact_pointer_pos() {
                         let projector = self.map.projector(response.rect);
                         let geo = projector.unproject(screen_pos.to_vec2());
