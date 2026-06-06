@@ -38,15 +38,9 @@ impl<'a> Component for Results<'a> {
                 ui.colored_label(
                     muted,
                     format!(
-                        "{} layer{}, {} transition{}",
+                        "{} layer{}",
                         self.data.layers.len(),
                         if self.data.layers.len() == 1 { "" } else { "s" },
-                        self.data.transitions.len(),
-                        if self.data.transitions.len() == 1 {
-                            ""
-                        } else {
-                            "s"
-                        },
                     ),
                 );
 
@@ -56,6 +50,7 @@ impl<'a> Component for Results<'a> {
                 egui::ScrollArea::vertical()
                     .id_salt("results_layers")
                     .max_height(150.0)
+                    .auto_shrink([false, true])
                     .show(ui, |ui| {
                         for (i, layer) in self.data.layers.iter().enumerate() {
                             let is_selected = self.selected_layer.borrow().is_some_and(|v| v == i);
@@ -86,6 +81,7 @@ impl<'a> Component for Results<'a> {
                         egui::ScrollArea::vertical()
                             .id_salt("results_candidates")
                             .max_height(150.0)
+                            .auto_shrink([false, true])
                             .show(ui, |ui| {
                                 for (i, cand) in layer.candidates.iter().enumerate() {
                                     let is_chosen = layer.chosen_idx == Some(i);
@@ -111,9 +107,9 @@ impl<'a> Component for Results<'a> {
                             if let Some(cand) = layer.candidates.get(cand_idx) {
                                 ui.separator();
                                 ui.heading(format!("Candidate #{cand_idx}"));
-                                ui.colored_label(muted, format!("Emission: {}", cand.emission));
-                                ui.colored_label(muted, format!("Lon  {:.6}", cand.position.x));
-                                ui.colored_label(muted, format!("Lat  {:.6}", cand.position.y));
+                                ui.colored_label(muted, format!("Emission={}", cand.emission));
+                                ui.colored_label(muted, format!("Lon={:.6}", cand.position.x));
+                                ui.colored_label(muted, format!("Lat={:.6}", cand.position.y));
                                 if layer.chosen_idx == Some(cand_idx) {
                                     ui.colored_label(positive, "Chosen by solver");
                                 }

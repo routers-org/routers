@@ -19,5 +19,4 @@ pub struct MatchData {
     pub original_line: LineString,
     pub interpolated_line: LineString,
     pub layers: Vec<MatchLayer>,
-    pub transitions: Vec<Vec<Coord>>,
 }

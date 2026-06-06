@@ -1,24 +1,28 @@
+use std::sync::Arc;
+
 use egui::Response;
 use geo::LineString;
+use routers::PredicateCache;
 use routers::transition::{
     costing::CostingStrategies, entity::Transition, layer::generation::StandardGenerator,
     solver::selective_forward::SelectiveForwardSolver,
 };
-use routers_codec::osm::{OsmNetwork, OsmTripConfiguration};
-use routers_network::DataPlane;
+use routers_codec::osm::{OsmEdgeMetadata, OsmEntryId, OsmNetwork, OsmTripConfiguration};
 
 use crate::utils::{Component, MatchCandidate, MatchData, MatchLayer};
 
+pub type MatchCache = Arc<PredicateCache<OsmEntryId, OsmEdgeMetadata, OsmNetwork>>;
 pub type MatchResult = Option<Result<MatchData, String>>;
 
 pub struct Matcher<'a> {
     network: &'a OsmNetwork,
     input: Option<LineString>,
+    cache: MatchCache,
 }
 
 impl<'a> Matcher<'a> {
-    pub fn new(network: &'a OsmNetwork, input: Option<LineString>) -> Self {
-        Self { network, input }
+    pub fn new(network: &'a OsmNetwork, input: Option<LineString>, cache: MatchCache) -> Self {
+        Self { network, input, cache }
     }
 }
 
@@ -31,18 +35,18 @@ impl<'a> Component for Matcher<'a> {
         if let Some(linestring) = &self.input
             && btn.clicked()
         {
-            return (btn, Some(run_match(self.network, linestring.clone())));
+            return (btn, Some(run_match(self.network, linestring.clone(), self.cache.clone())));
         }
 
         (btn, None)
     }
 }
 
-fn run_match(network: &OsmNetwork, linestring: LineString) -> Result<MatchData, String> {
+fn run_match(network: &OsmNetwork, linestring: LineString, cache: MatchCache) -> Result<MatchData, String> {
     let costing = CostingStrategies::default();
     let generator = StandardGenerator::new(network, &costing.emission, 100.0);
     let transition = Transition::new(network, linestring.clone(), &costing, generator);
-    let solver = SelectiveForwardSolver::default();
+    let solver = SelectiveForwardSolver::default().use_cache(cache);
     let runtime = OsmTripConfiguration::default();
 
     let collapsed = transition
@@ -88,23 +92,16 @@ fn run_match(network: &OsmNetwork, linestring: LineString) -> Result<MatchData, 
         }
     }
 
-    let transitions: Vec<Vec<geo::Coord>> = collapsed
-        .interpolated
-        .iter()
-        .map(|reachable| {
-            reachable
-                .path_nodes()
-                .filter_map(|node_id| network.point(&node_id))
-                .map(|pt| pt.0)
-                .collect()
-        })
-        .collect();
+    for layer in &mut layers {
+        let chosen_pos = layer.chosen_idx.map(|i| layer.candidates[i].position);
+        layer.candidates.sort_by_key(|c| c.emission);
+        layer.chosen_idx = chosen_pos.and_then(|pos| layer.candidates.iter().position(|c| c.position == pos));
+    }
 
     Ok(MatchData {
         cost: collapsed.cost,
         original_line: linestring,
         interpolated_line,
         layers,
-        transitions,
     })
 }

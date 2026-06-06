@@ -13,7 +13,8 @@ use walkers::{
 use wkt::ToWkt as _;
 
 use crate::{
-    ColourFactory, Component, Context, Input, Map, MatchData, Matcher, Regular, Results, Stack,
+    ColourFactory, Component, Context, Input, Map, MatchCache, MatchData, Matcher, Regular,
+    Results, Stack,
     plugins::{CandidatesPlugin, ChosenPathPlugin, DrawPlugin, LineStringPlugin},
 };
 
@@ -23,6 +24,7 @@ const MAPBOX_API_KEY: &'static str = "mapbox-api-key";
 pub struct Application {
     network: OsmNetwork,
     map: Map,
+    solver_cache: MatchCache,
     input_string: RefCell<String>,
     match_cache: RefCell<Option<MatchData>>,
     error_msg: RefCell<Option<String>>,
@@ -74,6 +76,7 @@ impl Application {
         Ok(Self {
             map,
             network,
+            solver_cache: std::sync::Arc::new(Default::default()),
             input_string: RefCell::new(String::new()),
             match_cache: RefCell::new(None),
             error_msg: RefCell::new(None),
@@ -122,28 +125,6 @@ impl Application {
         }));
 
         if let Some(layer_idx) = *self.selected_layer.borrow() {
-            if layer_idx > 0 {
-                if let Some(coords) = data.transitions.get(layer_idx - 1) {
-                    if coords.len() >= 2 {
-                        plugins.push(Box::new(
-                            LineStringPlugin::new(coords.clone())
-                                .color(Color32::YELLOW)
-                                .stroke_width(5.0),
-                        ));
-                    }
-                }
-            }
-
-            if let Some(coords) = data.transitions.get(layer_idx) {
-                if coords.len() >= 2 {
-                    plugins.push(Box::new(
-                        LineStringPlugin::new(coords.clone())
-                            .color(Color32::from_rgb(255, 140, 0))
-                            .stroke_width(5.0),
-                    ));
-                }
-            }
-
             if let Some(layer) = data.layers.get(layer_idx) {
                 plugins.push(Box::new(CandidatesPlugin {
                     layer: layer.clone(),
@@ -216,7 +197,7 @@ impl eframe::App for Application {
 
             ui.separator();
 
-            let matcher = Matcher::new(&self.network, linestring);
+            let matcher = Matcher::new(&self.network, linestring, self.solver_cache.clone());
             let (_, result) = Stack::new(&matcher).draw(&context, ui);
 
             match result {

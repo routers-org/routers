@@ -1,15 +1,16 @@
 use routers_codec::osm::OsmNetwork;
 
-use crate::{Component, Input, Matcher, Stack, components::matcher::MatchResult};
+use crate::{Component, Input, MatchCache, Matcher, Stack, components::matcher::MatchResult};
 
 pub struct Shell<'a> {
     input: &'a Input<'a>,
     network: &'a OsmNetwork,
+    cache: MatchCache,
 }
 
 impl<'a> Shell<'a> {
-    pub fn new(network: &'a OsmNetwork, input: &'a Input<'a>) -> Self {
-        Self { network, input }
+    pub fn new(network: &'a OsmNetwork, input: &'a Input<'a>, cache: MatchCache) -> Self {
+        Self { network, input, cache }
     }
 }
 
@@ -26,7 +27,7 @@ impl<'a> Component for Shell<'a> {
                 ui.disable();
             }
 
-            let matcher = Matcher::new(self.network, linestring);
+            let matcher = Matcher::new(self.network, linestring, self.cache.clone());
             let (r2, matched) = Stack::new(&matcher).height(25.).draw(ctx, ui);
 
             (r1.union(r2), matched)
