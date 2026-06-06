@@ -71,7 +71,7 @@ pub mod emission {
 
 pub mod transition {
     use crate::transition::*;
-    use routers_network::{Edge, Entry, Metadata, Network};
+    use routers_network::{Entry, Metadata, Network};
 
     /// Calculates the transition cost between two candidates.
     ///
