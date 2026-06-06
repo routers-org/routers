@@ -44,6 +44,9 @@ impl<'a> Component for Input<'a> {
 
         match wkt {
             Ok(ls) => (response, Some(ls)),
+            // Suppress the error UI for an empty field — no WKT yet is not an
+            // error worth showing.
+            Err(_) if input.is_empty() => (response, None),
             Err(error) => {
                 ui.disable();
                 ui.label(error.to_string());

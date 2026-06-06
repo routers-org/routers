@@ -1,5 +1,7 @@
+mod draw;
 mod linestring;
 
+pub use draw::DrawPlugin;
 pub use linestring::LineStringPlugin;
 
 use walkers::{MapMemory, Plugin, Projector};
