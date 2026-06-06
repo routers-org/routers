@@ -1,14 +1,15 @@
 use std::cell::RefCell;
 
 use egui::Response;
-use walkers::{HttpTiles, MapMemory, Position};
+use walkers::{HttpTiles, MapMemory, Plugin, Position};
 
-use crate::{Component, Context};
+use crate::{Component, Context, plugins::PluginBox};
 
 pub struct Map {
     position: Position,
     tiles: RefCell<HttpTiles>,
     map_memory: RefCell<MapMemory>,
+    plugins: RefCell<Vec<Box<dyn Plugin + 'static>>>,
 }
 
 impl Map {
@@ -17,7 +18,18 @@ impl Map {
             position,
             tiles: RefCell::new(tiles),
             map_memory: RefCell::new(map_memory),
+            plugins: RefCell::new(Vec::new()),
         }
+    }
+
+    pub fn center_at(&self, position: Position) {
+        self.map_memory.borrow_mut().center_at(position);
+    }
+
+    /// Replace the plugin list rendered on the next frame. Plugins are consumed
+    /// each draw and must be set again every frame if needed.
+    pub fn set_plugins(&self, plugins: Vec<Box<dyn Plugin + 'static>>) {
+        *self.plugins.borrow_mut() = plugins;
     }
 }
 
@@ -28,7 +40,11 @@ impl Component for Map {
         let tiles = &mut *self.tiles.borrow_mut();
         let memory = &mut *self.map_memory.borrow_mut();
 
-        let map = walkers::Map::new(Some(tiles), memory, self.position);
+        let mut map = walkers::Map::new(Some(tiles), memory, self.position);
+
+        for plugin in self.plugins.borrow_mut().drain(..) {
+            map = map.with_plugin(PluginBox(plugin));
+        }
 
         let response = ui.add(map);
         (response, ())
