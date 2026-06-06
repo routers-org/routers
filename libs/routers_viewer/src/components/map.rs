@@ -12,26 +12,25 @@ pub struct Map {
 }
 
 impl Map {
-    pub fn new(
-        position: Position,
-        tiles: RefCell<HttpTiles>,
-        map_memory: RefCell<MapMemory>,
-    ) -> Self {
+    pub fn new(tiles: HttpTiles, map_memory: MapMemory, position: Position) -> Self {
         Self {
             position,
-            tiles,
-            map_memory,
+            tiles: RefCell::new(tiles),
+            map_memory: RefCell::new(map_memory),
         }
     }
 }
 
 impl Component for Map {
-    fn draw(self, ctx: &Context, ui: &mut egui::Ui) -> Response {
+    type Output = ();
+
+    fn draw(&self, _: &Context, ui: &mut egui::Ui) -> (Response, Self::Output) {
         let tiles = &mut *self.tiles.borrow_mut();
         let memory = &mut *self.map_memory.borrow_mut();
 
         let map = walkers::Map::new(Some(tiles), memory, self.position);
 
-        ui.add(map)
+        let response = ui.add(map);
+        (response, ())
     }
 }

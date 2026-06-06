@@ -21,7 +21,9 @@ use crate::utils::{Layout, colour::ColourScheme};
 /// }
 /// ```
 pub trait Component {
-    fn draw(self, ctx: &Context, ui: &mut egui::Ui) -> egui::Response;
+    type Output;
+
+    fn draw(&self, ctx: &Context, ui: &mut egui::Ui) -> (egui::Response, Self::Output);
 }
 
 pub struct Context {
@@ -38,7 +40,7 @@ impl Context {
         &*self.layout
     }
 
-    pub fn draw(&self, ui: &mut egui::Ui, component: impl Component) -> Response {
+    pub fn draw<C: Component>(&self, ui: &mut egui::Ui, component: C) -> (Response, C::Output) {
         component.draw(self, ui)
     }
 }

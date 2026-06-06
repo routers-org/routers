@@ -1,24 +1,24 @@
-use std::sync::Arc;
-
 use routers_codec::osm::OsmNetwork;
-use walkers::MapMemory;
 
 use crate::{Component, Map};
 
-pub struct Shell {
-    network: Arc<OsmNetwork>,
+pub struct Shell<'a> {
+    map: &'a Map,
+    network: &'a OsmNetwork,
 }
 
-impl Shell {
-    pub fn new(network: Arc<OsmNetwork>) -> Self {
-        Self { network }
+impl<'a> Shell<'a> {
+    pub fn new(network: &'a OsmNetwork, map: &'a Map) -> Self {
+        Self { network, map }
     }
 
     // pub fn perform_match(&self) ->
 }
 
-impl Component for Shell {
-    fn draw(self, ctx: &crate::Context, ui: &mut egui::Ui) -> egui::Response {
-        ui.label(format!("ROUTERS"))
+impl<'a> Component for Shell<'a> {
+    type Output = ();
+
+    fn draw(&self, ctx: &crate::Context, ui: &mut egui::Ui) -> (egui::Response, Self::Output) {
+        self.map.draw(ctx, ui)
     }
 }

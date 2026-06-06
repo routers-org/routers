@@ -1,29 +1,23 @@
-use std::{path::PathBuf, sync::Arc};
+use std::path::PathBuf;
 
 use anyhow::Context as _;
 use eframe::CreationContext;
 use log::info;
-use quick_error::ResultExt;
 use routers_codec::osm::OsmNetwork;
 use routers_fixtures::{SYDNEY, fixture};
-use serde::Serialize;
 use walkers::{
     HttpTiles, MapMemory,
-    sources::{Mapbox, MapboxStyle},
+    sources::{Mapbox, MapboxStyle, OpenStreetMap},
 };
 
 const FIXTURE_NETWORK: &'static str = "fixture-network";
 const MAPBOX_API_KEY: &'static str = "mapbox-api-key";
 
-use crate::{ColourFactory, Component, Context, Regular, Shell};
+use crate::{ColourFactory, Component, Context, Map, Regular, Shell};
 
-#[derive(Serialize)]
 pub struct Application {
-    #[serde(skip)]
-    network: Arc<OsmNetwork>,
-    #[serde(skip)]
-    map_tiles: Option<HttpTiles>,
-    map_memory: MapMemory,
+    network: OsmNetwork,
+    map: Map,
 }
 
 impl Application {
@@ -34,7 +28,8 @@ impl Application {
 
         let api_key = storage
             .get_string(MAPBOX_API_KEY)
-            .context("could not find mapbox API key")?;
+            .context("could not find mapbox API key")
+            .ok();
 
         let default_path = fixture!(SYDNEY).clone();
         let path = storage
@@ -42,27 +37,32 @@ impl Application {
             .map(|v| PathBuf::from(v))
             .unwrap_or(default_path);
 
-        if !path.exists() {
-            return anyhow::bail!("The path (value={:?}) must point to a valid file.", path);
-        }
+        path.try_exists()
+            .context(path.to_string_lossy().to_string())
+            .context("The path must point to a valid file.")?;
 
         info!("Opening road network at {:?}...", path);
-        let network = OsmNetwork::from_saved(&path).map_err(|e| anyhow::anyhow!("{}", e))?;
+        let network = OsmNetwork::from_pbf(&path).map_err(|e| anyhow::anyhow!("{}", e))?;
 
-        let tiles = HttpTiles::new(
-            Mapbox {
-                style: MapboxStyle::Light,
-                high_resolution: true,
-                access_token: api_key,
-            },
-            ctx.egui_ctx.clone(),
-        );
+        let egui_ctx = ctx.egui_ctx.clone();
+        let tiles = match api_key {
+            Some(key) => HttpTiles::new(
+                Mapbox {
+                    style: MapboxStyle::Light,
+                    high_resolution: true,
+                    access_token: key,
+                },
+                egui_ctx,
+            ),
+            None => HttpTiles::new(OpenStreetMap, egui_ctx),
+        };
 
-        Ok(Self {
-            network: Arc::new(network),
-            map_memory: MapMemory::default(),
-            map_tiles: Some(tiles),
-        })
+        let memory = MapMemory::default();
+        let center = walkers::lon_lat(151.12, -33.52);
+
+        let map = Map::new(tiles, memory, center);
+
+        Ok(Self { map, network })
     }
 }
 
@@ -76,12 +76,7 @@ impl eframe::App for Application {
         };
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            Shell::new(self.network.clone()).draw(&context, ui);
+            Shell::new(&self.network, &self.map).draw(&context, ui);
         });
-    }
-
-    #[cfg(feature = "persistence")]
-    fn save(&mut self, storage: &mut dyn eframe::Storage) {
-        eframe::set_value(storage, eframe::APP_KEY, self);
     }
 }
