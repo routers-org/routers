@@ -1,19 +1,10 @@
 use egui::{Align2, Color32, FontId, Stroke};
 use walkers::{MapMemory, Plugin, Projector, lon_lat};
 
-use crate::match_data::LayerViz;
+use crate::utils::MatchLayer;
 
-/// Renders all snap candidates for one GPS layer on the map.
-///
-/// - **Blue** — the solver-chosen candidate
-/// - **Orange** — user-selected in the sidebar
-/// - **Grey** — all others
-///
-/// Each dot is annotated with its emission cost. The original GPS point is
-/// shown as a larger red dot labelled "Original".
 pub struct CandidatesPlugin {
-    pub layer: LayerViz,
-    /// Index into `layer.candidates` the user has highlighted (may be `None`).
+    pub layer: MatchLayer,
     pub selected_idx: Option<usize>,
 }
 
@@ -28,7 +19,6 @@ impl Plugin for CandidatesPlugin {
         let painter = ui.painter();
         let font = FontId::proportional(11.0);
 
-        // Original GPS point.
         let orig = projector
             .project(lon_lat(self.layer.original.x, self.layer.original.y))
             .to_pos2();
@@ -43,7 +33,6 @@ impl Plugin for CandidatesPlugin {
             Color32::RED,
         );
 
-        // Candidates.
         for (i, cand) in self.layer.candidates.iter().enumerate() {
             let pos = projector
                 .project(lon_lat(cand.position.x, cand.position.y))
@@ -53,7 +42,7 @@ impl Plugin for CandidatesPlugin {
             let is_selected = self.selected_idx == Some(i);
 
             let color = if is_selected {
-                Color32::from_rgb(255, 165, 0) // orange
+                Color32::from_rgb(255, 165, 0)
             } else if is_chosen {
                 Color32::BLUE
             } else {
@@ -64,7 +53,6 @@ impl Plugin for CandidatesPlugin {
 
             painter.circle_filled(pos, radius, color);
             painter.circle_stroke(pos, radius, Stroke::new(1.0, Color32::BLACK));
-
             painter.text(
                 pos + egui::vec2(radius + 2.0, 0.0),
                 Align2::LEFT_CENTER,

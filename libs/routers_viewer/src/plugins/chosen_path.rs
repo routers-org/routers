@@ -1,14 +1,10 @@
 use egui::{Color32, Stroke};
 use walkers::{MapMemory, Plugin, Projector, lon_lat};
 
-use crate::match_data::LayerViz;
+use crate::utils::MatchLayer;
 
-/// For every matched GPS point, draws:
-///   - a red dot at the original GPS position
-///   - a blue dot at the chosen (snapped) road position
-///   - a grey connector line between them
 pub struct ChosenPathPlugin {
-    pub layers: Vec<LayerViz>,
+    pub layers: Vec<MatchLayer>,
 }
 
 impl Plugin for ChosenPathPlugin {
@@ -26,11 +22,7 @@ impl Plugin for ChosenPathPlugin {
                 .project(lon_lat(layer.original.x, layer.original.y))
                 .to_pos2();
 
-            // Connector line (drawn first so dots sit on top)
-            if let Some(chosen) = layer
-                .chosen_idx
-                .and_then(|i| layer.candidates.get(i))
-            {
+            if let Some(chosen) = layer.chosen_idx.and_then(|i| layer.candidates.get(i)) {
                 let snapped = projector
                     .project(lon_lat(chosen.position.x, chosen.position.y))
                     .to_pos2();
@@ -39,7 +31,6 @@ impl Plugin for ChosenPathPlugin {
                     vec![orig, snapped],
                     Stroke::new(1.5, Color32::from_gray(100)),
                 );
-
                 painter.circle_filled(snapped, 5.0, Color32::BLUE);
                 painter.circle_stroke(snapped, 5.0, Stroke::new(1.0, Color32::BLACK));
             }

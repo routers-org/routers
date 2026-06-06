@@ -2,10 +2,7 @@ use std::cell::RefCell;
 
 use egui::Response;
 
-use crate::{
-    match_data::MatchData,
-    utils::{BaseColour, Component, Context},
-};
+use crate::utils::{BaseColour, Component, Context, MatchData};
 
 pub struct Results<'a> {
     data: &'a MatchData,
@@ -37,7 +34,6 @@ impl<'a> Component for Results<'a> {
         let response = ui
             .vertical(|ui| {
                 ui.heading("Match Results");
-
                 ui.colored_label(positive, format!("Cost: {}", self.data.cost));
                 ui.colored_label(
                     muted,
@@ -46,7 +42,11 @@ impl<'a> Component for Results<'a> {
                         self.data.layers.len(),
                         if self.data.layers.len() == 1 { "" } else { "s" },
                         self.data.transitions.len(),
-                        if self.data.transitions.len() == 1 { "" } else { "s" },
+                        if self.data.transitions.len() == 1 {
+                            ""
+                        } else {
+                            "s"
+                        },
                     ),
                 );
 
@@ -58,24 +58,19 @@ impl<'a> Component for Results<'a> {
                     .max_height(150.0)
                     .show(ui, |ui| {
                         for (i, layer) in self.data.layers.iter().enumerate() {
-                            let is_selected =
-                                self.selected_layer.borrow().is_some_and(|v| v == i);
-
+                            let is_selected = self.selected_layer.borrow().is_some_and(|v| v == i);
                             let n = layer.candidates.len();
                             let text = format!(
                                 "Layer {i} — {n} candidate{}",
                                 if n == 1 { "" } else { "s" }
                             );
-
                             if ui.selectable_label(is_selected, text).clicked() {
                                 *self.selected_layer.borrow_mut() = Some(i);
-                                // Reset candidate selection when layer changes.
                                 *self.selected_candidate.borrow_mut() = None;
                             }
                         }
                     });
 
-                // ── Selected layer ──────────────────────────────────────────
                 if let Some(layer_idx) = *self.selected_layer.borrow() {
                     if let Some(layer) = self.data.layers.get(layer_idx) {
                         ui.separator();
@@ -94,11 +89,8 @@ impl<'a> Component for Results<'a> {
                             .show(ui, |ui| {
                                 for (i, cand) in layer.candidates.iter().enumerate() {
                                     let is_chosen = layer.chosen_idx == Some(i);
-                                    let is_selected = self
-                                        .selected_candidate
-                                        .borrow()
-                                        .is_some_and(|v| v == i);
-
+                                    let is_selected =
+                                        self.selected_candidate.borrow().is_some_and(|v| v == i);
                                     let label = format!(
                                         "#{i}  emission={}{} ({:.5}, {:.5})",
                                         cand.emission,
@@ -106,7 +98,6 @@ impl<'a> Component for Results<'a> {
                                         cand.position.x,
                                         cand.position.y,
                                     );
-
                                     if ui
                                         .selectable_label(is_selected || is_chosen, label)
                                         .clicked()
@@ -116,28 +107,15 @@ impl<'a> Component for Results<'a> {
                                 }
                             });
 
-                        // ── Selected candidate detail ───────────────────────
                         if let Some(cand_idx) = *self.selected_candidate.borrow() {
                             if let Some(cand) = layer.candidates.get(cand_idx) {
                                 ui.separator();
                                 ui.heading(format!("Candidate #{cand_idx}"));
-                                ui.colored_label(
-                                    muted,
-                                    format!("Emission cost:  {}", cand.emission),
-                                );
-                                ui.colored_label(
-                                    muted,
-                                    format!("Lon  {:.6}", cand.position.x),
-                                );
-                                ui.colored_label(
-                                    muted,
-                                    format!("Lat  {:.6}", cand.position.y),
-                                );
+                                ui.colored_label(muted, format!("Emission: {}", cand.emission));
+                                ui.colored_label(muted, format!("Lon  {:.6}", cand.position.x));
+                                ui.colored_label(muted, format!("Lat  {:.6}", cand.position.y));
                                 if layer.chosen_idx == Some(cand_idx) {
-                                    ui.colored_label(
-                                        positive,
-                                        "This candidate was chosen by the solver.",
-                                    );
+                                    ui.colored_label(positive, "Chosen by solver");
                                 }
                             }
                         }

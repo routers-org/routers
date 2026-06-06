@@ -1,7 +1,9 @@
 mod colour;
 mod component;
 mod dimensions;
+mod match_data;
 
 pub use colour::{BaseColour, ColourFactory, ColourScheme};
 pub use component::{Component, Context};
 pub use dimensions::{Layout, Regular, Size};
+pub use match_data::{MatchCandidate, MatchData, MatchLayer};

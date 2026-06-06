@@ -4,18 +4,16 @@ use anyhow::Context as _;
 use eframe::CreationContext;
 use egui::{Color32, CursorIcon, SidePanel};
 use geo::Coord;
-use routers_codec::osm::{OsmNetwork};
+use routers_codec::osm::OsmNetwork;
 use routers_fixtures::{SYDNEY, fixture};
 use walkers::{
-    HttpTiles, MapMemory, Plugin,
+    HttpTiles, MapMemory, Plugin, lon_lat,
     sources::{Mapbox, MapboxStyle, OpenStreetMap},
-    lon_lat,
 };
 use wkt::ToWkt as _;
 
 use crate::{
-    ColourFactory, Component, Context, Input, Map, Matcher, Regular, Results, Stack,
-    match_data::MatchData,
+    ColourFactory, Component, Context, Input, Map, MatchData, Matcher, Regular, Results, Stack,
     plugins::{CandidatesPlugin, ChosenPathPlugin, DrawPlugin, LineStringPlugin},
 };
 
@@ -25,22 +23,12 @@ const MAPBOX_API_KEY: &'static str = "mapbox-api-key";
 pub struct Application {
     network: OsmNetwork,
     map: Map,
-
     input_string: RefCell<String>,
-
-    /// Last successful match result, retained across frames.
     match_cache: RefCell<Option<MatchData>>,
-    /// Error from the most recent failed match attempt.
     error_msg: RefCell<Option<String>>,
-
-    /// Which layer (GPS point) is selected in the Results sidebar.
     selected_layer: RefCell<Option<usize>>,
-    /// Which candidate within the selected layer is highlighted.
     selected_candidate: RefCell<Option<usize>>,
-
-    /// Whether the map-drawing tool is active.
     draw_mode: RefCell<bool>,
-    /// Points collected while the user clicks the map in draw mode.
     drawn_points: RefCell<Vec<Coord>>,
 }
 
@@ -81,9 +69,7 @@ impl Application {
             None => HttpTiles::new(OpenStreetMap, egui_ctx),
         };
 
-        let memory = MapMemory::default();
-        let center = lon_lat(151.12, -33.52);
-        let map = Map::new(tiles, memory, center);
+        let map = Map::new(tiles, MapMemory::default(), lon_lat(151.12, -33.52));
 
         Ok(Self {
             map,
@@ -101,7 +87,6 @@ impl Application {
     fn build_map_plugins(&self) -> Vec<Box<dyn Plugin + 'static>> {
         let mut plugins: Vec<Box<dyn Plugin + 'static>> = vec![];
 
-        // In-progress drawn points (shown before a match is run).
         if *self.draw_mode.borrow() {
             let pts = self.drawn_points.borrow().clone();
             if !pts.is_empty() {
@@ -114,7 +99,6 @@ impl Application {
             return plugins;
         };
 
-        // Original GPS trace (red, thin).
         let orig_coords: Vec<_> = data.original_line.0.iter().copied().collect();
         if orig_coords.len() >= 2 {
             plugins.push(Box::new(
@@ -124,7 +108,6 @@ impl Application {
             ));
         }
 
-        // Full interpolated road geometry (blue, prominent).
         let interp_coords: Vec<_> = data.interpolated_line.0.iter().copied().collect();
         if interp_coords.len() >= 2 {
             plugins.push(Box::new(
@@ -134,14 +117,11 @@ impl Application {
             ));
         }
 
-        // Chosen-path overlay: dots at original/snapped positions + connectors.
         plugins.push(Box::new(ChosenPathPlugin {
             layers: data.layers.clone(),
         }));
 
-        // When a layer is selected in the sidebar:
         if let Some(layer_idx) = *self.selected_layer.borrow() {
-            // Highlight the incoming transition in yellow (if not the first layer).
             if layer_idx > 0 {
                 if let Some(coords) = data.transitions.get(layer_idx - 1) {
                     if coords.len() >= 2 {
@@ -154,7 +134,6 @@ impl Application {
                 }
             }
 
-            // Highlight the outgoing transition in orange.
             if let Some(coords) = data.transitions.get(layer_idx) {
                 if coords.len() >= 2 {
                     plugins.push(Box::new(
@@ -165,7 +144,6 @@ impl Application {
                 }
             }
 
-            // All candidates for this layer as coloured dots.
             if let Some(layer) = data.layers.get(layer_idx) {
                 plugins.push(Box::new(CandidatesPlugin {
                     layer: layer.clone(),
@@ -179,11 +157,9 @@ impl Application {
 
     fn commit_drawn_point(&self, coord: Coord) {
         self.drawn_points.borrow_mut().push(coord);
-
         let pts = self.drawn_points.borrow();
         if pts.len() >= 2 {
-            let ls = geo::LineString::new(pts.clone());
-            *self.input_string.borrow_mut() = ls.wkt_string();
+            *self.input_string.borrow_mut() = geo::LineString::new(pts.clone()).wkt_string();
         }
     }
 }
@@ -200,11 +176,9 @@ impl eframe::App for Application {
             ui.heading("Routers Map Matcher");
             ui.separator();
 
-            // ── Input field ──────────────────────────────────────────────────
             let input = Input::new(&self.input_string);
             let (_, linestring) = input.draw(&context, ui);
 
-            // ── [✏ Draw] [✕ Clear] ───────────────────────────────────────────
             ui.horizontal(|ui| {
                 let drawing = *self.draw_mode.borrow();
 
@@ -232,14 +206,16 @@ impl eframe::App for Application {
                 let hint = if n == 0 {
                     "Click the map to add points".to_owned()
                 } else {
-                    format!("{n} point{} — click to add more", if n == 1 { "" } else { "s" })
+                    format!(
+                        "{n} point{} — click to add more",
+                        if n == 1 { "" } else { "s" }
+                    )
                 };
                 ui.colored_label(ctx.theme().default_visuals().warn_fg_color, hint);
             }
 
             ui.separator();
 
-            // ── Match button ─────────────────────────────────────────────────
             let matcher = Matcher::new(&self.network, linestring);
             let (_, result) = Stack::new(&matcher).draw(&context, ui);
 
@@ -247,7 +223,8 @@ impl eframe::App for Application {
                 None => {}
                 Some(Ok(data)) => {
                     if let Some(first) = data.layers.first() {
-                        self.map.center_at(lon_lat(first.original.x, first.original.y));
+                        self.map
+                            .center_at(lon_lat(first.original.x, first.original.y));
                     }
                     *self.match_cache.borrow_mut() = Some(data);
                     *self.error_msg.borrow_mut() = None;
@@ -259,12 +236,10 @@ impl eframe::App for Application {
                 }
             }
 
-            // ── Error display ────────────────────────────────────────────────
             if let Some(msg) = self.error_msg.borrow().as_deref() {
                 ui.colored_label(Color32::RED, msg);
             }
 
-            // ── Results panel ────────────────────────────────────────────────
             let cache = self.match_cache.borrow();
             if let Some(data) = cache.as_ref() {
                 ui.separator();
@@ -273,7 +248,6 @@ impl eframe::App for Application {
             }
         });
 
-        // ── Map ──────────────────────────────────────────────────────────────
         self.map.set_plugins(self.build_map_plugins());
 
         egui::CentralPanel::default().show(ctx, |ui| {
@@ -287,7 +261,10 @@ impl eframe::App for Application {
                     if let Some(screen_pos) = response.interact_pointer_pos() {
                         let projector = self.map.projector(response.rect);
                         let geo = projector.unproject(screen_pos.to_vec2());
-                        self.commit_drawn_point(Coord { x: geo.x(), y: geo.y() });
+                        self.commit_drawn_point(Coord {
+                            x: geo.x(),
+                            y: geo.y(),
+                        });
                     }
                 }
             }
