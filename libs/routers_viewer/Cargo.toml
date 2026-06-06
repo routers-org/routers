@@ -42,10 +42,6 @@ routers_fixtures = { workspace = true }
 [lints]
 workspace = true
 
-[[example]]
-name = "viewer"
-path = "examples/viewer.rs"
-
 [features]
 persistence = ["eframe/persistence"]
 
