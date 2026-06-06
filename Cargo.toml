@@ -59,6 +59,8 @@ rustc-hash = "2.1.1"
 # Logging
 log = { version = "0.4.28" }
 test-log = { version = "0.2.18", features = ["log"] }
+anyhow = "1.0.102"
+quick-error = "2.0.1"
 
 # ConnectRPC
 buffa = { version = "0.6.0", features = ["json"] }

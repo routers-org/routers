@@ -1,5 +1,6 @@
 #![warn(clippy::all, rust_2018_idioms)]
 
+use eframe::App;
 use log::info;
 use routers_viewer::Application;
 
@@ -26,7 +27,10 @@ async fn main() -> eframe::Result<()> {
     eframe::run_native(
         "routers",
         native_options,
-        Box::new(|ctx| Ok(Box::new(Application::new(ctx)))),
+        Box::new(|ctx| match Application::new(ctx) {
+            Ok(app) => Ok(Box::new(app) as Box<dyn App>),
+            Err(e) => Err(e.into_boxed_dyn_error()),
+        }),
     )
 }
 

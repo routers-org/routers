@@ -1,11 +1,20 @@
-use crate::Component;
+use std::sync::Arc;
 
-pub struct Shell {}
+use routers_codec::osm::OsmNetwork;
+use walkers::MapMemory;
+
+use crate::{Component, Map};
+
+pub struct Shell {
+    network: Arc<OsmNetwork>,
+}
 
 impl Shell {
-    pub fn new() -> Self {
-        Self {}
+    pub fn new(network: Arc<OsmNetwork>) -> Self {
+        Self { network }
     }
+
+    // pub fn perform_match(&self) ->
 }
 
 impl Component for Shell {

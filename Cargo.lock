@@ -6238,6 +6238,7 @@ dependencies = [
 name = "routers_viewer"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "dotenvy",
  "eframe",
  "egui",
@@ -6246,6 +6247,7 @@ dependencies = [
  "log",
  "pathfinding",
  "petgraph",
+ "quick-error",
  "routers",
  "routers_codec",
  "routers_fixtures",
@@ -8066,6 +8068,7 @@ dependencies = [
  "lru",
  "reqwest",
  "reqwest-middleware",
+ "serde",
  "thiserror 2.0.18",
  "tokio",
  "wasm-bindgen-futures",
