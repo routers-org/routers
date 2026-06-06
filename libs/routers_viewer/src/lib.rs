@@ -1,5 +1,5 @@
 use eframe::{App, Frame, egui};
-use egui::{CentralPanel, Color32, Context, Response, SidePanel, Stroke, TextEdit, Widget};
+use egui::{CentralPanel, Color32, Context, Margin, Response, SidePanel, Stroke, TextEdit, Widget};
 use walkers::{HttpTiles, Map, MapMemory, Plugin, Projector, lon_lat, sources::Mapbox};
 
 use dotenv::dotenv;
@@ -16,6 +16,10 @@ use routers_network::{DataPlane, Discovery, Entry, Node};
 use std::time::{Duration, Instant};
 use walkers::sources::MapboxStyle;
 use wkt::ToWkt;
+
+use crate::utils::Component;
+
+mod utils;
 
 struct MatchState {
     original_line: LineString,
