@@ -35,6 +35,7 @@ impl<'a> Component for Results<'a> {
             .vertical(|ui| {
                 ui.heading("Match Results");
                 ui.colored_label(positive, format!("Cost: {}", self.data.cost));
+                ui.colored_label(muted, format!("{}ms", self.data.time.as_millis()));
                 ui.colored_label(
                     muted,
                     format!(

@@ -70,9 +70,11 @@ fn run_match(network: &OsmNetwork, linestring: LineString, cache: MatchCache) ->
     let solver = SelectiveForwardSolver::default().use_cache(cache);
     let runtime = OsmTripConfiguration::default();
 
+    let start = std::time::Instant::now();
     let collapsed = transition
         .solve(solver, &runtime)
         .map_err(|e| format!("{e:?}"))?;
+    let time = start.elapsed();
 
     let interpolated_line = collapsed.interpolated(network);
 
@@ -121,6 +123,7 @@ fn run_match(network: &OsmNetwork, linestring: LineString, cache: MatchCache) ->
 
     Ok(MatchData {
         cost: collapsed.cost,
+        time,
         original_line: linestring,
         interpolated_line,
         layers,
