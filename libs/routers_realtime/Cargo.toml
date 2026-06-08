@@ -46,6 +46,8 @@ log = { workspace = true }
 routers_fixtures = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 csv = "1"
+env_logger = "0.11"
+polars = { version = "0.46", default-features = false, features = ["lazy", "csv"] }
 
 [lints]
 workspace = true
@@ -58,6 +60,10 @@ path = "bin/orchestrator.rs"
 name = "matcher"
 path = "bin/matcher.rs"
 
+[[bin]]
+name = "historian"
+path = "bin/historian.rs"
+
 [[example]]
 name = "process"
 path = "examples/process.rs"
@@ -65,3 +71,11 @@ path = "examples/process.rs"
 [[example]]
 name = "replay"
 path = "examples/replay.rs"
+
+[[example]]
+name = "replay_large"
+path = "examples/replay_large.rs"
+
+[[example]]
+name = "build_shards"
+path = "examples/build_shards.rs"

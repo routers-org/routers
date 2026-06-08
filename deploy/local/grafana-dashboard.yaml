@@ -10,7 +10,7 @@ data:
     {
       "title": "Routers Realtime",
       "uid": "routers-realtime",
-      "version": 2,
+      "version": 3,
       "refresh": "2s",
       "time": {
         "from": "now-15m",
@@ -42,13 +42,25 @@ data:
           "targets": [
             {
               "expr": "rate(routers_events_received_total[15s])",
-              "legendFormat": "received"
+              "legendFormat": "received",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
             },
             {
               "expr": "rate(routers_events_published_total[15s])",
-              "legendFormat": "published to NATS"
+              "legendFormat": "published to NATS",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
             }
-          ]
+          ],
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
         },
         {
           "id": 2,
@@ -71,17 +83,33 @@ data:
           "targets": [
             {
               "expr": "histogram_quantile(0.50, rate(routers_total_latency_ms_bucket[15s]))",
-              "legendFormat": "p50"
+              "legendFormat": "p50",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
             },
             {
               "expr": "histogram_quantile(0.95, rate(routers_total_latency_ms_bucket[15s]))",
-              "legendFormat": "p95"
+              "legendFormat": "p95",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
             },
             {
               "expr": "histogram_quantile(0.99, rate(routers_total_latency_ms_bucket[15s]))",
-              "legendFormat": "p99"
+              "legendFormat": "p99",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
             }
-          ]
+          ],
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
         },
         {
           "id": 3,
@@ -108,9 +136,17 @@ data:
           "targets": [
             {
               "expr": "routers_events_received_total",
-              "legendFormat": ""
+              "legendFormat": "",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
             }
-          ]
+          ],
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
         },
         {
           "id": 4,
@@ -137,9 +173,17 @@ data:
           "targets": [
             {
               "expr": "routers_events_published_total",
-              "legendFormat": ""
+              "legendFormat": "",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
             }
-          ]
+          ],
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
         },
         {
           "id": 5,
@@ -179,9 +223,17 @@ data:
           "targets": [
             {
               "expr": "routers_events_received_total - routers_events_published_total",
-              "legendFormat": ""
+              "legendFormat": "",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
             }
-          ]
+          ],
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
         },
         {
           "id": 6,
@@ -221,9 +273,17 @@ data:
           "targets": [
             {
               "expr": "routers_store_errors_total",
-              "legendFormat": ""
+              "legendFormat": "",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
             }
-          ]
+          ],
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
         },
         {
           "id": 7,
@@ -252,21 +312,41 @@ data:
           "targets": [
             {
               "expr": "rate(routers_total_latency_ms_sum[15s]) / rate(routers_total_latency_ms_count[15s])",
-              "legendFormat": "total"
+              "legendFormat": "total",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
             },
             {
               "expr": "rate(routers_store_latency_ms_sum[15s]) / rate(routers_store_latency_ms_count[15s])",
-              "legendFormat": "valkey (store)"
+              "legendFormat": "valkey (store)",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
             },
             {
               "expr": "rate(routers_nats_latency_ms_sum[15s]) / rate(routers_nats_latency_ms_count[15s])",
-              "legendFormat": "nats (publish)"
+              "legendFormat": "nats (publish)",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
             },
             {
               "expr": "rate(routers_total_latency_ms_sum[15s]) / rate(routers_total_latency_ms_count[15s]) - rate(routers_store_latency_ms_sum[15s]) / rate(routers_store_latency_ms_count[15s])",
-              "legendFormat": "other (deser + routing + history)"
+              "legendFormat": "other (deser + routing + history)",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
             }
-          ]
+          ],
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
         },
         {
           "id": 8,
@@ -287,13 +367,25 @@ data:
           "targets": [
             {
               "expr": "histogram_quantile(0.50, rate(routers_event_age_ms_bucket[15s]))",
-              "legendFormat": "p50"
+              "legendFormat": "p50",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
             },
             {
               "expr": "histogram_quantile(0.95, rate(routers_event_age_ms_bucket[15s]))",
-              "legendFormat": "p95"
+              "legendFormat": "p95",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
             }
-          ]
+          ],
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
         },
         {
           "id": 9,
@@ -331,17 +423,33 @@ data:
           "targets": [
             {
               "expr": "sum(routers_matches_total_success)",
-              "legendFormat": "success"
+              "legendFormat": "success",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
             },
             {
               "expr": "sum(routers_matches_total_no_candidate)",
-              "legendFormat": "no_candidate"
+              "legendFormat": "no_candidate",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
             },
             {
               "expr": "sum(routers_matches_total_error)",
-              "legendFormat": "error"
+              "legendFormat": "error",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
             }
-          ]
+          ],
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
         },
         {
           "id": 10,
@@ -387,9 +495,17 @@ data:
           "targets": [
             {
               "expr": "sum(routers_matches_total_success) / (sum(routers_matches_total_success) + sum(routers_matches_total_no_candidate) + sum(routers_matches_total_error))",
-              "legendFormat": "success rate"
+              "legendFormat": "success rate",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
             }
-          ]
+          ],
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
         },
         {
           "id": 11,
@@ -409,9 +525,17 @@ data:
           "targets": [
             {
               "expr": "rate(routers_solve_latency_ms_sum[30s]) / rate(routers_solve_latency_ms_count[30s])",
-              "legendFormat": "avg solve ms"
+              "legendFormat": "avg solve ms",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
             }
-          ]
+          ],
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
         },
         {
           "id": 12,
@@ -436,21 +560,41 @@ data:
           "targets": [
             {
               "expr": "rate(routers_match_latency_ms_sum[30s]) / rate(routers_match_latency_ms_count[30s])",
-              "legendFormat": "avg end-to-end ms"
+              "legendFormat": "avg end-to-end ms",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
             },
             {
               "expr": "histogram_quantile(0.50, rate(routers_match_latency_ms_bucket[30s]))",
-              "legendFormat": "p50"
+              "legendFormat": "p50",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
             },
             {
               "expr": "histogram_quantile(0.95, rate(routers_match_latency_ms_bucket[30s]))",
-              "legendFormat": "p95"
+              "legendFormat": "p95",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
             },
             {
               "expr": "histogram_quantile(0.99, rate(routers_match_latency_ms_bucket[30s]))",
-              "legendFormat": "p99"
+              "legendFormat": "p99",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
             }
-          ]
+          ],
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
         }
       ],
       "schemaVersion": 36

@@ -14,7 +14,7 @@ use routers_shard::{ShardId, ShardingStrategy};
 use serde::{Serialize, de::DeserializeOwned};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::time::{Duration, Instant};
-pub use store::{MemoryStore, ValkeyStore};
+pub use store::{MemoryStore, ValkeyStore, WarmingMemoryStore};
 use store::PositionStore;
 
 pub async fn orchestrate<St, Si, P, Strat, S>(
@@ -48,6 +48,7 @@ where
         if event.timestamp_ms > 0 {
             let age = resolved_at_ms.saturating_sub(event.timestamp_ms) as f64;
             m.event_age_ms.observe(age);
+            m.event_age_latest_s.set(age / 1000.0);
         }
 
         let shard = strategy.locate(event.coord);
@@ -70,7 +71,7 @@ where
         m.store_latency_ms
             .observe(t_store.elapsed().as_secs_f64() * 1000.0);
 
-        let history = history::filter_history(raw_history.into_iter());
+        let history = history::filter_history(raw_history.into_iter(), 10, event.timestamp_ms, 5 * 60 * 1000);
         let ctx = MatchContext {
             vehicle_id: event.vehicle_id,
             resolved_at_ms,
@@ -144,8 +145,9 @@ where
         };
         m.events_received.inc();
         if first.timestamp_ms > 0 {
-            m.event_age_ms
-                .observe(resolved_at_ms.saturating_sub(first.timestamp_ms) as f64);
+            let age = resolved_at_ms.saturating_sub(first.timestamp_ms) as f64;
+            m.event_age_ms.observe(age);
+            m.event_age_latest_s.set(age / 1000.0);
         }
         batch.push((first.vehicle_id, shard, position, resolved_at_ms, first.timestamp_ms));
 
@@ -165,8 +167,9 @@ where
                     };
                     m.events_received.inc();
                     if event.timestamp_ms > 0 {
-                        m.event_age_ms
-                            .observe(resolved_at_ms.saturating_sub(event.timestamp_ms) as f64);
+                        let age = resolved_at_ms.saturating_sub(event.timestamp_ms) as f64;
+                        m.event_age_ms.observe(age);
+                        m.event_age_latest_s.set(age / 1000.0);
                     }
                     batch.push((event.vehicle_id, shard, position, resolved_at_ms, event.timestamp_ms));
                 }
@@ -191,13 +194,13 @@ where
         let store_elapsed_ms = t_store.elapsed().as_secs_f64() * 1000.0;
         let per_event_store_ms = store_elapsed_ms / batch.len() as f64;
 
-        for ((vehicle_id, shard, position, resolved_at_ms, _), raw_history) in
+        for ((vehicle_id, shard, position, resolved_at_ms, timestamp_ms), raw_history) in
             batch.iter().zip(histories.into_iter())
         {
             let t_event = std::time::Instant::now();
             m.store_latency_ms.observe(per_event_store_ms);
 
-            let history = history::filter_history(raw_history.into_iter());
+            let history = history::filter_history(raw_history.into_iter(), 10, *timestamp_ms, 5 * 60 * 1000);
             let ctx = MatchContext {
                 vehicle_id: vehicle_id.clone(),
                 resolved_at_ms: *resolved_at_ms,

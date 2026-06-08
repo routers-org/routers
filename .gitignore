@@ -7,6 +7,8 @@
 *.wkt
 *.geojson
 *.rt
+*.csv.zip
+*.csv
 
 todo.md
 

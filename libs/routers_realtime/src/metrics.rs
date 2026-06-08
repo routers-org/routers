@@ -1,5 +1,5 @@
 use axum::{Router, routing::get};
-use prometheus::{Histogram, HistogramOpts, IntCounter, Registry, TextEncoder, opts};
+use prometheus::{Gauge, Histogram, HistogramOpts, IntCounter, Registry, TextEncoder, opts};
 use std::net::SocketAddr;
 use std::sync::OnceLock;
 
@@ -95,6 +95,10 @@ pub struct Metrics {
     /// Time spent waiting for the NATS JetStream PubAck (ms).
     pub nats_latency_ms: Histogram,
     pub event_age_ms: Histogram,
+    /// Exact age (seconds) of the most recently processed event.
+    /// Unlike `event_age_ms`, this is a Gauge — no bucket saturation,
+    /// works correctly for replay data that is days or months old.
+    pub event_age_latest_s: Gauge,
     registry: Registry,
 }
 
@@ -119,6 +123,13 @@ pub fn global() -> &'static Metrics {
                 .unwrap();
                 registry.register(Box::new(h.clone())).unwrap();
                 h
+            }};
+        }
+        macro_rules! gauge {
+            ($name:expr, $help:expr) => {{
+                let g = Gauge::with_opts(opts!($name, $help)).unwrap();
+                registry.register(Box::new(g.clone())).unwrap();
+                g
             }};
         }
 
@@ -156,6 +167,10 @@ pub fn global() -> &'static Metrics {
                 "routers_event_age_ms",
                 "Age of event when received: wall_clock − event_timestamp (ms)",
                 vec![100.0, 500.0, 1000.0, 2000.0, 5000.0, 10000.0, 30000.0, 60000.0]
+            ),
+            event_age_latest_s: gauge!(
+                "routers_event_age_latest_s",
+                "Age of the most recently processed event (s); exact value, safe for replay data"
             ),
             registry,
         }

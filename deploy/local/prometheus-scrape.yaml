@@ -12,16 +12,41 @@ stringData:
           namespaces:
             names: [routers-dev]
       relabel_configs:
+        # Only scrape pods with app=orchestrator
         - source_labels: [__meta_kubernetes_pod_label_app]
           action: keep
           regex: orchestrator
-        - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_port]
+        # Build __address__ from pod IP + prometheus annotation port
+        - source_labels: [__meta_kubernetes_pod_ip, __meta_kubernetes_pod_annotation_prometheus_io_port]
+          separator: ":"
           target_label: __address__
-          replacement: "${1}"
-          action: replace
+        # Honour the /metrics path annotation if set
+        - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+          target_label: __metrics_path__
           regex: (.+)
-          source_labels: [__meta_kubernetes_pod_ip, __meta_kubernetes_pod_annotation_prometheus_io_port]
-          replacement: "$1:$2"
+          action: replace
+        - source_labels: [__meta_kubernetes_pod_name]
+          target_label: pod
+        - source_labels: [__meta_kubernetes_pod_node_name]
+          target_label: node
+
+    - job_name: routers-matcher
+      scrape_interval: 2s
+      kubernetes_sd_configs:
+        - role: pod
+          namespaces:
+            names: [routers-dev]
+      relabel_configs:
+        - source_labels: [__meta_kubernetes_pod_label_app]
+          action: keep
+          regex: matcher
+        - source_labels: [__meta_kubernetes_pod_ip, __meta_kubernetes_pod_annotation_prometheus_io_port]
+          separator: ":"
+          target_label: __address__
+        - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+          target_label: __metrics_path__
+          regex: (.+)
+          action: replace
         - source_labels: [__meta_kubernetes_pod_name]
           target_label: pod
         - source_labels: [__meta_kubernetes_pod_node_name]

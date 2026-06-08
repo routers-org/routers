@@ -12,7 +12,7 @@ use routers_realtime::{
 #[cfg(not(debug_assertions))]
 use routers_realtime::assignment::ShardAssignment;
 use routers_shard::{
-    FileFetcher, Geohash, GeohashStrategy, MultiShardNetwork, SelectionMode, Selection,
+    FileFetcher, Geohash, GeohashStrategy, MultiShardNetwork, Selection, SelectionMode,
     ShardLoader, ShardingStrategy,
 };
 use std::str::FromStr;
@@ -50,23 +50,26 @@ async fn main() -> anyhow::Result<()> {
 
     let strategy = GeohashStrategy::with_precision(shard_precision);
 
-    #[cfg(debug_assertions)]
-    let shard: S = {
-        let val = std::env::var("OWNED_SHARD").expect("OWNED_SHARD must be set");
+    // OWNED_SHARD env var always takes precedence (required in debug builds; optional override
+    // in release builds while NatsKvAssignment lease acquisition is not yet implemented).
+    let shard: S = if let Ok(val) = std::env::var("OWNED_SHARD") {
         S::from_str(&val).expect("OWNED_SHARD is not a valid geohash")
-    };
+    } else {
+        #[cfg(debug_assertions)]
+        { panic!("OWNED_SHARD must be set in debug builds") }
 
-    #[cfg(not(debug_assertions))]
-    let shard: S = {
-        let nc = async_nats::connect(&nats_url)
-            .await
-            .map_err(|e| anyhow::anyhow!("NATS connect: {e}"))?;
-        let js = async_nats::jetstream::new(nc);
-        let assignment =
-            routers_realtime::assignment::NatsKvAssignment::new(js, "shard-leases")
+        #[cfg(not(debug_assertions))]
+        {
+            let nc = async_nats::connect(&nats_url)
                 .await
-                .map_err(|e| anyhow::anyhow!("NatsKvAssignment: {e}"))?;
-        assignment.acquire().await
+                .map_err(|e| anyhow::anyhow!("NATS connect: {e}"))?;
+            let js = async_nats::jetstream::new(nc);
+            let assignment =
+                routers_realtime::assignment::NatsKvAssignment::new(js, "shard-leases")
+                    .await
+                    .map_err(|e| anyhow::anyhow!("NatsKvAssignment: {e}"))?;
+            assignment.acquire().await
+        }
     };
 
     let selection = Selection::new(&strategy, shard, SelectionMode::OwnedAndNeighbours);
@@ -92,11 +95,11 @@ async fn main() -> anyhow::Result<()> {
     let nc = async_nats::connect(&nats_url)
         .await
         .map_err(|e| anyhow::anyhow!("NATS connect: {e}"))?;
-    let js = async_nats::jetstream::new(nc);
+    let js = async_nats::jetstream::new(nc.clone());
     let consumer = nats::match_consumer(&js, &shard)
         .await
         .map_err(|e| anyhow::anyhow!("match_consumer: {e}"))?;
-    let result_sink = nats::result_sink(js, "matched.positions".into());
+    let result_sink = nats::result_sink(nc, "matched.positions".into());
 
     futures::pin_mut!(result_sink);
     let mut messages = consumer
@@ -127,6 +130,10 @@ async fn main() -> anyhow::Result<()> {
             .collect();
 
         let linestring = LineString(coords);
+        let debug_pts: Vec<String> = ctx.history.iter()
+            .chain(std::iter::once(&ctx.current))
+            .map(|p| format!("[{:.6},{:.6},t={}]", p.coord.x(), p.coord.y(), p.timestamp_ms))
+            .collect();
         let opts = MatchOptions::<E, M, _>::default();
 
         let t_solve = Instant::now();
@@ -146,7 +153,12 @@ async fn main() -> anyhow::Result<()> {
                 (coord, outcome)
             }
             Err(e) => {
-                log::warn!("match failed for vehicle {}: {e}", ctx.vehicle_id);
+                eprintln!(
+                    "match failed for vehicle {}: {e:?} | points={} linestring=[{}]",
+                    ctx.vehicle_id,
+                    debug_pts.len(),
+                    debug_pts.join(",")
+                );
                 (ctx.current.coord, MatchOutcome::Error)
             }
         };

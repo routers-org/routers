@@ -38,21 +38,19 @@ where
 }
 
 pub fn result_sink(
-    js: async_nats::jetstream::Context,
+    nc: async_nats::Client,
     subject: String,
 ) -> impl Sink<MatchResult, Error = NatsSinkError> {
-    futures::sink::unfold(js, move |js, result: MatchResult| {
+    futures::sink::unfold(nc, move |nc, result: MatchResult| {
         let subject = subject.clone();
         async move {
             let payload: bytes::Bytes = postcard::to_allocvec(&result)
                 .map_err(NatsSinkError::Serialize)?
                 .into();
-            js.publish(subject, payload)
-                .await
-                .map_err(|_| NatsSinkError::Publish)?
+            nc.publish(subject, payload)
                 .await
                 .map_err(|_| NatsSinkError::Publish)?;
-            Ok(js)
+            Ok(nc)
         }
     })
 }

@@ -118,7 +118,12 @@ where
         let mut hash: FxHashMap<E, Node<E>> = FxHashMap::default();
         let mut meta: FxHashMap<E, M> = FxHashMap::default();
 
-        for (id, pos) in source.nodes() {
+        // Collect all node positions up-front so we can look up boundary
+        // nodes (those outside the selection that are targets of boundary
+        // edges) without a second source scan.
+        let all_nodes: FxHashMap<E, Point> = source.nodes().collect();
+
+        for (&id, &pos) in &all_nodes {
             let shard = strategy.locate(pos);
             if selection.contains(&shard) {
                 hash.insert(id, Node::new(pos, id));
@@ -126,12 +131,24 @@ where
             }
         }
 
+        // Include every edge whose source is in the selection. If the target
+        // is outside the selection, add it as a context node so the boundary
+        // edge is traversable when shards are merged at runtime.
         for (from, to, weight, m) in source.edges() {
-            if hash.contains_key(&from) && hash.contains_key(&to) {
-                let edge_id = DirectionAwareEdgeId::new(from);
-                graph.add_edge(from, to, (weight, edge_id));
-                meta.entry(from).or_insert(m);
+            if !hash.contains_key(&from) {
+                continue;
             }
+            if !hash.contains_key(&to) {
+                if let Some(&pos) = all_nodes.get(&to) {
+                    hash.insert(to, Node::new(pos, to));
+                    graph.add_node(to);
+                } else {
+                    continue;
+                }
+            }
+            let edge_id = DirectionAwareEdgeId::new(from);
+            graph.add_edge(from, to, (weight, edge_id));
+            meta.entry(from).or_insert(m);
         }
 
         let mut net = Self {

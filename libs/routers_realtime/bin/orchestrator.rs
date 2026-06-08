@@ -1,14 +1,13 @@
-use chrono::DateTime;
+use chrono::{DateTime, NaiveDateTime};
 use futures::StreamExt;
 use geo::Point;
 use routers_realtime::{
-    MemoryStore, ValkeyStore,
+    MemoryStore, ValkeyStore, WarmingMemoryStore,
     amqp::{Topic, TopicOpts},
     context::{MatchContext, RawEvent},
     metrics,
     nats,
     orchestrate,
-    orchestrate_batched,
 };
 use routers_shard::{Geohash, GeohashStrategy};
 use tokio::sync::mpsc;
@@ -30,7 +29,14 @@ fn make_source(opts: TopicOpts) -> impl std::future::Future<Output = anyhow::Res
             let ts = DateTime::parse_from_str(&payload.event_time, "%Y-%m-%d %H:%M:%S%.f %Z")
                 .or_else(|_| DateTime::parse_from_str(&payload.event_time, "%Y-%m-%d %H:%M:%S %Z"))
                 .map(|dt| dt.timestamp_millis() as u64)
-                .unwrap_or(0);
+                // Fallback: strip trailing " UTC" and parse as naive UTC datetime.
+                .unwrap_or_else(|_| {
+                    let s = payload.event_time.trim_end_matches(" UTC");
+                    NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S%.f")
+                        .or_else(|_| NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S"))
+                        .map(|dt| dt.and_utc().timestamp_millis() as u64)
+                        .unwrap_or(0)
+                });
             Some(RawEvent {
                 vehicle_id: payload.vehicle_id,
                 coord: Point::new(payload.point.x, payload.point.y),
@@ -59,14 +65,6 @@ async fn main() -> anyhow::Result<()> {
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(5);
-    let valkey_batch_size: usize = std::env::var("VALKEY_BATCH")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(64);
-    let valkey_batch_timeout_ms: u64 = std::env::var("VALKEY_BATCH_TIMEOUT_MS")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(2);
     // Number of parallel consumer+store pipelines. Each opens its own AMQP connection
     // and Valkey connection, all funnelling into the same shared NATS publisher.
     let parallelism: usize = std::env::var("PARALLELISM")
@@ -102,21 +100,14 @@ async fn main() -> anyhow::Result<()> {
         }
         _ => {
             eprintln!(
-                "store: valkey ({valkey_url})  batch={valkey_batch_size}  timeout={valkey_batch_timeout_ms}ms  parallelism={parallelism}"
+                "store: warming ({valkey_url})  parallelism={parallelism}"
             );
 
             if parallelism == 1 {
                 let source = make_source(TopicOpts::from_env()).await?;
-                let store = ValkeyStore::connect(&valkey_url).await?;
-                orchestrate_batched(
-                    source,
-                    make_sink(tx),
-                    store,
-                    strategy,
-                    valkey_batch_size,
-                    valkey_batch_timeout_ms,
-                )
-                .await
+                let valkey = ValkeyStore::connect(&valkey_url).await?;
+                let store = WarmingMemoryStore::new(valkey, 200);
+                orchestrate(source, make_sink(tx), store, &strategy).await
             } else {
                 // Spawn N-1 background tasks, run the last one on the current thread.
                 let mut handles = vec![];
@@ -127,26 +118,19 @@ async fn main() -> anyhow::Result<()> {
                         format!("orchestrator-{i}").as_str(),
                     );
                     let source = make_source(opts).await?;
-                    let store = ValkeyStore::connect(&valkey_url).await?;
+                    let valkey = ValkeyStore::connect(&valkey_url).await?;
+                    let store = WarmingMemoryStore::new(valkey, 200);
                     let sink = make_sink(tx.clone());
                     let strat = strategy.clone();
-                    let batch_size = valkey_batch_size;
-                    let timeout_ms = valkey_batch_timeout_ms;
 
                     if i < parallelism - 1 {
                         handles.push(tokio::spawn(async move {
-                            orchestrate_batched(
-                                source, sink, store, strat, batch_size, timeout_ms,
-                            )
-                            .await
+                            orchestrate(source, sink, store, &strat).await
                         }));
                     } else {
                         // Drop the original tx — last task holds its own clone
                         drop(tx);
-                        return orchestrate_batched(
-                            source, sink, store, strat, batch_size, timeout_ms,
-                        )
-                        .await;
+                        return orchestrate(source, sink, store, &strat).await;
                     }
                 }
                 // Wait for the first task to exit (any failure bubbles up)

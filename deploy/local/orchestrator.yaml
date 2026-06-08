@@ -35,19 +35,14 @@ spec:
               value: "redis://valkey-primary.routers-dev.svc.cluster.local:6379"
             - name: METRICS_ADDR
               value: "0.0.0.0:9091"
-            - name: VALKEY_BATCH
-              value: "64"
-            - name: VALKEY_BATCH_TIMEOUT_MS
-              value: "2"
             - name: PARALLELISM
               value: "1"
           resources:
             requests:
-              cpu: 500m
-              memory: 128Mi
+              cpu: 1000m
+              memory: 256Mi
             limits:
-              cpu: 2000m
-              memory: 512Mi
+              memory: 1Gi
 ---
 apiVersion: v1
 kind: Service
