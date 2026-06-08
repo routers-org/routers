@@ -3,7 +3,8 @@ use geo::{Coord, Distance, Haversine, LineString};
 use lapin::options::{BasicAckOptions, BasicNackOptions};
 use routers::{Match, PredicateCache};
 use routers_realtime::event::Payload;
-use routers_realtime::{Topic, TopicOpts};
+use futures::StreamExt;
+use routers_realtime::amqp::{Topic, TopicOpts};
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::Instant;
@@ -16,7 +17,7 @@ use routers_network::Metadata;
 #[tokio::main]
 async fn main() {
     let opts = TopicOpts::default().with_queue("queue.process");
-    let mut topic = Topic::new(opts).await.expect("Unable to create topic");
+    let mut topic = Box::pin(Topic::new(opts).await.expect("Unable to create topic"));
 
     let mut map = HashMap::<String, VecDeque<Coord<f64>>>::new();
 
@@ -32,7 +33,7 @@ async fn main() {
     let cache = Arc::new(PredicateCache::<OsmEntryId, OsmEdgeMetadata, OsmNetwork>::default());
     let runtime = OsmEdgeMetadata::default_runtime();
 
-    while let event = topic.recv().await {
+    while let Some(event) = topic.next().await {
         match event {
             Ok(delivery) if let Ok(fmt) = serde_json::from_slice::<Payload>(&delivery.data) => {
                 _ = delivery.ack(BasicAckOptions::default()).await;

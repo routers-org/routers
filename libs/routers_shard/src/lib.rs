@@ -22,7 +22,7 @@ pub use network::{ShardSource, ShardedNetwork};
 pub use selection::{Selection, SelectionMode};
 pub use strategy::{
     ShardId, ShardingStrategy,
-    geohash::{Geohash, GeohashStrategy},
+    geohash::{Geohash, GeohashParseError, GeohashStrategy},
     quadtree::{QuadKey, QuadTreeStrategy},
 };
 

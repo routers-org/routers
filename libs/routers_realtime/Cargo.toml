@@ -2,31 +2,61 @@
 name = "routers_realtime"
 version = "0.1.1"
 edition = "2024"
-description = "A Demonstration for Real-Time Map Matching"
+description = "Real-Time Map Matching Pipeline"
 license = "GPL-3.0-or-later"
 
+[lib]
+name = "routers_realtime"
+path = "src/lib.rs"
+
 [dependencies]
-lapin = "4.7.0"
-futures = "0.3.32"
-tokio = { workspace = true }
-
-anyhow = "1.0.102"
-chrono = "0.4.44"
-serde = { workspace = true, features = ["derive"] }
-csv = "1.4.0"
-serde_json = "1.0.149"
-
-geo = { workspace = true, features = ["serde"] }
-
+# Workspace
 routers = { workspace = true }
 routers_codec = { workspace = true }
 routers_network = { workspace = true }
+routers_shard = { workspace = true }
+geo = { workspace = true, features = ["serde"] }
+serde = { workspace = true, features = ["derive"] }
+postcard = { workspace = true }
+bytes = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+
+# AMQP
+lapin = "4.7.0"
+futures = "0.3.32"
+
+# NATS
+async-nats = "0.38.0"
+
+# Valkey / Redis
+redis = { version = "0.29", features = ["tokio-comp", "streams"] }
+
+# Metrics
+prometheus = { workspace = true }
+axum = { workspace = true }
+
+# Serialization / time
+chrono = "0.4.44"
+serde_json = "1.0.149"
+log = { workspace = true }
 
 [dev-dependencies]
 routers_fixtures = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+csv = "1"
 
 [lints]
 workspace = true
+
+[[bin]]
+name = "orchestrator"
+path = "bin/orchestrator.rs"
+
+[[bin]]
+name = "matcher"
+path = "bin/matcher.rs"
 
 [[example]]
 name = "process"

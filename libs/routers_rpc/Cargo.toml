@@ -14,6 +14,7 @@ bench = false
 routers = { workspace = true }
 routers_codec = { workspace = true }
 routers_network = { workspace = true }
+routers_shard = { workspace = true }
 routers_tz = { workspace = true }
 schema = { workspace = true }
 
@@ -26,6 +27,7 @@ geo = { workspace = true }
 
 log = { workspace = true }
 tokio = { workspace = true }
+anyhow = { workspace = true }
 
 # Tracing
 tracing = { workspace = true }
@@ -42,17 +44,13 @@ tracing-opentelemetry = { workspace = true, optional = true }
 [dev-dependencies]
 # Client + server examples need the corresponding connectrpc features.
 connectrpc = { workspace = true, features = ["client", "server"] }
-
-wkt = { workspace = true }
-
-# Environment Variable Resolution
 dotenv = { workspace = true }
-
-# Workspace Crates
+wkt = { workspace = true }
 routers_fixtures = { workspace = true }
 
 [features]
 default = []
+server = ["connectrpc/server"]
 telemetry = [
     "dep:opentelemetry",
     "dep:opentelemetry_sdk",
@@ -61,6 +59,11 @@ telemetry = [
 
     "dep:tracing-opentelemetry"
 ]
+
+[[bin]]
+name = "server"
+path = "bin/server.rs"
+required-features = ["telemetry", "server"]
 
 [[example]]
 name = "client"

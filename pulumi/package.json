@@ -1,0 +1,15 @@
+{
+  "name": "routers-infra",
+  "version": "0.1.0",
+  "private": true,
+  "main": "index.ts",
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "@pulumi/pulumi": "^3.0.0",
+    "@pulumi/gcp": "^8.0.0",
+    "@pulumi/kubernetes": "^4.0.0"
+  }
+}

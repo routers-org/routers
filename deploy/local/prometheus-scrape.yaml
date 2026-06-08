@@ -1,0 +1,36 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: routers-additional-scrape
+  namespace: routers-dev
+stringData:
+  scrape.yaml: |
+    - job_name: routers-orchestrator
+      scrape_interval: 2s
+      kubernetes_sd_configs:
+        - role: pod
+          namespaces:
+            names: [routers-dev]
+      relabel_configs:
+        - source_labels: [__meta_kubernetes_pod_label_app]
+          action: keep
+          regex: orchestrator
+        - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_port]
+          target_label: __address__
+          replacement: "${1}"
+          action: replace
+          regex: (.+)
+          source_labels: [__meta_kubernetes_pod_ip, __meta_kubernetes_pod_annotation_prometheus_io_port]
+          replacement: "$1:$2"
+        - source_labels: [__meta_kubernetes_pod_name]
+          target_label: pod
+        - source_labels: [__meta_kubernetes_pod_node_name]
+          target_label: node
+
+    - job_name: nats
+      scrape_interval: 10s
+      static_configs:
+        - targets:
+            - nats.routers-dev.svc.cluster.local:7777
+          labels:
+            component: nats

@@ -111,6 +111,10 @@ criterion = { version = "3.0.5", features = [
 insta = { version = "1.43.2", features = ["ron", "redactions"] }
 ctor = "0.4.2"
 
+# Metrics / HTTP
+prometheus = { version = "0.13", features = ["process"] }
+axum = { version = "0.8" }
+
 # Utilities
 strum = { version = "0.27.1", features = ["phf", "derive"] }
 serde = { version = "1.0.228", features = [] }

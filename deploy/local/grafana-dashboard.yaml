@@ -1,0 +1,457 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: routers-realtime-dashboard
+  namespace: routers-dev
+  labels:
+    grafana_dashboard: "1"
+data:
+  routers-realtime.json: |
+    {
+      "title": "Routers Realtime",
+      "uid": "routers-realtime",
+      "version": 2,
+      "refresh": "2s",
+      "time": {
+        "from": "now-15m",
+        "to": "now"
+      },
+      "timezone": "browser",
+      "tags": [
+        "routers"
+      ],
+      "panels": [
+        {
+          "id": 1,
+          "title": "Event Throughput (events/s)",
+          "type": "timeseries",
+          "gridPos": {
+            "x": 0,
+            "y": 0,
+            "w": 12,
+            "h": 8
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "reqps",
+              "custom": {
+                "lineWidth": 2
+              }
+            }
+          },
+          "targets": [
+            {
+              "expr": "rate(routers_events_received_total[15s])",
+              "legendFormat": "received"
+            },
+            {
+              "expr": "rate(routers_events_published_total[15s])",
+              "legendFormat": "published to NATS"
+            }
+          ]
+        },
+        {
+          "id": 2,
+          "title": "Processing Latency (ms)",
+          "type": "timeseries",
+          "gridPos": {
+            "x": 12,
+            "y": 0,
+            "w": 12,
+            "h": 8
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "ms",
+              "custom": {
+                "lineWidth": 2
+              }
+            }
+          },
+          "targets": [
+            {
+              "expr": "histogram_quantile(0.50, rate(routers_total_latency_ms_bucket[15s]))",
+              "legendFormat": "p50"
+            },
+            {
+              "expr": "histogram_quantile(0.95, rate(routers_total_latency_ms_bucket[15s]))",
+              "legendFormat": "p95"
+            },
+            {
+              "expr": "histogram_quantile(0.99, rate(routers_total_latency_ms_bucket[15s]))",
+              "legendFormat": "p99"
+            }
+          ]
+        },
+        {
+          "id": 3,
+          "title": "Events Received (total)",
+          "type": "stat",
+          "gridPos": {
+            "x": 0,
+            "y": 8,
+            "w": 6,
+            "h": 4
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short"
+            }
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ]
+            }
+          },
+          "targets": [
+            {
+              "expr": "routers_events_received_total",
+              "legendFormat": ""
+            }
+          ]
+        },
+        {
+          "id": 4,
+          "title": "Events Published (total)",
+          "type": "stat",
+          "gridPos": {
+            "x": 6,
+            "y": 8,
+            "w": 6,
+            "h": 4
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short"
+            }
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ]
+            }
+          },
+          "targets": [
+            {
+              "expr": "routers_events_published_total",
+              "legendFormat": ""
+            }
+          ]
+        },
+        {
+          "id": 5,
+          "title": "Dropped Events (received \u2212 published)",
+          "type": "stat",
+          "gridPos": {
+            "x": 12,
+            "y": 8,
+            "w": 6,
+            "h": 4
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "value": null,
+                    "color": "green"
+                  },
+                  {
+                    "value": 1,
+                    "color": "red"
+                  }
+                ]
+              }
+            }
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ]
+            }
+          },
+          "targets": [
+            {
+              "expr": "routers_events_received_total - routers_events_published_total",
+              "legendFormat": ""
+            }
+          ]
+        },
+        {
+          "id": 6,
+          "title": "Store Errors (total)",
+          "type": "stat",
+          "gridPos": {
+            "x": 18,
+            "y": 8,
+            "w": 6,
+            "h": 4
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "value": null,
+                    "color": "green"
+                  },
+                  {
+                    "value": 1,
+                    "color": "red"
+                  }
+                ]
+              }
+            }
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ]
+            }
+          },
+          "targets": [
+            {
+              "expr": "routers_store_errors_total",
+              "legendFormat": ""
+            }
+          ]
+        },
+        {
+          "id": 7,
+          "title": "Per-Event Latency Breakdown (avg ms)",
+          "description": "Where time goes per event. 'other' = total \u2212 store \u2212 nats (deserialization, routing, history filtering).",
+          "type": "timeseries",
+          "gridPos": {
+            "x": 0,
+            "y": 12,
+            "w": 24,
+            "h": 8
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "ms",
+              "custom": {
+                "lineWidth": 2
+              }
+            }
+          },
+          "options": {
+            "tooltip": {
+              "mode": "multi"
+            }
+          },
+          "targets": [
+            {
+              "expr": "rate(routers_total_latency_ms_sum[15s]) / rate(routers_total_latency_ms_count[15s])",
+              "legendFormat": "total"
+            },
+            {
+              "expr": "rate(routers_store_latency_ms_sum[15s]) / rate(routers_store_latency_ms_count[15s])",
+              "legendFormat": "valkey (store)"
+            },
+            {
+              "expr": "rate(routers_nats_latency_ms_sum[15s]) / rate(routers_nats_latency_ms_count[15s])",
+              "legendFormat": "nats (publish)"
+            },
+            {
+              "expr": "rate(routers_total_latency_ms_sum[15s]) / rate(routers_total_latency_ms_count[15s]) - rate(routers_store_latency_ms_sum[15s]) / rate(routers_store_latency_ms_count[15s])",
+              "legendFormat": "other (deser + routing + history)"
+            }
+          ]
+        },
+        {
+          "id": 8,
+          "title": "Event Age When Received (ms)",
+          "type": "timeseries",
+          "description": "How old events are by the time the orchestrator receives them.",
+          "gridPos": {
+            "x": 0,
+            "y": 20,
+            "w": 24,
+            "h": 7
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "ms"
+            }
+          },
+          "targets": [
+            {
+              "expr": "histogram_quantile(0.50, rate(routers_event_age_ms_bucket[15s]))",
+              "legendFormat": "p50"
+            },
+            {
+              "expr": "histogram_quantile(0.95, rate(routers_event_age_ms_bucket[15s]))",
+              "legendFormat": "p95"
+            }
+          ]
+        },
+        {
+          "id": 9,
+          "title": "Match Outcomes (total)",
+          "type": "stat",
+          "gridPos": {
+            "x": 0,
+            "y": 27,
+            "w": 8,
+            "h": 5
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ]
+            },
+            "orientation": "auto",
+            "colorMode": "background"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              }
+            }
+          },
+          "targets": [
+            {
+              "expr": "sum(routers_matches_total_success)",
+              "legendFormat": "success"
+            },
+            {
+              "expr": "sum(routers_matches_total_no_candidate)",
+              "legendFormat": "no_candidate"
+            },
+            {
+              "expr": "sum(routers_matches_total_error)",
+              "legendFormat": "error"
+            }
+          ]
+        },
+        {
+          "id": 10,
+          "title": "Match Success Rate",
+          "type": "stat",
+          "gridPos": {
+            "x": 8,
+            "y": 27,
+            "w": 8,
+            "h": 5
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ]
+            },
+            "orientation": "auto",
+            "colorMode": "background"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percentunit",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "red",
+                    "value": null
+                  },
+                  {
+                    "color": "yellow",
+                    "value": 0.8
+                  },
+                  {
+                    "color": "green",
+                    "value": 0.95
+                  }
+                ]
+              }
+            }
+          },
+          "targets": [
+            {
+              "expr": "sum(routers_matches_total_success) / (sum(routers_matches_total_success) + sum(routers_matches_total_no_candidate) + sum(routers_matches_total_error))",
+              "legendFormat": "success rate"
+            }
+          ]
+        },
+        {
+          "id": 11,
+          "title": "HMM Solve Time (ms)",
+          "type": "timeseries",
+          "gridPos": {
+            "x": 16,
+            "y": 27,
+            "w": 8,
+            "h": 5
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "ms"
+            }
+          },
+          "targets": [
+            {
+              "expr": "rate(routers_solve_latency_ms_sum[30s]) / rate(routers_solve_latency_ms_count[30s])",
+              "legendFormat": "avg solve ms"
+            }
+          ]
+        },
+        {
+          "id": 12,
+          "title": "Match End-to-End Latency (ms)",
+          "type": "timeseries",
+          "gridPos": {
+            "x": 0,
+            "y": 32,
+            "w": 24,
+            "h": 8
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "ms"
+            }
+          },
+          "options": {
+            "tooltip": {
+              "mode": "multi"
+            }
+          },
+          "targets": [
+            {
+              "expr": "rate(routers_match_latency_ms_sum[30s]) / rate(routers_match_latency_ms_count[30s])",
+              "legendFormat": "avg end-to-end ms"
+            },
+            {
+              "expr": "histogram_quantile(0.50, rate(routers_match_latency_ms_bucket[30s]))",
+              "legendFormat": "p50"
+            },
+            {
+              "expr": "histogram_quantile(0.95, rate(routers_match_latency_ms_bucket[30s]))",
+              "legendFormat": "p95"
+            },
+            {
+              "expr": "histogram_quantile(0.99, rate(routers_match_latency_ms_bucket[30s]))",
+              "legendFormat": "p99"
+            }
+          ]
+        }
+      ],
+      "schemaVersion": 36
+    }

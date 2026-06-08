@@ -9,6 +9,8 @@ use core::fmt;
 use geo::{Point, Rect, coord};
 use serde::{Deserialize, Serialize};
 use std::fmt::Display;
+use std::str::FromStr;
+use thiserror::Error;
 
 const BASE32: &[u8; 32] = b"0123456789bcdefghjkmnpqrstuvwxyz";
 const MAX_PRECISION: usize = 12;
@@ -27,6 +29,37 @@ impl Display for Geohash {
         }
 
         Ok(())
+    }
+}
+
+#[derive(Debug, Error, PartialEq)]
+pub enum GeohashParseError {
+    #[error("invalid length {0}: must be 1–12")]
+    InvalidLength(usize),
+    #[error("invalid character '{0}'")]
+    InvalidChar(char),
+}
+
+impl FromStr for Geohash {
+    type Err = GeohashParseError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let precision = s.len();
+        if precision == 0 || precision > MAX_PRECISION {
+            return Err(GeohashParseError::InvalidLength(precision));
+        }
+        let mut data = [0u8; MAX_PRECISION];
+        for (i, ch) in s.chars().enumerate() {
+            let idx = BASE32
+                .iter()
+                .position(|&b| b == ch as u8)
+                .ok_or(GeohashParseError::InvalidChar(ch))?;
+            data[i] = idx as u8;
+        }
+        Ok(Geohash {
+            data,
+            precision: precision as u8,
+        })
     }
 }
 
