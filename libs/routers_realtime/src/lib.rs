@@ -79,6 +79,7 @@ where
         let position = Position {
             coord: event.coord,
             timestamp_ms: event.timestamp_ms,
+            resolved_at_ms,
         };
 
         let t_store = std::time::Instant::now();
@@ -169,6 +170,7 @@ where
         let position = Position {
             coord: first.coord,
             timestamp_ms: first.timestamp_ms,
+            resolved_at_ms,
         };
         m.events_received.inc();
         if first.timestamp_ms > 0 {
@@ -191,6 +193,7 @@ where
                     let position = Position {
                         coord: event.coord,
                         timestamp_ms: event.timestamp_ms,
+                        resolved_at_ms,
                     };
                     m.events_received.inc();
                     if event.timestamp_ms > 0 {

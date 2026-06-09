@@ -114,6 +114,7 @@ fn parse_delivery(
     let position = Position {
         coord,
         timestamp_ms: ts,
+        resolved_at_ms: 0,
     };
     Some((payload.vehicle_id, shard, position))
 }

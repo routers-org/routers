@@ -8,6 +8,13 @@ use routers_network::{Entry, Metadata, Network};
 
 pub const DEFAULT_SEARCH_DISTANCE: f64 = 50.0; // 50m
 
+/// The last confirmed snapped coordinate for a vehicle, used as the first
+/// GPS point in the HMM linestring to prevent edge ambiguity at window boundaries.
+#[derive(Clone, Copy, Debug)]
+pub struct Anchor {
+    pub coord: geo::Coord,
+}
+
 pub struct MatchOptions<E: Entry, M: Metadata, N: Network<E, M>> {
     /// The distance the solver will use to search for candidates
     /// around every given input position.
@@ -45,6 +52,8 @@ pub struct MatchOptions<E: Entry, M: Metadata, N: Network<E, M>> {
     pub solver: SolverVariant,
 
     pub cache: Option<Arc<PredicateCache<E, M, N>>>,
+
+    pub anchor: Option<Anchor>,
 }
 
 impl<E: Entry, M: Metadata, N: Network<E, M>> Default for MatchOptions<E, M, N> {
@@ -54,6 +63,7 @@ impl<E: Entry, M: Metadata, N: Network<E, M>> Default for MatchOptions<E, M, N> 
             runtime: M::default_runtime(),
             solver: SolverVariant::default(),
             cache: None,
+            anchor: None,
         }
     }
 }
@@ -86,6 +96,10 @@ impl<E: Entry, M: Metadata, N: Network<E, M>> MatchOptions<E, M, N> {
             search_distance: search_distance.unwrap_or(self.search_distance),
             ..self
         }
+    }
+
+    pub fn with_anchor(self, anchor: impl Into<Option<Anchor>>) -> Self {
+        Self { anchor: anchor.into(), ..self }
     }
 }
 

@@ -1,4 +1,4 @@
-use crate::context::{MatchContext, MatchResult};
+use crate::context::{MatchContext, MatchResult, MatchRoute};
 use futures::Sink;
 use routers_shard::ShardId;
 use serde::Serialize;
@@ -45,6 +45,28 @@ pub fn result_sink(
         let subject = subject.clone();
         async move {
             let payload: bytes::Bytes = postcard::to_allocvec(&result)
+                .map_err(NatsSinkError::Serialize)?
+                .into();
+            nc.publish(subject, payload)
+                .await
+                .map_err(|_| NatsSinkError::Publish)?;
+            Ok(nc)
+        }
+    })
+}
+
+/// Fire-and-forget sink for [`MatchRoute`] to `matched.routes.{vehicle_id}`.
+///
+/// Subject is `{subject_prefix}.{vehicle_id}`. Callers typically pass
+/// `"matched.routes"` as the prefix.
+pub fn route_sink(
+    nc: async_nats::Client,
+    subject_prefix: String,
+) -> impl Sink<MatchRoute, Error = NatsSinkError> {
+    futures::sink::unfold(nc, move |nc, route: MatchRoute| {
+        let subject = format!("{}.{}", subject_prefix, route.vehicle_id);
+        async move {
+            let payload: bytes::Bytes = postcard::to_allocvec(&route)
                 .map_err(NatsSinkError::Serialize)?
                 .into();
             nc.publish(subject, payload)

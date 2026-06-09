@@ -65,6 +65,7 @@ mod tests {
         Position {
             coord: Point::new(0.0, 0.0),
             timestamp_ms: ts,
+            resolved_at_ms: 0,
         }
     }
 

@@ -70,19 +70,11 @@ where
                 }
 
                 if let ResolutionMethod::Standard = reachable.resolution_method {
-                    // Add target of current candidate edge
-                    if let Some(fat) = network.fatten(&current.edge) {
-                        if let Some(pe) = PathElement::from_fat(fat, network) {
-                            elements.push(pe);
-                        }
-                    }
-
-                    // Add intermediate edges
+                    // Add intermediate routing edges (source nodes).
+                    // The first edge's source == target of current candidate edge,
+                    // bridging forward from the GPS projection without any backward jump.
                     for edge in &reachable.path {
                         if let Some(fat) = network.fatten(edge) {
-                            if let Some(pe) = PathElement::from_fat(fat, network) {
-                                elements.push(pe);
-                            }
                             if let Some(pe) = PathElement::from_fat(fat, network) {
                                 elements.push(pe);
                             }

@@ -287,8 +287,9 @@ fn decode_stream_reply<S: ShardId + DeserializeOwned>(
             Some(redis::Value::BulkString(b)) => b.as_slice(),
             _ => continue,
         };
-        let s: S = postcard::from_bytes(shard_val)?;
-        let p: Position = postcard::from_bytes(pos_val)?;
+        let (Ok(s), Ok(p)) = (postcard::from_bytes::<S>(shard_val), postcard::from_bytes::<Position>(pos_val)) else {
+            continue;
+        };
         entries.push((s, p));
     }
     Ok(entries)

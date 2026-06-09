@@ -21,10 +21,15 @@ where
     #[cfg_attr(feature = "tracing", tracing::instrument(skip_all, level = Level::INFO))]
     fn r#match(
         &self,
-        linestring: LineString,
+        mut linestring: LineString,
         opts: MatchOptions<E, M, T>,
     ) -> Result<RoutedPath<E, M>, MatchError> {
         info!("Finding matched route for {} positions", linestring.0.len());
+
+        let has_anchor = opts.anchor.is_some();
+        if let Some(anchor) = opts.anchor {
+            linestring.0.insert(0, anchor.coord);
+        }
 
         let costing = CostingStrategies::default();
         let generator = StandardGenerator::new(self, &costing.emission, opts.search_distance);
@@ -36,9 +41,13 @@ where
             None => opts.solver.without_cache(),
         };
 
-        transition
+        let mut path = transition
             .solve(solver, &opts.runtime)
-            .map(|collapsed| RoutedPath::new(collapsed, self))
+            .map(|collapsed| RoutedPath::new(collapsed, self))?;
+        if has_anchor && !path.discretized.elements.is_empty() {
+            path.discretized.elements.remove(0);
+        }
+        Ok(path)
     }
 
     #[cfg_attr(feature = "tracing", tracing::instrument(skip_all, level = Level::INFO))]

@@ -60,6 +60,8 @@ impl eframe::App for MonitorApp {
                 match msg {
                     InboundMessage::Context(mc) => store.ingest_context(mc),
                     InboundMessage::Result(mr) => store.ingest_result(mr),
+                    InboundMessage::Route(rt) => store.ingest_route(rt),
+                    InboundMessage::Correction(cr) => store.ingest_correction(cr),
                 }
             }
             store.evict_stale();
@@ -160,4 +162,13 @@ fn draw_stats(ui: &mut egui::Ui, stats: &StoreStats, shard_count: usize) {
         Color32::from_rgb(220, 60, 60),
         format!("✗  {:.1}%  error", pct(stats.error)),
     );
+
+    if stats.corrections > 0 {
+        ui.add_space(4.0);
+        ui.separator();
+        ui.colored_label(
+            Color32::from_rgb(255, 200, 50),
+            format!("↺  {}  corrections", stats.corrections),
+        );
+    }
 }

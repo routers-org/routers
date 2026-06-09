@@ -1,10 +1,11 @@
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use egui::{Color32, Stroke};
 use routers_realtime::context::MatchOutcome;
 use walkers::{MapMemory, Plugin, Projector, lon_lat};
 
-use crate::monitor::store::VehicleTraceStore;
+use crate::monitor::store::{CORRECTION_FLASH_SECS, VehicleTraceStore};
 
 pub struct TracePlugin {
     store: Arc<Mutex<VehicleTraceStore>>,
@@ -16,8 +17,7 @@ impl TracePlugin {
     }
 }
 
-/// Deterministic per-vehicle colour: maps vehicle ID bytes to one of 32
-/// evenly-spaced hues so nearby hue indices are always visually distinct.
+/// Deterministic per-vehicle colour from vehicle ID bytes.
 fn vehicle_colour(id: &str) -> Color32 {
     let hash = id
         .bytes()
@@ -54,9 +54,9 @@ impl Plugin for TracePlugin {
     ) {
         let Ok(store) = self.store.lock() else { return };
         let painter = ui.painter();
+        let now = Instant::now();
 
-        // Viewport bounding box for culling — only render vehicles whose last
-        // fix falls within the visible map area.
+        // Viewport bounds for culling.
         let tl = projector.unproject(response.rect.left_top().to_vec2());
         let br = projector.unproject(response.rect.right_bottom().to_vec2());
         let lon_range = tl.x().min(br.x())..=tl.x().max(br.x());
@@ -72,49 +72,74 @@ impl Plugin for TracePlugin {
 
             let colour = vehicle_colour(vehicle_id);
 
-            // Raw GPS trace — thin grey polyline.
-            let raw_pts: Vec<_> = fixes
-                .iter()
-                .map(|f| {
-                    projector
-                        .project(lon_lat(f.raw_coord.x(), f.raw_coord.y()))
-                        .to_pos2()
-                })
-                .collect();
-
-            if raw_pts.len() >= 2 {
-                painter.line(
-                    raw_pts.clone(),
-                    Stroke::new(1.0, Color32::from_rgba_unmultiplied(150, 150, 150, 100)),
-                );
+            // ── Interpolated road route ──────────────────────────────────────
+            // The on-road geometry for the current HMM window from matched.routes.
+            // Drawn first (behind everything else) as a bold line in vehicle colour.
+            if let Some((polyline, _)) = store.routes.get(vehicle_id) {
+                let road_pts: Vec<_> = polyline
+                    .iter()
+                    .map(|c| projector.project(lon_lat(c.x, c.y)).to_pos2())
+                    .collect();
+                if road_pts.len() >= 2 {
+                    painter.line(
+                        road_pts,
+                        Stroke::new(3.5, Color32::from_rgba_unmultiplied(
+                            colour.r(), colour.g(), colour.b(), 210,
+                        )),
+                    );
+                }
             }
 
-            // Matched trace — vehicle colour, only Success fixes.
-            let matched_pts: Vec<_> = fixes
-                .iter()
-                .filter_map(|f| f.matched_coord)
-                .map(|c| projector.project(lon_lat(c.x(), c.y())).to_pos2())
-                .collect();
+            // ── Raw GPS dots + snap lines ────────────────────────────────────
+            // Draw raw GPS positions as small grey dots and snap lines to their
+            // matched counterparts. No raw polyline — the interpolated route
+            // above already shows the road path without historical accumulation.
+            for fix in fixes.iter() {
+                let raw_screen = projector
+                    .project(lon_lat(fix.raw_coord.x(), fix.raw_coord.y()))
+                    .to_pos2();
 
-            if matched_pts.len() >= 2 {
-                painter.line(matched_pts, Stroke::new(2.0, colour));
+                // Faint snap line to matched position
+                if let Some(matched) = fix.matched_coord {
+                    let matched_screen = projector
+                        .project(lon_lat(matched.x(), matched.y()))
+                        .to_pos2();
+                    painter.line(
+                        vec![raw_screen, matched_screen],
+                        Stroke::new(0.5, Color32::from_rgba_unmultiplied(120, 120, 120, 50)),
+                    );
+                }
             }
 
-            // Raw → matched snap lines per fix.
-            for (fix, &raw_screen) in fixes.iter().zip(raw_pts.iter()) {
+            // ── Correction flash circles ─────────────────────────────────────
+            // Corrected fixes glow yellow and fade over CORRECTION_FLASH_SECS.
+            for fix in fixes.iter() {
+                let Some(corrected_at) = fix.last_corrected_at else { continue };
+                let age = now.duration_since(corrected_at).as_secs_f32();
+                if age > CORRECTION_FLASH_SECS { continue; }
+
                 let Some(matched) = fix.matched_coord else { continue };
-                let matched_screen = projector
+                let pos = projector
                     .project(lon_lat(matched.x(), matched.y()))
                     .to_pos2();
-                painter.line(
-                    vec![raw_screen, matched_screen],
-                    Stroke::new(0.5, Color32::from_rgba_unmultiplied(100, 100, 100, 60)),
+                let alpha = ((1.0 - age / CORRECTION_FLASH_SECS) * 255.0) as u8;
+                // Outer glow ring
+                painter.circle_stroke(
+                    pos, 7.0,
+                    Stroke::new(2.5, Color32::from_rgba_unmultiplied(255, 220, 50, alpha)),
+                );
+                // Inner fill
+                painter.circle_filled(
+                    pos, 3.5,
+                    Color32::from_rgba_unmultiplied(255, 200, 0, (alpha as f32 * 0.7) as u8),
                 );
             }
 
-            // Latest raw fix: open circle, tinted by outcome so unmatched
-            // fixes stand out at a glance.
-            if let Some(&last_raw) = raw_pts.last() {
+            // ── Latest raw fix: outcome-tinted open circle ───────────────────
+            {
+                let last_raw = projector
+                    .project(lon_lat(last.raw_coord.x(), last.raw_coord.y()))
+                    .to_pos2();
                 let dot_colour = match last.outcome {
                     MatchOutcome::Success => Color32::from_rgba_unmultiplied(160, 160, 160, 200),
                     MatchOutcome::NoCandidate => Color32::from_rgba_unmultiplied(220, 140, 50, 220),
@@ -123,12 +148,12 @@ impl Plugin for TracePlugin {
                 painter.circle_stroke(last_raw, 3.0, Stroke::new(1.5, dot_colour));
             }
 
-            // Latest matched fix: filled circle in vehicle colour.
+            // ── Latest matched fix: filled dot in vehicle colour ─────────────
             if let Some(last_matched) = fixes.iter().rev().find_map(|f| f.matched_coord) {
                 let pos = projector
                     .project(lon_lat(last_matched.x(), last_matched.y()))
                     .to_pos2();
-                painter.circle_filled(pos, 4.0, colour);
+                painter.circle_filled(pos, 4.5, colour);
             }
         }
     }

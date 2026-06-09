@@ -1,4 +1,4 @@
-use geo::Point;
+use geo::{Coord, Point};
 use routers_shard::ShardId;
 use serde::{Deserialize, Serialize};
 
@@ -13,6 +13,11 @@ pub struct RawEvent {
 pub struct Position {
     pub coord: Point,
     pub timestamp_ms: u64,
+    /// Wall-clock ms assigned by the orchestrator when it processed this event.
+    /// Used as a stable CRDT key: (vehicle_id, resolved_at_ms) uniquely identifies
+    /// a processing event and allows the matcher to emit corrections when it
+    /// re-evaluates the same history point with more context.
+    pub resolved_at_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -43,4 +48,16 @@ pub enum MatchOutcome {
     NoCandidate,
     /// The matching algorithm returned an error.
     Error,
+}
+
+/// The interpolated road geometry for a matched window.
+///
+/// Published to `matched.routes.{vehicle_id}` after each successful HMM solve.
+/// `resolved_at_ms` is the orchestrator timestamp of the newest (current) event
+/// in the window, tying this route to the same CRDT key as the trailing MatchResult.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MatchRoute {
+    pub vehicle_id: String,
+    pub resolved_at_ms: u64,
+    pub polyline: Vec<Coord>,
 }
