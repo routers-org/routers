@@ -9,7 +9,6 @@ pub(crate) enum InboundMessage {
     Context(MatchContext<Geohash>),
     Result(MatchResult),
     Route(MatchRoute),
-    Correction(MatchResult),
 }
 
 pub(crate) async fn subscribe(
@@ -30,18 +29,13 @@ pub(crate) async fn subscribe(
     let res_egui = egui_ctx.clone();
     let result_task = tokio::spawn(subscribe_results(client.clone(), res_tx, res_egui));
 
-    let route_tx = tx.clone();
     let route_egui = egui_ctx.clone();
-    let route_task = tokio::spawn(subscribe_routes(client.clone(), route_tx, route_egui));
-
-    let corr_egui = egui_ctx.clone();
-    let correction_task = tokio::spawn(subscribe_corrections(client, tx, corr_egui));
+    let route_task = tokio::spawn(subscribe_routes(client, tx, route_egui));
 
     tokio::try_join!(
         async { context_task.await.map_err(|e| anyhow::anyhow!("context task panicked: {e}"))? },
         async { result_task.await.map_err(|e| anyhow::anyhow!("result task panicked: {e}"))? },
         async { route_task.await.map_err(|e| anyhow::anyhow!("route task panicked: {e}"))? },
-        async { correction_task.await.map_err(|e| anyhow::anyhow!("correction task panicked: {e}"))? },
     )?;
 
     Ok(())
@@ -128,24 +122,3 @@ async fn subscribe_routes(
     Ok(())
 }
 
-async fn subscribe_corrections(
-    client: async_nats::Client,
-    tx: Sender<InboundMessage>,
-    egui_ctx: egui::Context,
-) -> anyhow::Result<()> {
-    let mut sub = client
-        .subscribe("matched.corrections")
-        .await
-        .map_err(|e| anyhow::anyhow!("subscribe matched.corrections: {e}"))?;
-
-    while let Some(msg) = sub.next().await {
-        if let Ok(result) = postcard::from_bytes::<MatchResult>(&msg.payload) {
-            if tx.send(InboundMessage::Correction(result)).is_err() {
-                break;
-            }
-            egui_ctx.request_repaint();
-        }
-    }
-
-    Ok(())
-}

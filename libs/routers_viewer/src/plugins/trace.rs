@@ -1,11 +1,10 @@
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
 
 use egui::{Color32, Stroke};
 use routers_realtime::context::MatchOutcome;
 use walkers::{MapMemory, Plugin, Projector, lon_lat};
 
-use crate::monitor::store::{CORRECTION_FLASH_SECS, VehicleTraceStore};
+use crate::monitor::store::VehicleTraceStore;
 
 pub struct TracePlugin {
     store: Arc<Mutex<VehicleTraceStore>>,
@@ -54,7 +53,6 @@ impl Plugin for TracePlugin {
     ) {
         let Ok(store) = self.store.lock() else { return };
         let painter = ui.painter();
-        let now = Instant::now();
 
         // Viewport bounds for culling.
         let tl = projector.unproject(response.rect.left_top().to_vec2());
@@ -72,17 +70,41 @@ impl Plugin for TracePlugin {
 
             let colour = vehicle_colour(vehicle_id);
 
-            // ── Interpolated road route ──────────────────────────────────────
-            // The on-road geometry for the current HMM window from matched.routes.
-            // Drawn first (behind everything else) as a bold line in vehicle colour.
+            // ── Interpolated road route (previous fix → current) ────────────
             if let Some((polyline, _)) = store.routes.get(vehicle_id) {
-                let road_pts: Vec<_> = polyline
+                // Find the second-to-last matched fix to use as the trail start.
+                // Locate the closest point in the polyline to that position, then
+                // draw only the suffix — one GPS interval's worth of road geometry.
+                let tail_start = fixes
                     .iter()
-                    .map(|c| projector.project(lon_lat(c.x, c.y)).to_pos2())
-                    .collect();
-                if road_pts.len() >= 2 {
+                    .rev()
+                    .skip(2)
+                    .find_map(|f| f.matched_coord);
+
+                let start_idx = tail_start
+                    .and_then(|anchor| {
+                        polyline
+                            .iter()
+                            .enumerate()
+                            .min_by(|(_, a), (_, b)| {
+                                let da = (a.x - anchor.x()) * (a.x - anchor.x())
+                                    + (a.y - anchor.y()) * (a.y - anchor.y());
+                                let db = (b.x - anchor.x()) * (b.x - anchor.x())
+                                    + (b.y - anchor.y()) * (b.y - anchor.y());
+                                da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
+                            })
+                            .map(|(i, _)| i)
+                    })
+                    .unwrap_or(0);
+
+                let tail = &polyline[start_idx..];
+                if tail.len() >= 2 {
+                    let screen_pts: Vec<_> = tail
+                        .iter()
+                        .map(|c| projector.project(lon_lat(c.x, c.y)).to_pos2())
+                        .collect();
                     painter.line(
-                        road_pts,
+                        screen_pts,
                         Stroke::new(3.5, Color32::from_rgba_unmultiplied(
                             colour.r(), colour.g(), colour.b(), 210,
                         )),
@@ -109,30 +131,6 @@ impl Plugin for TracePlugin {
                         Stroke::new(0.5, Color32::from_rgba_unmultiplied(120, 120, 120, 50)),
                     );
                 }
-            }
-
-            // ── Correction flash circles ─────────────────────────────────────
-            // Corrected fixes glow yellow and fade over CORRECTION_FLASH_SECS.
-            for fix in fixes.iter() {
-                let Some(corrected_at) = fix.last_corrected_at else { continue };
-                let age = now.duration_since(corrected_at).as_secs_f32();
-                if age > CORRECTION_FLASH_SECS { continue; }
-
-                let Some(matched) = fix.matched_coord else { continue };
-                let pos = projector
-                    .project(lon_lat(matched.x(), matched.y()))
-                    .to_pos2();
-                let alpha = ((1.0 - age / CORRECTION_FLASH_SECS) * 255.0) as u8;
-                // Outer glow ring
-                painter.circle_stroke(
-                    pos, 7.0,
-                    Stroke::new(2.5, Color32::from_rgba_unmultiplied(255, 220, 50, alpha)),
-                );
-                // Inner fill
-                painter.circle_filled(
-                    pos, 3.5,
-                    Color32::from_rgba_unmultiplied(255, 200, 0, (alpha as f32 * 0.7) as u8),
-                );
             }
 
             // ── Latest raw fix: outcome-tinted open circle ───────────────────

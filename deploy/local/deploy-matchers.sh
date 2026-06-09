@@ -84,10 +84,10 @@ spec:
               readOnly: true
           resources:
             requests:
-              cpu: 250m
+              cpu: 500m
               memory: 256Mi
             limits:
-              cpu: 1000m
+              cpu: 2000m
               memory: 1536Mi
       volumes:
         - name: shards

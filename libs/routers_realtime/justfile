@@ -227,7 +227,7 @@ monitor:
     echo "NATS forwarded — starting monitor"
     SHARD_DIR=../../target/shard_cache \
     NATS_URL="nats://127.0.0.1:4222" \
-        cargo run -p routers_viewer --bin monitor
+        cargo run -p routers_viewer --bin monitor --release
 
 # Replay events through RabbitMQ (speed=1 is real-time; try 60 or 600)
 replay speed="60":

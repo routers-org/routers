@@ -93,10 +93,6 @@ async fn main() -> anyhow::Result<()> {
     let network = MultiShardNetwork::<E, M, S>::new(shards);
     let m = metrics::matcher_global();
 
-    // Tracks previously emitted (vehicle_id, resolved_at_ms) → coord so we can detect
-    // when the HMM revises a historical position and emit it to matched.corrections.
-    let mut last_results: std::collections::HashMap<(String, u64), geo::Coord> = std::collections::HashMap::new();
-
     // Reconnect loop — recovers from both startup connection failures and
     // mid-run transient errors (missed idle heartbeat, stream resets, etc.).
     let mut connect_backoff = Duration::from_secs(1);
@@ -129,13 +125,10 @@ async fn main() -> anyhow::Result<()> {
         };
 
         let route_nc = nc.clone();
-        let corrections_nc = nc.clone();
         let result_sink = nats::result_sink(nc, "matched.positions".into());
         futures::pin_mut!(result_sink);
         let route_sink = nats::route_sink(route_nc, "matched.routes".into());
         futures::pin_mut!(route_sink);
-        let corrections_sink = nats::result_sink(corrections_nc, "matched.corrections".into());
-        futures::pin_mut!(corrections_sink);
 
         let mut messages = match consumer.messages().await {
             Ok(m) => m,
@@ -212,56 +205,23 @@ async fn main() -> anyhow::Result<()> {
                 Ok(path) => {
                     m.matches_success.inc();
 
-                    // Emit one MatchResult per discretized element (full-window emission).
-                    // Also detect corrections: same (vehicle_id, resolved_at_ms) key with
-                    // a meaningfully different coord (> ~1m) indicates the HMM revised its
-                    // earlier decision as more context arrived.
-                    let history_len = ctx.history.len();
-                    let matched_at = now_ms();
-                    for (i, el) in path.discretized.elements.iter().enumerate() {
-                        let resolved_at_ms = if i < history_len {
-                            ctx.history[i].resolved_at_ms
-                        } else {
-                            ctx.resolved_at_ms
-                        };
-                        let new_coord = geo::Coord::from(el.point);
-                        let key = (ctx.vehicle_id.clone(), resolved_at_ms);
-
+                    // Emit one MatchResult for the current GPS point.
+                    // History points keep their original matched position; the MatchRoute
+                    // below carries the full window's road geometry for visualisation.
+                    if let Some(last_el) = path.discretized.elements.last() {
                         let result = MatchResult {
                             vehicle_id: ctx.vehicle_id.clone(),
-                            resolved_at_ms,
-                            matched_at_ms: matched_at,
-                            coord: Point::from(el.point),
+                            resolved_at_ms: ctx.resolved_at_ms,
+                            matched_at_ms: now_ms(),
+                            coord: Point::from(last_el.point),
                             outcome: MatchOutcome::Success,
                         };
-
-                        // Emit correction if this key was previously published with a different coord.
-                        // Threshold: ~1m (1e-5 deg ≈ 1.1m; using squared Euclidean as a fast proxy).
-                        if let Some(&prev) = last_results.get(&key) {
-                            let dx = prev.x - new_coord.x;
-                            let dy = prev.y - new_coord.y;
-                            if dx * dx + dy * dy > 1e-10 {
-                                if let Err(e) = corrections_sink.send(result.clone()).await {
-                                    eprintln!("[matcher-{shard}] correction publish: {e}, reconnecting");
-                                    let _ = msg.ack().await;
-                                    continue 'reconnect;
-                                }
-                            }
-                        }
-
                         if let Err(e) = result_sink.send(result).await {
                             eprintln!("[matcher-{shard}] result publish: {e}, reconnecting");
                             let _ = msg.ack().await;
                             continue 'reconnect;
                         }
-
-                        last_results.insert(key, new_coord);
                     }
-
-                    // Prune last_results entries older than the history window (5 min + buffer).
-                    // This keeps memory bounded at ~max_history_points entries per active vehicle.
-                    let cutoff = ctx.resolved_at_ms.saturating_sub(600_000);
-                    last_results.retain(|(_vid, resolved_at_ms), _| *resolved_at_ms >= cutoff);
 
                     // Emit one MatchRoute with the full interpolated road geometry
                     let route = MatchRoute {
