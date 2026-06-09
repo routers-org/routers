@@ -27,7 +27,11 @@ async fn main() -> anyhow::Result<()> {
         .and_then(|s| s.parse().ok())
         .unwrap_or(2);
 
-    let mut valkey = ValkeyStore::connect(&valkey_url).await?;
+    let valkey_max_len: usize = std::env::var("VALKEY_MAX_LEN")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(500);
+    let mut valkey = ValkeyStore::connect(&valkey_url, valkey_max_len).await?;
     let strategy = GeohashStrategy::with_precision(shard_precision);
 
     let mut opts = TopicOpts::from_env();

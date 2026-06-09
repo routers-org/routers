@@ -1,9 +1,9 @@
-ns        := "routers-dev"
+ns := "routers-dev"
 manifests := "../../deploy/local"
 
 rabbitmq_url := "amqp://guest:guest@127.0.0.1:5672/%2f"
-nats_url     := "nats://127.0.0.1:4222"
-valkey_url   := "redis://127.0.0.1:6379"
+nats_url := "nats://192.168.194.119"
+valkey_url := "redis://127.0.0.1:6379"
 
 # List available recipes
 default:
@@ -13,17 +13,17 @@ default:
 
 # Bring up all K8s services (idempotent)
 infra-up:
-    kubectl create namespace {{ns}} --dry-run=client -o yaml | kubectl apply -f -
+    kubectl create namespace {{ ns }} --dry-run=client -o yaml | kubectl apply -f -
     @# Helm repos
     helm repo add bitnami             https://charts.bitnami.com/bitnami      2>/dev/null || true
     helm repo add nats                https://nats-io.github.io/k8s/helm/charts 2>/dev/null || true
     helm repo add prometheus-community https://prometheus-community.github.io/helm-charts 2>/dev/null || true
     helm repo update
     @# RabbitMQ — plain manifest (bitnami image tags are unreliable in OrbStack)
-    kubectl apply -f {{manifests}}/rabbitmq.yaml
+    kubectl apply -f {{ manifests }}/rabbitmq.yaml
     @# NATS JetStream
     helm upgrade --install nats nats/nats \
-        --namespace {{ns}} \
+        --namespace {{ ns }} \
         --set config.jetstream.enabled=true \
         --set config.jetstream.memoryStore.enabled=true \
         --set config.jetstream.memoryStore.maxSize=512Mi \
@@ -32,13 +32,13 @@ infra-up:
         --set config.jetstream.fileStore.maxSize=1Gi
     @# Valkey
     helm upgrade --install valkey bitnami/valkey \
-        --namespace {{ns}} \
+        --namespace {{ ns }} \
         --set auth.enabled=false \
         --set replicaCount=1 \
         --set persistence.enabled=false
     @# Prometheus + Grafana
     helm upgrade --install kube-prometheus-stack prometheus-community/kube-prometheus-stack \
-        --namespace {{ns}} \
+        --namespace {{ ns }} \
         --set prometheus.prometheusSpec.scrapeInterval=10s \
         --set prometheus.prometheusSpec.additionalScrapeConfigsSecret.enabled=true \
         --set prometheus.prometheusSpec.additionalScrapeConfigsSecret.name=routers-additional-scrape \
@@ -46,14 +46,15 @@ infra-up:
         --set grafana.adminPassword=admin \
         --set alertmanager.enabled=false \
         --set kubeStateMetrics.enabled=true
-    kubectl apply -f {{manifests}}/prometheus-scrape.yaml
+    kubectl apply -f {{ manifests }}/prometheus-scrape.yaml
+    kubectl apply -f {{ manifests }}/grafana-dashboard.yaml
     @just wait-ready
 
 # Wait for all pods to be ready
 wait-ready:
-    kubectl wait --namespace {{ns}} --for=condition=ready pod -l app=rabbitmq       --timeout=120s
-    kubectl wait --namespace {{ns}} --for=condition=ready pod -l app.kubernetes.io/name=nats   --timeout=120s
-    kubectl wait --namespace {{ns}} --for=condition=ready pod -l app.kubernetes.io/name=valkey --timeout=120s
+    kubectl wait --namespace {{ ns }} --for=condition=ready pod -l app=rabbitmq       --timeout=120s
+    kubectl wait --namespace {{ ns }} --for=condition=ready pod -l app.kubernetes.io/name=nats   --timeout=120s
+    kubectl wait --namespace {{ ns }} --for=condition=ready pod -l app.kubernetes.io/name=valkey --timeout=120s
     @echo "All pods ready."
 
 # Create the non-loopback AMQP user (run once after infra-up)
@@ -68,15 +69,15 @@ amqp-user: _wait-rabbitmq-api
 
 # Tear down all K8s services
 infra-down:
-    helm uninstall nats                  --namespace {{ns}} 2>/dev/null || true
-    helm uninstall valkey                --namespace {{ns}} 2>/dev/null || true
-    helm uninstall kube-prometheus-stack --namespace {{ns}} 2>/dev/null || true
-    kubectl delete -f {{manifests}}/rabbitmq.yaml 2>/dev/null || true
-    kubectl delete namespace {{ns}} 2>/dev/null || true
+    helm uninstall nats                  --namespace {{ ns }} 2>/dev/null || true
+    helm uninstall valkey                --namespace {{ ns }} 2>/dev/null || true
+    helm uninstall kube-prometheus-stack --namespace {{ ns }} 2>/dev/null || true
+    kubectl delete -f {{ manifests }}/rabbitmq.yaml 2>/dev/null || true
+    kubectl delete namespace {{ ns }} 2>/dev/null || true
 
 # Show pod status
 status:
-    kubectl get pods -n {{ns}}
+    kubectl get pods -n {{ ns }}
 
 # ── Port-forwarding ───────────────────────────────────────────────────────────
 
@@ -92,8 +93,8 @@ port-forward all="":
     #!/usr/bin/env bash
     set -uo pipefail
 
-    NS={{ns}}
-    ALL={{all}}
+    NS={{ ns }}
+    ALL={{ all }}
 
     cleanup() {
         echo ""
@@ -147,39 +148,47 @@ port-forward all="":
 # ── Docker / K8s ─────────────────────────────────────────────────────────────
 
 # Build and deploy a service. Usage: just deploy <matcher|orchestrator|historian|all>
-# "all" deploys historian → orchestrator → matcher in dependency order.
-deploy service:
+# "all" deploys historian → orchestrator → all matcher pods.
+# Optional prefix filters by shard name: just deploy matcher r3g
+# Optional limit caps the count:         just deploy matcher "" 5
+deploy service prefix="" limit="0":
     #!/usr/bin/env bash
     set -euo pipefail
-    if [ "{{service}}" = "all" ]; then
+    if [ "{{ service }}" = "all" ]; then
         just deploy historian
         just deploy orchestrator
         just deploy matcher
         exit 0
     fi
-    docker build -f ../../Dockerfile.{{service}} -t routers-{{service}}:latest ../../
-    kubectl apply -f {{manifests}}/{{service}}.yaml
-    kubectl apply -f {{manifests}}/prometheus-scrape.yaml
-    kubectl rollout restart deployment/{{service}} -n {{ns}}
-    kubectl rollout status deployment/{{service}} -n {{ns}} --timeout=120s
+    if [ "{{ service }}" = "matcher" ]; then
+        docker build -f ../../Dockerfile.matcher -t routers-matcher:latest ../../
+        {{ manifests }}/deploy-matchers.sh "{{ prefix }}" "{{ limit }}"
+        kubectl rollout restart deployment -l app=matcher -n {{ ns }}
+        exit 0
+    fi
+    docker build -f ../../Dockerfile.{{ service }} -t routers-{{ service }}:latest ../../
+    kubectl apply -f {{ manifests }}/{{ service }}.yaml
+    kubectl apply -f {{ manifests }}/prometheus-scrape.yaml
+    kubectl rollout restart deployment/{{ service }} -n {{ ns }}
+    kubectl rollout status deployment/{{ service }} -n {{ ns }} --timeout=120s
 
 # Scale the in-cluster orchestrator to N replicas (competing consumers on same queue)
 scale n="2":
-    kubectl scale deployment/orchestrator -n {{ns}} --replicas={{n}}
-    kubectl rollout status deployment/orchestrator -n {{ns}} --timeout=60s
-    @echo "Scaled to {{n}} orchestrator replicas"
+    kubectl scale deployment/orchestrator -n {{ ns }} --replicas={{ n }}
+    kubectl rollout status deployment/orchestrator -n {{ ns }} --timeout=60s
+    @echo "Scaled to {{ n }} orchestrator replicas"
 
 # Show running orchestrator pods and their metrics
 orchestrator-status:
     #!/usr/bin/env bash
     echo "=== Pods ==="
-    kubectl get pods -n {{ns}} -l app=orchestrator -o wide
+    kubectl get pods -n {{ ns }} -l app=orchestrator -o wide
     echo ""
     echo "=== Metrics (sampled from each pod) ==="
-    for pod in $(kubectl get pods -n {{ns}} -l app=orchestrator -o name); do
+    for pod in $(kubectl get pods -n {{ ns }} -l app=orchestrator -o name); do
         pod_name=$(basename $pod)
         echo "--- $pod_name ---"
-        kubectl exec -n {{ns}} $pod -- sh -c 'curl -sf http://127.0.0.1:9091/metrics 2>/dev/null | grep -E "^routers_(events|store|nats|total).*[^{]$" | sort' 2>/dev/null || echo "(exec failed)"
+        kubectl exec -n {{ ns }} $pod -- sh -c 'curl -sf http://127.0.0.1:9091/metrics 2>/dev/null | grep -E "^routers_(events|store|nats|total).*[^{]$" | sort' 2>/dev/null || echo "(exec failed)"
     done
 
 # ── Run (local, for development) ─────────────────────────────────────────────
@@ -187,38 +196,58 @@ orchestrator-status:
 # Run the orchestrator locally with Valkey store (requires port-forwards)
 # VALKEY_BATCH=64 events per pipeline; VALKEY_BATCH_TIMEOUT_MS=2 max wait to fill a batch
 orchestrator batch="64" timeout_ms="2":
-    RABBITMQ_URL={{rabbitmq_url}} \
-    NATS_URL={{nats_url}} \
-    VALKEY_URL={{valkey_url}} \
-    VALKEY_BATCH={{batch}} \
-    VALKEY_BATCH_TIMEOUT_MS={{timeout_ms}} \
+    RABBITMQ_URL={{ rabbitmq_url }} \
+    NATS_URL={{ nats_url }} \
+    VALKEY_URL={{ valkey_url }} \
+    VALKEY_BATCH={{ batch }} \
+    VALKEY_BATCH_TIMEOUT_MS={{ timeout_ms }} \
     METRICS_ADDR=0.0.0.0:9091 \
         cargo run --release -p routers_realtime --bin orchestrator
 
 # Run the orchestrator locally with in-memory store — no Valkey RTT, for benchmarking
 orchestrator-mem:
-    RABBITMQ_URL={{rabbitmq_url}} \
-    NATS_URL={{nats_url}} \
+    RABBITMQ_URL={{ rabbitmq_url }} \
+    NATS_URL={{ nats_url }} \
     STORE=memory \
     METRICS_ADDR=0.0.0.0:9091 \
         cargo run --release -p routers_realtime --bin orchestrator
 
+# Run the realtime monitor viewer (live GPS + matched traces + shard boundaries).
+# Starts a NATS port-forward automatically and tears it down on exit.
+monitor:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    kubectl port-forward -n {{ ns }} svc/nats 4222:4222 > /dev/null 2>&1 &
+    PF_PID=$!
+    trap "kill $PF_PID 2>/dev/null || true" EXIT INT TERM
+    # Wait for the port-forward to be ready.
+    for i in $(seq 1 20); do
+        nc -z 127.0.0.1 4222 2>/dev/null && break || sleep 0.3
+    done
+    echo "NATS forwarded — starting monitor"
+    SHARD_DIR=../../target/shard_cache \
+    NATS_URL="nats://127.0.0.1:4222" \
+        cargo run -p routers_viewer --bin monitor
+
 # Replay events through RabbitMQ (speed=1 is real-time; try 60 or 600)
 replay speed="60":
-    RABBITMQ_URL={{rabbitmq_url}} \
-    REPLAY_SPEED={{speed}} \
+    RABBITMQ_URL={{ rabbitmq_url }} \
+    REPLAY_SPEED={{ speed }} \
         cargo run --release -p routers_realtime --example replay
 
 # Replay a large CSV via a polars-backed walking loop.
 # Uses a sequential per-event sleep instead of spawning one task per event —
 # safe for millions of rows.  speed=100 means 100× virtual time.
 # Set csv= to override the default sydney-dump-2026-thesis.csv.
-replay-large speed="60" csv="":
+# Set shards= to only send events in those geohashes (comma-separated).
+# Example: just replay-large shards="r3grm,r3grh,r3grq,r3grw,r3grk,r3grj,r3grs,r3grt"
+replay-large speed="60" csv="" shards="":
     #!/usr/bin/env bash
     set -euo pipefail
-    export RABBITMQ_URL={{rabbitmq_url}}
-    export REPLAY_SPEED={{speed}}
-    [[ -n "{{csv}}" ]] && export CSV_FILE={{csv}} || true
+    export RABBITMQ_URL={{ rabbitmq_url }}
+    export REPLAY_SPEED={{ speed }}
+    [[ -n "{{ csv }}" ]] && export CSV_FILE="{{ csv }}" || true
+    [[ -n "{{ shards }}" ]] && export ACTIVE_SHARDS="{{ shards }}" || true
     cargo run --release -p routers_realtime --example replay_large
 
 # Build both binaries in release mode
@@ -245,7 +274,7 @@ bench:
     cargo build -q --release -p routers_realtime --example replay
     echo ""
 
-    ns={{ns}}
+    ns={{ ns }}
     rabbit_api="http://127.0.0.1:15672/api"
     metrics_url="http://127.0.0.1:9091/metrics"
     drain_timeout=120   # give up waiting after this many seconds
@@ -415,7 +444,7 @@ bench:
 
     echo "Step 1: flooding RabbitMQ queue (all CSV events, no rate limit)..."
     t_flood_start=$(now_ms)
-    flood_output=$(RABBITMQ_URL={{rabbitmq_url}} REPLAY_FLOOD=1 \
+    flood_output=$(RABBITMQ_URL={{ rabbitmq_url }} REPLAY_FLOOD=1 \
         ../../target/release/examples/replay 2>&1)
     t_flood_end=$(now_ms)
     echo "$flood_output"
@@ -473,7 +502,7 @@ bench:
     if (( timed_out )); then
         echo "WARNING: queue did not drain within ${drain_timeout}s — partial results below."
         echo "  Check: is the orchestrator running? (just deploy OR just orchestrator)"
-        echo "  Check: port-forward for RabbitMQ management? (kubectl port-forward -n {{ns}} svc/rabbitmq 15672:15672)"
+        echo "  Check: port-forward for RabbitMQ management? (kubectl port-forward -n {{ ns }} svc/rabbitmq 15672:15672)"
         echo ""
     fi
 
@@ -616,7 +645,7 @@ dashboard:
 # Print match outcome counts and latency summary across all running matcher pods
 match-stats:
     #!/usr/bin/env bash
-    ns={{ns}}
+    ns={{ ns }}
     pods=$(kubectl get pods -n "$ns" -l app=matcher --no-headers 2>/dev/null | grep -v Terminating | awk '{print $1}')
     if [[ -z "$pods" ]]; then
         echo "No matcher pods found in namespace ${ns}."
@@ -655,7 +684,7 @@ match-stats:
 # Print live orchestrator metrics (aggregated across all pods, or localhost fallback)
 metrics:
     #!/usr/bin/env bash
-    ns={{ns}}
+    ns={{ ns }}
     pods=$(kubectl get pods -n "$ns" -l app=orchestrator -o jsonpath='{.items[*].metadata.name}' 2>/dev/null)
     if [[ -n "$pods" ]]; then
         for pod in $pods; do
@@ -669,7 +698,7 @@ metrics:
 
 # Purge all messages from the MATCH JetStream stream (clears bench backlog)
 nats-purge:
-    NATS_URL={{nats_url}} cargo run -q -p routers_realtime --example nats_purge
+    NATS_URL={{ nats_url }} cargo run -q -p routers_realtime --example nats_purge
 
 # Print NATS JetStream stream stats
 nats-stats:

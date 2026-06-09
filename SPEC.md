@@ -220,6 +220,9 @@ Artifact Registry tagged with the crate version.
 | `NATS_URL` | `nats://127.0.0.1:4222` | NATS server |
 | `VALKEY_URL` | `redis://127.0.0.1:6379` | Valkey/Redis |
 | `SHARD_PRECISION` | `5` | Geohash precision |
+| `HISTORY_MAX_POINTS` | `50` | Max history positions per `MatchContext`; increase for better HMM accuracy |
+| `HISTORY_MAX_AGE_SECS` | `300` | Drop positions older than this many seconds |
+| `VALKEY_MAX_LEN` | `500` | Valkey stream MAXLEN per vehicle (should be ≥ `HISTORY_MAX_POINTS`) |
 
 ### Matcher
 

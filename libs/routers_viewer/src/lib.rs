@@ -6,5 +6,6 @@ pub use utils::*;
 
 pub mod app;
 pub mod components;
+pub mod monitor;
 pub(crate) mod plugins;
 pub mod utils;

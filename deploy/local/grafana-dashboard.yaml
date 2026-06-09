@@ -10,7 +10,7 @@ data:
     {
       "title": "Routers Realtime",
       "uid": "routers-realtime",
-      "version": 3,
+      "version": 4,
       "refresh": "2s",
       "time": {
         "from": "now-15m",
@@ -595,6 +595,121 @@ data:
             "type": "prometheus",
             "uid": "prometheus"
           }
+        }
+        ,
+        {
+          "id": 100,
+          "title": "Pipeline Lag",
+          "type": "row",
+          "gridPos": { "x": 0, "y": 40, "w": 24, "h": 1 },
+          "collapsed": false
+        },
+        {
+          "id": 13,
+          "title": "Pipeline Stage Rates (events/s)",
+          "description": "Throughput at each stage. Gaps between lines reveal where the pipeline falls behind — the wider the gap, the deeper the queue at that stage.",
+          "type": "timeseries",
+          "gridPos": { "x": 0, "y": 41, "w": 24, "h": 8 },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "reqps",
+              "custom": { "lineWidth": 2 }
+            }
+          },
+          "options": { "tooltip": { "mode": "multi" } },
+          "targets": [
+            {
+              "expr": "rate(routers_events_received_total[15s])",
+              "legendFormat": "① RabbitMQ → Orchestrator (consumed)",
+              "datasource": { "type": "prometheus", "uid": "prometheus" }
+            },
+            {
+              "expr": "rate(routers_events_published_total[15s])",
+              "legendFormat": "② Orchestrator → NATS (published)",
+              "datasource": { "type": "prometheus", "uid": "prometheus" }
+            },
+            {
+              "expr": "sum(rate(routers_matches_total_success[15s])) + sum(rate(routers_matches_total_no_candidate[15s])) + sum(rate(routers_matches_total_error[15s]))",
+              "legendFormat": "③ Matcher output (matched/s)",
+              "datasource": { "type": "prometheus", "uid": "prometheus" }
+            }
+          ],
+          "datasource": { "type": "prometheus", "uid": "prometheus" }
+        },
+        {
+          "id": 14,
+          "title": "Stage Backlogs (accumulated events)",
+          "description": "Orchestrator in-flight = received − published (events being processed right now). NATS backlog = published − matched (events sitting in JetStream waiting for a matcher).",
+          "type": "timeseries",
+          "gridPos": { "x": 0, "y": 49, "w": 24, "h": 7 },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "min": 0,
+              "custom": { "lineWidth": 2, "fillOpacity": 12 }
+            }
+          },
+          "options": { "tooltip": { "mode": "multi" } },
+          "targets": [
+            {
+              "expr": "routers_events_received_total - routers_events_published_total",
+              "legendFormat": "Orchestrator in-flight (received − published)",
+              "datasource": { "type": "prometheus", "uid": "prometheus" }
+            },
+            {
+              "expr": "routers_events_published_total - (sum(routers_matches_total_success) + sum(routers_matches_total_no_candidate) + sum(routers_matches_total_error))",
+              "legendFormat": "NATS backlog (published − matched)",
+              "datasource": { "type": "prometheus", "uid": "prometheus" }
+            }
+          ],
+          "datasource": { "type": "prometheus", "uid": "prometheus" }
+        },
+        {
+          "id": 15,
+          "title": "Stage Latency Breakdown (avg ms)",
+          "description": "Time spent at each stage per event. 'Matcher queue wait' is the gap between NATS delivery and when the matcher starts solving — directly shows matcher saturation.",
+          "type": "timeseries",
+          "gridPos": { "x": 0, "y": 56, "w": 24, "h": 8 },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "ms",
+              "custom": { "lineWidth": 2 }
+            }
+          },
+          "options": { "tooltip": { "mode": "multi" } },
+          "targets": [
+            {
+              "expr": "rate(routers_total_latency_ms_sum[15s]) / rate(routers_total_latency_ms_count[15s])",
+              "legendFormat": "Orchestrator total (AMQP recv → NATS ack)",
+              "datasource": { "type": "prometheus", "uid": "prometheus" }
+            },
+            {
+              "expr": "rate(routers_store_latency_ms_sum[15s]) / rate(routers_store_latency_ms_count[15s])",
+              "legendFormat": "  └ Valkey store",
+              "datasource": { "type": "prometheus", "uid": "prometheus" }
+            },
+            {
+              "expr": "rate(routers_nats_latency_ms_sum[15s]) / rate(routers_nats_latency_ms_count[15s])",
+              "legendFormat": "  └ NATS publish + ack",
+              "datasource": { "type": "prometheus", "uid": "prometheus" }
+            },
+            {
+              "expr": "rate(routers_match_latency_ms_sum[30s]) / rate(routers_match_latency_ms_count[30s]) - rate(routers_solve_latency_ms_sum[30s]) / rate(routers_solve_latency_ms_count[30s])",
+              "legendFormat": "Matcher queue wait (sitting in NATS before pickup)",
+              "datasource": { "type": "prometheus", "uid": "prometheus" }
+            },
+            {
+              "expr": "rate(routers_solve_latency_ms_sum[30s]) / rate(routers_solve_latency_ms_count[30s])",
+              "legendFormat": "  └ HMM solve",
+              "datasource": { "type": "prometheus", "uid": "prometheus" }
+            },
+            {
+              "expr": "rate(routers_match_latency_ms_sum[30s]) / rate(routers_match_latency_ms_count[30s])",
+              "legendFormat": "Matcher total (NATS delivery → result published)",
+              "datasource": { "type": "prometheus", "uid": "prometheus" }
+            }
+          ],
+          "datasource": { "type": "prometheus", "uid": "prometheus" }
         }
       ],
       "schemaVersion": 36

@@ -4,11 +4,21 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 
+[[bin]]
+name = "viewer"
+path = "src/bin/viewer.rs"
+
+[[bin]]
+name = "monitor"
+path = "src/bin/monitor.rs"
+
 [dependencies]
 routers = { workspace = true }
 routers_network = { workspace = true }
 routers_codec = { workspace = true }
 routers_fixtures = { workspace = true }
+routers_realtime = { path = "../routers_realtime" }
+routers_shard = { workspace = true }
 
 log = { workspace = true }
 anyhow = { workspace = true }
@@ -19,22 +29,26 @@ wkt = { workspace = true }
 dotenv = { workspace = true }
 env_logger = "0.11"
 
-# UI Dependencies
+# UI
 eframe = "0.33.0"
 egui = "0.33.0"
 walkers = { version = "0.47", features = ["serde"] } # Version compatible with egui 0.33
 
-# Async runtime for any background tile fetching
+# Async
 tokio = { workspace = true }
+async-nats = "0.38.0"
+futures = "0.3"
+
+# Serialization
+postcard = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
 
 # Mock Network Dependencies
 petgraph = { workspace = true }
 rstar = { workspace = true }
 rustc-hash = { workspace = true }
 pathfinding = "4.14.0"
-
-serde = { workspace = true }
-serde_json = { workspace = true }
 
 [dev-dependencies]
 routers_fixtures = { workspace = true }

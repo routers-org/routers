@@ -73,10 +73,10 @@ pub struct ValkeyStore {
 }
 
 impl ValkeyStore {
-    pub async fn connect(url: &str) -> Result<Self, redis::RedisError> {
+    pub async fn connect(url: &str, max_len: usize) -> Result<Self, redis::RedisError> {
         let client = redis::Client::open(url)?;
         let conn = client.get_multiplexed_async_connection().await?;
-        Ok(Self { conn, max_len: 200 })
+        Ok(Self { conn, max_len })
     }
 }
 

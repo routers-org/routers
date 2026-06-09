@@ -2,7 +2,7 @@ use chrono::{DateTime, NaiveDateTime};
 use futures::StreamExt;
 use geo::Point;
 use routers_realtime::{
-    MemoryStore, ValkeyStore, WarmingMemoryStore,
+    HistoryConfig, MemoryStore, ValkeyStore, WarmingMemoryStore,
     amqp::{Topic, TopicOpts},
     context::{MatchContext, RawEvent},
     metrics,
@@ -29,7 +29,6 @@ fn make_source(opts: TopicOpts) -> impl std::future::Future<Output = anyhow::Res
             let ts = DateTime::parse_from_str(&payload.event_time, "%Y-%m-%d %H:%M:%S%.f %Z")
                 .or_else(|_| DateTime::parse_from_str(&payload.event_time, "%Y-%m-%d %H:%M:%S %Z"))
                 .map(|dt| dt.timestamp_millis() as u64)
-                // Fallback: strip trailing " UTC" and parse as naive UTC datetime.
                 .unwrap_or_else(|_| {
                     let s = payload.event_time.trim_end_matches(" UTC");
                     NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S%.f")
@@ -65,8 +64,6 @@ async fn main() -> anyhow::Result<()> {
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(5);
-    // Number of parallel consumer+store pipelines. Each opens its own AMQP connection
-    // and Valkey connection, all funnelling into the same shared NATS publisher.
     let parallelism: usize = std::env::var("PARALLELISM")
         .ok()
         .and_then(|s| s.parse().ok())
@@ -75,6 +72,25 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or_else(|_| "0.0.0.0:9091".into())
         .parse()
         .expect("METRICS_ADDR must be a valid socket address");
+
+    let history_max_points: usize = std::env::var("HISTORY_MAX_POINTS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(50);
+    let history_max_age_ms: u64 = std::env::var("HISTORY_MAX_AGE_SECS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(300)
+        * 1000;
+    let valkey_max_len: usize = std::env::var("VALKEY_MAX_LEN")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(500);
+
+    let history_cfg = HistoryConfig {
+        max_points: history_max_points,
+        max_age_ms: history_max_age_ms,
+    };
 
     tokio::spawn(metrics::serve(metrics_addr));
 
@@ -88,52 +104,48 @@ async fn main() -> anyhow::Result<()> {
         .await
         .map_err(|e| anyhow::anyhow!("NATS stream setup: {e}"))?;
 
-    // One NATS batch publisher shared across all pipeline tasks.
     let (tx, rx) = mpsc::channel::<MatchContext<S>>(2048 * parallelism);
     tokio::spawn(nats::batch_publisher::<S>(js, rx, 64));
 
     match store_mode.as_str() {
         "memory" => {
-            eprintln!("store: memory (no persistence)  parallelism=1");
+            eprintln!("store: memory (no persistence)  parallelism=1  history_max_points={history_max_points}");
             let source = make_source(TopicOpts::from_env()).await?;
-            orchestrate(source, make_sink(tx), MemoryStore::<S>::new(200), &strategy).await
+            orchestrate(source, make_sink(tx), MemoryStore::<S>::new(valkey_max_len), &strategy, &history_cfg).await
         }
         _ => {
             eprintln!(
-                "store: warming ({valkey_url})  parallelism={parallelism}"
+                "store: warming ({valkey_url})  parallelism={parallelism}  history_max_points={history_max_points}  valkey_max_len={valkey_max_len}"
             );
 
             if parallelism == 1 {
                 let source = make_source(TopicOpts::from_env()).await?;
-                let valkey = ValkeyStore::connect(&valkey_url).await?;
-                let store = WarmingMemoryStore::new(valkey, 200);
-                orchestrate(source, make_sink(tx), store, &strategy).await
+                let valkey = ValkeyStore::connect(&valkey_url, valkey_max_len).await?;
+                let store = WarmingMemoryStore::new(valkey, valkey_max_len);
+                orchestrate(source, make_sink(tx), store, &strategy, &history_cfg).await
             } else {
-                // Spawn N-1 background tasks, run the last one on the current thread.
                 let mut handles = vec![];
                 for i in 0..parallelism {
                     let mut opts = TopicOpts::from_env();
-                    // Each consumer needs a unique tag within the RabbitMQ connection.
                     opts.consumer_tag = lapin::types::ShortString::from(
                         format!("orchestrator-{i}").as_str(),
                     );
                     let source = make_source(opts).await?;
-                    let valkey = ValkeyStore::connect(&valkey_url).await?;
-                    let store = WarmingMemoryStore::new(valkey, 200);
+                    let valkey = ValkeyStore::connect(&valkey_url, valkey_max_len).await?;
+                    let store = WarmingMemoryStore::new(valkey, valkey_max_len);
                     let sink = make_sink(tx.clone());
                     let strat = strategy.clone();
 
+                    let hcfg = history_cfg.clone();
                     if i < parallelism - 1 {
                         handles.push(tokio::spawn(async move {
-                            orchestrate(source, sink, store, &strat).await
+                            orchestrate(source, sink, store, &strat, &hcfg).await
                         }));
                     } else {
-                        // Drop the original tx — last task holds its own clone
                         drop(tx);
-                        return orchestrate(source, sink, store, &strat).await;
+                        return orchestrate(source, sink, store, &strat, &hcfg).await;
                     }
                 }
-                // Wait for the first task to exit (any failure bubbles up)
                 if let Some(result) = futures::future::select_all(handles).await.0.ok() {
                     result
                 } else {

@@ -24,7 +24,14 @@ pub fn filter_history<S: Clone + PartialEq>(
         if collected.len() == max_points {
             break;
         }
-        // If timestamps are known, stop as soon as an entry is too old.
+        // Skip entries newer than the current event. They ended up in the stream
+        // ahead of us due to a concurrent orchestrator or a same-vehicle batch.
+        // Use `continue` not `break` — the stream is insertion-ordered, not
+        // GPS-time-ordered, so older entries can follow newer ones.
+        if current_ts > 0 && pos.timestamp_ms > 0 && pos.timestamp_ms > current_ts {
+            continue;
+        }
+        // Stop once an entry is outside the age window; everything after is older.
         if current_ts > 0 && pos.timestamp_ms > 0
             && current_ts.saturating_sub(pos.timestamp_ms) > max_age_ms
         {
@@ -39,7 +46,10 @@ pub fn filter_history<S: Clone + PartialEq>(
         collected.push(pos);
     }
 
+    // Reverse from newest-first to oldest-first, then sort by GPS timestamp so
+    // out-of-order insertions don't produce a zigzag linestring for the HMM.
     collected.reverse();
+    collected.sort_by_key(|p| p.timestamp_ms);
     collected
 }
 
@@ -125,6 +135,35 @@ mod tests {
         assert_eq!(result.len(), 2);
         assert_eq!(result[0].timestamp_ms, 800);
         assert_eq!(result[1].timestamp_ms, 950);
+    }
+
+    #[test]
+    fn skips_future_entries_without_breaking() {
+        // A later event (ts=200) got inserted into the stream before the current
+        // event (ts=100) processed its XREVRANGE. The future entry must be skipped
+        // (not cause a break), and the remaining older entries must still be returned.
+        let entries = vec![
+            (FakeShard(1), pos(200)), // future — skip, not break
+            (FakeShard(1), pos(100)), // current_ts == 100, included as history
+            (FakeShard(1), pos(80)),
+            (FakeShard(1), pos(60)),
+        ];
+        let result = filter_history(entries.into_iter(), 100, 100, 300);
+        // ts=200 must be excluded; ts=100, 80, 60 must be present in oldest-first order
+        assert_eq!(result.iter().map(|p| p.timestamp_ms).collect::<Vec<_>>(), vec![60, 80, 100]);
+    }
+
+    #[test]
+    fn sorts_out_of_order_insertions() {
+        // Stream insertion order doesn't match GPS timestamp order.
+        let entries = vec![
+            (FakeShard(1), pos(100)),
+            (FakeShard(1), pos(95)),
+            (FakeShard(1), pos(98)), // inserted out of order
+            (FakeShard(1), pos(90)),
+        ];
+        let result = filter_history(entries.into_iter(), 100, 100, 300);
+        assert_eq!(result.iter().map(|p| p.timestamp_ms).collect::<Vec<_>>(), vec![90, 95, 98, 100]);
     }
 
     #[test]

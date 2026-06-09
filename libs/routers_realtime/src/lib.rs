@@ -17,11 +17,35 @@ use tokio::time::{Duration, Instant};
 pub use store::{MemoryStore, ValkeyStore, WarmingMemoryStore};
 use store::PositionStore;
 
+/// Controls how much position history is passed to each matcher.
+///
+/// Both parameters affect the HMM quality: longer sequences give the
+/// transition model more signal to reject implausible routes. Set
+/// `max_points` to at least 30–50 for reliable disambiguation on
+/// dense urban networks.
+#[derive(Clone)]
+pub struct HistoryConfig {
+    /// Maximum number of positions included in each `MatchContext`.
+    pub max_points: usize,
+    /// Positions older than this (relative to the current event) are dropped.
+    pub max_age_ms: u64,
+}
+
+impl Default for HistoryConfig {
+    fn default() -> Self {
+        Self {
+            max_points: 50,
+            max_age_ms: 5 * 60 * 1000,
+        }
+    }
+}
+
 pub async fn orchestrate<St, Si, P, Strat, S>(
     source: St,
     sink: Si,
     mut store: P,
     strategy: &Strat,
+    history_cfg: &HistoryConfig,
 ) -> anyhow::Result<()>
 where
     St: Stream<Item = RawEvent>,
@@ -71,7 +95,9 @@ where
         m.store_latency_ms
             .observe(t_store.elapsed().as_secs_f64() * 1000.0);
 
-        let history = history::filter_history(raw_history.into_iter(), 10, event.timestamp_ms, 5 * 60 * 1000);
+        // raw_history[0] is the position we just wrote; skip it so history only
+        // contains prior events and ctx.current isn't duplicated in the linestring.
+        let history = history::filter_history(raw_history.into_iter().skip(1), history_cfg.max_points, event.timestamp_ms, history_cfg.max_age_ms);
         let ctx = MatchContext {
             vehicle_id: event.vehicle_id,
             resolved_at_ms,
@@ -108,6 +134,7 @@ pub async fn orchestrate_batched<St, Si, Strat, S>(
     strategy: Strat,
     batch_size: usize,
     batch_timeout_ms: u64,
+    history_cfg: &HistoryConfig,
 ) -> anyhow::Result<()>
 where
     St: Stream<Item = RawEvent>,
@@ -200,7 +227,7 @@ where
             let t_event = std::time::Instant::now();
             m.store_latency_ms.observe(per_event_store_ms);
 
-            let history = history::filter_history(raw_history.into_iter(), 10, *timestamp_ms, 5 * 60 * 1000);
+            let history = history::filter_history(raw_history.into_iter().skip(1), history_cfg.max_points, *timestamp_ms, history_cfg.max_age_ms);
             let ctx = MatchContext {
                 vehicle_id: vehicle_id.clone(),
                 resolved_at_ms: *resolved_at_ms,

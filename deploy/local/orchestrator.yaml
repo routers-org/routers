@@ -37,6 +37,12 @@ spec:
               value: "0.0.0.0:9091"
             - name: PARALLELISM
               value: "1"
+            - name: HISTORY_MAX_POINTS
+              value: "15"
+            - name: HISTORY_MAX_AGE_SECS
+              value: "300"
+            - name: RUST_LOG
+              value: "debug"
           resources:
             requests:
               cpu: 1000m

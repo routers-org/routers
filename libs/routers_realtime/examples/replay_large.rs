@@ -6,17 +6,23 @@
 /// it viable for millions of rows.
 ///
 /// Environment variables:
-///   CSV_FILE      path to the CSV (default: sydney-dump-2026-thesis.csv)
-///   RABBITMQ_URL  AMQP connection string
-///   REPLAY_SPEED  speed multiplier (default: 1.0; try 60, 100, 0.5)
-///   REPLAY_FLOOD  if set, ignore timing and publish as fast as possible
+///   CSV_FILE        path to the CSV (default: sydney-dump-2026-thesis.csv)
+///   RABBITMQ_URL    AMQP connection string
+///   REPLAY_SPEED    speed multiplier (default: 1.0; try 60, 100, 0.5)
+///   REPLAY_FLOOD    if set, ignore timing and publish as fast as possible
+///   ACTIVE_SHARDS   comma-separated geohash list to filter by (e.g. r3grm,r3grh)
+///                   if unset or empty, all events are sent
+///   SHARD_PRECISION geohash precision used by the matcher (default: 5)
 use chrono::NaiveDateTime;
-use geo::Coord;
+use geo::{Coord, Point};
 use polars::prelude::*;
 use routers_realtime::amqp::{Topic, TopicOpts};
 use routers_realtime::event::Payload;
+use routers_shard::{Geohash, GeohashStrategy, ShardingStrategy};
+use std::collections::HashSet;
 use std::error::Error;
 use std::io::Write;
+use std::str::FromStr;
 use tokio::time::Instant;
 
 const DEFAULT_CSV: &str =
@@ -58,11 +64,32 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .and_then(|s| s.trim().parse().ok())
         .unwrap_or(1.0);
 
+    let shard_precision: u8 = std::env::var("SHARD_PRECISION")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(5);
+    let strategy = GeohashStrategy::with_precision(shard_precision);
+
+    let active_shards: HashSet<Geohash> = std::env::var("ACTIVE_SHARDS")
+        .unwrap_or_default()
+        .split(',')
+        .filter(|s| !s.is_empty())
+        .filter_map(|s| Geohash::from_str(s.trim()).ok())
+        .collect();
+
     if flood {
         println!("Mode: flood (REPLAY_FLOOD set)");
     } else {
         println!("Mode: timed  speed={speed}×  (REPLAY_SPEED={:?})", std::env::var("REPLAY_SPEED").unwrap_or_else(|_| "unset — defaulting to 1.0".into()));
     }
+    if active_shards.is_empty() {
+        println!("Shard filter: none (sending all events)");
+    } else {
+        let mut names: Vec<_> = active_shards.iter().map(|s| s.to_string()).collect();
+        names.sort();
+        println!("Shard filter: {} shards — {}", names.len(), names.join(", "));
+    }
+
     println!("Loading {}...", csv_path);
     let t_load = std::time::Instant::now();
     let df = load_sorted(&csv_path)?;
@@ -99,40 +126,31 @@ async fn main() -> Result<(), Box<dyn Error>> {
     println!("Connecting to RabbitMQ...");
     let topic = Topic::new(opts).await?;
 
+    let effective_speed = if flood { f64::INFINITY } else { speed };
     if flood {
-        println!("Flood mode — sending {n} events at max rate...");
-        run(
-            &topic,
-            trip_ids,
-            vehicle_ids,
-            providers,
-            event_times,
-            latitudes,
-            longitudes,
-            n,
-            t_first,
-            f64::INFINITY, // infinite speed = never sleep
-        )
-        .await?;
+        println!("Flood mode — sending at max rate...");
     } else {
         println!(
             "Walking mode — replaying at {speed}× (wall span: {:.1} min)",
             span_min / speed,
         );
-        run(
-            &topic,
-            trip_ids,
-            vehicle_ids,
-            providers,
-            event_times,
-            latitudes,
-            longitudes,
-            n,
-            t_first,
-            speed,
-        )
-        .await?;
     }
+
+    run(
+        &topic,
+        trip_ids,
+        vehicle_ids,
+        providers,
+        event_times,
+        latitudes,
+        longitudes,
+        n,
+        t_first,
+        effective_speed,
+        &active_shards,
+        &strategy,
+    )
+    .await?;
 
     let _ = topic.finish().await;
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
@@ -150,9 +168,12 @@ async fn run(
     n: usize,
     t_first: NaiveDateTime,
     speed: f64,
+    active_shards: &HashSet<Geohash>,
+    strategy: &GeohashStrategy,
 ) -> Result<(), Box<dyn Error>> {
     let wall_start = Instant::now();
     let mut sent: u64 = 0;
+    let mut skipped: u64 = 0;
     let mut last_report = Instant::now();
     let mut last_sent: u64 = 0;
 
@@ -160,6 +181,16 @@ async fn run(
         let time_str = event_times.get(i).unwrap_or("");
         let lat = latitudes.get(i).unwrap_or(0.0);
         let lon = longitudes.get(i).unwrap_or(0.0);
+
+        // Drop events outside the active shard set before any timing logic so
+        // they don't inflate the wall-clock timeline for filtered replays.
+        if !active_shards.is_empty() {
+            let shard = strategy.locate(Point::new(lon, lat));
+            if !active_shards.contains(&shard) {
+                skipped += 1;
+                continue;
+            }
+        }
 
         // Compute the wall-clock instant this event should be dispatched.
         // If we are behind schedule (target already past), send immediately.
@@ -192,14 +223,22 @@ async fn run(
         if now.duration_since(last_report).as_secs_f64() >= 2.0 {
             let rate =
                 (sent - last_sent) as f64 / now.duration_since(last_report).as_secs_f64();
-            let pct = sent as f64 / n as f64 * 100.0;
-            print!("\r  [{pct:5.1}%]  {sent:>7}/{n}  {rate:>8.0} events/s   ");
+            let pct = (sent + skipped) as f64 / n as f64 * 100.0;
+            if skipped > 0 {
+                print!("\r  [{pct:5.1}%]  sent={sent:>7}  skipped={skipped:>7}  {rate:>8.0} events/s   ");
+            } else {
+                print!("\r  [{pct:5.1}%]  {sent:>7}/{n}  {rate:>8.0} events/s   ");
+            }
             let _ = std::io::stdout().flush();
             last_report = now;
             last_sent = sent;
         }
     }
 
-    println!("\r  Done — {sent} events sent in {:.2}s", wall_start.elapsed().as_secs_f64());
+    if skipped > 0 {
+        println!("\r  Done — {sent} sent, {skipped} skipped (outside active shards) in {:.2}s", wall_start.elapsed().as_secs_f64());
+    } else {
+        println!("\r  Done — {sent} events sent in {:.2}s", wall_start.elapsed().as_secs_f64());
+    }
     Ok(())
 }

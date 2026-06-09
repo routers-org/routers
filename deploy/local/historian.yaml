@@ -36,6 +36,8 @@ spec:
               value: "64"
             - name: VALKEY_BATCH_TIMEOUT_MS
               value: "2"
+            - name: RUST_LOG
+              value: "debug"
           resources:
             requests:
               cpu: 200m

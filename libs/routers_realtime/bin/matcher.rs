@@ -16,7 +16,7 @@ use routers_shard::{
     ShardLoader, ShardingStrategy,
 };
 use std::str::FromStr;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 type E = OsmEntryId;
 type M = OsmEdgeMetadata;
@@ -35,6 +35,8 @@ fn now_ms() -> u64 {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+
     let nats_url = std::env::var("NATS_URL").unwrap_or_else(|_| "nats://127.0.0.1:4222".into());
     let shard_dir = std::env::var("SHARD_DIR").unwrap_or_else(|_| "./shards".into());
     let shard_precision: u8 = std::env::var("SHARD_PRECISION")
@@ -50,8 +52,6 @@ async fn main() -> anyhow::Result<()> {
 
     let strategy = GeohashStrategy::with_precision(shard_precision);
 
-    // OWNED_SHARD env var always takes precedence (required in debug builds; optional override
-    // in release builds while NatsKvAssignment lease acquisition is not yet implemented).
     let shard: S = if let Ok(val) = std::env::var("OWNED_SHARD") {
         S::from_str(&val).expect("OWNED_SHARD is not a valid geohash")
     } else {
@@ -91,105 +91,148 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let network = MultiShardNetwork::<E, M, S>::new(shards);
-
-    let nc = async_nats::connect(&nats_url)
-        .await
-        .map_err(|e| anyhow::anyhow!("NATS connect: {e}"))?;
-    let js = async_nats::jetstream::new(nc.clone());
-    let consumer = nats::match_consumer(&js, &shard)
-        .await
-        .map_err(|e| anyhow::anyhow!("match_consumer: {e}"))?;
-    let result_sink = nats::result_sink(nc, "matched.positions".into());
-
-    futures::pin_mut!(result_sink);
-    let mut messages = consumer
-        .messages()
-        .await
-        .map_err(|e| anyhow::anyhow!("consumer messages: {e}"))?;
-
     let m = metrics::matcher_global();
 
-    while let Some(msg) = messages.next().await {
-        let t_delivery = Instant::now();
+    // Reconnect loop — recovers from both startup connection failures and
+    // mid-run transient errors (missed idle heartbeat, stream resets, etc.).
+    let mut connect_backoff = Duration::from_secs(1);
 
-        let msg = msg.map_err(|e| anyhow::anyhow!("message recv: {e}"))?;
-        let ctx: MatchContext<S> = match postcard::from_bytes(&msg.payload) {
+    'reconnect: loop {
+        // ── Connect with retry ───────────────────────────────────────────────
+        let nc = loop {
+            match async_nats::connect(&nats_url).await {
+                Ok(nc) => {
+                    connect_backoff = Duration::from_secs(1);
+                    break nc;
+                }
+                Err(e) => {
+                    eprintln!("[matcher-{shard}] NATS connect: {e}, retry in {connect_backoff:?}");
+                    tokio::time::sleep(connect_backoff).await;
+                    connect_backoff = (connect_backoff * 2).min(Duration::from_secs(30));
+                }
+            }
+        };
+
+        let js = async_nats::jetstream::new(nc.clone());
+
+        let consumer = match nats::match_consumer(&js, &shard).await {
             Ok(c) => c,
             Err(e) => {
-                log::warn!("failed to decode MatchContext: {e}");
-                let _ = msg.ack().await;
-                continue;
+                eprintln!("[matcher-{shard}] consumer setup: {e}, reconnecting");
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                continue 'reconnect;
             }
         };
 
-        let coords: Vec<geo::Coord> = ctx
-            .history
-            .iter()
-            .chain(std::iter::once(&ctx.current))
-            .map(|p| p.coord.into())
-            .collect();
+        let result_sink = nats::result_sink(nc, "matched.positions".into());
+        futures::pin_mut!(result_sink);
 
-        let linestring = LineString(coords);
-        let debug_pts: Vec<String> = ctx.history.iter()
-            .chain(std::iter::once(&ctx.current))
-            .map(|p| format!("[{:.6},{:.6},t={}]", p.coord.x(), p.coord.y(), p.timestamp_ms))
-            .collect();
-        let opts = MatchOptions::<E, M, _>::default();
-
-        let t_solve = Instant::now();
-        let (matched_coord, outcome) = match network.r#match(linestring, opts) {
-            Ok(path) => {
-                let coord = path
-                    .discretized
-                    .elements
-                    .last()
-                    .map(|el| Point::from(el.point))
-                    .unwrap_or(ctx.current.coord);
-                let outcome = if path.discretized.elements.is_empty() {
-                    MatchOutcome::NoCandidate
-                } else {
-                    MatchOutcome::Success
-                };
-                (coord, outcome)
-            }
+        let mut messages = match consumer.messages().await {
+            Ok(m) => m,
             Err(e) => {
-                eprintln!(
-                    "match failed for vehicle {}: {e:?} | points={} linestring=[{}]",
-                    ctx.vehicle_id,
-                    debug_pts.len(),
-                    debug_pts.join(",")
-                );
-                (ctx.current.coord, MatchOutcome::Error)
+                eprintln!("[matcher-{shard}] message stream: {e}, reconnecting");
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                continue 'reconnect;
             }
         };
-        let solve_ms = t_solve.elapsed().as_secs_f64() * 1000.0;
-        m.solve_latency_ms.observe(solve_ms);
 
-        match outcome {
-            MatchOutcome::Success => m.matches_success.inc(),
-            MatchOutcome::NoCandidate => m.matches_no_candidate.inc(),
-            MatchOutcome::Error => {
-                m.matches_error.inc();
+        // ── Message loop ─────────────────────────────────────────────────────
+        loop {
+            let msg = match messages.next().await {
+                None => {
+                    eprintln!("[matcher-{shard}] stream closed, reconnecting");
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    continue 'reconnect;
+                }
+                Some(Ok(msg)) => msg,
+                Some(Err(e)) => {
+                    eprintln!("[matcher-{shard}] message recv: {e}, reconnecting");
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    continue 'reconnect;
+                }
+            };
+
+            let t_delivery = Instant::now();
+
+            let ctx: MatchContext<S> = match postcard::from_bytes(&msg.payload) {
+                Ok(c) => c,
+                Err(e) => {
+                    log::warn!("failed to decode MatchContext: {e}");
+                    let _ = msg.ack().await;
+                    continue;
+                }
+            };
+
+            let coords: Vec<geo::Coord> = ctx
+                .history
+                .iter()
+                .chain(std::iter::once(&ctx.current))
+                .map(|p| p.coord.into())
+                .collect();
+
+            let linestring = LineString(coords);
+            let debug_pts: Vec<String> = ctx.history.iter()
+                .chain(std::iter::once(&ctx.current))
+                .map(|p| format!("[{:.6},{:.6},t={}]", p.coord.x(), p.coord.y(), p.timestamp_ms))
+                .collect();
+            let opts = MatchOptions::<E, M, _>::default();
+
+            let t_solve = Instant::now();
+            let (matched_coord, outcome) = match network.r#match(linestring, opts) {
+                Ok(path) => {
+                    let coord = path
+                        .discretized
+                        .elements
+                        .last()
+                        .map(|el| Point::from(el.point))
+                        .unwrap_or(ctx.current.coord);
+                    let outcome = if path.discretized.elements.is_empty() {
+                        MatchOutcome::NoCandidate
+                    } else {
+                        MatchOutcome::Success
+                    };
+                    (coord, outcome)
+                }
+                Err(e) => {
+                    eprintln!(
+                        "match failed for vehicle {}: {e:?} | points={} linestring=[{}]",
+                        ctx.vehicle_id,
+                        debug_pts.len(),
+                        debug_pts.join(",")
+                    );
+                    (ctx.current.coord, MatchOutcome::Error)
+                }
+            };
+            let solve_ms = t_solve.elapsed().as_secs_f64() * 1000.0;
+            m.solve_latency_ms.observe(solve_ms);
+
+            match outcome {
+                MatchOutcome::Success => m.matches_success.inc(),
+                MatchOutcome::NoCandidate => m.matches_no_candidate.inc(),
+                MatchOutcome::Error => {
+                    m.matches_error.inc();
+                    let _ = msg.ack().await;
+                    continue;
+                }
+            }
+
+            let result = MatchResult {
+                vehicle_id: ctx.vehicle_id,
+                resolved_at_ms: ctx.resolved_at_ms,
+                matched_at_ms: now_ms(),
+                coord: matched_coord,
+                outcome,
+            };
+
+            if let Err(e) = result_sink.send(result).await {
+                eprintln!("[matcher-{shard}] result publish: {e}, reconnecting");
                 let _ = msg.ack().await;
-                continue;
+                continue 'reconnect;
             }
+            let _ = msg.ack().await;
+
+            m.match_latency_ms
+                .observe(t_delivery.elapsed().as_secs_f64() * 1000.0);
         }
-
-        let matched_at_ms = now_ms();
-        let result = MatchResult {
-            vehicle_id: ctx.vehicle_id,
-            resolved_at_ms: ctx.resolved_at_ms,
-            matched_at_ms,
-            coord: matched_coord,
-            outcome,
-        };
-
-        result_sink.send(result).await?;
-        let _ = msg.ack().await;
-
-        let match_ms = t_delivery.elapsed().as_secs_f64() * 1000.0;
-        m.match_latency_ms.observe(match_ms);
     }
-
-    Ok(())
 }
