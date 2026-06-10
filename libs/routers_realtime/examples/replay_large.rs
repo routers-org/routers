@@ -2,22 +2,26 @@
 ///
 /// Loads and sorts the full dataset with polars, then walks events in
 /// chronological order, sleeping until each event's virtual time arrives
-/// before publishing. This avoids spawning one async task per event, making
-/// it viable for millions of rows.
+/// before publishing. Publishes directly to the NATS EVENTS JetStream stream.
 ///
 /// Environment variables:
-///   CSV_FILE        path to the CSV (default: sydney-dump-2026-thesis.csv)
-///   RABBITMQ_URL    AMQP connection string
-///   REPLAY_SPEED    speed multiplier (default: 1.0; try 60, 100, 0.5)
-///   REPLAY_FLOOD    if set, ignore timing and publish as fast as possible
-///   ACTIVE_SHARDS   comma-separated geohash list to filter by (e.g. r3grm,r3grh)
-///                   if unset or empty, all events are sent
-///   SHARD_PRECISION geohash precision used by the matcher (default: 5)
+///   CSV_FILE          path to the CSV (default: sydney-dump-2026-thesis.csv)
+///   NATS_URL          NATS connection string
+///   REPLAY_SPEED      speed multiplier (default: 1.0; try 60, 100, 0.5)
+///   REPLAY_FLOOD      if set, ignore timing and publish as fast as possible
+///   REPLAY_PIPELINE   number of JetStream publishes to fire before awaiting acks
+///                     (default: 1 = sequential; set to 256+ in flood mode)
+///   REPLAY_LOOPS      how many times to cycle through the dataset (default: 1;
+///                     0 = repeat indefinitely until killed)
+///   ACTIVE_SHARDS     comma-separated geohash list to filter by (e.g. r3grm,r3grh)
+///                     if unset or empty, all events are sent
+///   SHARD_PRECISION   geohash precision used by the matcher (default: 5)
+use async_nats::jetstream;
 use chrono::NaiveDateTime;
 use geo::{Coord, Point};
 use polars::prelude::*;
-use routers_realtime::amqp::{Topic, TopicOpts};
 use routers_realtime::event::Payload;
+use routers_realtime::nats_ingest::{self, NatsIngestOpts};
 use routers_shard::{Geohash, GeohashStrategy, ShardingStrategy};
 use std::collections::HashSet;
 use std::error::Error;
@@ -37,8 +41,6 @@ fn parse_time(s: &str) -> Option<NaiveDateTime> {
         .ok()
 }
 
-/// Load the CSV with polars, sort by EventTime (lexicographic = chronological
-/// for this ISO-like format), and return the pruned DataFrame.
 fn load_sorted(path: &str) -> Result<DataFrame, PolarsError> {
     LazyCsvReader::new(path)
         .with_has_header(true)
@@ -59,6 +61,15 @@ fn load_sorted(path: &str) -> Result<DataFrame, PolarsError> {
 async fn main() -> Result<(), Box<dyn Error>> {
     let csv_path = std::env::var("CSV_FILE").unwrap_or_else(|_| DEFAULT_CSV.to_string());
     let flood = std::env::var("REPLAY_FLOOD").is_ok();
+    let loops: usize = std::env::var("REPLAY_LOOPS")
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(1);
+    let pipeline: usize = std::env::var("REPLAY_PIPELINE")
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(1)
+        .max(1);
     let speed: f64 = std::env::var("REPLAY_SPEED")
         .ok()
         .and_then(|s| s.trim().parse().ok())
@@ -78,9 +89,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .collect();
 
     if flood {
-        println!("Mode: flood (REPLAY_FLOOD set)");
+        println!("Mode: flood (REPLAY_FLOOD set)  pipeline={pipeline}");
     } else {
-        println!("Mode: timed  speed={speed}×  (REPLAY_SPEED={:?})", std::env::var("REPLAY_SPEED").unwrap_or_else(|_| "unset — defaulting to 1.0".into()));
+        println!(
+            "Mode: timed  speed={speed}×  (REPLAY_SPEED={:?})",
+            std::env::var("REPLAY_SPEED").unwrap_or_else(|_| "unset — defaulting to 1.0".into()),
+        );
     }
     if active_shards.is_empty() {
         println!("Shard filter: none (sending all events)");
@@ -99,7 +113,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
         return Ok(());
     }
 
-    // Borrow all columns up front — column access is O(1).
     let trip_ids = df.column("TripID")?.str()?;
     let vehicle_ids = df.column("VehicleID")?.str()?;
     let providers = df.column("Provider")?.str()?;
@@ -120,45 +133,72 @@ async fn main() -> Result<(), Box<dyn Error>> {
         t_load.elapsed().as_secs_f64(),
     );
 
-    let opts = TopicOpts::from_env()
-        .with_queue("queue.replay")
-        .with_auto_delete();
-    println!("Connecting to RabbitMQ...");
-    let topic = Topic::new(opts).await?;
+    let nats_url =
+        std::env::var("NATS_URL").unwrap_or_else(|_| "nats://127.0.0.1:4222".into());
+    println!("Connecting to NATS ({nats_url})...");
+    let nc = async_nats::connect(&nats_url).await?;
+    let js = async_nats::jetstream::new(nc);
+    let opts = NatsIngestOpts::from_env();
+    nats_ingest::ensure_events_stream(&js, &opts).await?;
+    let subject = opts.subject.clone();
+    println!("EVENTS stream ready — subject={subject}");
 
     let effective_speed = if flood { f64::INFINITY } else { speed };
+    let loop_desc = |n: usize| if n == 0 { "∞".to_string() } else { n.to_string() };
     if flood {
-        println!("Flood mode — sending at max rate...");
+        println!(
+            "Flood mode — sending at max rate  pipeline={pipeline}  loops={}",
+            loop_desc(loops),
+        );
     } else {
         println!(
-            "Walking mode — replaying at {speed}× (wall span: {:.1} min)",
+            "Walking mode — replaying at {speed}×  loops={}  (wall span per loop: {:.1} min)",
+            loop_desc(loops),
             span_min / speed,
         );
     }
 
-    run(
-        &topic,
-        trip_ids,
-        vehicle_ids,
-        providers,
-        event_times,
-        latitudes,
-        longitudes,
-        n,
-        t_first,
-        effective_speed,
-        &active_shards,
-        &strategy,
-    )
-    .await?;
+    let mut iteration = 0usize;
+    loop {
+        iteration += 1;
+        if loops != 1 {
+            let label = if loops == 0 {
+                format!("loop {iteration}")
+            } else {
+                format!("loop {iteration}/{loops}")
+            };
+            println!("{label}");
+        }
 
-    let _ = topic.finish().await;
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        run(
+            &js,
+            &subject,
+            trip_ids,
+            vehicle_ids,
+            providers,
+            event_times,
+            latitudes,
+            longitudes,
+            n,
+            t_first,
+            effective_speed,
+            pipeline,
+            &active_shards,
+            &strategy,
+        )
+        .await?;
+
+        if loops > 0 && iteration >= loops {
+            break;
+        }
+    }
+
     Ok(())
 }
 
 async fn run(
-    topic: &Topic,
+    js: &jetstream::Context,
+    subject: &str,
     trip_ids: &StringChunked,
     vehicle_ids: &StringChunked,
     providers: &StringChunked,
@@ -168,6 +208,7 @@ async fn run(
     n: usize,
     t_first: NaiveDateTime,
     speed: f64,
+    pipeline: usize,
     active_shards: &HashSet<Geohash>,
     strategy: &GeohashStrategy,
 ) -> Result<(), Box<dyn Error>> {
@@ -177,13 +218,13 @@ async fn run(
     let mut last_report = Instant::now();
     let mut last_sent: u64 = 0;
 
+    let mut pending: Vec<jetstream::context::PublishAckFuture> = Vec::with_capacity(pipeline);
+
     for i in 0..n {
         let time_str = event_times.get(i).unwrap_or("");
         let lat = latitudes.get(i).unwrap_or(0.0);
         let lon = longitudes.get(i).unwrap_or(0.0);
 
-        // Drop events outside the active shard set before any timing logic so
-        // they don't inflate the wall-clock timeline for filtered replays.
         if !active_shards.is_empty() {
             let shard = strategy.locate(Point::new(lon, lat));
             if !active_shards.contains(&shard) {
@@ -192,8 +233,6 @@ async fn run(
             }
         }
 
-        // Compute the wall-clock instant this event should be dispatched.
-        // If we are behind schedule (target already past), send immediately.
         if speed.is_finite() {
             if let Some(event_time) = parse_time(time_str) {
                 let offset_ms = (event_time - t_first).num_milliseconds();
@@ -212,15 +251,25 @@ async fn run(
             event_time: time_str.to_owned(),
             point: Coord::from((lon, lat)),
         };
-        if let Ok(bytes) = serde_json::to_vec(&payload) {
-            if topic.send(&bytes).await.is_ok() {
-                sent += 1;
+        let Ok(bytes) = serde_json::to_vec(&payload) else { continue };
+
+        if speed.is_infinite() && pipeline > 1 {
+            match js.publish(subject.to_owned(), bytes.into()).await {
+                Ok(ack) => { pending.push(ack); sent += 1; }
+                Err(e) => eprintln!("\n[replay] publish error: {e}"),
+            }
+            if pending.len() >= pipeline {
+                for a in pending.drain(..) { let _ = a.await; }
+            }
+        } else {
+            match js.publish(subject.to_owned(), bytes.into()).await {
+                Ok(ack) => { let _ = ack.await; sent += 1; }
+                Err(e) => eprintln!("\n[replay] publish error: {e}"),
             }
         }
 
-        // Progress line every ~2s
         let now = Instant::now();
-        if now.duration_since(last_report).as_secs_f64() >= 2.0 {
+        if now.duration_since(last_report).as_secs_f64() >= 1.0 {
             let rate =
                 (sent - last_sent) as f64 / now.duration_since(last_report).as_secs_f64();
             let pct = (sent + skipped) as f64 / n as f64 * 100.0;
@@ -235,10 +284,18 @@ async fn run(
         }
     }
 
+    for a in pending.drain(..) { let _ = a.await; }
+
     if skipped > 0 {
-        println!("\r  Done — {sent} sent, {skipped} skipped (outside active shards) in {:.2}s", wall_start.elapsed().as_secs_f64());
+        println!(
+            "\r  Done — {sent} sent, {skipped} skipped (outside active shards) in {:.2}s",
+            wall_start.elapsed().as_secs_f64(),
+        );
     } else {
-        println!("\r  Done — {sent} events sent in {:.2}s", wall_start.elapsed().as_secs_f64());
+        println!(
+            "\r  Done — {sent} events sent in {:.2}s",
+            wall_start.elapsed().as_secs_f64(),
+        );
     }
     Ok(())
 }

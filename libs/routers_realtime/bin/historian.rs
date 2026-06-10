@@ -1,17 +1,16 @@
-use chrono::{DateTime, NaiveDateTime};
 use futures::StreamExt;
-use geo::Point;
 use routers_realtime::{
     ValkeyStore,
-    amqp::{Topic, TopicOpts},
     context::Position,
-    event,
+    nats_ingest::{self, NatsIngestOpts},
 };
 use routers_shard::{Geohash, GeohashStrategy, ShardingStrategy};
 use tokio::time::{Duration, Instant};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let nats_url =
+        std::env::var("NATS_URL").unwrap_or_else(|_| "nats://127.0.0.1:4222".into());
     let valkey_url =
         std::env::var("VALKEY_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".into());
     let shard_precision: u8 = std::env::var("SHARD_PRECISION")
@@ -26,26 +25,28 @@ async fn main() -> anyhow::Result<()> {
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(2);
-
     let valkey_max_len: usize = std::env::var("VALKEY_MAX_LEN")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(500);
+
     let mut valkey = ValkeyStore::connect(&valkey_url, valkey_max_len).await?;
     let strategy = GeohashStrategy::with_precision(shard_precision);
 
-    let mut opts = TopicOpts::from_env();
-    // Historian uses its own durable queue so it receives every message
-    // independently of the orchestrator's queue.
-    opts = opts.with_queue(
-        &std::env::var("RABBITMQ_QUEUE").unwrap_or_else(|_| "historian".into()),
+    let nc = async_nats::connect(&nats_url)
+        .await
+        .map_err(|e| anyhow::anyhow!("NATS connect: {e}"))?;
+    let js = async_nats::jetstream::new(nc);
+
+    // Uses EVENTS_CONSUMER env var (default "historian") — a separate durable
+    // consumer from the orchestrator's so every event is delivered to both.
+    let opts = NatsIngestOpts::from_env();
+    nats_ingest::ensure_events_stream(&js, &opts).await?;
+    let mut events = Box::pin(nats_ingest::nats_source(js, opts).await?);
+
+    eprintln!(
+        "historian: nats={nats_url}  valkey={valkey_url}  batch={batch_size}  timeout={batch_timeout_ms}ms"
     );
-    opts.consumer_tag = lapin::types::ShortString::from("historian");
-
-    let topic = Topic::new(opts).await?;
-    futures::pin_mut!(topic);
-
-    eprintln!("historian: valkey={valkey_url}  batch={batch_size}  timeout={batch_timeout_ms}ms");
 
     let timeout = Duration::from_millis(batch_timeout_ms);
     let mut batch: Vec<(String, Geohash, Position)> = Vec::with_capacity(batch_size);
@@ -53,31 +54,24 @@ async fn main() -> anyhow::Result<()> {
     loop {
         batch.clear();
 
-        // Block until first message arrives.
-        let first = match topic.next().await {
+        let first = match events.next().await {
             None => break,
-            Some(Ok(d)) => d,
-            Some(Err(e)) => {
-                eprintln!("historian: AMQP error: {e}");
-                break;
-            }
+            Some(e) => e,
         };
+        batch.push((
+            first.vehicle_id,
+            strategy.locate(first.coord),
+            Position { coord: first.coord, timestamp_ms: first.timestamp_ms, resolved_at_ms: 0 },
+        ));
 
-        if let Some((vehicle_id, shard, position)) = parse_delivery(&first.data, &strategy) {
-            batch.push((vehicle_id, shard, position));
-        }
-        let _ = first.ack(lapin::options::BasicAckOptions::default()).await;
-
-        // Fill batch until timeout or capacity.
         let deadline = Instant::now() + timeout;
         while batch.len() < batch_size {
-            match tokio::time::timeout_at(deadline, topic.next()).await {
-                Ok(Some(Ok(delivery))) => {
-                    if let Some(entry) = parse_delivery(&delivery.data, &strategy) {
-                        batch.push(entry);
-                    }
-                    let _ = delivery.ack(lapin::options::BasicAckOptions::default()).await;
-                }
+            match tokio::time::timeout_at(deadline, events.next()).await {
+                Ok(Some(event)) => batch.push((
+                    event.vehicle_id,
+                    strategy.locate(event.coord),
+                    Position { coord: event.coord, timestamp_ms: event.timestamp_ms, resolved_at_ms: 0 },
+                )),
                 _ => break,
             }
         }
@@ -88,33 +82,4 @@ async fn main() -> anyhow::Result<()> {
     }
 
     Ok(())
-}
-
-fn parse_delivery(
-    data: &[u8],
-    strategy: &GeohashStrategy,
-) -> Option<(String, Geohash, Position)> {
-    let payload: event::Payload = serde_json::from_slice(data)
-        .map_err(|e| eprintln!("historian: JSON parse error: {e}"))
-        .ok()?;
-
-    let ts = DateTime::parse_from_str(&payload.event_time, "%Y-%m-%d %H:%M:%S%.f %Z")
-        .or_else(|_| DateTime::parse_from_str(&payload.event_time, "%Y-%m-%d %H:%M:%S %Z"))
-        .map(|dt| dt.timestamp_millis() as u64)
-        .unwrap_or_else(|_| {
-            let s = payload.event_time.trim_end_matches(" UTC");
-            NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S%.f")
-                .or_else(|_| NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S"))
-                .map(|dt| dt.and_utc().timestamp_millis() as u64)
-                .unwrap_or(0)
-        });
-
-    let coord = Point::new(payload.point.x, payload.point.y);
-    let shard = strategy.locate(coord);
-    let position = Position {
-        coord,
-        timestamp_ms: ts,
-        resolved_at_ms: 0,
-    };
-    Some((payload.vehicle_id, shard, position))
 }

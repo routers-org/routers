@@ -6,7 +6,7 @@ metadata:
   labels:
     app: historian
 spec:
-  replicas: 1
+  replicas: 3
   selector:
     matchLabels:
       app: historian
@@ -20,13 +20,9 @@ spec:
           image: routers-historian:latest
           imagePullPolicy: Never
           env:
-            - name: RABBITMQ_URL
-              value: "amqp://guest:guest@rabbitmq.routers-dev.svc.cluster.local:5672/%2f"
-            - name: RABBITMQ_EXCHANGE
-              value: "amqprs.example"
-            - name: RABBITMQ_ROUTING_KEY
-              value: "amq.topic"
-            - name: RABBITMQ_QUEUE
+            - name: NATS_URL
+              value: "nats://nats.routers-dev.svc.cluster.local:4222"
+            - name: EVENTS_CONSUMER
               value: "historian"
             - name: VALKEY_URL
               value: "redis://valkey-primary.routers-dev.svc.cluster.local:6379"
@@ -40,7 +36,7 @@ spec:
               value: "debug"
           resources:
             requests:
-              cpu: 200m
+              cpu: 500m
               memory: 64Mi
             limits:
               memory: 256Mi

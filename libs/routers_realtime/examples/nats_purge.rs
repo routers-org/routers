@@ -1,4 +1,4 @@
-/// Purge all messages from the MATCH JetStream stream.
+/// Purge all messages from the EVENTS and MATCH JetStream streams.
 /// Usage: cargo run -p routers_realtime --example nats_purge
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -8,15 +8,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let nc = async_nats::connect(&nats_url).await?;
     let js = async_nats::jetstream::new(nc);
 
-    match js.get_stream("MATCH").await {
-        Ok(mut stream) => {
-            let info = stream.info().await?;
-            let before = info.state.messages;
-            stream.purge().await?;
-            println!("Purged {before} messages from MATCH stream.");
-        }
-        Err(_) => {
-            println!("MATCH stream does not exist — nothing to purge.");
+    for name in ["EVENTS", "MATCH"] {
+        match js.get_stream(name).await {
+            Ok(mut stream) => {
+                let info = stream.info().await?;
+                let before = info.state.messages;
+                stream.purge().await?;
+                println!("Purged {before} messages from {name} stream.");
+            }
+            Err(_) => {
+                println!("{name} stream does not exist — nothing to purge.");
+            }
         }
     }
 

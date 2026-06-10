@@ -1,9 +1,13 @@
 ns := "routers-dev"
 manifests := "../../deploy/local"
 
-rabbitmq_url := "amqp://guest:guest@127.0.0.1:5672/%2f"
-nats_url := "nats://192.168.194.119"
+nats_url := "nats://127.0.0.1:4222"
 valkey_url := "redis://127.0.0.1:6379"
+
+# bench-stub defaults — override with: just bench_pipeline=512 bench-stub
+bench_shards   := "r3grm,r3grh,r3grq,r3grw,r3grk,r3grj,r3grs,r3grt"
+bench_pipeline := "256"
+bench_loops    := "3"
 
 # List available recipes
 default:
@@ -19,8 +23,6 @@ infra-up:
     helm repo add nats                https://nats-io.github.io/k8s/helm/charts 2>/dev/null || true
     helm repo add prometheus-community https://prometheus-community.github.io/helm-charts 2>/dev/null || true
     helm repo update
-    @# RabbitMQ — plain manifest (bitnami image tags are unreliable in OrbStack)
-    kubectl apply -f {{ manifests }}/rabbitmq.yaml
     @# NATS JetStream
     helm upgrade --install nats nats/nats \
         --namespace {{ ns }} \
@@ -52,27 +54,15 @@ infra-up:
 
 # Wait for all pods to be ready
 wait-ready:
-    kubectl wait --namespace {{ ns }} --for=condition=ready pod -l app=rabbitmq       --timeout=120s
     kubectl wait --namespace {{ ns }} --for=condition=ready pod -l app.kubernetes.io/name=nats   --timeout=120s
     kubectl wait --namespace {{ ns }} --for=condition=ready pod -l app.kubernetes.io/name=valkey --timeout=120s
     @echo "All pods ready."
-
-# Create the non-loopback AMQP user (run once after infra-up)
-amqp-user: _wait-rabbitmq-api
-    curl -sf -u guest:guest -X PUT http://127.0.0.1:15672/api/users/routers \
-        -H "content-type: application/json" \
-        -d '{"password":"routers","tags":"administrator"}'
-    curl -sf -u guest:guest -X PUT 'http://127.0.0.1:15672/api/permissions/%2f/routers' \
-        -H "content-type: application/json" \
-        -d '{"configure":".*","write":".*","read":".*"}'
-    @echo "AMQP user 'routers' ready."
 
 # Tear down all K8s services
 infra-down:
     helm uninstall nats                  --namespace {{ ns }} 2>/dev/null || true
     helm uninstall valkey                --namespace {{ ns }} 2>/dev/null || true
     helm uninstall kube-prometheus-stack --namespace {{ ns }} 2>/dev/null || true
-    kubectl delete -f {{ manifests }}/rabbitmq.yaml 2>/dev/null || true
     kubectl delete namespace {{ ns }} 2>/dev/null || true
 
 # Show pod status
@@ -85,9 +75,7 @@ status:
 pf-kill:
     @pkill -f "kubectl port-forward" 2>/dev/null && echo "killed" || echo "nothing running"
 
-# Forward observability + RabbitMQ ports to localhost (blocks; Ctrl-C to stop).
-# When the orchestrator runs in-cluster (just deploy), only rabbit/grafana/prometheus
-# are needed from the Mac side. NATS and Valkey can be omitted.
+# Forward observability ports to localhost (blocks; Ctrl-C to stop).
 # Add --all to also forward NATS and Valkey for local orchestrator mode.
 port-forward all="":
     #!/usr/bin/env bash
@@ -115,22 +103,16 @@ port-forward all="":
     echo "Port-forwarding namespace ${NS} (self-healing)..."
     echo ""
 
-    # Always forward: RabbitMQ (for flood/bench), Grafana, Prometheus
-    restart_forever rabbitmq-amqp  port-forward -n "${NS}" svc/rabbitmq      5672:5672
-    restart_forever rabbitmq-ui    port-forward -n "${NS}" svc/rabbitmq      15672:15672
-    restart_forever grafana        port-forward -n "${NS}" svc/kube-prometheus-stack-grafana 3000:80
-    restart_forever prometheus     port-forward -n "${NS}" svc/prometheus-operated 9090:9090
+    restart_forever grafana    port-forward -n "${NS}" svc/kube-prometheus-stack-grafana 3000:80
+    restart_forever prometheus port-forward -n "${NS}" svc/prometheus-operated 9090:9090
 
-    echo "  RabbitMQ AMQP   amqp://guest:guest@127.0.0.1:5672/"
-    echo "  RabbitMQ UI     http://127.0.0.1:15672     (guest/guest)"
     echo "  Grafana         http://127.0.0.1:3000      (admin/admin)"
     echo "  Prometheus      http://127.0.0.1:9090"
 
-    # Optional: NATS + Valkey + NATS monitor (only needed for local orchestrator mode)
     if [[ -n "$ALL" ]]; then
-        restart_forever nats-client    port-forward -n "${NS}" pod/nats-0        4222:4222
-        restart_forever nats-monitor   port-forward -n "${NS}" pod/nats-0        8222:8222
-        restart_forever valkey         port-forward -n "${NS}" svc/valkey-primary 6379:6379
+        restart_forever nats-client  port-forward -n "${NS}" pod/nats-0         4222:4222
+        restart_forever nats-monitor port-forward -n "${NS}" pod/nats-0         8222:8222
+        restart_forever valkey       port-forward -n "${NS}" svc/valkey-primary 6379:6379
         echo "  NATS            nats://127.0.0.1:4222"
         echo "  NATS monitor    http://127.0.0.1:8222/jsz"
         echo "  Valkey          redis://127.0.0.1:6379"
@@ -193,20 +175,15 @@ orchestrator-status:
 
 # ── Run (local, for development) ─────────────────────────────────────────────
 
-# Run the orchestrator locally with Valkey store (requires port-forwards)
-# VALKEY_BATCH=64 events per pipeline; VALKEY_BATCH_TIMEOUT_MS=2 max wait to fill a batch
-orchestrator batch="64" timeout_ms="2":
-    RABBITMQ_URL={{ rabbitmq_url }} \
+# Run the orchestrator locally with Valkey store (requires port-forwards).
+orchestrator:
     NATS_URL={{ nats_url }} \
     VALKEY_URL={{ valkey_url }} \
-    VALKEY_BATCH={{ batch }} \
-    VALKEY_BATCH_TIMEOUT_MS={{ timeout_ms }} \
     METRICS_ADDR=0.0.0.0:9091 \
         cargo run --release -p routers_realtime --bin orchestrator
 
-# Run the orchestrator locally with in-memory store — no Valkey RTT, for benchmarking
+# Run the orchestrator locally with in-memory store — no Valkey RTT, for benchmarking.
 orchestrator-mem:
-    RABBITMQ_URL={{ rabbitmq_url }} \
     NATS_URL={{ nats_url }} \
     STORE=memory \
     METRICS_ADDR=0.0.0.0:9091 \
@@ -220,7 +197,6 @@ monitor:
     kubectl port-forward -n {{ ns }} svc/nats 4222:4222 > /dev/null 2>&1 &
     PF_PID=$!
     trap "kill $PF_PID 2>/dev/null || true" EXIT INT TERM
-    # Wait for the port-forward to be ready.
     for i in $(seq 1 20); do
         nc -z 127.0.0.1 4222 2>/dev/null && break || sleep 0.3
     done
@@ -229,26 +205,124 @@ monitor:
     NATS_URL="nats://127.0.0.1:4222" \
         cargo run -p routers_viewer --bin monitor --release
 
-# Replay events through RabbitMQ (speed=1 is real-time; try 60 or 600)
-replay speed="60":
-    RABBITMQ_URL={{ rabbitmq_url }} \
-    REPLAY_SPEED={{ speed }} \
-        cargo run --release -p routers_realtime --example replay
-
-# Replay a large CSV via a polars-backed walking loop.
-# Uses a sequential per-event sleep instead of spawning one task per event —
-# safe for millions of rows.  speed=100 means 100× virtual time.
+# Replay a large CSV via NATS JetStream (speed=1 is real-time; try 60 or 100).
 # Set csv= to override the default sydney-dump-2026-thesis.csv.
 # Set shards= to only send events in those geohashes (comma-separated).
-# Example: just replay-large shards="r3grm,r3grh,r3grq,r3grw,r3grk,r3grj,r3grs,r3grt"
-replay-large speed="60" csv="" shards="":
+# Set pipeline= to pipeline N JetStream acks in flood mode (default 1 = sequential).
+# Example: just replay shards="r3grm,r3grh,r3grq,r3grw,r3grk,r3grj,r3grs,r3grt"
+replay speed="60" csv="" shards="" pipeline="1" loops="1":
     #!/usr/bin/env bash
     set -euo pipefail
-    export RABBITMQ_URL={{ rabbitmq_url }}
+    kubectl port-forward -n {{ ns }} pod/nats-0 4222:4222 > /dev/null 2>&1 &
+    PF_PID=$!
+    trap "kill $PF_PID 2>/dev/null || true" EXIT INT TERM
+    for i in $(seq 1 20); do nc -z 127.0.0.1 4222 2>/dev/null && break || sleep 0.3; done
+    export NATS_URL={{ nats_url }}
     export REPLAY_SPEED={{ speed }}
+    export REPLAY_PIPELINE={{ pipeline }}
+    export REPLAY_LOOPS={{ loops }}
     [[ -n "{{ csv }}" ]] && export CSV_FILE="{{ csv }}" || true
     [[ -n "{{ shards }}" ]] && export ACTIVE_SHARDS="{{ shards }}" || true
     cargo run --release -p routers_realtime --example replay_large
+
+# Measure pure pipeline overhead (no HMM compute) to find the absolute throughput ceiling.
+#
+# Step 1: patches the running matcher deployments to set MATCH_STUB=1 so matchers
+#         echo coords back instantly without any map-matching work.
+# Step 2: floods NATS with bench_pipeline pipelined JetStream publishes.
+# Step 3: waits for the system to drain, reports throughput.
+# Step 4: restores matchers to normal (removes MATCH_STUB).
+#
+# Override defaults with top-level variables: just bench_pipeline=512 bench_loops=1 bench-stub
+bench-stub:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    ns={{ ns }}
+    shards="{{ bench_shards }}"
+    pipeline="{{ bench_pipeline }}"
+    loops="{{ bench_loops }}"
+
+    echo "=== Pipeline overhead benchmark (MATCH_STUB=1, pipeline=${pipeline}, loops=${loops}) ==="
+    echo ""
+
+    echo "Patching matchers to stub mode..."
+    for shard in $(echo "${shards}" | tr ',' ' '); do
+        kubectl set env deployment/matcher-${shard} -n ${ns} MATCH_STUB=1 2>/dev/null || true
+    done
+    echo "Waiting for stub rollout..."
+    for shard in $(echo "${shards}" | tr ',' ' '); do
+        kubectl rollout status deployment/matcher-${shard} -n ${ns} --timeout=60s 2>/dev/null || true
+    done
+    echo ""
+
+    pkill -f "kubectl port-forward.*(prometheus|nats-0)" 2>/dev/null || true
+    sleep 0.5
+    kubectl port-forward -n ${ns} svc/prometheus-operated 19090:9090 > /dev/null 2>&1 &
+    prom_pf=$!
+    kubectl port-forward -n ${ns} pod/nats-0 19222:8222 > /dev/null 2>&1 &
+    nats_mon_pf=$!
+    kubectl port-forward -n ${ns} pod/nats-0 4222:4222 > /dev/null 2>&1 &
+    nats_client_pf=$!
+
+    restore_matchers() {
+        echo ""
+        echo "Restoring matchers to normal mode..."
+        for shard in $(echo "${shards}" | tr ',' ' '); do
+            kubectl set env deployment/matcher-${shard} -n ${ns} MATCH_STUB- 2>/dev/null || true
+        done
+        kill "$prom_pf" "$nats_mon_pf" "$nats_client_pf" 2>/dev/null || true
+    }
+    trap restore_matchers EXIT
+
+    for i in $(seq 1 20); do nc -z 127.0.0.1 4222 2>/dev/null && break || sleep 0.3; done
+
+    prom_query() {
+        curl -sf --max-time 3 "http://127.0.0.1:19090/api/v1/query?query=${1}" 2>/dev/null \
+        | python3 -c "import sys,json; d=json.load(sys.stdin); r=d.get('data',{}).get('result',[]); print(r[0]['value'][1] if r else 0)" \
+        2>/dev/null || echo "0"
+    }
+    get_nats_pending() {
+        curl -sf --max-time 3 "http://127.0.0.1:19222/jsz?streams=1&consumers=1&acc=1" 2>/dev/null \
+        | python3 -c "import sys,json; d=json.load(sys.stdin); accts=d.get('account_details',[]); consumers=[c for a in accts for s in a.get('stream_detail',[]) for c in s.get('consumer_detail',[])]; print(sum(c.get('num_pending',0)+c.get('num_ack_pending',0) for c in consumers))" \
+        2>/dev/null || echo "-1"
+    }
+
+    snap_matched=$(prom_query "sum%28routers_matches_total_success%29" || echo "0")
+
+    echo "Flooding (pipeline=${pipeline})..."
+    t_start=$(python3 -c "import time; print(int(time.time()*1000))")
+    export NATS_URL="{{ nats_url }}"
+    export REPLAY_FLOOD=1
+    export REPLAY_PIPELINE="${pipeline}"
+    export REPLAY_LOOPS="${loops}"
+    export ACTIVE_SHARDS="${shards}"
+    cargo run -q --release -p routers_realtime --example replay_large
+    t_flood_end=$(python3 -c "import time; print(int(time.time()*1000))")
+    echo ""
+
+    echo "Waiting for NATS drain..."
+    deadline=$(( t_flood_end + 120000 ))
+    while true; do
+        pending=$(get_nats_pending)
+        now=$(python3 -c "import time; print(int(time.time()*1000))")
+        if [[ "$pending" == "0" ]] || (( now >= deadline )); then break; fi
+        elapsed=$(echo "$now $t_start" | awk '{printf "%.1f", ($1-$2)/1000}')
+        printf "\r  [%5.1fs]  NATS pending: %s   " "$elapsed" "$pending"
+        sleep 1
+    done
+    t_end=$(python3 -c "import time; print(int(time.time()*1000))")
+    echo ""
+
+    end_matched=$(prom_query "sum%28routers_matches_total_success%29" || echo "0")
+    total=$(echo "$end_matched $snap_matched" | awk '{printf "%d", $1-$2}')
+    elapsed_s=$(echo "$t_end $t_start" | awk '{printf "%.2f", ($1-$2)/1000}')
+    throughput=$(echo "$total $elapsed_s" | awk '{printf "%.0f", $1/$2}')
+
+    echo ""
+    echo "=== Results ==="
+    echo "  Matched (stub):  ${total}"
+    echo "  Wall time:       ${elapsed_s}s"
+    echo "  Throughput:      ${throughput} evt/s  (pipeline overhead only)"
 
 # Build both binaries in release mode
 build:
@@ -259,388 +333,6 @@ test:
     cargo test -p routers_realtime
 
 # ── Observability ─────────────────────────────────────────────────────────────
-
-# Flood the queue with all CSV events, wait until the orchestrator has fully drained
-# it, then report total processing time, throughput, and latency.
-#
-# Works with both in-cluster (just deploy) and local (just orchestrator) setups.
-# Metrics are aggregated across all running orchestrator pods via kubectl exec.
-# Only RabbitMQ management API requires a port-forward (for queue depth polling).
-bench:
-    #!/usr/bin/env bash
-    set -euo pipefail
-
-    echo "Building replay binary..."
-    cargo build -q --release -p routers_realtime --example replay
-    echo ""
-
-    ns={{ ns }}
-    rabbit_api="http://127.0.0.1:15672/api"
-    metrics_url="http://127.0.0.1:9091/metrics"
-    drain_timeout=120   # give up waiting after this many seconds
-
-    # python3 ms timestamps
-    now_ms() { python3 -c "import time; print(int(time.time()*1000))"; }
-
-    # Port-forward each orchestrator pod to a high local port (19091, 19092, ...).
-    # Using high ports avoids conflicts with a local orchestrator on 9091.
-    metrics_ports=()
-    metrics_pf_pids=()
-    pod_count=0
-
-    # Exclude Terminating pods (status.phase stays "Running" during graceful shutdown).
-    for pod in $(kubectl get pods -n "$ns" -l app=orchestrator \
-            --no-headers 2>/dev/null | grep -v Terminating | awk '{print $1}'); do
-        local_port=$(( 19091 + pod_count ))
-        kubectl port-forward -n "$ns" "pod/$pod" "${local_port}:9091" > /dev/null 2>&1 &
-        metrics_pf_pids+=($!)
-        metrics_ports+=($local_port)
-        pod_count=$(( pod_count + 1 ))
-    done
-
-    if [[ "$pod_count" -eq 0 ]]; then
-        # Fallback: local orchestrator on 9091
-        metrics_ports=(9091)
-    fi
-
-    # Prometheus is the reliable source for matcher metrics — the matcher image is
-    # distroless (no shell/curl), so kubectl exec doesn't work. Prometheus scrapes
-    # the pod directly and aggregates across all matcher instances.
-    # Use a dedicated high port to avoid conflicting with just port-forward.
-    kubectl port-forward -n "$ns" svc/prometheus-operated 19090:9090 > /dev/null 2>&1 &
-    prom_pf_pid=$!
-    prom_url="http://127.0.0.1:19090"
-
-    # NATS monitor port-forward for Step 3 drain detection.
-    kubectl port-forward -n "$ns" pod/nats-0 19222:8222 > /dev/null 2>&1 &
-    nats_pf_pid=$!
-    nats_mon_url="http://127.0.0.1:19222"
-
-    # Always start dedicated port-forwards for RabbitMQ (AMQP + management) and
-    # keep them separate so one dying doesn't take out the other.
-    # Kill any existing rabbit port-forwards first to avoid conflicts.
-    pkill -f "kubectl port-forward.*rabbitmq" 2>/dev/null || true
-    sleep 0.5
-    kubectl port-forward -n "$ns" svc/rabbitmq 5672:5672 > /dev/null 2>&1 &
-    rabbit_amqp_pf_pid=$!
-    kubectl port-forward -n "$ns" svc/rabbitmq 15672:15672 > /dev/null 2>&1 &
-    rabbit_mgmt_pf_pid=$!
-    sleep 1.5
-
-    cleanup_metrics_pf() {
-        [[ ${#metrics_pf_pids[@]} -gt 0 ]] && kill "${metrics_pf_pids[@]}" 2>/dev/null || true
-        kill "$rabbit_amqp_pf_pid" "$rabbit_mgmt_pf_pid" "$prom_pf_pid" "$nats_pf_pid" 2>/dev/null || true
-    }
-    trap cleanup_metrics_pf EXIT
-
-    # Give port-forwards time to establish; retry once if not ready
-    sleep 1.5
-    # Verify at least one metrics endpoint is reachable
-    reachable=0
-    for port in "${metrics_ports[@]}"; do
-        if curl -sf --max-time 2 "http://127.0.0.1:${port}/metrics" > /dev/null 2>&1; then
-            reachable=1; break
-        fi
-    done
-    if [[ "$reachable" -eq 0 ]]; then
-        sleep 2  # one more try
-        for port in "${metrics_ports[@]}"; do
-            if curl -sf --max-time 2 "http://127.0.0.1:${port}/metrics" > /dev/null 2>&1; then
-                reachable=1; break
-            fi
-        done
-    fi
-
-    get_metric() {
-        local metric="$1"
-        local total=0
-        for port in "${metrics_ports[@]}"; do
-            val=$(curl -sf --max-time 2 "http://127.0.0.1:${port}/metrics" 2>/dev/null \
-                | grep "^$metric " | awk '{print $2}' || echo "0")
-            total=$(echo "$total ${val:-0}" | awk '{printf "%.6f", $1+$2}')
-        done
-        echo "$total"
-    }
-
-    get_hist_avg() {
-        local s c
-        s=$(get_metric "${1}_sum")
-        c=$(get_metric "${1}_count")
-        if [[ -n "$s" && -n "$c" && "$c" != "0" && "$c" != "0.000000" ]]; then
-            echo "$s $c" | awk '{printf "%.3f", $1/$2}'
-        else
-            echo "n/a"
-        fi
-    }
-
-    get_queue_depth() {
-        curl -sf -u guest:guest "${rabbit_api}/queues/%2f/queue" 2>/dev/null \
-            | python3 -c "import sys,json; d=json.load(sys.stdin); print(int(d.get('messages',0)))" \
-            2>/dev/null || echo "?"
-    }
-
-    # Query Prometheus for a matcher metric (sum across all pods).
-    prom_query() {
-        curl -sf --max-time 3 "${prom_url}/api/v1/query?query=${1}" 2>/dev/null \
-        | python3 -c "import sys,json; d=json.load(sys.stdin); r=d.get('data',{}).get('result',[]); print(r[0]['value'][1] if r else 0)" \
-        2>/dev/null || echo "0"
-    }
-
-    get_matcher_metric() {
-        prom_query "sum%28${1}%29"
-    }
-
-    get_matcher_hist_avg() {
-        local v
-        v=$(prom_query "sum%28${1}_sum%29%2Fsum%28${1}_count%29")
-        [[ -n "$v" && "$v" != "0" ]] && printf "%.3f" "$v" || echo "n/a"
-    }
-
-    # Total matches across all outcomes — one Prometheus query.
-    get_matcher_total() {
-        prom_query "sum%28routers_matches_total_success%29%2Bsum%28routers_matches_total_no_candidate%29%2Bsum%28routers_matches_total_error%29"
-    }
-
-    # Sum of num_pending + num_ack_pending across all NATS consumers in the MATCH stream.
-    # Returns 0 when all deployed matchers have fully processed and acked their events.
-    # Returns -1 if the NATS monitor is unreachable.
-    get_nats_pending() {
-        curl -sf --max-time 3 "${nats_mon_url}/jsz?streams=1&consumers=1&acc=1" 2>/dev/null \
-        | python3 -c "import sys,json; d=json.load(sys.stdin); accts=d.get('account_details',[]); consumers=[c for a in accts for s in a.get('stream_detail',[]) for c in s.get('consumer_detail',[])]; print(sum(c.get('num_pending',0)+c.get('num_ack_pending',0) for c in consumers))" \
-        2>/dev/null || echo "-1"
-    }
-
-    # ── preflight ────────────────────────────────────────────────────────────────
-
-    if [[ "$reachable" -eq 0 ]]; then
-        echo "ERROR: no orchestrator reachable"
-        echo "  In-cluster: just deploy"
-        echo "  Local:      just orchestrator (with port-forward all=1)"
-        cleanup_metrics_pf
-        exit 1
-    fi
-
-    snap_received=$(get_metric "routers_events_received_total"); snap_received=${snap_received:-0}
-    snap_published=$(get_metric "routers_events_published_total"); snap_published=${snap_published:-0}
-    # Wait for the Prometheus port-forward to be ready before snapshotting.
-    for _ in 1 2 3 4 5; do
-        curl -sf --max-time 1 "${prom_url}/-/ready" > /dev/null 2>&1 && break || sleep 1
-    done
-
-    snap_matched=$(get_matcher_metric "routers_matches_total_success")
-    snap_no_cand=$(get_matcher_metric "routers_matches_total_no_candidate")
-    snap_errors=$(get_matcher_metric "routers_matches_total_error")
-    snap_matched_total=$(get_matcher_total)
-
-    echo "=== Routers Realtime — Throughput Benchmark ==="
-    if [[ "$pod_count" -gt 0 ]]; then
-        echo "  in-cluster: ${pod_count} orchestrator pod(s) (metrics via port-forward)"
-    else
-        echo "  local orchestrator"
-    fi
-    echo ""
-
-    # ── Step 1: flood ────────────────────────────────────────────────────────────
-
-    echo "Step 1: flooding RabbitMQ queue (all CSV events, no rate limit)..."
-    t_flood_start=$(now_ms)
-    flood_output=$(RABBITMQ_URL={{ rabbitmq_url }} REPLAY_FLOOD=1 \
-        ../../target/release/examples/replay 2>&1)
-    t_flood_end=$(now_ms)
-    echo "$flood_output"
-
-    flood_count=$(echo "$flood_output" | grep -oE 'Flooded [0-9]+' | grep -oE '[0-9]+' || true)
-    flood_count=${flood_count:-"?"}
-    flood_ms=$(( t_flood_end - t_flood_start ))
-    echo ""
-    echo "  Sent ${flood_count} events in $(echo $flood_ms | awk '{printf "%.2f", $1/1000}')s"
-    echo ""
-
-    # ── Step 2: drain ────────────────────────────────────────────────────────────
-
-    echo "Step 2: waiting for orchestrator to drain queue to zero (timeout: ${drain_timeout}s)..."
-    echo ""
-    # Take a snapshot at flood-end so we can compute the drain-only throughput.
-    snap2_received=$(get_metric "routers_events_received_total"); snap2_received=${snap2_received:-0}
-    t_drain_start=$(now_ms)
-    t_drain_complete=""        # set when processed >= flood_count
-    deadline_ms=$(( t_drain_start + drain_timeout * 1000 ))
-    timed_out=0
-    # RabbitMQ management stats refresh every 5s — queue depth is stale.
-    # Use processed count as the primary drain signal; depth is informational only.
-
-    while true; do
-        sleep 1
-
-        now=$(now_ms)
-        if (( now >= deadline_ms )); then
-            timed_out=1
-            break
-        fi
-
-        depth=$(get_queue_depth)
-        cur=$(get_metric "routers_events_received_total"); cur=${cur:-$snap_received}
-        processed=$(echo "$cur $snap_received" | awk '{printf "%d", $1-$2}')
-        elapsed=$(echo "$now $t_drain_start" | awk '{printf "%.1f", ($1-$2)/1000}')
-        printf "\r  [%5.1fs]  processed: %7d / %-7s   queue depth: %-8s" \
-            "$elapsed" "$processed" "$flood_count" "$depth"
-
-        # Primary exit: all flooded events accounted for.
-        if [[ "$flood_count" =~ ^[0-9]+$ ]] && (( processed >= flood_count )); then
-            [[ -z "$t_drain_complete" ]] && t_drain_complete=$now
-            # 2s grace to let in-flight NATS publishes settle.
-            elapsed_since=$(( now - t_drain_complete ))
-            if (( elapsed_since >= 2000 )); then
-                break
-            fi
-        fi
-    done
-    t_drain_end=${t_drain_complete:-$(now_ms)}
-    echo ""
-    echo ""
-
-    if (( timed_out )); then
-        echo "WARNING: queue did not drain within ${drain_timeout}s — partial results below."
-        echo "  Check: is the orchestrator running? (just deploy OR just orchestrator)"
-        echo "  Check: port-forward for RabbitMQ management? (kubectl port-forward -n {{ ns }} svc/rabbitmq 15672:15672)"
-        echo ""
-    fi
-
-    # Capture published count here so Phase 3 knows its target.
-    after_received=$(get_metric "routers_events_received_total"); after_received=${after_received:-$snap_received}
-    after_published=$(get_metric "routers_events_published_total"); after_published=${after_published:-$snap_published}
-    total_received=$(echo "$after_received $snap_received" | awk '{printf "%d", $1-$2}')
-    total_published=$(echo "$after_published $snap_published" | awk '{printf "%d", $1-$2}')
-
-    # ── Step 3: matcher drain ─────────────────────────────────────────────────────
-
-    match_drain_timeout=300   # matchers can be slow; allow up to 5 min
-    match_timed_out=0
-    t_match_complete=""
-
-    if kubectl get pods -n "$ns" -l app=matcher --no-headers 2>/dev/null | grep -qv Terminating; then
-        # Wait for NATS monitor port-forward to be ready.
-        for _i in 1 2 3 4 5; do
-            curl -sf --max-time 1 "${nats_mon_url}/jsz" > /dev/null 2>&1 && break || sleep 1
-        done
-
-        # Snapshot NATS pending at step 3 start — delivery may already be in progress.
-        snap3_pending=$(get_nats_pending)
-
-        if [[ "$snap3_pending" == "0" ]]; then
-            echo "Step 3: NATS consumers already at zero pending — pipeline complete."
-            echo ""
-            t_match_complete=$t_drain_end
-        elif [[ "$snap3_pending" == "-1" ]]; then
-            echo "Step 3: NATS monitor unreachable — skipping matcher drain wait."
-            echo "  Check: nats-0 pod is running and port 8222 is accessible"
-            echo ""
-        else
-            echo "Step 3: waiting for NATS consumers to drain (pending = 0, timeout: ${match_drain_timeout}s)..."
-            echo ""
-            t_match_start=$(now_ms)
-            match_deadline_ms=$(( t_match_start + match_drain_timeout * 1000 ))
-
-            while true; do
-                sleep 1
-                now=$(now_ms)
-                if (( now >= match_deadline_ms )); then
-                    match_timed_out=1
-                    break
-                fi
-
-                pending=$(get_nats_pending)
-                elapsed=$(echo "$now $t_match_start" | awk '{printf "%.1f", ($1-$2)/1000}')
-                printf "\r  [%5.1fs]  NATS pending: %-10s" "$elapsed" "$pending"
-
-                if [[ "$pending" == "0" ]]; then
-                    [[ -z "$t_match_complete" ]] && t_match_complete=$now
-                    # 1s grace to let any in-flight result publishes settle.
-                    if (( now - t_match_complete >= 1000 )); then
-                        break
-                    fi
-                fi
-            done
-            echo ""
-            echo ""
-        fi
-
-        if (( match_timed_out )); then
-            echo "WARNING: NATS consumers did not reach zero pending within ${match_drain_timeout}s — partial results below."
-            echo "  Check: is the matcher running? (just deploy matcher)"
-            echo ""
-        fi
-    else
-        echo "Step 3: no matcher found — skipping matcher drain."
-        echo "  Deploy a matcher with: just deploy matcher"
-        echo ""
-    fi
-
-    t_pipeline_end=${t_match_complete:-$t_drain_end}
-
-    # ── Results ──────────────────────────────────────────────────────────────────
-
-    drain_only=$(echo "$after_received $snap2_received" | awk '{v=$1-$2; printf "%d", (v>0)?v:0}')
-    drain_s=$(echo "$t_drain_start $t_drain_end" | awk '{printf "%.2f", ($2-$1)/1000}')
-    orchestrator_s=$(echo "$t_flood_start $t_drain_end" | awk '{printf "%.2f", ($2-$1)/1000}')
-    pipeline_s=$(echo "$t_flood_start $t_pipeline_end" | awk '{printf "%.2f", ($2-$1)/1000}')
-    throughput=$(echo "$total_received $orchestrator_s" | \
-        awk '{printf "%.1f", ($1>0 && $2>0) ? $1/$2 : 0}')
-    drain_throughput=$(echo "$drain_only $drain_s" | \
-        awk '{printf "%.1f", ($1>0 && $2>0) ? $1/$2 : 0}')
-    lat_avg=$(get_hist_avg "routers_nats_latency_ms")
-    store_avg=$(get_hist_avg "routers_store_latency_ms")
-    store_errors=$(get_metric "routers_store_errors_total"); store_errors=${store_errors:-0}
-
-    fin_s=$(get_matcher_metric "routers_matches_total_success")
-    fin_n=$(get_matcher_metric "routers_matches_total_no_candidate")
-    fin_e=$(get_matcher_metric "routers_matches_total_error")
-    run_success=$(echo "$fin_s $snap_matched" | awk '{d=$1-$2; printf "%d", (d>0)?d:0}')
-    run_no_cand=$(echo "$fin_n $snap_no_cand" | awk '{d=$1-$2; printf "%d", (d>0)?d:0}')
-    run_errors=$(echo "$fin_e $snap_errors" | awk '{d=$1-$2; printf "%d", (d>0)?d:0}')
-    solve_avg=$(get_matcher_hist_avg "routers_solve_latency_ms")
-    match_avg=$(get_matcher_hist_avg "routers_match_latency_ms")
-
-    echo "=== RESULTS ==="
-    printf "  Events sent (flood)             : %s\n" "$flood_count"
-    printf "  Events received by orchestrator : %d\n" "$total_received"
-    printf "  Events published to NATS        : %d\n" "$total_published"
-    dropped=$(echo "$total_received $total_published" | awk '{d=$1-$2; printf "%d", (d>0)?d:0}')
-    if [[ "$dropped" != "0" ]]; then
-        printf "  Dropped (received − published)  : %s  ← check store errors\n" "$dropped"
-    fi
-    store_errs_int=$(echo "$store_errors" | awk '{printf "%d", $1}')
-    if [[ "$store_errs_int" -gt 0 ]]; then
-        printf "  Store errors                    : %d  ← Valkey errors\n" "$store_errs_int"
-    fi
-    echo ""
-    printf "  Matched (success)               : %d\n" "$run_success"
-    printf "  Matched (no candidate)          : %d\n" "$run_no_cand"
-    printf "  Matched (error)                 : %d\n" "$run_errors"
-    echo ""
-    printf "  Flood time                      : %.2fs\n" "$(echo $flood_ms | awk '{printf "%.2f", $1/1000}')"
-    printf "  Orchestrator drain (post-flood) : %ss\n" "$drain_s"
-    printf "  Orchestrator wall time          : %ss\n" "$orchestrator_s"
-    if [[ -n "$t_match_complete" ]]; then
-        matcher_drain_s=$(echo "$t_drain_end $t_pipeline_end" | awk '{printf "%.2f", ($2-$1)/1000}')
-        printf "  Matcher drain (post-orch.)      : %ss\n" "$matcher_drain_s"
-    fi
-    printf "  Full pipeline wall time         : %ss\n" "$pipeline_s"
-    echo ""
-    printf "  Orchestrator throughput         : %s events/s\n" "$throughput"
-    printf "  Drain-phase throughput          : %s events/s\n" "$drain_throughput"
-    printf "  Avg NATS publish latency        : %s ms/event\n" "$lat_avg"
-    printf "  Avg store latency               : %s ms/event\n" "$store_avg"
-    printf "  Avg HMM solve time              : %s ms/match\n" "$solve_avg"
-    printf "  Avg end-to-end match latency    : %s ms/match\n" "$match_avg"
-    echo ""
-    echo "  Grafana: http://127.0.0.1:3000/d/routers-realtime/routers-realtime"
-
-    cleanup_metrics_pf
-
-# Open the Grafana dashboard in the browser
-dashboard:
-    open http://127.0.0.1:3000/d/routers-realtime/routers-realtime
 
 # Print match outcome counts and latency summary across all running matcher pods
 match-stats:
@@ -666,7 +358,7 @@ match-stats:
         mc=$(echo "$raw" | grep "^routers_match_latency_ms_count " | awk '{print $2}'); match_count=$((match_count + ${mc:-0}))
     done
     total=$((success + no_cand + errors))
-    echo "=== Match outcomes (${#pods[@]} pods) ==="
+    echo "=== Match outcomes ==="
     printf "  success      : %d\n" "$success"
     printf "  no_candidate : %d\n" "$no_cand"
     printf "  error        : %d\n" "$errors"
@@ -696,9 +388,15 @@ metrics:
         curl -sf http://127.0.0.1:9091/metrics | grep -v '^#' | sort
     fi
 
-# Purge all messages from the MATCH JetStream stream (clears bench backlog)
+# Purge all messages from EVENTS and MATCH JetStream streams (clears backlog)
 nats-purge:
-    NATS_URL={{ nats_url }} cargo run -q -p routers_realtime --example nats_purge
+    #!/usr/bin/env bash
+    set -euo pipefail
+    kubectl port-forward -n {{ ns }} pod/nats-0 4222:4222 > /dev/null 2>&1 &
+    PF_PID=$!
+    trap "kill $PF_PID 2>/dev/null || true" EXIT INT TERM
+    for i in $(seq 1 20); do nc -z 127.0.0.1 4222 2>/dev/null && break || sleep 0.3; done
+    NATS_URL="{{ nats_url }}" cargo run -q -p routers_realtime --example nats_purge
 
 # Print NATS JetStream stream stats
 nats-stats:
@@ -709,26 +407,6 @@ nats-stats:
     print(f'streams={d[\"streams\"]}  messages={d[\"messages\"]:,}  bytes={d[\"bytes\"]:,}')
     "
 
-# Print RabbitMQ queue summary
-rabbit-queues:
-    #!/usr/bin/env bash
-    curl -sf -u guest:guest http://127.0.0.1:15672/api/queues/%2f | python3 -c "
-    import sys, json
-    for q in json.load(sys.stdin):
-        print(f'{q[\"name\"]:30s}  msgs={q.get(\"messages\",0):6d}  consumers={q.get(\"consumers\",0)}')
-    "
-
-# ── Private helpers ───────────────────────────────────────────────────────────
-
-_wait-rabbitmq-api:
-    #!/usr/bin/env bash
-    echo -n "Waiting for RabbitMQ management API..."
-    for i in $(seq 1 30); do
-        if curl -sf -u guest:guest http://127.0.0.1:15672/api/overview >/dev/null 2>&1; then
-            echo " ready."
-            exit 0
-        fi
-        echo -n "."
-        sleep 2
-    done
-    echo " timed out." && exit 1
+# Open the Grafana dashboard in the browser
+dashboard:
+    open http://127.0.0.1:3000/d/routers-realtime/routers-realtime

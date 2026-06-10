@@ -23,8 +23,6 @@ anyhow = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 
-# AMQP
-lapin = "4.7.0"
 futures = "0.3.32"
 
 # NATS
@@ -67,10 +65,6 @@ path = "bin/historian.rs"
 [[example]]
 name = "process"
 path = "examples/process.rs"
-
-[[example]]
-name = "replay"
-path = "examples/replay.rs"
 
 [[example]]
 name = "replay_large"

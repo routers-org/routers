@@ -80,45 +80,6 @@ impl ValkeyStore {
     }
 }
 
-impl<S> PositionStore<S> for ValkeyStore
-where
-    S: ShardId + Serialize + DeserializeOwned + Send,
-{
-    async fn push_and_fetch(
-        &mut self,
-        vehicle_id: &str,
-        shard: S,
-        position: Position,
-    ) -> Result<Vec<(S, Position)>, StoreError> {
-        let key = format!("vehicle:{}:positions", vehicle_id);
-        let shard_bytes = postcard::to_allocvec(&shard)?;
-        let pos_bytes = postcard::to_allocvec(&position)?;
-
-        // Pipeline XADD + XREVRANGE in one round-trip rather than two sequential calls.
-        let (_, reply): (redis::Value, redis::streams::StreamRangeReply) = redis::pipe()
-            .cmd("XADD")
-            .arg(&key)
-            .arg("MAXLEN")
-            .arg("~")
-            .arg(self.max_len)
-            .arg("*")
-            .arg("shard")
-            .arg(shard_bytes.as_slice())
-            .arg("pos")
-            .arg(pos_bytes.as_slice())
-            .cmd("XREVRANGE")
-            .arg(&key)
-            .arg("+")
-            .arg("-")
-            .arg("COUNT")
-            .arg(self.max_len)
-            .query_async(&mut self.conn)
-            .await?;
-
-        decode_stream_reply::<S>(reply)
-    }
-}
-
 impl ValkeyStore {
     /// XREVRANGE for a single vehicle — used for cold-start seeding of in-memory caches.
     /// Returns entries in newest-first order.
@@ -139,64 +100,6 @@ impl ValkeyStore {
             .query_async(&mut self.conn)
             .await?;
         decode_stream_reply::<S>(reply)
-    }
-
-    /// Pipeline N XADD + N XREVRANGE commands in one round-trip.
-    /// Returns one history vec per input event, in the same order.
-    pub async fn push_and_fetch_many<S>(
-        &mut self,
-        batch: &[(String, S, Position)],
-    ) -> Result<Vec<Vec<(S, Position)>>, StoreError>
-    where
-        S: ShardId + Serialize + DeserializeOwned + Send,
-    {
-        if batch.is_empty() {
-            return Ok(vec![]);
-        }
-
-        let mut serialized: Vec<(Vec<u8>, Vec<u8>)> = Vec::with_capacity(batch.len());
-        for (_, shard, position) in batch {
-            serialized.push((
-                postcard::to_allocvec(shard)?,
-                postcard::to_allocvec(position)?,
-            ));
-        }
-
-        let mut pipe = redis::pipe();
-        // N XADDs — ignore reply (we only need the updated stream, not the new ID)
-        for ((vehicle_id, _, _), (shard_bytes, pos_bytes)) in batch.iter().zip(serialized.iter()) {
-            let key = format!("vehicle:{}:positions", vehicle_id);
-            pipe.cmd("XADD")
-                .arg(&key)
-                .arg("MAXLEN")
-                .arg("~")
-                .arg(self.max_len)
-                .arg("*")
-                .arg("shard")
-                .arg(shard_bytes.as_slice())
-                .arg("pos")
-                .arg(pos_bytes.as_slice())
-                .ignore();
-        }
-        // N XREVRANGEs — results are collected
-        for (vehicle_id, _, _) in batch {
-            let key = format!("vehicle:{}:positions", vehicle_id);
-            pipe.cmd("XREVRANGE")
-                .arg(&key)
-                .arg("+")
-                .arg("-")
-                .arg("COUNT")
-                .arg(self.max_len);
-        }
-
-        let replies: Vec<redis::streams::StreamRangeReply> =
-            pipe.query_async(&mut self.conn).await?;
-
-        let mut results = Vec::with_capacity(batch.len());
-        for reply in replies {
-            results.push(decode_stream_reply(reply)?);
-        }
-        Ok(results)
     }
 
     /// Pipeline N XADD commands in one round-trip — no reads.

@@ -6,7 +6,7 @@ metadata:
   labels:
     app: orchestrator
 spec:
-  replicas: 1
+  replicas: 3
   selector:
     matchLabels:
       app: orchestrator
@@ -27,8 +27,6 @@ spec:
             - name: metrics
               containerPort: 9091
           env:
-            - name: RABBITMQ_URL
-              value: "amqp://guest:guest@rabbitmq.routers-dev.svc.cluster.local:5672/%2f"
             - name: NATS_URL
               value: "nats://nats.routers-dev.svc.cluster.local:4222"
             - name: VALKEY_URL
@@ -36,9 +34,9 @@ spec:
             - name: METRICS_ADDR
               value: "0.0.0.0:9091"
             - name: PARALLELISM
-              value: "1"
+              value: "8"
             - name: HISTORY_MAX_POINTS
-              value: "15"
+              value: "10"
             - name: HISTORY_MAX_AGE_SECS
               value: "300"
             - name: RUST_LOG

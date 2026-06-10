@@ -83,16 +83,23 @@ pub async fn ensure_match_stream(
     let config = async_nats::jetstream::stream::Config {
         name: "MATCH".into(),
         subjects: vec!["match.>".into()],
-        // Drop oldest messages when full — prevents publish failures when no
-        // matcher is consuming the stream. get_or_create_stream won't update an
-        // existing stream, so we try update first and fall back to create.
-        max_bytes: 1024 * 1024 * 1024,
+        // Memory storage: no disk I/O per message — essential for high throughput.
+        // File storage caps at ~20k msg/s on a local VM due to fsync overhead.
+        storage: async_nats::jetstream::stream::StorageType::Memory,
+        // Drop oldest messages when full so publish never blocks.
+        max_bytes: 512 * 1024 * 1024,
         discard: async_nats::jetstream::stream::DiscardPolicy::Old,
         ..Default::default()
     };
+    // Storage type cannot be changed in place — if the existing stream uses File,
+    // delete it and recreate. Message loss is acceptable: unprocessed messages
+    // are from a previous run and will be replayed by the orchestrator.
     match js.update_stream(&config).await {
         Ok(_) => js.get_stream("MATCH").await.map_err(Into::into),
-        Err(_) => js.create_stream(config).await.map_err(Into::into),
+        Err(_) => {
+            let _ = js.delete_stream("MATCH").await;
+            js.create_stream(config).await.map_err(Into::into)
+        }
     }
 }
 

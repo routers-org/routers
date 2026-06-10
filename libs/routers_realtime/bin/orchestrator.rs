@@ -1,12 +1,9 @@
-use chrono::{DateTime, NaiveDateTime};
-use futures::StreamExt;
-use geo::Point;
 use routers_realtime::{
     HistoryConfig, MemoryStore, ValkeyStore, WarmingMemoryStore,
-    amqp::{Topic, TopicOpts},
     context::{MatchContext, RawEvent},
     metrics,
     nats,
+    nats_ingest::{self, NatsIngestOpts},
     orchestrate,
 };
 use routers_shard::{Geohash, GeohashStrategy};
@@ -14,38 +11,15 @@ use tokio::sync::mpsc;
 
 type S = Geohash;
 
-fn make_source(opts: TopicOpts) -> impl std::future::Future<Output = anyhow::Result<impl futures::Stream<Item = RawEvent> + Send>> {
-    async move {
-        let topic = Topic::new(opts).await?;
-        Ok(topic.filter_map(|delivery| async move {
-            let delivery = delivery.ok()?;
-            let payload: routers_realtime::event::Payload =
-                serde_json::from_slice(&delivery.data)
-                    .map_err(|e| { eprintln!("[source] JSON parse error: {e}"); e })
-                    .ok()?;
-            let _ = delivery
-                .ack(lapin::options::BasicAckOptions::default())
-                .await;
-            let ts = DateTime::parse_from_str(&payload.event_time, "%Y-%m-%d %H:%M:%S%.f %Z")
-                .or_else(|_| DateTime::parse_from_str(&payload.event_time, "%Y-%m-%d %H:%M:%S %Z"))
-                .map(|dt| dt.timestamp_millis() as u64)
-                .unwrap_or_else(|_| {
-                    let s = payload.event_time.trim_end_matches(" UTC");
-                    NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S%.f")
-                        .or_else(|_| NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S"))
-                        .map(|dt| dt.and_utc().timestamp_millis() as u64)
-                        .unwrap_or(0)
-                });
-            Some(RawEvent {
-                vehicle_id: payload.vehicle_id,
-                coord: Point::new(payload.point.x, payload.point.y),
-                timestamp_ms: ts,
-            })
-        }))
-    }
+async fn make_source(
+    js: async_nats::jetstream::Context,
+) -> anyhow::Result<futures::stream::BoxStream<'static, RawEvent>> {
+    Ok(Box::pin(nats_ingest::nats_source(js, NatsIngestOpts::from_env()).await?))
 }
 
-fn make_sink(tx: mpsc::Sender<MatchContext<S>>) -> impl futures::Sink<MatchContext<S>, Error = anyhow::Error> {
+fn make_sink(
+    tx: mpsc::Sender<MatchContext<S>>,
+) -> impl futures::Sink<MatchContext<S>, Error = anyhow::Error> {
     futures::sink::unfold(tx, |tx, ctx| async move {
         tx.send(ctx)
             .await
@@ -56,7 +30,8 @@ fn make_sink(tx: mpsc::Sender<MatchContext<S>>) -> impl futures::Sink<MatchConte
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let nats_url = std::env::var("NATS_URL").unwrap_or_else(|_| "nats://127.0.0.1:4222".into());
+    let nats_url =
+        std::env::var("NATS_URL").unwrap_or_else(|_| "nats://127.0.0.1:4222".into());
     let valkey_url =
         std::env::var("VALKEY_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".into());
     let store_mode = std::env::var("STORE").unwrap_or_else(|_| "valkey".into());
@@ -72,7 +47,10 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or_else(|_| "0.0.0.0:9091".into())
         .parse()
         .expect("METRICS_ADDR must be a valid socket address");
-
+    let nats_batch_size: usize = std::env::var("NATS_BATCH_SIZE")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(256);
     let history_max_points: usize = std::env::var("HISTORY_MAX_POINTS")
         .ok()
         .and_then(|s| s.parse().ok())
@@ -100,49 +78,62 @@ async fn main() -> anyhow::Result<()> {
         .await
         .map_err(|e| anyhow::anyhow!("NATS connect: {e}"))?;
     let js = async_nats::jetstream::new(nc);
+
     nats::ensure_match_stream(&js)
         .await
-        .map_err(|e| anyhow::anyhow!("NATS stream setup: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("NATS match stream setup: {e}"))?;
 
-    let (tx, rx) = mpsc::channel::<MatchContext<S>>(2048 * parallelism);
-    tokio::spawn(nats::batch_publisher::<S>(js, rx, 64));
+    let ingest_opts = NatsIngestOpts::from_env();
+    nats_ingest::ensure_events_stream(&js, &ingest_opts)
+        .await
+        .map_err(|e| anyhow::anyhow!("NATS events stream setup: {e}"))?;
+
+    // One batch_publisher per worker to avoid a shared-channel bottleneck.
+    let n_publishers = parallelism.max(1);
+    let mut txs: Vec<mpsc::Sender<MatchContext<S>>> = Vec::with_capacity(n_publishers);
+    for _ in 0..n_publishers {
+        let (tx, rx) = mpsc::channel::<MatchContext<S>>(2048);
+        tokio::spawn(nats::batch_publisher::<S>(js.clone(), rx, nats_batch_size));
+        txs.push(tx);
+    }
 
     match store_mode.as_str() {
         "memory" => {
-            eprintln!("store: memory (no persistence)  parallelism=1  history_max_points={history_max_points}");
-            let source = make_source(TopicOpts::from_env()).await?;
+            eprintln!(
+                "store: memory  parallelism=1  history_max_points={history_max_points}"
+            );
+            let source = make_source(js).await?;
+            let tx = txs.remove(0);
             orchestrate(source, make_sink(tx), MemoryStore::<S>::new(valkey_max_len), &strategy, &history_cfg).await
         }
         _ => {
             eprintln!(
-                "store: warming ({valkey_url})  parallelism={parallelism}  history_max_points={history_max_points}  valkey_max_len={valkey_max_len}"
+                "store: warming ({valkey_url})  parallelism={parallelism}  history_max_points={history_max_points}  nats_batch={nats_batch_size}  valkey_max_len={valkey_max_len}"
             );
 
             if parallelism == 1 {
-                let source = make_source(TopicOpts::from_env()).await?;
+                let source = make_source(js).await?;
                 let valkey = ValkeyStore::connect(&valkey_url, valkey_max_len).await?;
                 let store = WarmingMemoryStore::new(valkey, valkey_max_len);
+                let tx = txs.remove(0);
                 orchestrate(source, make_sink(tx), store, &strategy, &history_cfg).await
             } else {
                 let mut handles = vec![];
-                for i in 0..parallelism {
-                    let mut opts = TopicOpts::from_env();
-                    opts.consumer_tag = lapin::types::ShortString::from(
-                        format!("orchestrator-{i}").as_str(),
-                    );
-                    let source = make_source(opts).await?;
+                for (i, tx) in txs.into_iter().enumerate() {
+                    // All workers share the same NATS consumer name — the server
+                    // distributes pending messages across concurrent pull requests.
+                    let source = make_source(js.clone()).await?;
                     let valkey = ValkeyStore::connect(&valkey_url, valkey_max_len).await?;
                     let store = WarmingMemoryStore::new(valkey, valkey_max_len);
-                    let sink = make_sink(tx.clone());
+                    let sink = make_sink(tx);
                     let strat = strategy.clone();
-
                     let hcfg = history_cfg.clone();
+
                     if i < parallelism - 1 {
                         handles.push(tokio::spawn(async move {
                             orchestrate(source, sink, store, &strat, &hcfg).await
                         }));
                     } else {
-                        drop(tx);
                         return orchestrate(source, sink, store, &strat, &hcfg).await;
                     }
                 }

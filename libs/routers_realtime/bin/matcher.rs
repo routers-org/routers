@@ -1,7 +1,7 @@
-use futures::SinkExt;
-use futures::StreamExt;
+use futures::{SinkExt, StreamExt};
 use geo::{LineString, Point};
 use routers::transition::r#match::MatchOptions;
+use routers::transition::{MatchError, RoutedPath};
 use routers::Match;
 use routers_codec::osm::{OsmEdgeMetadata, OsmEntryId};
 use routers_realtime::{
@@ -15,12 +15,23 @@ use routers_shard::{
     FileFetcher, Geohash, GeohashStrategy, MultiShardNetwork, Selection, SelectionMode,
     ShardLoader, ShardingStrategy,
 };
+use std::sync::Arc;
 use std::str::FromStr;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 type E = OsmEntryId;
 type M = OsmEdgeMetadata;
 type S = Geohash;
+type SolveResult = (
+    async_nats::jetstream::Message,
+    String,
+    u64,
+    geo::Point,
+    Vec<String>,
+    Result<RoutedPath<E, M>, MatchError>,
+    f64,
+    Instant,
+);
 
 fn shard_filename(key: &Geohash) -> String {
     format!("{}.shard.rt", key)
@@ -47,6 +58,17 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or_else(|_| "0.0.0.0:9092".into())
         .parse()
         .expect("METRICS_ADDR must be a valid socket address");
+    let concurrency: usize = std::env::var("MATCH_CONCURRENCY")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or_else(|| {
+            std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(4)
+        });
+    // Stub mode: skip HMM entirely and echo back the raw coord as a successful match.
+    // Use MATCH_STUB=1 to measure pure pipeline overhead without any compute cost.
+    let stub = std::env::var("MATCH_STUB").is_ok();
 
     tokio::spawn(metrics::serve_matcher(metrics_addr));
 
@@ -90,11 +112,11 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
-    let network = MultiShardNetwork::<E, M, S>::new(shards);
+    let network = Arc::new(MultiShardNetwork::<E, M, S>::new(shards));
     let m = metrics::matcher_global();
 
-    // Reconnect loop — recovers from both startup connection failures and
-    // mid-run transient errors (missed idle heartbeat, stream resets, etc.).
+    log::info!("[matcher-{shard}] concurrency={concurrency} stub={stub}");
+
     let mut connect_backoff = Duration::from_secs(1);
 
     'reconnect: loop {
@@ -134,124 +156,185 @@ async fn main() -> anyhow::Result<()> {
             Ok(m) => m,
             Err(e) => {
                 eprintln!("[matcher-{shard}] message stream: {e}, reconnecting");
-                tokio::time::sleep(Duration::from_secs(2)).await;
+                tokio::time::sleep(Duration::from_millis(500)).await;
                 continue 'reconnect;
             }
         };
 
-        // ── Message loop ─────────────────────────────────────────────────────
+        // ── Pipeline: up to `concurrency` parallel HMM solves ────────────────
+        // select! simultaneously waits for a completed solve (to publish and
+        // free a slot) and the next incoming message (to fill a free slot).
+        // Backpressure: the messages arm is disabled when the join_set is full.
+        let mut join_set: tokio::task::JoinSet<SolveResult> = tokio::task::JoinSet::new();
+
         loop {
-            let msg = match messages.next().await {
-                None => {
-                    eprintln!("[matcher-{shard}] stream closed, reconnecting");
-                    tokio::time::sleep(Duration::from_millis(500)).await;
-                    continue 'reconnect;
-                }
-                Some(Ok(msg)) => msg,
-                Some(Err(e)) => {
-                    eprintln!("[matcher-{shard}] message recv: {e}, reconnecting");
-                    tokio::time::sleep(Duration::from_millis(500)).await;
-                    continue 'reconnect;
-                }
-            };
+            tokio::select! {
+                biased;
 
-            let t_delivery = Instant::now();
-
-            let ctx: MatchContext<S> = match postcard::from_bytes(&msg.payload) {
-                Ok(c) => c,
-                Err(e) => {
-                    log::warn!("failed to decode MatchContext: {e}");
-                    let _ = msg.ack().await;
-                    continue;
-                }
-            };
-
-            let coords: Vec<geo::Coord> = ctx
-                .history
-                .iter()
-                .chain(std::iter::once(&ctx.current))
-                .map(|p| p.coord.into())
-                .collect();
-
-            let linestring = LineString(coords);
-            let debug_pts: Vec<String> = ctx.history.iter()
-                .chain(std::iter::once(&ctx.current))
-                .map(|p| format!("[{:.6},{:.6},t={}]", p.coord.x(), p.coord.y(), p.timestamp_ms))
-                .collect();
-            let opts = MatchOptions::<E, M, _>::default();
-
-            let t_solve = Instant::now();
-            let match_result = network.r#match(linestring, opts);
-            let solve_ms = t_solve.elapsed().as_secs_f64() * 1000.0;
-            m.solve_latency_ms.observe(solve_ms);
-
-            match match_result {
-                Ok(path) if path.discretized.elements.is_empty() => {
-                    // HMM returned no candidates — emit one NoCandidate result for current
-                    m.matches_no_candidate.inc();
-                    let result = MatchResult {
-                        vehicle_id: ctx.vehicle_id,
-                        resolved_at_ms: ctx.resolved_at_ms,
-                        matched_at_ms: now_ms(),
-                        coord: ctx.current.coord,
-                        outcome: MatchOutcome::NoCandidate,
-                    };
-                    if let Err(e) = result_sink.send(result).await {
-                        eprintln!("[matcher-{shard}] result publish: {e}, reconnecting");
-                        let _ = msg.ack().await;
-                        continue 'reconnect;
-                    }
-                }
-                Ok(path) => {
-                    m.matches_success.inc();
-
-                    // Emit one MatchResult for the current GPS point.
-                    // History points keep their original matched position; the MatchRoute
-                    // below carries the full window's road geometry for visualisation.
-                    if let Some(last_el) = path.discretized.elements.last() {
-                        let result = MatchResult {
-                            vehicle_id: ctx.vehicle_id.clone(),
-                            resolved_at_ms: ctx.resolved_at_ms,
-                            matched_at_ms: now_ms(),
-                            coord: Point::from(last_el.point),
-                            outcome: MatchOutcome::Success,
+                // Drain a completed solve and publish its result.
+                Some(task_result) = join_set.join_next(), if !join_set.is_empty() => {
+                    let (msg, vehicle_id, resolved_at_ms, current_coord, debug_pts, match_result, solve_ms, t_delivery) =
+                        match task_result {
+                            Ok(r) => r,
+                            Err(e) => {
+                                eprintln!("[matcher-{shard}] task panicked: {e}");
+                                continue;
+                            }
                         };
-                        if let Err(e) = result_sink.send(result).await {
-                            eprintln!("[matcher-{shard}] result publish: {e}, reconnecting");
-                            let _ = msg.ack().await;
-                            continue 'reconnect;
+
+                    m.solve_latency_ms.observe(solve_ms);
+
+                    match match_result {
+                        Ok(path) if path.discretized.elements.is_empty() => {
+                            m.matches_no_candidate.inc();
+                            let result = MatchResult {
+                                vehicle_id,
+                                resolved_at_ms,
+                                matched_at_ms: now_ms(),
+                                coord: current_coord,
+                                outcome: MatchOutcome::NoCandidate,
+                            };
+                            if let Err(e) = result_sink.send(result).await {
+                                eprintln!("[matcher-{shard}] result publish: {e}, reconnecting");
+                                let _ = msg.ack().await;
+                                continue 'reconnect;
+                            }
+                        }
+                        Ok(path) => {
+                            m.matches_success.inc();
+
+                            if let Some(last_el) = path.discretized.elements.last() {
+                                let result = MatchResult {
+                                    vehicle_id: vehicle_id.clone(),
+                                    resolved_at_ms,
+                                    matched_at_ms: now_ms(),
+                                    coord: Point::from(last_el.point),
+                                    outcome: MatchOutcome::Success,
+                                };
+                                if let Err(e) = result_sink.send(result).await {
+                                    eprintln!("[matcher-{shard}] result publish: {e}, reconnecting");
+                                    let _ = msg.ack().await;
+                                    continue 'reconnect;
+                                }
+                            }
+
+                            let route = MatchRoute {
+                                vehicle_id: vehicle_id.clone(),
+                                resolved_at_ms,
+                                polyline: path
+                                    .interpolated
+                                    .elements
+                                    .iter()
+                                    .map(|el| el.point)
+                                    .collect(),
+                            };
+                            if let Err(e) = route_sink.send(route).await {
+                                eprintln!("[matcher-{shard}] route publish: {e}, reconnecting");
+                                let _ = msg.ack().await;
+                                continue 'reconnect;
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!(
+                                "match failed for vehicle {}: {e:?} | points={} linestring=[{}]",
+                                vehicle_id,
+                                debug_pts.len(),
+                                debug_pts.join(",")
+                            );
+                            m.matches_error.inc();
                         }
                     }
 
-                    // Emit one MatchRoute with the full interpolated road geometry
-                    let route = MatchRoute {
-                        vehicle_id: ctx.vehicle_id.clone(),
-                        resolved_at_ms: ctx.resolved_at_ms,
-                        polyline: path.interpolated.elements.iter().map(|el| el.point).collect(),
-                    };
-                    if let Err(e) = route_sink.send(route).await {
-                        eprintln!("[matcher-{shard}] route publish: {e}, reconnecting");
-                        let _ = msg.ack().await;
-                        continue 'reconnect;
-                    }
-                }
-                Err(e) => {
-                    eprintln!(
-                        "match failed for vehicle {}: {e:?} | points={} linestring=[{}]",
-                        ctx.vehicle_id,
-                        debug_pts.len(),
-                        debug_pts.join(",")
-                    );
-                    m.matches_error.inc();
                     let _ = msg.ack().await;
-                    continue;
+                    m.match_latency_ms
+                        .observe(t_delivery.elapsed().as_secs_f64() * 1000.0);
+                }
+
+                // Accept the next message when below capacity.
+                // In stub mode the join_set is always empty so this arm is always enabled.
+                msg_result = messages.next(), if join_set.len() < concurrency => {
+                    let msg = match msg_result {
+                        None => {
+                            eprintln!("[matcher-{shard}] stream closed, reconnecting");
+                            tokio::time::sleep(Duration::from_millis(500)).await;
+                            continue 'reconnect;
+                        }
+                        Some(Ok(m)) => m,
+                        Some(Err(e)) => {
+                            eprintln!("[matcher-{shard}] message recv: {e}, reconnecting");
+                            tokio::time::sleep(Duration::from_millis(500)).await;
+                            continue 'reconnect;
+                        }
+                    };
+
+                    let t_delivery = Instant::now();
+
+                    let ctx: MatchContext<S> = match postcard::from_bytes(&msg.payload) {
+                        Ok(c) => c,
+                        Err(e) => {
+                            log::warn!("failed to decode MatchContext: {e}");
+                            let _ = msg.ack().await;
+                            continue;
+                        }
+                    };
+
+                    if stub {
+                        // Echo the raw coord back as an instant successful match.
+                        // No HMM, no spawn_blocking — pure pipeline overhead measurement.
+                        let result = MatchResult {
+                            vehicle_id: ctx.vehicle_id,
+                            resolved_at_ms: ctx.resolved_at_ms,
+                            matched_at_ms: now_ms(),
+                            coord: ctx.current.coord,
+                            outcome: MatchOutcome::Success,
+                        };
+                        m.matches_success.inc();
+                        if let Err(e) = result_sink.send(result).await {
+                            eprintln!("[matcher-{shard}] stub publish: {e}, reconnecting");
+                            let _ = msg.ack().await;
+                            continue 'reconnect;
+                        }
+                        let _ = msg.ack().await;
+                        m.match_latency_ms
+                            .observe(t_delivery.elapsed().as_secs_f64() * 1000.0);
+                        continue;
+                    }
+
+                    let coords: Vec<geo::Coord> = ctx
+                        .history
+                        .iter()
+                        .chain(std::iter::once(&ctx.current))
+                        .map(|p| p.coord.into())
+                        .collect();
+                    let linestring = LineString(coords);
+                    let debug_pts: Vec<String> = ctx
+                        .history
+                        .iter()
+                        .chain(std::iter::once(&ctx.current))
+                        .map(|p| {
+                            format!(
+                                "[{:.6},{:.6},t={}]",
+                                p.coord.x(),
+                                p.coord.y(),
+                                p.timestamp_ms
+                            )
+                        })
+                        .collect();
+
+                    let vehicle_id = ctx.vehicle_id.clone();
+                    let resolved_at_ms = ctx.resolved_at_ms;
+                    let current_coord = ctx.current.coord;
+                    let network_clone = Arc::clone(&network);
+
+                    join_set.spawn_blocking(move || {
+                        let opts = MatchOptions::<E, M, _>::default();
+                        let t_solve = Instant::now();
+                        let result = network_clone.r#match(linestring, opts);
+                        let solve_ms = t_solve.elapsed().as_secs_f64() * 1000.0;
+                        (msg, vehicle_id, resolved_at_ms, current_coord, debug_pts, result, solve_ms, t_delivery)
+                    });
                 }
             }
-
-            let _ = msg.ack().await;
-
-            m.match_latency_ms
-                .observe(t_delivery.elapsed().as_secs_f64() * 1000.0);
         }
     }
 }
