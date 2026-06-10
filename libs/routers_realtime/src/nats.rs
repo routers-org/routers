@@ -135,35 +135,42 @@ pub async fn batch_publisher<S>(
 
         let t0 = std::time::Instant::now();
 
-        // Fire all publishes without waiting for individual acks.
-        let mut pending: Vec<async_nats::jetstream::context::PublishAckFuture> =
-            Vec::with_capacity(batch.len());
-        let mut n = 0usize;
-        for ctx in &batch {
-            let subject = format!("match.{}", ctx.target_shard);
-            let Ok(payload) = postcard::to_allocvec(ctx).map(bytes::Bytes::from) else {
-                continue;
-            };
-            match js.publish(subject, payload).await {
-                Ok(ack) => {
-                    pending.push(ack);
-                    n += 1;
-                }
-                Err(e) => eprintln!("[batch_publisher] NATS publish error: {e}"),
-            }
-        }
+        // Serialize all payloads upfront.
+        let messages: Vec<(String, bytes::Bytes)> = batch
+            .iter()
+            .filter_map(|ctx| {
+                postcard::to_allocvec(ctx)
+                    .ok()
+                    .map(|b| (format!("match.{}", ctx.target_shard), bytes::Bytes::from(b)))
+            })
+            .collect();
+        let n = messages.len();
 
-        // Await all acks together — one RTT for the whole batch.
-        for ack in pending {
-            if let Err(e) = ack.await {
-                eprintln!("[batch_publisher] NATS ack error: {e}");
-                n = n.saturating_sub(1);
-            }
-        }
+        // Fire all publishes concurrently (each is just an internal channel write),
+        // then await all ack futures concurrently — one poll loop for the whole batch.
+        let ack_futs: Vec<_> = futures::future::join_all(
+            messages
+                .iter()
+                .map(|(subj, payload)| js.publish(subj.clone(), payload.clone())),
+        )
+        .await
+        .into_iter()
+        .filter_map(|r| r.map_err(|e| eprintln!("[batch_publisher] publish error: {e}")).ok())
+        .collect();
 
-        if n > 0 {
-            let per_event_ms = t0.elapsed().as_secs_f64() * 1000.0 / n as f64;
-            for _ in 0..n {
+        let errors = futures::future::join_all(
+            ack_futs.into_iter().map(std::future::IntoFuture::into_future),
+        )
+        .await
+        .into_iter()
+        .filter(|r| r.is_err())
+        .inspect(|e| eprintln!("[batch_publisher] ack error: {e:?}"))
+        .count();
+
+        let succeeded = n.saturating_sub(errors);
+        if succeeded > 0 {
+            let per_event_ms = t0.elapsed().as_secs_f64() * 1000.0 / succeeded as f64;
+            for _ in 0..succeeded {
                 m.nats_latency_ms.observe(per_event_ms);
                 m.events_published.inc();
             }
