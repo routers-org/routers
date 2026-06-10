@@ -138,10 +138,17 @@ impl Plugin for TracePlugin {
                 let last_raw = projector
                     .project(lon_lat(last.raw_coord.x(), last.raw_coord.y()))
                     .to_pos2();
-                let dot_colour = match last.outcome {
-                    MatchOutcome::Success => Color32::from_rgba_unmultiplied(160, 160, 160, 200),
-                    MatchOutcome::NoCandidate => Color32::from_rgba_unmultiplied(220, 140, 50, 220),
-                    MatchOutcome::Error => Color32::from_rgba_unmultiplied(220, 60, 60, 220),
+                // Show orange/red only if the vehicle has never successfully matched.
+                // A vehicle that is actively matching will always have an unresolved
+                // leading fix (result lag), so we don't want it flickering orange.
+                let ever_matched = fixes.iter().any(|f| f.outcome == MatchOutcome::Success);
+                let dot_colour = if ever_matched {
+                    Color32::from_rgba_unmultiplied(160, 160, 160, 200)
+                } else {
+                    match last.outcome {
+                        MatchOutcome::Success | MatchOutcome::NoCandidate => Color32::from_rgba_unmultiplied(220, 140, 50, 220),
+                        MatchOutcome::Error => Color32::from_rgba_unmultiplied(220, 60, 60, 220),
+                    }
                 };
                 painter.circle_stroke(last_raw, 3.0, Stroke::new(1.5, dot_colour));
             }

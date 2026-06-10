@@ -5,9 +5,9 @@ nats_url := "nats://127.0.0.1:4222"
 valkey_url := "redis://127.0.0.1:6379"
 
 # bench-stub defaults — override with: just bench_pipeline=512 bench-stub
-bench_shards   := "r3grm,r3grh,r3grq,r3grw,r3grk,r3grj,r3grs,r3grt"
+bench_shards := "r3grm,r3grh,r3grq,r3grw,r3grk,r3grj,r3grs,r3grt"
 bench_pipeline := "256"
-bench_loops    := "3"
+bench_loops := "3"
 
 # List available recipes
 default:
@@ -223,57 +223,28 @@ replay speed="60" csv="" shards="" pipeline="1" loops="1":
     export REPLAY_LOOPS={{ loops }}
     [[ -n "{{ csv }}" ]] && export CSV_FILE="{{ csv }}" || true
     [[ -n "{{ shards }}" ]] && export ACTIVE_SHARDS="{{ shards }}" || true
+    export DEPLOY_SHARDS=1
+    export SHARD_CACHE="$(realpath "{{ justfile_directory() }}/../../target/shard_cache")"
     cargo run --release -p routers_realtime --example replay_large
 
-# Measure pure pipeline overhead (no HMM compute) to find the absolute throughput ceiling.
+# Flood benchmark — measures end-to-end throughput through the full pipeline.
+# stub=true  skips HMM (instant echo) to measure pure pipeline overhead ceiling.
+# stub=false runs real HMM matching to verify no regression.
 #
-# Step 1: deploys matcher pods with MATCH_STUB=1 set from the start (no HMM, instant echo).
-#         If matchers are already running they are patched to stub mode.
-# Step 2: floods NATS with bench_pipeline pipelined JetStream publishes.
-# Step 3: waits for the system to drain, reports throughput.
-# Step 4: scales matchers back to 0 on exit (preserves deployments, frees laptop resources).
-#
-# Override defaults with top-level variables: just bench_pipeline=512 bench_loops=1 bench-stub
-bench-stub:
+# Override defaults: just bench_pipeline=512 bench_loops=1 bench
+# just bench_pipeline=512 bench_loops=1 bench stub=true
+bench stub="false":
     #!/usr/bin/env bash
     set -euo pipefail
     ns={{ ns }}
     shards="{{ bench_shards }}"
     pipeline="{{ bench_pipeline }}"
     loops="{{ bench_loops }}"
+    stub="{{ stub }}"
     shard_cache="$(realpath "{{ justfile_directory() }}/../../target/shard_cache")"
+    mode_label=$( [[ "${stub}" == "true" ]] && echo "stub" || echo "real" )
 
-    echo "=== Pipeline overhead benchmark (MATCH_STUB=1, pipeline=${pipeline}, loops=${loops}) ==="
-    echo ""
-
-    # Deploy exactly the bench shards as stub matchers (MATCH_STUB=1 baked in).
-    echo "Deploying bench matchers (stub, exact shards only)..."
-    for shard in $(echo "${shards}" | tr ',' ' '); do
-        printf 'apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: matcher-%s\n  namespace: %s\n  labels:\n    app: matcher\n    shard: "%s"\nspec:\n  replicas: 1\n  selector:\n    matchLabels:\n      app: matcher\n      shard: "%s"\n  template:\n    metadata:\n      labels:\n        app: matcher\n        shard: "%s"\n      annotations:\n        prometheus.io/scrape: "true"\n        prometheus.io/port: "9092"\n        prometheus.io/path: "/metrics"\n    spec:\n      containers:\n        - name: matcher\n          image: routers-matcher:latest\n          imagePullPolicy: Never\n          env:\n            - name: NATS_URL\n              value: "nats://nats.routers-dev.svc.cluster.local:4222"\n            - name: SHARD_DIR\n              value: /shards\n            - name: SHARD_PRECISION\n              value: "5"\n            - name: METRICS_ADDR\n              value: "0.0.0.0:9092"\n            - name: OWNED_SHARD\n              value: "%s"\n            - name: MATCH_STUB\n              value: "1"\n            - name: RUST_LOG\n              value: "info"\n          resources:\n            requests:\n              cpu: 500m\n              memory: 256Mi\n            limits:\n              memory: 512Mi\n          volumeMounts:\n            - mountPath: /shards\n              name: shards\n              readOnly: true\n      volumes:\n        - name: shards\n          hostPath:\n            path: %s\n            type: Directory\n' \
-            "${shard}" "${ns}" "${shard}" "${shard}" "${shard}" "${shard}" "${shard_cache}" | kubectl apply -f -
-    done
-
-    echo "Waiting for stub rollout..."
-    for shard in $(echo "${shards}" | tr ',' ' '); do
-        kubectl rollout status deployment/matcher-${shard} -n ${ns} --timeout=90s 2>/dev/null || true
-    done
-    echo ""
-
-    # Scale the general orchestrator to 0 to avoid competing consumers during bench.
-    echo "Scaling general orchestrator to 0 (per-shard orchestrators will take over)..."
-    kubectl scale deployment/orchestrator -n ${ns} --replicas=0 2>/dev/null || true
-
-    # Deploy per-shard orchestrators — one per bench shard.
-    echo "Deploying per-shard orchestrators..."
-    for shard in $(echo "${shards}" | tr ',' ' '); do
-        printf 'apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: orchestrator-%s\n  namespace: %s\n  labels:\n    app: orchestrator-shard\n    shard: "%s"\nspec:\n  replicas: 1\n  selector:\n    matchLabels:\n      app: orchestrator-shard\n      shard: "%s"\n  template:\n    metadata:\n      labels:\n        app: orchestrator-shard\n        shard: "%s"\n      annotations:\n        prometheus.io/scrape: "true"\n        prometheus.io/port: "9091"\n        prometheus.io/path: "/metrics"\n    spec:\n      containers:\n        - name: orchestrator\n          image: routers-orchestrator:latest\n          imagePullPolicy: Never\n          env:\n            - name: NATS_URL\n              value: "nats://nats.routers-dev.svc.cluster.local:4222"\n            - name: VALKEY_URL\n              value: "redis://valkey-primary.routers-dev.svc.cluster.local:6379"\n            - name: OWNED_SHARD\n              value: "%s"\n            - name: PARALLELISM\n              value: "1"\n            - name: HISTORY_MAX_POINTS\n              value: "10"\n            - name: HISTORY_MAX_AGE_SECS\n              value: "300"\n            - name: STORE\n              value: "memory"\n            - name: RUST_LOG\n              value: "info"\n          resources:\n            requests:\n              cpu: 500m\n              memory: 256Mi\n            limits:\n              memory: 512Mi\n' \
-            "${shard}" "${ns}" "${shard}" "${shard}" "${shard}" "${shard}" "${shard}" | kubectl apply -f -
-    done
-
-    echo "Waiting for per-shard orchestrator rollouts..."
-    for shard in $(echo "${shards}" | tr ',' ' '); do
-        kubectl rollout status deployment/orchestrator-${shard} -n ${ns} --timeout=90s 2>/dev/null || true
-    done
+    echo "=== Bench (mode=${mode_label}, pipeline=${pipeline}, loops=${loops}) ==="
     echo ""
 
     pkill -f "kubectl port-forward.*(prometheus|nats-0)" 2>/dev/null || true
@@ -284,36 +255,15 @@ bench-stub:
     nats_mon_pf=$!
     kubectl port-forward -n ${ns} pod/nats-0 4222:4222 > /dev/null 2>&1 &
     nats_client_pf=$!
-
-    shutdown_matchers() {
-        echo ""
-        echo "Scaling matchers to 0 (bench done — preserving deployments, freeing resources)..."
-        kubectl scale deployment -l app=matcher -n ${ns} --replicas=0 2>/dev/null || true
-        echo "Scaling per-shard orchestrators to 0..."
-        kubectl scale deployment -l app=orchestrator-shard -n ${ns} --replicas=0 2>/dev/null || true
-        echo "Restoring general orchestrator to 1 replica..."
-        kubectl scale deployment/orchestrator -n ${ns} --replicas=1 2>/dev/null || true
-        kill "$prom_pf" "$nats_mon_pf" "$nats_client_pf" 2>/dev/null || true
-    }
-    trap shutdown_matchers EXIT
+    trap 'kill "$prom_pf" "$nats_mon_pf" "$nats_client_pf" 2>/dev/null || true' EXIT
 
     for i in $(seq 1 20); do nc -z 127.0.0.1 4222 2>/dev/null && break || sleep 0.3; done
-
-    # Wait for per-shard orchestrator pods to be ready before flooding.
-    echo "Waiting for per-shard orchestrator pods to be ready..."
-    for shard in $(echo "${shards}" | tr ',' ' '); do
-        kubectl wait pod -l "app=orchestrator-shard,shard=${shard}" -n ${ns} \
-            --for=condition=ready --timeout=90s 2>/dev/null || true
-    done
-    echo ""
 
     prom_query() {
         curl -sf --max-time 3 "http://127.0.0.1:19090/api/v1/query?query=${1}" 2>/dev/null \
         | python3 -c "import sys,json; d=json.load(sys.stdin); r=d.get('data',{}).get('result',[]); print(r[0]['value'][1] if r else 0)" \
         2>/dev/null || echo "0"
     }
-    # Returns total num_pending + num_ack_pending across all JetStream consumers,
-    # or -1 if the API call fails. Uses 'accounts=1' (not 'acc=1') to get consumer detail.
     get_nats_pending() {
         curl -sf --max-time 3 "http://127.0.0.1:19222/jsz?streams=1&consumers=1&accounts=1" 2>/dev/null \
         | python3 -c "import sys,json; d=json.load(sys.stdin); accts=d.get('account_details',[]); consumers=[c for a in accts for s in a.get('stream_detail',[]) for c in s.get('consumer_detail',[])]; print(-1 if not accts else sum(c.get('num_pending',0)+c.get('num_ack_pending',0) for c in consumers))" \
@@ -329,6 +279,10 @@ bench-stub:
     export REPLAY_PIPELINE="${pipeline}"
     export REPLAY_LOOPS="${loops}"
     export ACTIVE_SHARDS="${shards}"
+    export DEPLOY_SHARDS=1
+    export SHARD_CACHE="${shard_cache}"
+    export K8S_NS="${ns}"
+    [[ "${stub}" == "true" ]] && export MATCH_STUB=1 || unset MATCH_STUB
     cargo run -q --release -p routers_realtime --example replay_large
     t_flood_end=$(python3 -c "import time; print(int(time.time()*1000))")
     echo ""
@@ -357,9 +311,13 @@ bench-stub:
 
     echo ""
     echo "=== Results ==="
-    echo "  Matched (stub):  ${total}"
-    echo "  Wall time:       ${elapsed_s}s"
-    echo "  Throughput:      ${throughput} evt/s  (pipeline overhead only)"
+    echo "  Matched (${mode_label}):  ${total}"
+    echo "  Wall time:        ${elapsed_s}s"
+    echo "  Throughput:       ${throughput} evt/s"
+
+# Shorthand for: just bench stub=true
+bench-stub:
+    just bench stub=true
 
 # Build both binaries in release mode
 build:

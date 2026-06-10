@@ -68,7 +68,7 @@ async fn main() -> anyhow::Result<()> {
     let mut ingest_opts = NatsIngestOpts::from_env();
     if let Some(ref shard) = owned_shard {
         ingest_opts.subject = format!("events.raw.{}", shard);
-        ingest_opts.consumer_name = format!("orchestrator.{}", shard);
+        ingest_opts.consumer_name = format!("orchestrator-{}", shard);
     }
 
     // Remove the legacy MATCH JetStream stream if it exists.

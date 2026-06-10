@@ -16,6 +16,13 @@
 ///   ACTIVE_SHARDS     comma-separated geohash list to filter by (e.g. r3grm,r3grh)
 ///                     if unset or empty, all events are sent
 ///   SHARD_PRECISION   geohash precision used by the matcher (default: 5)
+///
+///   DEPLOY_SHARDS     if set, auto-deploy per-shard matchers and orchestrators
+///                     from ACTIVE_SHARDS before flooding, and tear them down on exit.
+///   MATCH_STUB        if set alongside DEPLOY_SHARDS, deploy matchers in stub mode
+///                     (no HMM — measures pure pipeline overhead).
+///   SHARD_CACHE       absolute path to shard cache dir (required with DEPLOY_SHARDS).
+///   K8S_NS            kubernetes namespace (default: routers-dev).
 use async_nats::jetstream;
 use chrono::NaiveDateTime;
 use geo::{Coord, Point};
@@ -57,6 +64,215 @@ fn load_sorted(path: &str) -> Result<DataFrame, PolarsError> {
         .collect()
 }
 
+// ── Shard deployment ──────────────────────────────────────────────────────────
+
+fn kubectl_apply(yaml: &str) -> Result<(), Box<dyn Error>> {
+    use std::process::{Command, Stdio};
+    let mut child = Command::new("kubectl")
+        .args(["apply", "-f", "-"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .spawn()?;
+    child.stdin.as_mut().unwrap().write_all(yaml.as_bytes())?;
+    let status = child.wait()?;
+    if !status.success() {
+        return Err(format!("kubectl apply failed: {status}").into());
+    }
+    Ok(())
+}
+
+fn kubectl_rollout_wait(deployment: &str, ns: &str) -> Result<(), Box<dyn Error>> {
+    let status = std::process::Command::new("kubectl")
+        .args(["rollout", "status", &format!("deployment/{deployment}"), "-n", ns, "--timeout=120s"])
+        .status()?;
+    if !status.success() {
+        eprintln!("[deploy] warning: rollout wait for {deployment} did not complete cleanly");
+    }
+    Ok(())
+}
+
+fn matcher_yaml(shard: &Geohash, stub: bool, shard_cache: &str, ns: &str, shard_precision: u8) -> String {
+    // stub_env must end with a newline so it splices cleanly into the env list.
+    let stub_env = if stub {
+        "            - name: MATCH_STUB\n              value: \"1\"\n"
+    } else {
+        ""
+    };
+    // Use real newlines (not \n\ continuations) so source indentation is preserved verbatim.
+    format!("apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: matcher-{shard}
+  namespace: {ns}
+  labels:
+    app: matcher
+    shard: \"{shard}\"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: matcher
+      shard: \"{shard}\"
+  template:
+    metadata:
+      labels:
+        app: matcher
+        shard: \"{shard}\"
+      annotations:
+        prometheus.io/scrape: \"true\"
+        prometheus.io/port: \"9092\"
+        prometheus.io/path: \"/metrics\"
+    spec:
+      containers:
+        - name: matcher
+          image: routers-matcher:latest
+          imagePullPolicy: Never
+          env:
+            - name: NATS_URL
+              value: \"nats://nats.routers-dev.svc.cluster.local:4222\"
+            - name: SHARD_DIR
+              value: /shards
+            - name: SHARD_PRECISION
+              value: \"{shard_precision}\"
+            - name: METRICS_ADDR
+              value: \"0.0.0.0:9092\"
+            - name: OWNED_SHARD
+              value: \"{shard}\"
+{stub_env}            - name: RUST_LOG
+              value: \"info\"
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 2Gi
+          volumeMounts:
+            - mountPath: /shards
+              name: shards
+              readOnly: true
+      volumes:
+        - name: shards
+          hostPath:
+            path: {shard_cache}
+            type: Directory
+")
+}
+
+fn orchestrator_yaml(shard: &Geohash, ns: &str) -> String {
+    format!("apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: orchestrator-{shard}
+  namespace: {ns}
+  labels:
+    app: orchestrator-shard
+    shard: \"{shard}\"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: orchestrator-shard
+      shard: \"{shard}\"
+  template:
+    metadata:
+      labels:
+        app: orchestrator-shard
+        shard: \"{shard}\"
+      annotations:
+        prometheus.io/scrape: \"true\"
+        prometheus.io/port: \"9091\"
+        prometheus.io/path: \"/metrics\"
+    spec:
+      containers:
+        - name: orchestrator
+          image: routers-orchestrator:latest
+          imagePullPolicy: Never
+          env:
+            - name: NATS_URL
+              value: \"nats://nats.routers-dev.svc.cluster.local:4222\"
+            - name: VALKEY_URL
+              value: \"redis://valkey-primary.routers-dev.svc.cluster.local:6379\"
+            - name: OWNED_SHARD
+              value: \"{shard}\"
+            - name: PARALLELISM
+              value: \"1\"
+            - name: HISTORY_MAX_POINTS
+              value: \"10\"
+            - name: HISTORY_MAX_AGE_SECS
+              value: \"300\"
+            - name: STORE
+              value: \"memory\"
+            - name: RUST_LOG
+              value: \"info\"
+          resources:
+            requests:
+              cpu: 500m
+              memory: 256Mi
+            limits:
+              memory: 512Mi
+")
+}
+
+fn deploy_shards(
+    shards: &[Geohash],
+    stub: bool,
+    shard_cache: &str,
+    ns: &str,
+    shard_precision: u8,
+) -> Result<(), Box<dyn Error>> {
+    println!("Deploying matchers ({})...", if stub { "stub" } else { "real HMM" });
+    for shard in shards {
+        kubectl_apply(&matcher_yaml(shard, stub, shard_cache, ns, shard_precision))?;
+    }
+    println!("Waiting for matcher rollouts...");
+    for shard in shards {
+        kubectl_rollout_wait(&format!("matcher-{shard}"), ns)?;
+    }
+
+    println!("Scaling general orchestrator to 0...");
+    let _ = std::process::Command::new("kubectl")
+        .args(["scale", "deployment/orchestrator", "-n", ns, "--replicas=0"])
+        .status();
+
+    println!("Deploying per-shard orchestrators...");
+    for shard in shards {
+        kubectl_apply(&orchestrator_yaml(shard, ns))?;
+    }
+    println!("Waiting for orchestrator rollouts...");
+    for shard in shards {
+        kubectl_rollout_wait(&format!("orchestrator-{shard}"), ns)?;
+    }
+
+    // Wait for pods to be ready (rollout status confirms deployment, but pods may still be starting)
+    println!("Waiting for pods ready...");
+    for shard in shards {
+        let _ = std::process::Command::new("kubectl")
+            .args(["wait", "pod", "-l", &format!("app=orchestrator-shard,shard={shard}"), "-n", ns,
+                   "--for=condition=ready", "--timeout=90s"])
+            .status();
+    }
+
+    Ok(())
+}
+
+fn teardown_shards(ns: &str) {
+    println!("Scaling matchers to 0...");
+    let _ = std::process::Command::new("kubectl")
+        .args(["scale", "deployment", "-l", "app=matcher", "-n", ns, "--replicas=0"])
+        .status();
+    println!("Scaling per-shard orchestrators to 0...");
+    let _ = std::process::Command::new("kubectl")
+        .args(["scale", "deployment", "-l", "app=orchestrator-shard", "-n", ns, "--replicas=0"])
+        .status();
+    println!("Restoring general orchestrator...");
+    let _ = std::process::Command::new("kubectl")
+        .args(["scale", "deployment/orchestrator", "-n", ns, "--replicas=1"])
+        .status();
+}
+
+// ── Main ──────────────────────────────────────────────────────────────────────
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     let csv_path = std::env::var("CSV_FILE").unwrap_or_else(|_| DEFAULT_CSV.to_string());
@@ -88,6 +304,28 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .filter_map(|s| Geohash::from_str(s.trim()).ok())
         .collect();
 
+    let deploy = std::env::var("DEPLOY_SHARDS").is_ok();
+    let stub = std::env::var("MATCH_STUB").is_ok();
+    let ns = std::env::var("K8S_NS").unwrap_or_else(|_| "routers-dev".into());
+
+    if deploy {
+        if active_shards.is_empty() {
+            return Err("DEPLOY_SHARDS requires ACTIVE_SHARDS to be set".into());
+        }
+        let shard_cache = std::env::var("SHARD_CACHE")
+            .map_err(|_| "DEPLOY_SHARDS requires SHARD_CACHE to be set")?;
+        // Canonicalize to remove any .. segments (K8s rejects them in hostPath)
+        let shard_cache = std::fs::canonicalize(&shard_cache)
+            .map_err(|e| format!("SHARD_CACHE {shard_cache:?}: {e}"))?
+            .to_string_lossy()
+            .into_owned();
+
+        let mut sorted_shards: Vec<Geohash> = active_shards.iter().cloned().collect();
+        sorted_shards.sort_by_key(|s| s.to_string());
+        deploy_shards(&sorted_shards, stub, &shard_cache, &ns, shard_precision)?;
+        println!();
+    }
+
     if flood {
         println!("Mode: flood (REPLAY_FLOOD set)  pipeline={pipeline}");
     } else {
@@ -110,6 +348,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let n = df.height();
     if n == 0 {
         println!("No events found.");
+        if deploy { teardown_shards(&ns); }
         return Ok(());
     }
 
@@ -140,8 +379,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let js = async_nats::jetstream::new(nc);
     let opts = NatsIngestOpts::from_env();
     nats_ingest::ensure_events_stream(&js, &opts).await?;
-    // Always publish to per-shard subjects: events.raw.{shard}
-    // opts.subject is the consumer filter (events.raw.>); the base for publishing is events.raw
     let subject = "events.raw".to_owned();
     println!("EVENTS stream ready — subject prefix={subject}");
 
@@ -193,6 +430,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
         if loops > 0 && iteration >= loops {
             break;
         }
+    }
+
+    if deploy {
+        println!();
+        teardown_shards(&ns);
     }
 
     Ok(())
