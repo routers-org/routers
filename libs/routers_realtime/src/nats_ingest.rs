@@ -6,6 +6,7 @@ use geo::Point;
 use std::pin::Pin;
 use std::time::Duration;
 
+#[derive(Clone)]
 pub struct NatsIngestOpts {
     pub stream_name: String,
     pub subject: String,
@@ -17,7 +18,7 @@ impl Default for NatsIngestOpts {
     fn default() -> Self {
         Self {
             stream_name: "EVENTS".into(),
-            subject: "events.raw".into(),
+            subject: "events.raw.>".into(),
             consumer_name: "orchestrator".into(),
             max_bytes: 512 * 1024 * 1024,
         }
@@ -30,7 +31,7 @@ impl NatsIngestOpts {
             stream_name: std::env::var("EVENTS_STREAM")
                 .unwrap_or_else(|_| "EVENTS".into()),
             subject: std::env::var("EVENTS_SUBJECT")
-                .unwrap_or_else(|_| "events.raw".into()),
+                .unwrap_or_else(|_| "events.raw.>".into()),
             consumer_name: std::env::var("EVENTS_CONSUMER")
                 .unwrap_or_else(|_| "orchestrator".into()),
             max_bytes: std::env::var("EVENTS_MAX_BYTES")
@@ -49,20 +50,20 @@ pub async fn ensure_events_stream(
 ) -> anyhow::Result<()> {
     let config = jetstream::stream::Config {
         name: opts.stream_name.clone(),
-        subjects: vec![opts.subject.clone()],
+        subjects: vec!["events.raw.>".into()],
         storage: StorageType::Memory,
         max_bytes: opts.max_bytes,
         discard: jetstream::stream::DiscardPolicy::Old,
         ..Default::default()
     };
-    match js.update_stream(&config).await {
-        Ok(_) => {}
-        Err(_) => {
-            let _ = js.delete_stream(&opts.stream_name).await;
-            js.create_stream(config)
-                .await
-                .map_err(|e| anyhow::anyhow!("NATS EVENTS stream create: {e}"))?;
-        }
+    // Try to update the existing stream first. If it doesn't exist yet, create it.
+    // Never delete — that discards buffered events and races with concurrent orchestrators.
+    if js.update_stream(&config).await.is_err() {
+        // Update failed — likely because subjects changed (NATS rejects subject updates).
+        // Delete and recreate. Ignore errors on both: concurrent orchestrators may race here,
+        // and the one that loses the delete or create race is fine — the stream will exist.
+        let _ = js.delete_stream(&opts.stream_name).await;
+        let _ = js.create_stream(config).await;
     }
     Ok(())
 }
@@ -121,31 +122,21 @@ async fn create_nats_stream(
 ///
 /// Multiple callers sharing the same `consumer_name` act as competing consumers:
 /// NATS distributes messages across them.
-pub async fn nats_source(
+pub fn nats_source(
     js: Context,
     opts: NatsIngestOpts,
-) -> anyhow::Result<impl futures::Stream<Item = RawEvent> + Send> {
-    // Verify the stream and consumer are reachable before returning. The first
-    // inner stream is passed directly to the background task to avoid a second
-    // round-trip.
-    let first = create_nats_stream(&js, &opts).await?;
-
+) -> impl futures::Stream<Item = RawEvent> + Send {
     let (mut tx, rx) = futures::channel::mpsc::channel::<RawEvent>(256);
 
     tokio::spawn(async move {
-        let mut pending: Option<RawEventStream> = Some(first);
-
         'outer: loop {
-            let mut inner = match pending.take() {
-                Some(s) => s,
-                None => match create_nats_stream(&js, &opts).await {
-                    Ok(s) => s,
-                    Err(e) => {
-                        eprintln!("[nats_source] reconnect error: {e}, retrying in 1s");
-                        tokio::time::sleep(Duration::from_secs(1)).await;
-                        continue 'outer;
-                    }
-                },
+            let mut inner = match create_nats_stream(&js, &opts).await {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("[nats_source] connect error: {e}, retrying in 1s");
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                    continue 'outer;
+                }
             };
 
             loop {
@@ -165,7 +156,7 @@ pub async fn nats_source(
         }
     });
 
-    Ok(rx)
+    rx
 }
 
 fn parse_event_time(s: &str) -> u64 {

@@ -108,9 +108,13 @@ where
         // When the sink is a channel (batched NATS publisher), this is
         // Valkey RTT + CPU. nats_latency_ms and events_published are
         // recorded by the publisher task after acks arrive.
+        let t_nats = std::time::Instant::now();
         sink.send(ctx)
             .await
             .map_err(|e| anyhow::anyhow!("sink error: {e}"))?;
+        m.nats_latency_ms
+            .observe(t_nats.elapsed().as_secs_f64() * 1000.0);
+        m.events_published.inc();
         m.total_latency_ms
             .observe(t_event.elapsed().as_secs_f64() * 1000.0);
     }

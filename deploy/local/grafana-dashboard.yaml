@@ -34,22 +34,22 @@ data:
           "options": { "tooltip": { "mode": "multi" } },
           "targets": [
             {
-              "expr": "sum(rate(routers_events_received_total[15s]))",
+              "expr": "sum(rate(routers_events_received_total[3s]))",
               "legendFormat": "ingest consumed",
-              "datasource": { "type": "prometheus", "uid": "prometheus" }
+              "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
             },
             {
-              "expr": "sum(rate(routers_events_published_total[15s]))",
+              "expr": "sum(rate(routers_events_published_total[3s]))",
               "legendFormat": "published to NATS",
-              "datasource": { "type": "prometheus", "uid": "prometheus" }
+              "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
             },
             {
-              "expr": "sum(rate(routers_matches_total_success[15s])) + sum(rate(routers_matches_total_no_candidate[15s])) + sum(rate(routers_matches_total_error[15s]))",
+              "expr": "sum(rate(routers_matches_total_success[3s])) + sum(rate(routers_matches_total_no_candidate[3s])) + sum(rate(routers_matches_total_error[3s]))",
               "legendFormat": "matched",
-              "datasource": { "type": "prometheus", "uid": "prometheus" }
+              "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
             }
           ],
-          "datasource": { "type": "prometheus", "uid": "prometheus" }
+          "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
         },
         {
           "id": 2,
@@ -66,22 +66,22 @@ data:
           "options": { "tooltip": { "mode": "multi" } },
           "targets": [
             {
-              "expr": "histogram_quantile(0.50, sum(rate(routers_total_latency_ms_bucket[15s])) by (le))",
+              "expr": "histogram_quantile(0.50, sum(rate(routers_total_latency_ms_bucket[3s])) by (le))",
               "legendFormat": "p50",
-              "datasource": { "type": "prometheus", "uid": "prometheus" }
+              "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
             },
             {
-              "expr": "histogram_quantile(0.95, sum(rate(routers_total_latency_ms_bucket[15s])) by (le))",
+              "expr": "histogram_quantile(0.95, sum(rate(routers_total_latency_ms_bucket[3s])) by (le))",
               "legendFormat": "p95",
-              "datasource": { "type": "prometheus", "uid": "prometheus" }
+              "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
             },
             {
-              "expr": "histogram_quantile(0.99, sum(rate(routers_total_latency_ms_bucket[15s])) by (le))",
+              "expr": "histogram_quantile(0.99, sum(rate(routers_total_latency_ms_bucket[3s])) by (le))",
               "legendFormat": "p99",
-              "datasource": { "type": "prometheus", "uid": "prometheus" }
+              "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
             }
           ],
-          "datasource": { "type": "prometheus", "uid": "prometheus" }
+          "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
         },
         {
           "id": 3,
@@ -94,10 +94,10 @@ data:
             {
               "expr": "sum(routers_events_received_total)",
               "legendFormat": "",
-              "datasource": { "type": "prometheus", "uid": "prometheus" }
+              "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
             }
           ],
-          "datasource": { "type": "prometheus", "uid": "prometheus" }
+          "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
         },
         {
           "id": 4,
@@ -110,10 +110,10 @@ data:
             {
               "expr": "sum(routers_events_published_total)",
               "legendFormat": "",
-              "datasource": { "type": "prometheus", "uid": "prometheus" }
+              "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
             }
           ],
-          "datasource": { "type": "prometheus", "uid": "prometheus" }
+          "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
         },
         {
           "id": 5,
@@ -137,10 +137,10 @@ data:
             {
               "expr": "sum(routers_events_received_total) - sum(routers_events_published_total)",
               "legendFormat": "",
-              "datasource": { "type": "prometheus", "uid": "prometheus" }
+              "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
             }
           ],
-          "datasource": { "type": "prometheus", "uid": "prometheus" }
+          "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
         },
         {
           "id": 6,
@@ -164,10 +164,10 @@ data:
             {
               "expr": "sum(routers_store_errors_total)",
               "legendFormat": "",
-              "datasource": { "type": "prometheus", "uid": "prometheus" }
+              "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
             }
           ],
-          "datasource": { "type": "prometheus", "uid": "prometheus" }
+          "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
         },
         {
           "id": 7,
@@ -184,27 +184,27 @@ data:
           "options": { "tooltip": { "mode": "multi" } },
           "targets": [
             {
-              "expr": "sum(rate(routers_total_latency_ms_sum[15s])) / sum(rate(routers_total_latency_ms_count[15s]))",
+              "expr": "sum(rate(routers_total_latency_ms_sum[3s])) / sum(rate(routers_total_latency_ms_count[3s]))",
               "legendFormat": "total",
-              "datasource": { "type": "prometheus", "uid": "prometheus" }
+              "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
             },
             {
-              "expr": "sum(rate(routers_store_latency_ms_sum[15s])) / sum(rate(routers_store_latency_ms_count[15s]))",
+              "expr": "sum(rate(routers_store_latency_ms_sum[3s])) / sum(rate(routers_store_latency_ms_count[3s]))",
               "legendFormat": "valkey warm-up (cache miss only)",
-              "datasource": { "type": "prometheus", "uid": "prometheus" }
+              "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
             },
             {
-              "expr": "sum(rate(routers_nats_latency_ms_sum[15s])) / sum(rate(routers_nats_latency_ms_count[15s]))",
+              "expr": "sum(rate(routers_nats_latency_ms_sum[3s])) / sum(rate(routers_nats_latency_ms_count[3s]))",
               "legendFormat": "NATS publish + ack",
-              "datasource": { "type": "prometheus", "uid": "prometheus" }
+              "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
             },
             {
-              "expr": "sum(rate(routers_total_latency_ms_sum[15s])) / sum(rate(routers_total_latency_ms_count[15s])) - sum(rate(routers_store_latency_ms_sum[15s])) / sum(rate(routers_store_latency_ms_count[15s]))",
+              "expr": "sum(rate(routers_total_latency_ms_sum[3s])) / sum(rate(routers_total_latency_ms_count[3s])) - sum(rate(routers_store_latency_ms_sum[3s])) / sum(rate(routers_store_latency_ms_count[3s]))",
               "legendFormat": "other (deser + geohash + history filter)",
-              "datasource": { "type": "prometheus", "uid": "prometheus" }
+              "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
             }
           ],
-          "datasource": { "type": "prometheus", "uid": "prometheus" }
+          "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
         },
         {
           "id": 8,
@@ -216,17 +216,17 @@ data:
           "options": { "tooltip": { "mode": "multi" } },
           "targets": [
             {
-              "expr": "histogram_quantile(0.50, sum(rate(routers_event_age_ms_bucket[15s])) by (le))",
+              "expr": "histogram_quantile(0.50, sum(rate(routers_event_age_ms_bucket[3s])) by (le))",
               "legendFormat": "p50",
-              "datasource": { "type": "prometheus", "uid": "prometheus" }
+              "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
             },
             {
-              "expr": "histogram_quantile(0.95, sum(rate(routers_event_age_ms_bucket[15s])) by (le))",
+              "expr": "histogram_quantile(0.95, sum(rate(routers_event_age_ms_bucket[3s])) by (le))",
               "legendFormat": "p95",
-              "datasource": { "type": "prometheus", "uid": "prometheus" }
+              "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
             }
           ],
-          "datasource": { "type": "prometheus", "uid": "prometheus" }
+          "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
         },
         {
           "id": 9,
@@ -251,20 +251,20 @@ data:
             {
               "expr": "sum(routers_matches_total_success)",
               "legendFormat": "success",
-              "datasource": { "type": "prometheus", "uid": "prometheus" }
+              "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
             },
             {
               "expr": "sum(routers_matches_total_no_candidate)",
               "legendFormat": "no_candidate",
-              "datasource": { "type": "prometheus", "uid": "prometheus" }
+              "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
             },
             {
               "expr": "sum(routers_matches_total_error)",
               "legendFormat": "error",
-              "datasource": { "type": "prometheus", "uid": "prometheus" }
+              "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
             }
           ],
-          "datasource": { "type": "prometheus", "uid": "prometheus" }
+          "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
         },
         {
           "id": 10,
@@ -293,10 +293,10 @@ data:
             {
               "expr": "sum(routers_matches_total_success) / (sum(routers_matches_total_success) + sum(routers_matches_total_no_candidate) + sum(routers_matches_total_error))",
               "legendFormat": "success rate",
-              "datasource": { "type": "prometheus", "uid": "prometheus" }
+              "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
             }
           ],
-          "datasource": { "type": "prometheus", "uid": "prometheus" }
+          "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
         },
         {
           "id": 11,
@@ -308,10 +308,10 @@ data:
             {
               "expr": "sum(rate(routers_solve_latency_ms_sum[30s])) / sum(rate(routers_solve_latency_ms_count[30s]))",
               "legendFormat": "avg solve ms",
-              "datasource": { "type": "prometheus", "uid": "prometheus" }
+              "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
             }
           ],
-          "datasource": { "type": "prometheus", "uid": "prometheus" }
+          "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
         },
         {
           "id": 12,
@@ -325,25 +325,25 @@ data:
             {
               "expr": "sum(rate(routers_match_latency_ms_sum[30s])) / sum(rate(routers_match_latency_ms_count[30s]))",
               "legendFormat": "avg",
-              "datasource": { "type": "prometheus", "uid": "prometheus" }
+              "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
             },
             {
               "expr": "histogram_quantile(0.50, sum(rate(routers_match_latency_ms_bucket[30s])) by (le))",
               "legendFormat": "p50",
-              "datasource": { "type": "prometheus", "uid": "prometheus" }
+              "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
             },
             {
               "expr": "histogram_quantile(0.95, sum(rate(routers_match_latency_ms_bucket[30s])) by (le))",
               "legendFormat": "p95",
-              "datasource": { "type": "prometheus", "uid": "prometheus" }
+              "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
             },
             {
               "expr": "histogram_quantile(0.99, sum(rate(routers_match_latency_ms_bucket[30s])) by (le))",
               "legendFormat": "p99",
-              "datasource": { "type": "prometheus", "uid": "prometheus" }
+              "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
             }
           ],
-          "datasource": { "type": "prometheus", "uid": "prometheus" }
+          "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
         },
         {
           "id": 100,
@@ -367,22 +367,22 @@ data:
           "options": { "tooltip": { "mode": "multi" } },
           "targets": [
             {
-              "expr": "sum(rate(routers_events_received_total[15s]))",
+              "expr": "sum(rate(routers_events_received_total[3s]))",
               "legendFormat": "① Ingest → Orchestrator (consumed)",
-              "datasource": { "type": "prometheus", "uid": "prometheus" }
+              "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
             },
             {
-              "expr": "sum(rate(routers_events_published_total[15s]))",
+              "expr": "sum(rate(routers_events_published_total[3s]))",
               "legendFormat": "② Orchestrator → NATS (published)",
-              "datasource": { "type": "prometheus", "uid": "prometheus" }
+              "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
             },
             {
-              "expr": "sum(rate(routers_matches_total_success[15s])) + sum(rate(routers_matches_total_no_candidate[15s])) + sum(rate(routers_matches_total_error[15s]))",
+              "expr": "sum(rate(routers_matches_total_success[3s])) + sum(rate(routers_matches_total_no_candidate[3s])) + sum(rate(routers_matches_total_error[3s]))",
               "legendFormat": "③ Matcher output (matched/s)",
-              "datasource": { "type": "prometheus", "uid": "prometheus" }
+              "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
             }
           ],
-          "datasource": { "type": "prometheus", "uid": "prometheus" }
+          "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
         },
         {
           "id": 14,
@@ -402,15 +402,15 @@ data:
             {
               "expr": "sum(routers_events_received_total) - sum(routers_events_published_total)",
               "legendFormat": "Orchestrator in-flight (received − published)",
-              "datasource": { "type": "prometheus", "uid": "prometheus" }
+              "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
             },
             {
               "expr": "sum(routers_events_published_total) - (sum(routers_matches_total_success) + sum(routers_matches_total_no_candidate) + sum(routers_matches_total_error))",
               "legendFormat": "NATS backlog (published − matched)",
-              "datasource": { "type": "prometheus", "uid": "prometheus" }
+              "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
             }
           ],
-          "datasource": { "type": "prometheus", "uid": "prometheus" }
+          "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
         },
         {
           "id": 15,
@@ -427,37 +427,37 @@ data:
           "options": { "tooltip": { "mode": "multi" } },
           "targets": [
             {
-              "expr": "sum(rate(routers_total_latency_ms_sum[15s])) / sum(rate(routers_total_latency_ms_count[15s]))",
+              "expr": "sum(rate(routers_total_latency_ms_sum[3s])) / sum(rate(routers_total_latency_ms_count[3s]))",
               "legendFormat": "Orchestrator total (ingest recv → NATS ack)",
-              "datasource": { "type": "prometheus", "uid": "prometheus" }
+              "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
             },
             {
-              "expr": "sum(rate(routers_store_latency_ms_sum[15s])) / sum(rate(routers_store_latency_ms_count[15s]))",
+              "expr": "sum(rate(routers_store_latency_ms_sum[3s])) / sum(rate(routers_store_latency_ms_count[3s]))",
               "legendFormat": "  └ Valkey warm-up (cache miss)",
-              "datasource": { "type": "prometheus", "uid": "prometheus" }
+              "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
             },
             {
-              "expr": "sum(rate(routers_nats_latency_ms_sum[15s])) / sum(rate(routers_nats_latency_ms_count[15s]))",
+              "expr": "sum(rate(routers_nats_latency_ms_sum[3s])) / sum(rate(routers_nats_latency_ms_count[3s]))",
               "legendFormat": "  └ NATS publish + ack",
-              "datasource": { "type": "prometheus", "uid": "prometheus" }
+              "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
             },
             {
               "expr": "sum(rate(routers_match_latency_ms_sum[30s])) / sum(rate(routers_match_latency_ms_count[30s])) - sum(rate(routers_solve_latency_ms_sum[30s])) / sum(rate(routers_solve_latency_ms_count[30s]))",
               "legendFormat": "Matcher queue wait (sitting in NATS before pickup)",
-              "datasource": { "type": "prometheus", "uid": "prometheus" }
+              "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
             },
             {
               "expr": "sum(rate(routers_solve_latency_ms_sum[30s])) / sum(rate(routers_solve_latency_ms_count[30s]))",
               "legendFormat": "  └ HMM solve",
-              "datasource": { "type": "prometheus", "uid": "prometheus" }
+              "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
             },
             {
               "expr": "sum(rate(routers_match_latency_ms_sum[30s])) / sum(rate(routers_match_latency_ms_count[30s]))",
               "legendFormat": "Matcher total (NATS delivery → result published)",
-              "datasource": { "type": "prometheus", "uid": "prometheus" }
+              "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
             }
           ],
-          "datasource": { "type": "prometheus", "uid": "prometheus" }
+          "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
         }
       ],
       "schemaVersion": 36

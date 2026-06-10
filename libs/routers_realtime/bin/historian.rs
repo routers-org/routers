@@ -42,7 +42,7 @@ async fn main() -> anyhow::Result<()> {
     // consumer from the orchestrator's so every event is delivered to both.
     let opts = NatsIngestOpts::from_env();
     nats_ingest::ensure_events_stream(&js, &opts).await?;
-    let mut events = Box::pin(nats_ingest::nats_source(js, opts).await?);
+    let mut events = Box::pin(nats_ingest::nats_source(js, opts));
 
     eprintln!(
         "historian: nats={nats_url}  valkey={valkey_url}  batch={batch_size}  timeout={batch_timeout_ms}ms"

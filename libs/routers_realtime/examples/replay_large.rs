@@ -140,8 +140,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let js = async_nats::jetstream::new(nc);
     let opts = NatsIngestOpts::from_env();
     nats_ingest::ensure_events_stream(&js, &opts).await?;
-    let subject = opts.subject.clone();
-    println!("EVENTS stream ready — subject={subject}");
+    // Always publish to per-shard subjects: events.raw.{shard}
+    // opts.subject is the consumer filter (events.raw.>); the base for publishing is events.raw
+    let subject = "events.raw".to_owned();
+    println!("EVENTS stream ready — subject prefix={subject}");
 
     let effective_speed = if flood { f64::INFINITY } else { speed };
     let loop_desc = |n: usize| if n == 0 { "∞".to_string() } else { n.to_string() };
@@ -225,13 +227,12 @@ async fn run(
         let lat = latitudes.get(i).unwrap_or(0.0);
         let lon = longitudes.get(i).unwrap_or(0.0);
 
-        if !active_shards.is_empty() {
-            let shard = strategy.locate(Point::new(lon, lat));
-            if !active_shards.contains(&shard) {
-                skipped += 1;
-                continue;
-            }
+        let shard = strategy.locate(Point::new(lon, lat));
+        if !active_shards.is_empty() && !active_shards.contains(&shard) {
+            skipped += 1;
+            continue;
         }
+        let event_subject = format!("{}.{}", subject, shard);
 
         if speed.is_finite() {
             if let Some(event_time) = parse_time(time_str) {
@@ -254,7 +255,7 @@ async fn run(
         let Ok(bytes) = serde_json::to_vec(&payload) else { continue };
 
         if speed.is_infinite() && pipeline > 1 {
-            match js.publish(subject.to_owned(), bytes.into()).await {
+            match js.publish(event_subject, bytes.into()).await {
                 Ok(ack) => { pending.push(ack); sent += 1; }
                 Err(e) => eprintln!("\n[replay] publish error: {e}"),
             }
@@ -262,7 +263,7 @@ async fn run(
                 for a in pending.drain(..) { let _ = a.await; }
             }
         } else {
-            match js.publish(subject.to_owned(), bytes.into()).await {
+            match js.publish(event_subject, bytes.into()).await {
                 Ok(ack) => { let _ = ack.await; sent += 1; }
                 Err(e) => eprintln!("\n[replay] publish error: {e}"),
             }

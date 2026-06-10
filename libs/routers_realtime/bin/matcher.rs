@@ -23,7 +23,6 @@ type E = OsmEntryId;
 type M = OsmEdgeMetadata;
 type S = Geohash;
 type SolveResult = (
-    async_nats::jetstream::Message,
     String,
     u64,
     geo::Point,
@@ -135,12 +134,14 @@ async fn main() -> anyhow::Result<()> {
             }
         };
 
+        // js is still needed for the NatsKvAssignment path (shard auto-assignment without OWNED_SHARD)
         let js = async_nats::jetstream::new(nc.clone());
+        let _ = js; // suppress unused warning when OWNED_SHARD is always set
 
-        let consumer = match nats::match_consumer(&js, &shard).await {
-            Ok(c) => c,
+        let mut sub = match nc.subscribe(format!("match.{}", shard)).await {
+            Ok(s) => s,
             Err(e) => {
-                eprintln!("[matcher-{shard}] consumer setup: {e}, reconnecting");
+                eprintln!("[matcher-{shard}] subscribe: {e}, reconnecting");
                 tokio::time::sleep(Duration::from_secs(2)).await;
                 continue 'reconnect;
             }
@@ -151,15 +152,6 @@ async fn main() -> anyhow::Result<()> {
         futures::pin_mut!(result_sink);
         let route_sink = nats::route_sink(route_nc, "matched.routes".into());
         futures::pin_mut!(route_sink);
-
-        let mut messages = match consumer.messages().await {
-            Ok(m) => m,
-            Err(e) => {
-                eprintln!("[matcher-{shard}] message stream: {e}, reconnecting");
-                tokio::time::sleep(Duration::from_millis(500)).await;
-                continue 'reconnect;
-            }
-        };
 
         // ── Pipeline: up to `concurrency` parallel HMM solves ────────────────
         // select! simultaneously waits for a completed solve (to publish and
@@ -173,7 +165,7 @@ async fn main() -> anyhow::Result<()> {
 
                 // Drain a completed solve and publish its result.
                 Some(task_result) = join_set.join_next(), if !join_set.is_empty() => {
-                    let (msg, vehicle_id, resolved_at_ms, current_coord, debug_pts, match_result, solve_ms, t_delivery) =
+                    let (vehicle_id, resolved_at_ms, current_coord, debug_pts, match_result, solve_ms, t_delivery) =
                         match task_result {
                             Ok(r) => r,
                             Err(e) => {
@@ -196,7 +188,6 @@ async fn main() -> anyhow::Result<()> {
                             };
                             if let Err(e) = result_sink.send(result).await {
                                 eprintln!("[matcher-{shard}] result publish: {e}, reconnecting");
-                                let _ = msg.ack().await;
                                 continue 'reconnect;
                             }
                         }
@@ -213,7 +204,6 @@ async fn main() -> anyhow::Result<()> {
                                 };
                                 if let Err(e) = result_sink.send(result).await {
                                     eprintln!("[matcher-{shard}] result publish: {e}, reconnecting");
-                                    let _ = msg.ack().await;
                                     continue 'reconnect;
                                 }
                             }
@@ -230,7 +220,6 @@ async fn main() -> anyhow::Result<()> {
                             };
                             if let Err(e) = route_sink.send(route).await {
                                 eprintln!("[matcher-{shard}] route publish: {e}, reconnecting");
-                                let _ = msg.ack().await;
                                 continue 'reconnect;
                             }
                         }
@@ -245,26 +234,20 @@ async fn main() -> anyhow::Result<()> {
                         }
                     }
 
-                    let _ = msg.ack().await;
                     m.match_latency_ms
                         .observe(t_delivery.elapsed().as_secs_f64() * 1000.0);
                 }
 
                 // Accept the next message when below capacity.
                 // In stub mode the join_set is always empty so this arm is always enabled.
-                msg_result = messages.next(), if join_set.len() < concurrency => {
-                    let msg = match msg_result {
+                msg_opt = sub.next(), if join_set.len() < concurrency => {
+                    let msg = match msg_opt {
                         None => {
                             eprintln!("[matcher-{shard}] stream closed, reconnecting");
                             tokio::time::sleep(Duration::from_millis(500)).await;
                             continue 'reconnect;
                         }
-                        Some(Ok(m)) => m,
-                        Some(Err(e)) => {
-                            eprintln!("[matcher-{shard}] message recv: {e}, reconnecting");
-                            tokio::time::sleep(Duration::from_millis(500)).await;
-                            continue 'reconnect;
-                        }
+                        Some(m) => m,
                     };
 
                     let t_delivery = Instant::now();
@@ -273,7 +256,6 @@ async fn main() -> anyhow::Result<()> {
                         Ok(c) => c,
                         Err(e) => {
                             log::warn!("failed to decode MatchContext: {e}");
-                            let _ = msg.ack().await;
                             continue;
                         }
                     };
@@ -291,10 +273,8 @@ async fn main() -> anyhow::Result<()> {
                         m.matches_success.inc();
                         if let Err(e) = result_sink.send(result).await {
                             eprintln!("[matcher-{shard}] stub publish: {e}, reconnecting");
-                            let _ = msg.ack().await;
                             continue 'reconnect;
                         }
-                        let _ = msg.ack().await;
                         m.match_latency_ms
                             .observe(t_delivery.elapsed().as_secs_f64() * 1000.0);
                         continue;
@@ -331,7 +311,7 @@ async fn main() -> anyhow::Result<()> {
                         let t_solve = Instant::now();
                         let result = network_clone.r#match(linestring, opts);
                         let solve_ms = t_solve.elapsed().as_secs_f64() * 1000.0;
-                        (msg, vehicle_id, resolved_at_ms, current_coord, debug_pts, result, solve_ms, t_delivery)
+                        (vehicle_id, resolved_at_ms, current_coord, debug_pts, result, solve_ms, t_delivery)
                     });
                 }
             }

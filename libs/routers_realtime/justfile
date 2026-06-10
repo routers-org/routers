@@ -241,23 +241,38 @@ bench-stub:
     shards="{{ bench_shards }}"
     pipeline="{{ bench_pipeline }}"
     loops="{{ bench_loops }}"
-    shard_cache="{{ justfile_directory() }}/../../target/shard_cache"
+    shard_cache="$(realpath "{{ justfile_directory() }}/../../target/shard_cache")"
 
     echo "=== Pipeline overhead benchmark (MATCH_STUB=1, pipeline=${pipeline}, loops=${loops}) ==="
     echo ""
 
-    # Deploy (or re-apply) matcher deployments for the bench shards.
-    # We apply them first, then immediately set MATCH_STUB=1 before the pods are
-    # scheduled — so there is only one effective rollout with stub mode active.
-    echo "Deploying bench matchers..."
-    SHARD_CACHE="${shard_cache}" "{{ justfile_directory() }}/../../deploy/local/deploy-matchers.sh" "r3gr" 2>/dev/null || true
-
-    echo "Setting MATCH_STUB=1 on all matchers..."
-    kubectl set env deployment -l app=matcher -n ${ns} MATCH_STUB=1
+    # Deploy exactly the bench shards as stub matchers (MATCH_STUB=1 baked in).
+    echo "Deploying bench matchers (stub, exact shards only)..."
+    for shard in $(echo "${shards}" | tr ',' ' '); do
+        printf 'apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: matcher-%s\n  namespace: %s\n  labels:\n    app: matcher\n    shard: "%s"\nspec:\n  replicas: 1\n  selector:\n    matchLabels:\n      app: matcher\n      shard: "%s"\n  template:\n    metadata:\n      labels:\n        app: matcher\n        shard: "%s"\n      annotations:\n        prometheus.io/scrape: "true"\n        prometheus.io/port: "9092"\n        prometheus.io/path: "/metrics"\n    spec:\n      containers:\n        - name: matcher\n          image: routers-matcher:latest\n          imagePullPolicy: Never\n          env:\n            - name: NATS_URL\n              value: "nats://nats.routers-dev.svc.cluster.local:4222"\n            - name: SHARD_DIR\n              value: /shards\n            - name: SHARD_PRECISION\n              value: "5"\n            - name: METRICS_ADDR\n              value: "0.0.0.0:9092"\n            - name: OWNED_SHARD\n              value: "%s"\n            - name: MATCH_STUB\n              value: "1"\n            - name: RUST_LOG\n              value: "info"\n          resources:\n            requests:\n              cpu: 500m\n              memory: 256Mi\n            limits:\n              memory: 512Mi\n          volumeMounts:\n            - mountPath: /shards\n              name: shards\n              readOnly: true\n      volumes:\n        - name: shards\n          hostPath:\n            path: %s\n            type: Directory\n' \
+            "${shard}" "${ns}" "${shard}" "${shard}" "${shard}" "${shard}" "${shard_cache}" | kubectl apply -f -
+    done
 
     echo "Waiting for stub rollout..."
     for shard in $(echo "${shards}" | tr ',' ' '); do
         kubectl rollout status deployment/matcher-${shard} -n ${ns} --timeout=90s 2>/dev/null || true
+    done
+    echo ""
+
+    # Scale the general orchestrator to 0 to avoid competing consumers during bench.
+    echo "Scaling general orchestrator to 0 (per-shard orchestrators will take over)..."
+    kubectl scale deployment/orchestrator -n ${ns} --replicas=0 2>/dev/null || true
+
+    # Deploy per-shard orchestrators — one per bench shard.
+    echo "Deploying per-shard orchestrators..."
+    for shard in $(echo "${shards}" | tr ',' ' '); do
+        printf 'apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: orchestrator-%s\n  namespace: %s\n  labels:\n    app: orchestrator-shard\n    shard: "%s"\nspec:\n  replicas: 1\n  selector:\n    matchLabels:\n      app: orchestrator-shard\n      shard: "%s"\n  template:\n    metadata:\n      labels:\n        app: orchestrator-shard\n        shard: "%s"\n      annotations:\n        prometheus.io/scrape: "true"\n        prometheus.io/port: "9091"\n        prometheus.io/path: "/metrics"\n    spec:\n      containers:\n        - name: orchestrator\n          image: routers-orchestrator:latest\n          imagePullPolicy: Never\n          env:\n            - name: NATS_URL\n              value: "nats://nats.routers-dev.svc.cluster.local:4222"\n            - name: VALKEY_URL\n              value: "redis://valkey-primary.routers-dev.svc.cluster.local:6379"\n            - name: OWNED_SHARD\n              value: "%s"\n            - name: PARALLELISM\n              value: "1"\n            - name: HISTORY_MAX_POINTS\n              value: "10"\n            - name: HISTORY_MAX_AGE_SECS\n              value: "300"\n            - name: STORE\n              value: "memory"\n            - name: RUST_LOG\n              value: "info"\n          resources:\n            requests:\n              cpu: 500m\n              memory: 256Mi\n            limits:\n              memory: 512Mi\n' \
+            "${shard}" "${ns}" "${shard}" "${shard}" "${shard}" "${shard}" "${shard}" | kubectl apply -f -
+    done
+
+    echo "Waiting for per-shard orchestrator rollouts..."
+    for shard in $(echo "${shards}" | tr ',' ' '); do
+        kubectl rollout status deployment/orchestrator-${shard} -n ${ns} --timeout=90s 2>/dev/null || true
     done
     echo ""
 
@@ -274,11 +289,23 @@ bench-stub:
         echo ""
         echo "Scaling matchers to 0 (bench done — preserving deployments, freeing resources)..."
         kubectl scale deployment -l app=matcher -n ${ns} --replicas=0 2>/dev/null || true
+        echo "Scaling per-shard orchestrators to 0..."
+        kubectl scale deployment -l app=orchestrator-shard -n ${ns} --replicas=0 2>/dev/null || true
+        echo "Restoring general orchestrator to 1 replica..."
+        kubectl scale deployment/orchestrator -n ${ns} --replicas=1 2>/dev/null || true
         kill "$prom_pf" "$nats_mon_pf" "$nats_client_pf" 2>/dev/null || true
     }
     trap shutdown_matchers EXIT
 
     for i in $(seq 1 20); do nc -z 127.0.0.1 4222 2>/dev/null && break || sleep 0.3; done
+
+    # Wait for per-shard orchestrator pods to be ready before flooding.
+    echo "Waiting for per-shard orchestrator pods to be ready..."
+    for shard in $(echo "${shards}" | tr ',' ' '); do
+        kubectl wait pod -l "app=orchestrator-shard,shard=${shard}" -n ${ns} \
+            --for=condition=ready --timeout=90s 2>/dev/null || true
+    done
+    echo ""
 
     prom_query() {
         curl -sf --max-time 3 "http://127.0.0.1:19090/api/v1/query?query=${1}" 2>/dev/null \
@@ -319,9 +346,9 @@ bench-stub:
     t_end=$(python3 -c "import time; print(int(time.time()*1000))")
     echo ""
 
-    # Prometheus scrapes every 10s — wait one full cycle so the final metrics are fresh.
+    # Prometheus scrapes every 1s — wait a few cycles so the final metrics are fresh.
     echo "Waiting for Prometheus scrape..."
-    sleep 12
+    sleep 4
 
     end_matched=$(prom_query "sum%28routers_matches_total_success%29" || echo "0")
     total=$(echo "$end_matched $snap_matched" | awk '{printf "%d", $1-$2}')
@@ -407,6 +434,16 @@ nats-purge:
     trap "kill $PF_PID 2>/dev/null || true" EXIT INT TERM
     for i in $(seq 1 20); do nc -z 127.0.0.1 4222 2>/dev/null && break || sleep 0.3; done
     NATS_URL="{{ nats_url }}" cargo run -q -p routers_realtime --example nats_purge
+
+# Delete the EVENTS stream entirely so it is recreated with correct subjects on next orchestrator start
+nats-reset-events:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    kubectl port-forward -n {{ ns }} pod/nats-0 4222:4222 > /dev/null 2>&1 &
+    PF_PID=$!
+    trap "kill $PF_PID 2>/dev/null || true" EXIT INT TERM
+    for i in $(seq 1 20); do nc -z 127.0.0.1 4222 2>/dev/null && break || sleep 0.3; done
+    NATS_URL="{{ nats_url }}" cargo run -q -p routers_realtime --example nats_purge -- --delete
 
 # Print NATS JetStream stream stats
 nats-stats:

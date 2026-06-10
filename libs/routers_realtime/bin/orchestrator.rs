@@ -1,31 +1,20 @@
 use routers_realtime::{
     HistoryConfig, MemoryStore, ValkeyStore, WarmingMemoryStore,
-    context::{MatchContext, RawEvent},
+    context::RawEvent,
     metrics,
     nats,
     nats_ingest::{self, NatsIngestOpts},
     orchestrate,
 };
 use routers_shard::{Geohash, GeohashStrategy};
-use tokio::sync::mpsc;
 
 type S = Geohash;
 
-async fn make_source(
+fn make_source(
     js: async_nats::jetstream::Context,
-) -> anyhow::Result<futures::stream::BoxStream<'static, RawEvent>> {
-    Ok(Box::pin(nats_ingest::nats_source(js, NatsIngestOpts::from_env()).await?))
-}
-
-fn make_sink(
-    tx: mpsc::Sender<MatchContext<S>>,
-) -> impl futures::Sink<MatchContext<S>, Error = anyhow::Error> {
-    futures::sink::unfold(tx, |tx, ctx| async move {
-        tx.send(ctx)
-            .await
-            .map_err(|_| anyhow::anyhow!("NATS publisher task closed"))?;
-        Ok::<_, anyhow::Error>(tx)
-    })
+    opts: NatsIngestOpts,
+) -> futures::stream::BoxStream<'static, RawEvent> {
+    Box::pin(nats_ingest::nats_source(js, opts))
 }
 
 #[tokio::main]
@@ -47,10 +36,6 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or_else(|_| "0.0.0.0:9091".into())
         .parse()
         .expect("METRICS_ADDR must be a valid socket address");
-    let nats_batch_size: usize = std::env::var("NATS_BATCH_SIZE")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(256);
     let history_max_points: usize = std::env::var("HISTORY_MAX_POINTS")
         .ok()
         .and_then(|s| s.parse().ok())
@@ -64,6 +49,7 @@ async fn main() -> anyhow::Result<()> {
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(500);
+    let owned_shard: Option<String> = std::env::var("OWNED_SHARD").ok();
 
     let history_cfg = HistoryConfig {
         max_points: history_max_points,
@@ -77,55 +63,50 @@ async fn main() -> anyhow::Result<()> {
     let nc = async_nats::connect(&nats_url)
         .await
         .map_err(|e| anyhow::anyhow!("NATS connect: {e}"))?;
-    let js = async_nats::jetstream::new(nc);
+    let js = async_nats::jetstream::new(nc.clone());
 
-    nats::ensure_match_stream(&js)
-        .await
-        .map_err(|e| anyhow::anyhow!("NATS match stream setup: {e}"))?;
+    let mut ingest_opts = NatsIngestOpts::from_env();
+    if let Some(ref shard) = owned_shard {
+        ingest_opts.subject = format!("events.raw.{}", shard);
+        ingest_opts.consumer_name = format!("orchestrator.{}", shard);
+    }
 
-    let ingest_opts = NatsIngestOpts::from_env();
+    // Remove the legacy MATCH JetStream stream if it exists.
+    // Matching now uses core NATS publish/subscribe — JetStream is not needed
+    // and would intercept match.* subjects, silently swallowing all match requests.
+    let _ = js.delete_stream("MATCH").await;
+
     nats_ingest::ensure_events_stream(&js, &ingest_opts)
         .await
         .map_err(|e| anyhow::anyhow!("NATS events stream setup: {e}"))?;
-
-    // One batch_publisher per worker to avoid a shared-channel bottleneck.
-    let n_publishers = parallelism.max(1);
-    let mut txs: Vec<mpsc::Sender<MatchContext<S>>> = Vec::with_capacity(n_publishers);
-    for _ in 0..n_publishers {
-        let (tx, rx) = mpsc::channel::<MatchContext<S>>(2048);
-        tokio::spawn(nats::batch_publisher::<S>(js.clone(), rx, nats_batch_size));
-        txs.push(tx);
-    }
 
     match store_mode.as_str() {
         "memory" => {
             eprintln!(
                 "store: memory  parallelism=1  history_max_points={history_max_points}"
             );
-            let source = make_source(js).await?;
-            let tx = txs.remove(0);
-            orchestrate(source, make_sink(tx), MemoryStore::<S>::new(valkey_max_len), &strategy, &history_cfg).await
+            let source = make_source(js, ingest_opts);
+            let sink = nats::match_publish_sink::<S>(nc, "match".into());
+            orchestrate(source, sink, MemoryStore::<S>::new(valkey_max_len), &strategy, &history_cfg).await
         }
         _ => {
             eprintln!(
-                "store: warming ({valkey_url})  parallelism={parallelism}  history_max_points={history_max_points}  nats_batch={nats_batch_size}  valkey_max_len={valkey_max_len}"
+                "store: warming ({valkey_url})  parallelism={parallelism}  history_max_points={history_max_points}  valkey_max_len={valkey_max_len}"
             );
 
             if parallelism == 1 {
-                let source = make_source(js).await?;
+                let source = make_source(js, ingest_opts);
                 let valkey = ValkeyStore::connect(&valkey_url, valkey_max_len).await?;
                 let store = WarmingMemoryStore::new(valkey, valkey_max_len);
-                let tx = txs.remove(0);
-                orchestrate(source, make_sink(tx), store, &strategy, &history_cfg).await
+                let sink = nats::match_publish_sink::<S>(nc, "match".into());
+                orchestrate(source, sink, store, &strategy, &history_cfg).await
             } else {
                 let mut handles = vec![];
-                for (i, tx) in txs.into_iter().enumerate() {
-                    // All workers share the same NATS consumer name — the server
-                    // distributes pending messages across concurrent pull requests.
-                    let source = make_source(js.clone()).await?;
+                for i in 0..parallelism {
+                    let source = make_source(js.clone(), ingest_opts.clone());
                     let valkey = ValkeyStore::connect(&valkey_url, valkey_max_len).await?;
                     let store = WarmingMemoryStore::new(valkey, valkey_max_len);
-                    let sink = make_sink(tx);
+                    let sink = nats::match_publish_sink::<S>(nc.clone(), "match".into());
                     let strat = strategy.clone();
                     let hcfg = history_cfg.clone();
 

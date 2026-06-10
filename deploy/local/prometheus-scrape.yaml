@@ -6,16 +6,16 @@ metadata:
 stringData:
   scrape.yaml: |
     - job_name: routers-orchestrator
-      scrape_interval: 2s
+      scrape_interval: 1s
       kubernetes_sd_configs:
         - role: pod
           namespaces:
             names: [routers-dev]
       relabel_configs:
-        # Only scrape pods with app=orchestrator
+        # Scrape pods with app=orchestrator or app=orchestrator-shard
         - source_labels: [__meta_kubernetes_pod_label_app]
           action: keep
-          regex: orchestrator
+          regex: orchestrator(-shard)?
         # Build __address__ from pod IP + prometheus annotation port
         - source_labels: [__meta_kubernetes_pod_ip, __meta_kubernetes_pod_annotation_prometheus_io_port]
           separator: ":"
@@ -31,7 +31,7 @@ stringData:
           target_label: node
 
     - job_name: routers-matcher
-      scrape_interval: 2s
+      scrape_interval: 1s
       kubernetes_sd_configs:
         - role: pod
           namespaces:
