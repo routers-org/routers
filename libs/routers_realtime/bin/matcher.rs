@@ -12,8 +12,7 @@ use routers_realtime::{
 #[cfg(not(debug_assertions))]
 use routers_realtime::assignment::ShardAssignment;
 use routers_shard::{
-    FileFetcher, Geohash, GeohashStrategy, MultiShardNetwork,
-    ShardLoader, ShardingStrategy,
+    FileFetcher, Geohash, GeohashStrategy, Selection, SelectionMode, ShardLoader,
 };
 use std::sync::Arc;
 use std::str::FromStr;
@@ -93,11 +92,23 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
+    // OwnedAndPadded loads only the owned shard file. Cross-boundary nodes
+    // (within 1km of the cell edge) are baked into that file at shard-build
+    // time, so the runtime graph stays small but boundary edges remain
+    // resolvable. The selection's loaded set is always {owned}, so we use
+    // ShardedNetwork directly — wrapping it in MultiShardNetwork would
+    // duplicate `hash`, `graph`, and both RTrees, roughly doubling RAM
+    // for no functional benefit (ShardedNetwork already implements
+    // DataPlane + Scan + Route + Discovery).
+    let _selection = Selection::new(
+        &strategy,
+        shard,
+        SelectionMode::OwnedAndPadded { padding_distance: 1000.0 },
+    );
     let fetcher = FileFetcher::new(std::path::Path::new(&shard_dir));
     let mut loader = ShardLoader::<E, M, S, _, _>::new(fetcher, shard_filename);
 
-    let owned_arc = loader.load(&shard).await?;
-    let network = Arc::new(MultiShardNetwork::<E, M, S>::new(vec![owned_arc]));
+    let network = loader.load(&shard).await?;
     let m = metrics::matcher_global();
 
     log::info!("[matcher-{shard}] concurrency={concurrency} stub={stub}");

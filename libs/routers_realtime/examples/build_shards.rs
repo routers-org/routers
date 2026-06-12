@@ -58,7 +58,7 @@ fn main() {
     let mut skipped = 0usize;
     for cell in &cells {
         let path = out_dir.join(format!("{}.shard.rt", cell));
-        let selection = Selection::new(&strategy, *cell, SelectionMode::Owned);
+        let selection = Selection::new(&strategy, *cell, SelectionMode::OwnedAndPadded { padding_distance: 1000.0 });
         match ShardedNetwork::<OsmEntryId, OsmEdgeMetadata, Geohash>::from_source(&source, &strategy, &selection) {
             Ok(net) => {
                 if let Err(e) = net.save_to_file(&path) {
