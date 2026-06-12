@@ -84,11 +84,27 @@ where
     fn edges_in_box<'a>(
         &'a self,
         aabb: AABB<Point>,
-    ) -> Box<dyn Iterator<Item = &'a Edge<Node<E>>> + Send + 'a>
+    ) -> Box<dyn Iterator<Item = Edge<Node<E>>> + Send + 'a>
     where
         E: 'a,
     {
-        Box::new(self.index_edge.locate_in_envelope_intersecting(&aabb))
+        Box::new(
+            self.index_edge
+                .locate_in_envelope_intersecting(&aabb)
+                .filter_map(move |edge_ref| {
+                    let source = *self.hash.get(&edge_ref.source)?;
+                    let target = *self.hash.get(&edge_ref.target)?;
+                    let &(weight, id) =
+                        self.graph.edge_weight(edge_ref.source, edge_ref.target)?;
+                    Some(Edge {
+                        source,
+                        target,
+                        id: DirectionAwareEdgeId::new(Node::new(Point::new(0., 0.), id.index()))
+                            .with_direction(id.direction()),
+                        weight,
+                    })
+                }),
+        )
     }
 
     fn nodes_in_box<'a>(

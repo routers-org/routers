@@ -28,7 +28,7 @@ where
         &'a self,
         point: &'a Point,
         distance: f64,
-    ) -> Box<dyn Iterator<Item = (Point, &'a Edge<Node<E>>)> + Send + 'a>
+    ) -> Box<dyn Iterator<Item = (Point, Edge<Node<E>>)> + Send + 'a>
     where
         E: 'a,
     {

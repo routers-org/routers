@@ -32,8 +32,12 @@ where
     graph: GraphStructure<E>,
     hash: FxHashMap<E, Node<E>>,
 
+    /// Spatial index over all unique nodes across all shards.
     index: RTree<Node<E>>,
-    index_edge: RTree<Edge<Node<E>>>,
+
+    /// Slim spatial index over edges — see `ShardedNetwork::index_edge`
+    /// for rationale. Required for correct HMM candidate enumeration.
+    index_edge: RTree<crate::network::EdgeRef<E>>,
 }
 
 impl<E, M, S> MultiShardNetwork<E, M, S>
@@ -49,9 +53,6 @@ where
         let mut nodes_seen: FxHashSet<E> = FxHashSet::default();
         let mut nodes: Vec<Node<E>> = Vec::new();
 
-        let mut edges_seen: FxHashSet<(E, E, routers_network::Direction)> = FxHashSet::default();
-        let mut edges: Vec<Edge<Node<E>>> = Vec::new();
-
         for shard in &shards {
             for (id, node) in &shard.hash {
                 if nodes_seen.insert(*id) {
@@ -63,16 +64,20 @@ where
             for (src, dst, &(weight, edge_id)) in shard.graph.all_edges() {
                 graph.add_edge(src, dst, (weight, edge_id));
             }
-
-            for edge in shard.index_edge.iter() {
-                if edges_seen.insert((edge.source.id, edge.target.id, edge.id.direction())) {
-                    edges.push(*edge);
-                }
-            }
         }
 
-        let (index, index_edge) =
-            rayon::join(|| RTree::bulk_load(nodes), || RTree::bulk_load(edges));
+        let edges: Vec<crate::network::EdgeRef<E>> = graph
+            .all_edges()
+            .filter_map(|(s, t, _)| {
+                let src_pos = hash.get(&s)?.position;
+                let tgt_pos = hash.get(&t)?.position;
+                Some(crate::network::EdgeRef::new(s, t, src_pos, tgt_pos))
+            })
+            .collect();
+        let (index, index_edge) = rayon::join(
+            || RTree::bulk_load(nodes),
+            || RTree::bulk_load(edges),
+        );
 
         Self {
             shards,

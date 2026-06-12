@@ -31,6 +31,39 @@ use crate::strategy::{ShardId, ShardingStrategy};
 pub type GraphStructure<E> =
     DiGraphMap<E, (Weight, DirectionAwareEdgeId<E>), BuildHasherDefault<FxHasher>>;
 
+/// Slim spatial-index entry for edges. Holds just the endpoint ids and
+/// the cached AABB needed for rstar's envelope queries. Full
+/// `Edge<Node<E>>` values are materialised on demand from `hash` +
+/// `graph` lookups — ~3× smaller than storing fat edges in the RTree,
+/// which dominated runtime RAM at precision-4 shard sizes.
+#[derive(Clone, Copy, Debug)]
+pub struct EdgeRef<E: Entry> {
+    pub source: E,
+    pub target: E,
+    bbox_min: Point,
+    bbox_max: Point,
+}
+
+impl<E: Entry> EdgeRef<E> {
+    pub fn new(source: E, target: E, src_pos: Point, tgt_pos: Point) -> Self {
+        let (sx, sy) = src_pos.x_y();
+        let (tx, ty) = tgt_pos.x_y();
+        Self {
+            source,
+            target,
+            bbox_min: Point::new(sx.min(tx), sy.min(ty)),
+            bbox_max: Point::new(sx.max(tx), sy.max(ty)),
+        }
+    }
+}
+
+impl<E: Entry> rstar::RTreeObject for EdgeRef<E> {
+    type Envelope = AABB<Point>;
+    fn envelope(&self) -> Self::Envelope {
+        AABB::from_corners(self.bbox_min, self.bbox_max)
+    }
+}
+
 /// A data source from which a [`ShardedNetwork`] can be built.
 ///
 /// Implement this trait on any type that provides an iterable collection of
@@ -75,10 +108,17 @@ where
     pub hash: FxHashMap<E, Node<E>>,
     pub meta: FxHashMap<E, M>,
 
+    /// Spatial index over nodes.
     #[serde(skip)]
     pub index: RTree<Node<E>>,
+
+    /// Slim spatial index over edges — stores only ids + cached AABB,
+    /// not the fat `Edge<Node<E>>` value. We do still need an edge
+    /// RTree (an earlier attempt to derive edges from `index` +
+    /// adjacency missed any edge passing near a GPS point whose
+    /// endpoints fell outside the search box, and torched success rate).
     #[serde(skip)]
-    pub index_edge: RTree<Edge<Node<E>>>,
+    pub index_edge: RTree<EdgeRef<E>>,
 
     /// The shard this node has authority over.
     pub owned: S,
@@ -171,34 +211,21 @@ where
         Ok(net)
     }
 
-    /// Rebuild the spatial indices (`index` and `index_edge`) from the
-    /// `hash` and `graph` fields.
+    /// Rebuild the spatial indices from `hash` + `graph`.
     ///
-    /// The indices are intentionally not serialised — bulk-loading an
-    /// `RTree` from N items is O(N log N) and runs at hundreds of MB/s in
-    /// practice, which is faster than letting `postcard` decode a tree
-    /// structure that takes proportionally more bytes on disk. Call this
-    /// after deserialising a network in custom code paths;
-    /// [`from_cached`](Self::from_cached) does it for you.
+    /// Both the node RTree and the slim edge RTree are intentionally not
+    /// serialised — bulk-loading is O(N log N) at hundreds of MB/s,
+    /// faster than letting `postcard` decode tree structures that take
+    /// proportionally more bytes on disk.
     pub fn rebuild_indices(&mut self) {
-        // Bulk-loading the two `RTree`s is the dominant cost on cache hits
-        // (~350ms for a 9-shard Sydney load). The two trees are independent
-        // so we farm them out to `rayon::join` and pay one tree's worth of
-        // wall-clock time instead of the sum.
         let nodes: Vec<Node<E>> = self.hash.values().copied().collect();
-        let edges: Vec<Edge<Node<E>>> = self
+        let edges: Vec<EdgeRef<E>> = self
             .graph
             .all_edges()
-            .filter_map(|(s, t, &(weight, id))| {
-                let source = *self.hash.get(&s)?;
-                let target = *self.hash.get(&t)?;
-                Some(Edge {
-                    source,
-                    target,
-                    id: DirectionAwareEdgeId::new(Node::new(Point::new(0., 0.), id.index()))
-                        .with_direction(id.direction()),
-                    weight,
-                })
+            .filter_map(|(s, t, _)| {
+                let src_pos = self.hash.get(&s)?.position;
+                let tgt_pos = self.hash.get(&t)?.position;
+                Some(EdgeRef::new(s, t, src_pos, tgt_pos))
             })
             .collect();
         let (node_index, edge_index) =
@@ -333,11 +360,27 @@ where
     fn edges_in_box<'a>(
         &'a self,
         aabb: AABB<Point>,
-    ) -> Box<dyn Iterator<Item = &'a Edge<Node<E>>> + Send + 'a>
+    ) -> Box<dyn Iterator<Item = Edge<Node<E>>> + Send + 'a>
     where
         E: 'a,
     {
-        Box::new(self.index_edge.locate_in_envelope_intersecting(&aabb))
+        Box::new(
+            self.index_edge
+                .locate_in_envelope_intersecting(&aabb)
+                .filter_map(move |edge_ref| {
+                    let source = *self.hash.get(&edge_ref.source)?;
+                    let target = *self.hash.get(&edge_ref.target)?;
+                    let &(weight, id) =
+                        self.graph.edge_weight(edge_ref.source, edge_ref.target)?;
+                    Some(Edge {
+                        source,
+                        target,
+                        id: DirectionAwareEdgeId::new(Node::new(Point::new(0., 0.), id.index()))
+                            .with_direction(id.direction()),
+                        weight,
+                    })
+                }),
+        )
     }
 
     fn nodes_in_box<'a>(

@@ -343,11 +343,11 @@ impl Discovery<OsmEntryId> for OsmNetwork {
     fn edges_in_box<'a>(
         &'a self,
         aabb: AABB<Point>,
-    ) -> Box<dyn Iterator<Item = &'a Edge<Node<OsmEntryId>>> + Send + 'a>
+    ) -> Box<dyn Iterator<Item = Edge<Node<OsmEntryId>>> + Send + 'a>
     where
         OsmEntryId: 'a,
     {
-        Box::new(self.index_edge.locate_in_envelope_intersecting(&aabb))
+        Box::new(self.index_edge.locate_in_envelope_intersecting(&aabb).copied())
     }
 
     fn nodes_in_box<'a>(

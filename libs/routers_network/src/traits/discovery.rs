@@ -6,11 +6,16 @@ use rstar::AABB;
 use crate::{Edge, Entry, Node};
 
 pub trait Discovery<E: Entry> {
-    /// TODO: Document
+    /// Returns an iterator of *owned* `Edge<Node<E>>` values whose endpoints
+    /// fall within the given AABB. Owned (not borrowed) so implementations
+    /// can materialise edges on the fly from sparser representations — this
+    /// avoids holding a redundant `RTree<Edge<Node<E>>>` alongside the
+    /// node-RTree and graph adjacency, which roughly halves runtime RAM at
+    /// the cost of two hash lookups per result.
     fn edges_in_box<'a>(
         &'a self,
         aabb: AABB<Point>,
-    ) -> Box<dyn Iterator<Item = &'a Edge<Node<E>>> + Send + 'a>
+    ) -> Box<dyn Iterator<Item = Edge<Node<E>>> + Send + 'a>
     where
         E: 'a;
 
@@ -44,21 +49,13 @@ pub trait Discovery<E: Entry> {
         self.nodes_in_box(aabb)
     }
 
-    /// A function which returns an unsorted iterator of [`FatEdge`] references which are within
-    /// the provided `distance` of the input [point](Point).
-    ///
-    /// ### Note
-    /// This function implements a square-scan.
-    ///
-    /// Therefore, it bounds the search to be within a square-radius of the origin. Therefore,
-    /// it may not select every node within the supplied distance, or it may select more nodes.
-    /// This resolution method is however significantly cheaper than a circular scan, so a wider
-    /// or shorter search radius may be required in some use-cases.
+    /// Owned-iterator counterpart to [`Discovery::edges_in_box`]. See its
+    /// doc-comment for why this yields by-value rather than by-reference.
     fn edges_at_distance<'a>(
         &'a self,
         point: &Point,
         distance: f64,
-    ) -> Box<dyn Iterator<Item = &'a Edge<Node<E>>> + Send + 'a>
+    ) -> Box<dyn Iterator<Item = Edge<Node<E>>> + Send + 'a>
     where
         E: 'a,
     {
@@ -80,7 +77,7 @@ where
     fn edges_in_box<'a>(
         &'a self,
         aabb: AABB<Point>,
-    ) -> Box<dyn Iterator<Item = &'a Edge<Node<E>>> + Send + 'a>
+    ) -> Box<dyn Iterator<Item = Edge<Node<E>>> + Send + 'a>
     where
         E: 'a,
     {
