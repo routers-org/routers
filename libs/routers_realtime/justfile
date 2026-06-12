@@ -5,7 +5,7 @@ nats_url := "nats://127.0.0.1:4222"
 valkey_url := "redis://127.0.0.1:6379"
 
 # bench-stub defaults — override with: just bench_pipeline=512 bench-stub
-bench_shards := "r3grm,r3grh,r3grq,r3grw,r3grk,r3grj,r3grs,r3grt"
+bench_shards := "r3gr,r3gq,r3gw,r3gx,r652,r658"
 bench_pipeline := "256"
 bench_loops := "3"
 

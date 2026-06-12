@@ -12,7 +12,7 @@ use routers_realtime::{
 #[cfg(not(debug_assertions))]
 use routers_realtime::assignment::ShardAssignment;
 use routers_shard::{
-    FileFetcher, Geohash, GeohashStrategy, MultiShardNetwork, Selection, SelectionMode,
+    FileFetcher, Geohash, GeohashStrategy, MultiShardNetwork,
     ShardLoader, ShardingStrategy,
 };
 use std::sync::Arc;
@@ -52,7 +52,7 @@ async fn main() -> anyhow::Result<()> {
     let shard_precision: u8 = std::env::var("SHARD_PRECISION")
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or(5);
+        .unwrap_or(4);
     let metrics_addr: std::net::SocketAddr = std::env::var("METRICS_ADDR")
         .unwrap_or_else(|_| "0.0.0.0:9092".into())
         .parse()
@@ -93,25 +93,11 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    let selection = Selection::new(&strategy, shard, SelectionMode::OwnedAndNeighbours);
     let fetcher = FileFetcher::new(std::path::Path::new(&shard_dir));
     let mut loader = ShardLoader::<E, M, S, _, _>::new(fetcher, shard_filename);
 
     let owned_arc = loader.load(&shard).await?;
-    let mut shards = vec![owned_arc];
-
-    for neighbour in strategy.neighbours(&shard) {
-        if selection.contains(&neighbour) {
-            match loader.load(&neighbour).await {
-                Ok(net) => shards.push(net),
-                Err(e) => {
-                    log::warn!("neighbour shard {} unavailable: {}", neighbour, e);
-                }
-            }
-        }
-    }
-
-    let network = Arc::new(MultiShardNetwork::<E, M, S>::new(shards));
+    let network = Arc::new(MultiShardNetwork::<E, M, S>::new(vec![owned_arc]));
     let m = metrics::matcher_global();
 
     log::info!("[matcher-{shard}] concurrency={concurrency} stub={stub}");

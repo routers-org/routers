@@ -44,7 +44,7 @@ fn main() {
     ).expect("load PBF");
     eprintln!("  {} nodes, {} edges", network.hash.len(), network.graph.edge_count());
 
-    let strategy = GeohashStrategy::with_precision(5);
+    let strategy = GeohashStrategy::with_precision(4);
     let source = OsmSource(&network);
 
     // Collect all unique geohash cells that contain at least one node.
@@ -52,7 +52,7 @@ fn main() {
     for node in network.hash.values() {
         cells.insert(strategy.locate(node.position));
     }
-    eprintln!("  {} unique geohash cells (precision=5)", cells.len());
+    eprintln!("  {} unique geohash cells (precision=4)", cells.len());
 
     let mut built = 0usize;
     let mut skipped = 0usize;

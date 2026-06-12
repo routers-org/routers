@@ -24,7 +24,7 @@ impl Plugin for ShardPlugin {
     ) {
         let painter = ui.painter();
         let viewport = ui.clip_rect();
-        let strategy = GeohashStrategy::with_precision(5);
+        let strategy = GeohashStrategy::with_precision(4);
 
         // Inactive shard colours.
         let fill_inactive   = Color32::from_rgba_unmultiplied(100, 120, 160, 18);

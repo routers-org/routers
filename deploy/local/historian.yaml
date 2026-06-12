@@ -27,7 +27,7 @@ spec:
             - name: VALKEY_URL
               value: "redis://valkey-primary.routers-dev.svc.cluster.local:6379"
             - name: SHARD_PRECISION
-              value: "5"
+              value: "4"
             - name: VALKEY_BATCH
               value: "64"
             - name: VALKEY_BATCH_TIMEOUT_MS

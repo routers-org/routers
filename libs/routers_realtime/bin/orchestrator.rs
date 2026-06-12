@@ -27,7 +27,7 @@ async fn main() -> anyhow::Result<()> {
     let shard_precision: u8 = std::env::var("SHARD_PRECISION")
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or(5);
+        .unwrap_or(4);
     let parallelism: usize = std::env::var("PARALLELISM")
         .ok()
         .and_then(|s| s.parse().ok())

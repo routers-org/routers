@@ -144,9 +144,9 @@ spec:
           resources:
             requests:
               cpu: 100m
-              memory: 256Mi
+              memory: 512Mi
             limits:
-              memory: 2Gi
+              memory: 8Gi
           volumeMounts:
             - mountPath: /shards
               name: shards
@@ -294,7 +294,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let shard_precision: u8 = std::env::var("SHARD_PRECISION")
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or(5);
+        .unwrap_or(4);
     let strategy = GeohashStrategy::with_precision(shard_precision);
 
     let active_shards: HashSet<Geohash> = std::env::var("ACTIVE_SHARDS")

@@ -32,19 +32,19 @@ spec:
             - name: SHARD_DIR
               value: "/shards"
             - name: SHARD_PRECISION
-              value: "5"
+              value: "4"
             - name: METRICS_ADDR
               value: "0.0.0.0:9092"
             - name: OWNED_SHARD
-              value: "r3grm"
+              value: "r3gr"
           volumeMounts:
             - name: shards
               mountPath: /shards
               readOnly: true
           resources:
             requests:
-              cpu: 2000m
-              memory: 2Gi
+              cpu: 100m
+              memory: 512Mi
             limits:
               memory: 8Gi
       volumes:
