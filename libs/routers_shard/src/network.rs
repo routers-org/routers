@@ -123,9 +123,16 @@ where
         // edges) without a second source scan.
         let all_nodes: FxHashMap<E, Point> = source.nodes().collect();
 
+        // Admit a node if either (a) its shard is in the loaded set, or
+        // (b) its position falls within the optional padded buffer. The
+        // padding path lets `OwnedAndPadded` pull in cross-boundary
+        // road-network data without materialising whole neighbour shards.
         for (&id, &pos) in &all_nodes {
-            let shard = strategy.locate(pos);
-            if selection.contains(&shard) {
+            let admit = selection.padding_contains(pos) || {
+                let shard = strategy.locate(pos);
+                selection.contains(&shard)
+            };
+            if admit {
                 hash.insert(id, Node::new(pos, id));
                 graph.add_node(id);
             }
