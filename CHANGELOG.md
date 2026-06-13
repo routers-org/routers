@@ -2,6 +2,25 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.6] - 2026-06-13
+
+### 🚀 Features
+
+- Upgrade to `buffa/0.6.0` ([#145](https://github.com/routers-org/routers/pull/145))
+- WASM Support ([#147](https://github.com/routers-org/routers/pull/147))
+- Allow Compiling with `--all-features` ([#149](https://github.com/routers-org/routers/pull/149))
+- Sharding Implementation ([#148](https://github.com/routers-org/routers/pull/148))
+- Employ Component Model for Viewer Application ([#150](https://github.com/routers-org/routers/pull/150))
+
+### 🐛 Bug Fixes
+
+- Cleanup of Angular Complexity Calculation ([#142](https://github.com/routers-org/routers/pull/142))
+- Consider Intra-Transitions Costs ([#141](https://github.com/routers-org/routers/pull/141))
+- Double-Copying and Padded Strategy in Sharding ([#151](https://github.com/routers-org/routers/pull/151))
+- Remove `tonic` Dependency ([#152](https://github.com/routers-org/routers/pull/152))
+
+
+
 ## [0.2.5] - 2026-05-18
 
 ### 🚀 Features
