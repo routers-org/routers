@@ -31,7 +31,7 @@ pub struct HistoryConfig {
 impl Default for HistoryConfig {
     fn default() -> Self {
         Self {
-            max_points: 10,
+            max_points: 5,
             max_age_ms: 5 * 60 * 1000,
         }
     }

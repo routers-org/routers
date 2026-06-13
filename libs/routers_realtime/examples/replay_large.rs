@@ -198,7 +198,7 @@ spec:
             - name: PARALLELISM
               value: \"1\"
             - name: HISTORY_MAX_POINTS
-              value: \"10\"
+              value: \"5\"
             - name: HISTORY_MAX_AGE_SECS
               value: \"300\"
             - name: STORE

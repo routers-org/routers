@@ -13,6 +13,10 @@ pub struct MatcherMetrics {
     pub matches_success: IntCounter,
     pub matches_no_candidate: IntCounter,
     pub matches_error: IntCounter,
+    // Phase 1 streaming-match counters.
+    pub match_step_warm: IntCounter,
+    pub match_step_cold: IntCounter,
+    pub state_cache_size: Gauge,
     registry: Registry,
 }
 
@@ -66,6 +70,23 @@ pub fn matcher_global() -> &'static MatcherMetrics {
                 "routers_matches_total_error",
                 "Matches that returned an algorithm error"
             ),
+            match_step_warm: counter!(
+                "routers_match_step_warm_total",
+                "Warm steps: per-vehicle state was found and used as anchor"
+            ),
+            match_step_cold: counter!(
+                "routers_match_step_cold_total",
+                "Cold starts: no per-vehicle state, full history-based solve"
+            ),
+            state_cache_size: {
+                let g = Gauge::with_opts(opts!(
+                    "routers_match_state_cache_size",
+                    "Number of vehicles currently in the streaming state cache"
+                ))
+                .unwrap();
+                registry.register(Box::new(g.clone())).unwrap();
+                g
+            },
             registry,
         }
     })

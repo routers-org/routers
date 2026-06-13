@@ -1,6 +1,8 @@
+use dashmap::DashMap;
 use futures::{SinkExt, StreamExt};
-use geo::{LineString, Point};
-use routers::transition::r#match::MatchOptions;
+use geo::{Distance, Haversine, LineString, Point};
+use routers::transition::r#match::{Anchor, MatchOptions};
+use routers::transition::streaming::MatchState;
 use routers::transition::{MatchError, RoutedPath};
 use routers::Match;
 use routers_codec::osm::{OsmEdgeMetadata, OsmEntryId};
@@ -15,8 +17,27 @@ use routers_shard::{
     FileFetcher, Geohash, GeohashStrategy, Selection, SelectionMode, ShardLoader,
 };
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::str::FromStr;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+/// Phase 1A profiling: sample matcher-side timing breakdown every Nth
+/// event. Set `MATCH_PROFILE_SAMPLE_N=50` to log 1 in 50 events.
+/// Default 0 = disabled, no overhead beyond a relaxed atomic.
+static MATCH_PROFILE_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+fn match_profile_sample_n() -> u64 {
+    static CACHED: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *CACHED.get_or_init(|| {
+        std::env::var("MATCH_PROFILE_SAMPLE_N")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0)
+    })
+}
+
+/// State cache type: vehicle_id → MatchState. Anchored 1-best warm step.
+type StateCache = Arc<DashMap<String, MatchState>>;
 
 type E = OsmEntryId;
 type M = OsmEdgeMetadata;
@@ -29,6 +50,8 @@ type SolveResult = (
     Result<RoutedPath<E, M>, MatchError>,
     f64,
     Instant,
+    bool,    // was_warm — true if anchor-based warm step was used
+    Instant, // t_spawn_at — Instant captured just before spawn_blocking; used to derive setup_ms / post_ms
 );
 
 fn shard_filename(key: &Geohash) -> String {
@@ -67,6 +90,20 @@ async fn main() -> anyhow::Result<()> {
     // Stub mode: skip HMM entirely and echo back the raw coord as a successful match.
     // Use MATCH_STUB=1 to measure pure pipeline overhead without any compute cost.
     let stub = std::env::var("MATCH_STUB").is_ok();
+    // Phase 1 streaming-match: when on, the matcher caches each vehicle's
+    // last matched coord and feeds it as MatchOptions::anchor on the next
+    // event, reducing the trellis from 6 layers to 2. 1-best (no multi-
+    // hypothesis frontier preservation). Off by default — must be opted
+    // into per pod via MATCH_STATEFUL=1.
+    let stateful = std::env::var("MATCH_STATEFUL").is_ok();
+    // Eviction TTL: vehicles whose `last_event_ms` is older than this on
+    // the next event tick are dropped from the cache (we then cold-start
+    // them). Aligned with HISTORY_MAX_AGE_SECS per the design doc.
+    let state_ttl_ms: u64 = std::env::var("MATCH_STATE_TTL_SECS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(1800)
+        * 1000;
 
     tokio::spawn(metrics::serve_matcher(metrics_addr));
 
@@ -111,7 +148,29 @@ async fn main() -> anyhow::Result<()> {
     let network = loader.load(&shard).await?;
     let m = metrics::matcher_global();
 
-    log::info!("[matcher-{shard}] concurrency={concurrency} stub={stub}");
+    // Per-vehicle state cache for streaming-match. When `stateful` is
+    // false this stays empty and is never read — zero overhead.
+    let state_cache: StateCache = Arc::new(DashMap::with_capacity(if stateful { 16_384 } else { 0 }));
+    log::info!("[matcher-{shard}] concurrency={concurrency} stub={stub} stateful={stateful}");
+
+    // Background eviction + gauge updater. Scans the cache every 60s
+    // and drops entries whose `last_event_ms` is older than the TTL.
+    // No-op while `state_cache` is empty (stateful=false case).
+    if stateful {
+        let evict_cache = Arc::clone(&state_cache);
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(Duration::from_secs(60));
+            tick.tick().await; // skip first immediate tick
+            loop {
+                tick.tick().await;
+                let cutoff = now_ms().saturating_sub(state_ttl_ms);
+                evict_cache.retain(|_, s| s.last_event_ms >= cutoff);
+                metrics::matcher_global()
+                    .state_cache_size
+                    .set(evict_cache.len() as f64);
+            }
+        });
+    }
 
     let mut connect_backoff = Duration::from_secs(1);
 
@@ -162,7 +221,7 @@ async fn main() -> anyhow::Result<()> {
 
                 // Drain a completed solve and publish its result.
                 Some(task_result) = join_set.join_next(), if !join_set.is_empty() => {
-                    let (vehicle_id, resolved_at_ms, current_coord, debug_pts, match_result, solve_ms, t_delivery) =
+                    let (vehicle_id, resolved_at_ms, current_coord, debug_pts, match_result, solve_ms, t_delivery, was_warm, t_spawn_at) =
                         match task_result {
                             Ok(r) => r,
                             Err(e) => {
@@ -172,12 +231,14 @@ async fn main() -> anyhow::Result<()> {
                         };
 
                     m.solve_latency_ms.observe(solve_ms);
+                    let setup_ms = (t_spawn_at - t_delivery).as_secs_f64() * 1000.0;
+                    let t_post_start = Instant::now();
 
                     match match_result {
                         Ok(path) if path.discretized.elements.is_empty() => {
                             m.matches_no_candidate.inc();
                             let result = MatchResult {
-                                vehicle_id,
+                                vehicle_id: vehicle_id.clone(),
                                 resolved_at_ms,
                                 matched_at_ms: now_ms(),
                                 coord: current_coord,
@@ -191,12 +252,34 @@ async fn main() -> anyhow::Result<()> {
                         Ok(path) => {
                             m.matches_success.inc();
 
-                            if let Some(last_el) = path.discretized.elements.last() {
+                            let snapped_coord = path
+                                .discretized
+                                .elements
+                                .last()
+                                .map(|el| Point::from(el.point));
+
+                            if let Some(snapped) = snapped_coord {
+                                // Write back to state cache (stateful mode
+                                // only — DashMap insert is O(1) amortised).
+                                // Last-writer-by-timestamp: only commit if
+                                // our resolved_at_ms is the newest seen.
+                                if stateful {
+                                    state_cache
+                                        .entry(vehicle_id.clone())
+                                        .and_modify(|s| {
+                                            if resolved_at_ms > s.last_event_ms {
+                                                s.last_matched = snapped;
+                                                s.last_event_ms = resolved_at_ms;
+                                            }
+                                        })
+                                        .or_insert_with(|| MatchState::new(snapped, resolved_at_ms));
+                                }
+
                                 let result = MatchResult {
                                     vehicle_id: vehicle_id.clone(),
                                     resolved_at_ms,
                                     matched_at_ms: now_ms(),
-                                    coord: Point::from(last_el.point),
+                                    coord: snapped,
                                     outcome: MatchOutcome::Success,
                                 };
                                 if let Err(e) = result_sink.send(result).await {
@@ -222,17 +305,39 @@ async fn main() -> anyhow::Result<()> {
                         }
                         Err(e) => {
                             eprintln!(
-                                "match failed for vehicle {}: {e:?} | points={} linestring=[{}]",
+                                "match failed for vehicle {}: {e:?} | points={} warm={} linestring=[{}]",
                                 vehicle_id,
                                 debug_pts.len(),
+                                was_warm,
                                 debug_pts.join(",")
                             );
                             m.matches_error.inc();
+                            // Drop stale state on error so the next event
+                            // for this vehicle cold-starts with fresh history.
+                            if stateful && was_warm {
+                                state_cache.remove(&vehicle_id);
+                            }
                         }
                     }
 
-                    m.match_latency_ms
-                        .observe(t_delivery.elapsed().as_secs_f64() * 1000.0);
+                    let total_ms = t_delivery.elapsed().as_secs_f64() * 1000.0;
+                    m.match_latency_ms.observe(total_ms);
+
+                    // Sampled per-event timeline breakdown. setup_ms is
+                    // matcher-binary overhead (decode + sanity + state
+                    // lookup + linestring build + tokio dispatch hop).
+                    // solve_ms is the solver wall-clock. post_ms is the
+                    // publish + state writeback path. total_ms is
+                    // delivery → publish complete.
+                    let sample_n = match_profile_sample_n();
+                    if sample_n > 0 && MATCH_PROFILE_COUNTER.fetch_add(1, Ordering::Relaxed) % sample_n == 0 {
+                        let post_ms = t_post_start.elapsed().as_secs_f64() * 1000.0;
+                        log::info!(
+                            target: "match_profile",
+                            "total={:.2}ms setup={:.2}ms solve={:.2}ms post={:.2}ms warm={} vid={}",
+                            total_ms, setup_ms, solve_ms, post_ms, was_warm, vehicle_id,
+                        );
+                    }
                 }
 
                 // Accept the next message when below capacity.
@@ -277,13 +382,50 @@ async fn main() -> anyhow::Result<()> {
                         continue;
                     }
 
-                    let coords: Vec<geo::Coord> = ctx
+                    let points: Vec<Point> = ctx
                         .history
                         .iter()
                         .chain(std::iter::once(&ctx.current))
-                        .map(|p| p.coord.into())
+                        .map(|p| p.coord)
                         .collect();
-                    let linestring = LineString(coords);
+
+                    // Sanity-guard pathological inputs before they hog a
+                    // concurrency slot. A single GPS jump > 5km is almost
+                    // always bad data (vehicle teleport, sensor reset).
+                    // Total length > 50km on a window of ≤11 points implies
+                    // we'd be matching across an absurd geographic span and
+                    // the HMM cost will blow up — fail fast as a soft error.
+                    const MAX_SEGMENT_METERS: f64 = 5_000.0;
+                    const MAX_TOTAL_METERS: f64 = 50_000.0;
+                    let (max_gap, total_len) = points
+                        .windows(2)
+                        .map(|w| Haversine.distance(w[0], w[1]))
+                        .fold((0.0_f64, 0.0_f64), |(mx, sum), d| (mx.max(d), sum + d));
+                    if max_gap > MAX_SEGMENT_METERS || total_len > MAX_TOTAL_METERS {
+                        log::warn!(
+                            "skipping pathological trip vehicle={} max_gap={:.0}m total={:.0}m points={}",
+                            ctx.vehicle_id,
+                            max_gap,
+                            total_len,
+                            points.len(),
+                        );
+                        m.matches_error.inc();
+                        let result = MatchResult {
+                            vehicle_id: ctx.vehicle_id,
+                            resolved_at_ms: ctx.resolved_at_ms,
+                            matched_at_ms: now_ms(),
+                            coord: ctx.current.coord,
+                            outcome: MatchOutcome::Error,
+                        };
+                        if let Err(e) = result_sink.send(result).await {
+                            eprintln!("[matcher-{shard}] error publish: {e}, reconnecting");
+                            continue 'reconnect;
+                        }
+                        m.match_latency_ms
+                            .observe(t_delivery.elapsed().as_secs_f64() * 1000.0);
+                        continue;
+                    }
+
                     let debug_pts: Vec<String> = ctx
                         .history
                         .iter()
@@ -298,17 +440,70 @@ async fn main() -> anyhow::Result<()> {
                         })
                         .collect();
 
+                    // Decide warm vs cold: if we have non-stale state for
+                    // this vehicle, build a 2-point linestring `[current]`
+                    // with anchor=prev.last_matched; otherwise cold-start
+                    // with the full 6-point history-based linestring.
+                    let now_ms_local = now_ms();
+                    let warm_anchor: Option<Anchor> = if stateful {
+                        state_cache.get(&ctx.vehicle_id).and_then(|s| {
+                            if now_ms_local.saturating_sub(s.last_event_ms) <= state_ttl_ms
+                                && ctx.resolved_at_ms > s.last_event_ms
+                            {
+                                Some(Anchor { coord: s.last_matched.into() })
+                            } else {
+                                None
+                            }
+                        })
+                    } else {
+                        None
+                    };
+
+                    let (linestring, was_warm) = if let Some(anchor) = warm_anchor {
+                        // Warm step: only the current GPS point in the
+                        // linestring — `r#match` will prepend the anchor.
+                        m.match_step_warm.inc();
+                        let ls = LineString(vec![ctx.current.coord.into()]);
+                        // Stash anchor for the closure below.
+                        let _ = anchor; // anchor consumed via MatchOptions below
+                        (ls, true)
+                    } else {
+                        m.match_step_cold.inc();
+                        (LineString(points.iter().map(|p| (*p).into()).collect()), false)
+                    };
+
                     let vehicle_id = ctx.vehicle_id.clone();
                     let resolved_at_ms = ctx.resolved_at_ms;
                     let current_coord = ctx.current.coord;
                     let network_clone = Arc::clone(&network);
+                    let anchor_for_solve = warm_anchor;
+
+                    // Captured *before* spawn_blocking dispatches the
+                    // task. Setup time = t_spawn_at - t_delivery. We
+                    // need this on the result side to separate
+                    // matcher-binary overhead (decode, sanity, state
+                    // lookup, linestring build, dispatch hop) from the
+                    // actual solver work.
+                    let t_spawn_at = Instant::now();
 
                     join_set.spawn_blocking(move || {
-                        let opts = MatchOptions::<E, M, _>::default();
+                        let opts = MatchOptions::<E, M, _>::default()
+                            .with_anchor(anchor_for_solve);
                         let t_solve = Instant::now();
                         let result = network_clone.r#match(linestring, opts);
                         let solve_ms = t_solve.elapsed().as_secs_f64() * 1000.0;
-                        (vehicle_id, resolved_at_ms, current_coord, debug_pts, result, solve_ms, t_delivery)
+                        // Surface slow solves so we can correlate them
+                        // with vehicle traces if the p99 starts climbing again.
+                        if solve_ms > 200.0 {
+                            log::warn!(
+                                "slow solve {:.0}ms vehicle={} points={} warm={}",
+                                solve_ms,
+                                vehicle_id,
+                                debug_pts.len(),
+                                was_warm,
+                            );
+                        }
+                        (vehicle_id, resolved_at_ms, current_coord, debug_pts, result, solve_ms, t_delivery, was_warm, t_spawn_at)
                     });
                 }
             }

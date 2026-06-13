@@ -39,7 +39,7 @@ async fn main() -> anyhow::Result<()> {
     let history_max_points: usize = std::env::var("HISTORY_MAX_POINTS")
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or(50);
+        .unwrap_or(5);
     let history_max_age_ms: u64 = std::env::var("HISTORY_MAX_AGE_SECS")
         .ok()
         .and_then(|s| s.parse::<u64>().ok())

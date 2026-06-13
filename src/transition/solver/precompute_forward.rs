@@ -1,4 +1,11 @@
-use std::{marker::PhantomData, sync::Arc};
+use std::{
+    marker::PhantomData,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
+    time::Instant,
+};
 
 use crate::transition::*;
 
@@ -13,6 +20,32 @@ use measure_time::debug_time;
 use pathfinding::num_traits::Zero;
 use pathfinding::prelude::*;
 use routers_network::{Entry, Metadata, Network};
+
+/// Phase-0 profiling: log per-stage solve timings every Nth call.
+/// Activated by setting `SOLVER_PROFILE_SAMPLE_N` env to a positive int
+/// (e.g. `100` for one log line per 100 solves). Default 0 = off, no
+/// overhead in the hot path beyond a single relaxed atomic increment.
+static SOLVE_PROFILE_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+fn solve_profile_sample_n() -> u64 {
+    static CACHED: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *CACHED.get_or_init(|| {
+        std::env::var("SOLVER_PROFILE_SAMPLE_N")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0)
+    })
+}
+
+/// Phase-0 profiling: switch the outer layer iter from parallel to serial
+/// so we can time each layer-pair's reach work separately. The *inner*
+/// per-candidate iter stays parallel — that's where the speedup actually
+/// lives (10 candidates/layer vs 5 layers, so inner parallelism dominates).
+/// Off by default, no impact on prod code path.
+fn solve_profile_per_layer() -> bool {
+    static CACHED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *CACHED.get_or_init(|| std::env::var("SOLVER_PROFILE_PER_LAYER").is_ok())
+}
 
 /// A Upper-Bounded Dijkstra (UBD) algorithm.
 ///
@@ -196,20 +229,22 @@ where
         info!("Solving: Start={start:?}. End={end:?}. ");
         let context = transition.context(runtime);
 
+        let t_solve_start = Instant::now();
+        let n_layers = transition.layers.layers.len();
+        let mut per_layer_ms: Vec<f64> = Vec::new();
+
         // Pre-generate KV pair
-        let mut pair = {
-            debug_time!("generate transition graph");
-
-            transition
-                .layers
-                .layers
-                .par_iter()
-                .flat_map(|layer| {
-                    // objectively O(n^2) / O(n) isn't going to scale; we need something more efficient...
-                    // we need a way to do a multicast N:N from all in layer N to all in layer N+1
-                    layer.nodes.par_iter().map(|source| {
+        let t_gen = Instant::now();
+        let mut pair: FxHashMap<CandidateId, Vec<(CandidateId, CandidateEdge)>> = if solve_profile_per_layer() {
+            // Serial outer loop for per-layer attribution; inner stays parallel.
+            let mut acc: FxHashMap<CandidateId, Vec<(CandidateId, CandidateEdge)>> = FxHashMap::default();
+            for layer in &transition.layers.layers {
+                let t_layer = Instant::now();
+                let layer_entries: Vec<(CandidateId, Vec<(CandidateId, CandidateEdge)>)> = layer
+                    .nodes
+                    .par_iter()
+                    .map(|source| {
                         let found = self.reach(&transition, &context, source);
-
                         let some = found
                             .into_iter()
                             .map(|(mut reachable, edge)| {
@@ -217,19 +252,49 @@ where
                                 {
                                     reachable.cost = edge.weight;
                                 }
-
                                 self.reachable_hash
                                     .insert(reachable.hash(), reachable.clone())
                                     .expect("hash collision, must insert correctly.");
                                 (reachable.target, edge)
                             })
                             .collect::<Vec<_>>();
-
+                        (*source, some)
+                    })
+                    .collect();
+                per_layer_ms.push(t_layer.elapsed().as_secs_f64() * 1000.0);
+                for (s, e) in layer_entries {
+                    acc.insert(s, e);
+                }
+            }
+            acc
+        } else {
+            debug_time!("generate transition graph");
+            transition
+                .layers
+                .layers
+                .par_iter()
+                .flat_map(|layer| {
+                    layer.nodes.par_iter().map(|source| {
+                        let found = self.reach(&transition, &context, source);
+                        let some = found
+                            .into_iter()
+                            .map(|(mut reachable, edge)| {
+                                #[cfg(debug_assertions)]
+                                {
+                                    reachable.cost = edge.weight;
+                                }
+                                self.reachable_hash
+                                    .insert(reachable.hash(), reachable.clone())
+                                    .expect("hash collision, must insert correctly.");
+                                (reachable.target, edge)
+                            })
+                            .collect::<Vec<_>>();
                         (*source, some)
                     })
                 })
                 .collect::<FxHashMap<CandidateId, Vec<(CandidateId, CandidateEdge)>>>()
         };
+        let gen_ms = t_gen.elapsed().as_secs_f64() * 1000.0;
 
         pair.insert(
             start,
@@ -256,6 +321,7 @@ where
         //
         //       This behaviour can be implemented using the `AllForwardSolver` going forward.
 
+        let t_astar = Instant::now();
         let Some((path, cost)) = ({
             debug_time!("Solved transition graph");
 
@@ -268,6 +334,42 @@ where
         }) else {
             return Err(MatchError::CollapseFailure(CollapseError::NoPathFound));
         };
+        let astar_ms = t_astar.elapsed().as_secs_f64() * 1000.0;
+
+        // Phase-0 profiling: sampled per-stage timing log.
+        // `gen_ms` is the time the warm step would skip (all reach work for
+        // layer pairs 0..n-2). `astar_ms` is the part it still pays.
+        let sample_n = solve_profile_sample_n();
+        if sample_n > 0 {
+            let n = SOLVE_PROFILE_COUNTER.fetch_add(1, Ordering::Relaxed);
+            if n % sample_n == 0 {
+                let solve_ms = t_solve_start.elapsed().as_secs_f64() * 1000.0;
+                let gen_pct = if solve_ms > 0.0 {
+                    (gen_ms / solve_ms) * 100.0
+                } else {
+                    0.0
+                };
+                let astar_pct = if solve_ms > 0.0 {
+                    (astar_ms / solve_ms) * 100.0
+                } else {
+                    0.0
+                };
+                let per_layer_str = if per_layer_ms.is_empty() {
+                    String::new()
+                } else {
+                    let parts: Vec<String> = per_layer_ms
+                        .iter()
+                        .enumerate()
+                        .map(|(i, ms)| format!("L{i}={ms:.2}"))
+                        .collect();
+                    format!(" per_layer=[{}]", parts.join(","))
+                };
+                info!(
+                    target: "solver_profile",
+                    "solve_ms={solve_ms:.2} gen_ms={gen_ms:.2} ({gen_pct:.1}%) astar_ms={astar_ms:.2} ({astar_pct:.1}%) layers={n_layers}{per_layer_str}"
+                );
+            }
+        }
 
         info!("Total cost of solve: {}", cost.weight);
         let reached = path

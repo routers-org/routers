@@ -21,6 +21,12 @@ where
     pub(crate) map: HashMap<K, Arc<V>, FxBuildHasher>,
     pub(crate) metadata: Meta,
 
+    /// When `true`, `query` always recomputes via `Calculable::calculate`
+    /// and never reads from or writes to `map`. Lets callers eliminate the
+    /// `scc::HashMap` allocate/insert pressure when the upstream solver is
+    /// re-constructing the cache per solve (and thus never sees a hit).
+    pub(crate) bypass: bool,
+
     _marker: core::marker::PhantomData<M>,
     _marker2: core::marker::PhantomData<N>,
 }
@@ -87,6 +93,9 @@ where
     /// consumes an owned value of the key, [`K`], which is required for the
     /// call to the [`Calculable::calculate`] function.
     pub fn query(&self, ctx: &RoutingContext<K, M, N>, key: K) -> Arc<V> {
+        if self.0.bypass {
+            return Arc::new(self.calculate(ctx, key));
+        }
         if let Some(value) = self.0.map.get(&key) {
             return Arc::clone(value.get());
         }
@@ -96,6 +105,7 @@ where
 
         Arc::clone(&calculated)
     }
+
 }
 
 impl<K, V, M, N, Meta> Default for CacheMap<K, V, M, N, Meta>
@@ -110,6 +120,7 @@ where
         Self {
             map: HashMap::default(),
             metadata: Meta::default(),
+            bypass: false,
 
             _marker: core::marker::PhantomData,
             _marker2: core::marker::PhantomData,
@@ -245,6 +256,30 @@ mod predicate {
                     successors: SuccessorsCache::default(),
                     threshold_distance: threshold_cm,
                 },
+                bypass: false,
+                _marker: core::marker::PhantomData,
+                _marker2: core::marker::PhantomData,
+            }))
+        }
+
+        /// Returns a `PredicateCache` that disables both its own cache and
+        /// its underlying successors cache. Recomputes everything every call.
+        pub fn disabled() -> Self {
+            let successors = LockedMap(Arc::new(CacheMap {
+                map: HashMap::default(),
+                metadata: (),
+                bypass: true,
+                _marker: core::marker::PhantomData,
+                _marker2: core::marker::PhantomData,
+            }));
+            let inner = PredicateMetadata::<E, M, N> {
+                successors,
+                threshold_distance: DEFAULT_THRESHOLD,
+            };
+            LockedMap(Arc::new(CacheMap {
+                map: HashMap::default(),
+                metadata: inner,
+                bypass: true,
                 _marker: core::marker::PhantomData,
                 _marker2: core::marker::PhantomData,
             }))

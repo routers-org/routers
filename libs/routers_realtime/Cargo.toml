@@ -41,6 +41,9 @@ serde_json = "1.0.149"
 log = { workspace = true }
 env_logger = "0.11"
 
+# Per-vehicle state cache for streaming-match (Phase 1 of partial-state matching).
+dashmap = "6"
+
 [dev-dependencies]
 routers_fixtures = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

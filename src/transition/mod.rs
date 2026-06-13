@@ -10,6 +10,7 @@ pub mod layer;
 pub mod r#match;
 pub mod primitives;
 pub mod solver;
+pub mod streaming;
 pub mod trip;
 
 pub use r#match::DEFAULT_SEARCH_DISTANCE;
