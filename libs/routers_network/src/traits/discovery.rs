@@ -6,12 +6,7 @@ use rstar::AABB;
 use crate::{Edge, Entry, Node};
 
 pub trait Discovery<E: Entry> {
-    /// Returns an iterator of *owned* `Edge<Node<E>>` values whose endpoints
-    /// fall within the given AABB. Owned (not borrowed) so implementations
-    /// can materialise edges on the fly from sparser representations — this
-    /// avoids holding a redundant `RTree<Edge<Node<E>>>` alongside the
-    /// node-RTree and graph adjacency, which roughly halves runtime RAM at
-    /// the cost of two hash lookups per result.
+    /// Returns an iterator of edges which fall within the given AABB.
     fn edges_in_box<'a>(
         &'a self,
         aabb: AABB<Point>,
@@ -19,7 +14,7 @@ pub trait Discovery<E: Entry> {
     where
         E: 'a;
 
-    /// TODO: Document
+    /// Returns an iterator of nodes which fall within the given AABB.
     fn nodes_in_box<'a>(
         &'a self,
         aabb: AABB<Point>,
