@@ -1,10 +1,10 @@
 use dashmap::DashMap;
 use futures::{SinkExt, StreamExt};
 use geo::{Distance, Haversine, LineString, Point};
-use routers::transition::r#match::{Anchor, MatchOptions};
-use routers::transition::streaming::MatchState;
-use routers::transition::{MatchError, RoutedPath};
-use routers::Match;
+use routers::transition::r#match::DEFAULT_SEARCH_DISTANCE;
+use routers::transition::streaming::{MatchState, StreamingMatcher};
+use routers::transition::{CostingStrategies, MatchError, RoutedPath};
+use routers_network::traits::metadata::Metadata;
 use routers_codec::osm::{OsmEdgeMetadata, OsmEntryId};
 use routers_realtime::{
     context::{MatchContext, MatchOutcome, MatchResult, MatchRoute},
@@ -36,8 +36,10 @@ fn match_profile_sample_n() -> u64 {
     })
 }
 
-/// State cache type: vehicle_id → MatchState. Anchored 1-best warm step.
-type StateCache = Arc<DashMap<String, MatchState>>;
+/// Per-vehicle Viterbi frontier cache. `MatchState` is a multi-candidate
+/// column under Phase 1C — top-K pruning is applied at writeback when
+/// `MATCH_FRONTIER_K` is set.
+type StateCache = Arc<DashMap<String, MatchState<OsmEntryId>>>;
 
 type E = OsmEntryId;
 type M = OsmEdgeMetadata;
@@ -47,13 +49,22 @@ type SolveResult = (
     u64,
     geo::Point,
     Vec<String>,
-    Result<RoutedPath<E, M>, MatchError>,
+    Result<(RoutedPath<E, M>, MatchState<E>), MatchError>,
     f64,
     Instant,
-    bool,    // was_warm — true if anchor-based warm step was used
+    bool,    // was_warm — true if warm step over a saved frontier was used
     Instant, // t_spawn_at
-    u32,     // prev_cum_cost — Viterbi cumulative cost prior to this event (0 on cold-start)
 );
+
+fn frontier_k() -> Option<usize> {
+    static CACHED: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
+    *CACHED.get_or_init(|| {
+        std::env::var("MATCH_FRONTIER_K")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .filter(|&k: &usize| k > 0)
+    })
+}
 
 fn shard_filename(key: &Geohash) -> String {
     format!("{}.shard.rt", key)
@@ -231,7 +242,7 @@ async fn main() -> anyhow::Result<()> {
 
                 // Drain a completed solve and publish its result.
                 Some(task_result) = join_set.join_next(), if !join_set.is_empty() => {
-                    let (vehicle_id, resolved_at_ms, current_coord, debug_pts, match_result, solve_ms, t_delivery, was_warm, t_spawn_at, prev_cum_cost) =
+                    let (vehicle_id, resolved_at_ms, current_coord, debug_pts, match_result, solve_ms, t_delivery, was_warm, t_spawn_at) =
                         match task_result {
                             Ok(r) => r,
                             Err(e) => {
@@ -245,7 +256,7 @@ async fn main() -> anyhow::Result<()> {
                     let t_post_start = Instant::now();
 
                     match match_result {
-                        Ok(path) if path.discretized.elements.is_empty() => {
+                        Ok((path, _)) if path.discretized.elements.is_empty() => {
                             m.matches_no_candidate.inc();
                             let result = MatchResult {
                                 vehicle_id: vehicle_id.clone(),
@@ -259,7 +270,7 @@ async fn main() -> anyhow::Result<()> {
                                 continue 'reconnect;
                             }
                         }
-                        Ok(path) => {
+                        Ok((path, mut new_state)) => {
                             m.matches_success.inc();
 
                             let snapped_coord = path
@@ -269,30 +280,19 @@ async fn main() -> anyhow::Result<()> {
                                 .map(|el| Point::from(el.point));
 
                             if let Some(snapped) = snapped_coord {
-                                // Phase 1B cum_cost tracking:
-                                //   warm → prev_cum_cost + this_event_cost
-                                //   cold → reset to this_event_cost (no prior chain)
-                                let event_cost = path.cost;
-                                let new_cum_cost = if was_warm {
-                                    prev_cum_cost.saturating_add(event_cost)
-                                } else {
-                                    event_cost
-                                };
-                                // Write back to state cache (stateful mode
-                                // only — DashMap insert is O(1) amortised).
-                                // Last-writer-by-timestamp: only commit if
-                                // our resolved_at_ms is the newest seen.
                                 if stateful {
+                                    if let Some(k) = frontier_k() {
+                                        new_state.truncate_to_top(k);
+                                    }
+                                    let new_cum_cost = new_state.last_cum_cost().unwrap_or(0);
                                     state_cache
                                         .entry(vehicle_id.clone())
                                         .and_modify(|s| {
                                             if resolved_at_ms > s.last_event_ms {
-                                                s.last_matched = snapped;
-                                                s.last_event_ms = resolved_at_ms;
-                                                s.last_cum_cost = new_cum_cost;
+                                                *s = new_state.clone();
                                             }
                                         })
-                                        .or_insert_with(|| MatchState::new(snapped, resolved_at_ms, new_cum_cost));
+                                        .or_insert(new_state);
                                     m.cum_cost.observe(new_cum_cost as f64);
                                 }
 
@@ -461,82 +461,82 @@ async fn main() -> anyhow::Result<()> {
                         })
                         .collect();
 
-                    // Decide warm vs cold: if we have non-stale state for
-                    // this vehicle, build a 2-point linestring `[current]`
-                    // with anchor=prev.last_matched; otherwise cold-start
-                    // with the full 6-point history-based linestring.
-                    //
-                    // Three gates for going warm:
-                    //   1. State cache hit, AND
-                    //   2. Not TTL-expired, AND
-                    //   3. cum_cost hasn't passed the ceiling.
-                    // The cost-ceiling check catches drift: if the warm
-                    // step's path quality has degraded over many events,
-                    // we forcibly re-anchor by going cold.
+                    // Decide warm vs cold: if we have a non-stale frontier
+                    // for this vehicle that's still under the cost ceiling,
+                    // extend it by one observation via `StreamingMatcher::step`.
+                    // Otherwise cold-start with the full history linestring.
                     let now_ms_local = now_ms();
-                    let (warm_anchor, prev_cum_cost): (Option<Anchor>, u32) = if stateful {
+                    let warm_state: Option<MatchState<E>> = if stateful {
                         let read = state_cache.get(&ctx.vehicle_id);
                         match read {
-                            Some(s)
-                                if now_ms_local.saturating_sub(s.last_event_ms) <= state_ttl_ms
-                                    && ctx.resolved_at_ms > s.last_event_ms
-                                    && s.last_cum_cost < cost_ceiling =>
-                            {
-                                (
-                                    Some(Anchor { coord: s.last_matched.into() }),
-                                    s.last_cum_cost,
-                                )
+                            Some(s) => {
+                                let cum = s.last_cum_cost().unwrap_or(u32::MAX);
+                                let fresh = now_ms_local
+                                    .saturating_sub(s.last_event_ms)
+                                    <= state_ttl_ms
+                                    && ctx.resolved_at_ms > s.last_event_ms;
+                                let under_ceiling = cum < cost_ceiling;
+                                if !under_ceiling {
+                                    drop(s);
+                                    state_cache.remove(&ctx.vehicle_id);
+                                    m.cost_ceiling_evictions.inc();
+                                    None
+                                } else if fresh && !s.is_empty() {
+                                    Some(s.clone())
+                                } else {
+                                    None
+                                }
                             }
-                            Some(s) if s.last_cum_cost >= cost_ceiling => {
-                                // Cost-ceiling trip-wire fired: drop state
-                                // and cold-start this event to re-anchor.
-                                drop(s);
-                                state_cache.remove(&ctx.vehicle_id);
-                                m.cost_ceiling_evictions.inc();
-                                (None, 0)
-                            }
-                            _ => (None, 0),
+                            None => None,
                         }
                     } else {
-                        (None, 0)
+                        None
                     };
 
-                    let (linestring, was_warm) = if let Some(anchor) = warm_anchor {
-                        // Warm step: only the current GPS point in the
-                        // linestring — `r#match` will prepend the anchor.
+                    let was_warm = warm_state.is_some();
+                    if was_warm {
                         m.match_step_warm.inc();
-                        let ls = LineString(vec![ctx.current.coord.into()]);
-                        // Stash anchor for the closure below.
-                        let _ = anchor; // anchor consumed via MatchOptions below
-                        (ls, true)
                     } else {
                         m.match_step_cold.inc();
-                        (LineString(points.iter().map(|p| (*p).into()).collect()), false)
+                    }
+
+                    let cold_points: Vec<Point> = if was_warm {
+                        Vec::new()
+                    } else {
+                        points
                     };
+                    let new_point = ctx.current.coord;
 
                     let vehicle_id = ctx.vehicle_id.clone();
                     let resolved_at_ms = ctx.resolved_at_ms;
                     let current_coord = ctx.current.coord;
                     let network_clone = Arc::clone(&network);
-                    let anchor_for_solve = warm_anchor;
-                    let prev_cum_cost_capture = prev_cum_cost;
 
                     // Captured *before* spawn_blocking dispatches the
-                    // task. Setup time = t_spawn_at - t_delivery. We
-                    // need this on the result side to separate
-                    // matcher-binary overhead (decode, sanity, state
-                    // lookup, linestring build, dispatch hop) from the
-                    // actual solver work.
+                    // task. Setup time = t_spawn_at - t_delivery, used
+                    // to separate matcher-binary overhead from solver work.
                     let t_spawn_at = Instant::now();
 
                     join_set.spawn_blocking(move || {
-                        let opts = MatchOptions::<E, M, _>::default()
-                            .with_anchor(anchor_for_solve);
+                        let costing = CostingStrategies::<_, _, E, M, _>::default();
+                        let matcher = StreamingMatcher::new(
+                            &*network_clone,
+                            &costing,
+                            DEFAULT_SEARCH_DISTANCE,
+                        );
+                        let runtime = OsmEdgeMetadata::runtime(None);
+
                         let t_solve = Instant::now();
-                        let result = network_clone.r#match(linestring, opts);
+                        let result = match warm_state {
+                            Some(prev) => matcher.step(&prev, new_point, resolved_at_ms, &runtime),
+                            None => {
+                                let linestring = LineString(
+                                    cold_points.iter().map(|p| (*p).into()).collect(),
+                                );
+                                matcher.cold_start(linestring, resolved_at_ms, &runtime)
+                            }
+                        };
                         let solve_ms = t_solve.elapsed().as_secs_f64() * 1000.0;
-                        // Surface slow solves so we can correlate them
-                        // with vehicle traces if the p99 starts climbing again.
                         if solve_ms > 200.0 {
                             log::warn!(
                                 "slow solve {:.0}ms vehicle={} points={} warm={}",
@@ -546,7 +546,7 @@ async fn main() -> anyhow::Result<()> {
                                 was_warm,
                             );
                         }
-                        (vehicle_id, resolved_at_ms, current_coord, debug_pts, result, solve_ms, t_delivery, was_warm, t_spawn_at, prev_cum_cost_capture)
+                        (vehicle_id, resolved_at_ms, current_coord, debug_pts, result, solve_ms, t_delivery, was_warm, t_spawn_at)
                     });
                 }
             }

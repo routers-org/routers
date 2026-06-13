@@ -105,6 +105,31 @@ where
         }
     }
 
+    /// Constructs a transition graph from pre-built [`Layers`] and
+    /// [`Candidates`], bypassing the [`LayerGenerator`].
+    ///
+    /// Use this when the candidate set is not derived from a single
+    /// linestring — for example, when extending a saved Viterbi
+    /// frontier by one new GPS point, where L0 candidates come from
+    /// the prior frontier rather than from candidate generation.
+    ///
+    /// The caller is responsible for ensuring `layers` and
+    /// `candidates` are mutually consistent: every [`CandidateId`] in
+    /// `layers.layers[*].nodes` must resolve in `candidates.lookup`.
+    pub fn from_parts(
+        map: &'a N,
+        heuristics: &'a CostingStrategies<Emmis, Trans, E, M, N>,
+        layers: Layers,
+        candidates: Candidates<E>,
+    ) -> Transition<'a, Emmis, Trans, E, M, N> {
+        Transition {
+            map,
+            candidates,
+            layers,
+            heuristics,
+        }
+    }
+
 
     /// Converts the transition graph into a [`RoutingContext`].
     pub fn context<'b>(&'a self, runtime: &'b M::Runtime) -> RoutingContext<'b, E, M, N>
@@ -143,5 +168,62 @@ where
         self.candidates
             .collapse()
             .map_err(MatchError::CollapseFailure)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::costing::CostingStrategies;
+    use crate::generation::StandardGenerator;
+    use crate::r#match::DEFAULT_SEARCH_DISTANCE;
+    use crate::solver::PrecomputeForwardSolver;
+    use crate::testing::{MockEntryId, MockMetadata, MockNetwork, MockNetworkBuilder};
+    use geo::{point, wkt};
+
+    fn straight_road() -> MockNetwork {
+        MockNetworkBuilder::new()
+            .node(1, point!(x: -118.14, y: 34.15))
+            .node(2, point!(x: -118.15, y: 34.15))
+            .node(3, point!(x: -118.16, y: 34.15))
+            .node(4, point!(x: -118.17, y: 34.15))
+            .edge(1, 2)
+            .edge(2, 3)
+            .edge(3, 4)
+            .build()
+    }
+
+    /// `from_parts` over generator outputs must produce the same solve
+    /// result as the equivalent `Transition::new` call. This pins the
+    /// contract that the two constructors are interchangeable when the
+    /// `Layers` + `Candidates` arguments come from the same generator.
+    #[test]
+    fn from_parts_solves_equivalently_to_new() {
+        let net = straight_road();
+        let linestring: LineString = wkt! {
+            LINESTRING(
+                -118.141 34.1503,
+                -118.155 34.1503,
+                -118.169 34.1503
+            )
+        };
+        let costing = CostingStrategies::default();
+
+        // Reference: build via `Transition::new`.
+        let gen_a = StandardGenerator::new(&net, &costing.emission, DEFAULT_SEARCH_DISTANCE);
+        let trans_a = Transition::new(&net, linestring.clone(), &costing, gen_a);
+        let solver_a = PrecomputeForwardSolver::<MockEntryId, MockMetadata, MockNetwork>::default();
+        let result_a = solver_a.solve(trans_a, &()).expect("baseline solve succeeds");
+
+        // Under test: invoke the generator manually, then `from_parts`.
+        let gen_b = StandardGenerator::new(&net, &costing.emission, DEFAULT_SEARCH_DISTANCE);
+        let points = linestring.into_points();
+        let (layers, candidates) = gen_b.generate(&points);
+        let trans_b = Transition::from_parts(&net, &costing, layers, candidates);
+        let solver_b = PrecomputeForwardSolver::<MockEntryId, MockMetadata, MockNetwork>::default();
+        let result_b = solver_b.solve(trans_b, &()).expect("from_parts solve succeeds");
+
+        assert_eq!(result_a.cost, result_b.cost);
+        assert_eq!(result_a.route, result_b.route);
     }
 }
