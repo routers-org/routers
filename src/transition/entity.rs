@@ -105,6 +105,7 @@ where
         }
     }
 
+
     /// Converts the transition graph into a [`RoutingContext`].
     pub fn context<'b>(&'a self, runtime: &'b M::Runtime) -> RoutingContext<'b, E, M, N>
     where

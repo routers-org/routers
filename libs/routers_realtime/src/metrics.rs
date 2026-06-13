@@ -17,6 +17,14 @@ pub struct MatcherMetrics {
     pub match_step_warm: IntCounter,
     pub match_step_cold: IntCounter,
     pub state_cache_size: Gauge,
+    /// Cumulative Viterbi cost per warm step. Histogram lets us see the
+    /// shape over time — if cum_cost tails out, the warm-step quality
+    /// has degraded and we may need to reduce TTL or tighten the
+    /// cost-ceiling.
+    pub cum_cost: Histogram,
+    /// Number of state evictions caused by the cum_cost ceiling guard
+    /// (`MATCH_COST_CEILING`). Should be near-zero in steady state.
+    pub cost_ceiling_evictions: IntCounter,
     registry: Registry,
 }
 
@@ -87,6 +95,27 @@ pub fn matcher_global() -> &'static MatcherMetrics {
                 registry.register(Box::new(g.clone())).unwrap();
                 g
             },
+            cum_cost: {
+                // Wide log-ish buckets: cum_cost can grow large over many events.
+                let buckets = vec![
+                    100.0, 500.0, 2_000.0, 10_000.0, 50_000.0,
+                    200_000.0, 500_000.0, 1_000_000.0, 2_000_000.0, 5_000_000.0,
+                ];
+                let h = Histogram::with_opts(
+                    HistogramOpts::new(
+                        "routers_match_cum_cost",
+                        "Cumulative Viterbi cost per warm-step (per event)",
+                    )
+                    .buckets(buckets),
+                )
+                .unwrap();
+                registry.register(Box::new(h.clone())).unwrap();
+                h
+            },
+            cost_ceiling_evictions: counter!(
+                "routers_match_cost_ceiling_evictions_total",
+                "State evictions triggered by the cum_cost ceiling guard"
+            ),
             registry,
         }
     })

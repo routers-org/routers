@@ -51,7 +51,8 @@ type SolveResult = (
     f64,
     Instant,
     bool,    // was_warm — true if anchor-based warm step was used
-    Instant, // t_spawn_at — Instant captured just before spawn_blocking; used to derive setup_ms / post_ms
+    Instant, // t_spawn_at
+    u32,     // prev_cum_cost — Viterbi cumulative cost prior to this event (0 on cold-start)
 );
 
 fn shard_filename(key: &Geohash) -> String {
@@ -104,6 +105,15 @@ async fn main() -> anyhow::Result<()> {
         .and_then(|s| s.parse::<u64>().ok())
         .unwrap_or(1800)
         * 1000;
+    // Phase 1B cum-cost divergence guard: if the running Viterbi
+    // cumulative cost passes this ceiling, evict the warm state and
+    // force the next event to cold-start. Prevents a bad warm-step
+    // (e.g., GPS noise + ambiguous junction) from compounding cost
+    // indefinitely. 0 = disabled.
+    let cost_ceiling: u32 = std::env::var("MATCH_COST_CEILING")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(2_000_000);
 
     tokio::spawn(metrics::serve_matcher(metrics_addr));
 
@@ -221,7 +231,7 @@ async fn main() -> anyhow::Result<()> {
 
                 // Drain a completed solve and publish its result.
                 Some(task_result) = join_set.join_next(), if !join_set.is_empty() => {
-                    let (vehicle_id, resolved_at_ms, current_coord, debug_pts, match_result, solve_ms, t_delivery, was_warm, t_spawn_at) =
+                    let (vehicle_id, resolved_at_ms, current_coord, debug_pts, match_result, solve_ms, t_delivery, was_warm, t_spawn_at, prev_cum_cost) =
                         match task_result {
                             Ok(r) => r,
                             Err(e) => {
@@ -259,6 +269,15 @@ async fn main() -> anyhow::Result<()> {
                                 .map(|el| Point::from(el.point));
 
                             if let Some(snapped) = snapped_coord {
+                                // Phase 1B cum_cost tracking:
+                                //   warm → prev_cum_cost + this_event_cost
+                                //   cold → reset to this_event_cost (no prior chain)
+                                let event_cost = path.cost;
+                                let new_cum_cost = if was_warm {
+                                    prev_cum_cost.saturating_add(event_cost)
+                                } else {
+                                    event_cost
+                                };
                                 // Write back to state cache (stateful mode
                                 // only — DashMap insert is O(1) amortised).
                                 // Last-writer-by-timestamp: only commit if
@@ -270,9 +289,11 @@ async fn main() -> anyhow::Result<()> {
                                             if resolved_at_ms > s.last_event_ms {
                                                 s.last_matched = snapped;
                                                 s.last_event_ms = resolved_at_ms;
+                                                s.last_cum_cost = new_cum_cost;
                                             }
                                         })
-                                        .or_insert_with(|| MatchState::new(snapped, resolved_at_ms));
+                                        .or_insert_with(|| MatchState::new(snapped, resolved_at_ms, new_cum_cost));
+                                    m.cum_cost.observe(new_cum_cost as f64);
                                 }
 
                                 let result = MatchResult {
@@ -444,19 +465,40 @@ async fn main() -> anyhow::Result<()> {
                     // this vehicle, build a 2-point linestring `[current]`
                     // with anchor=prev.last_matched; otherwise cold-start
                     // with the full 6-point history-based linestring.
+                    //
+                    // Three gates for going warm:
+                    //   1. State cache hit, AND
+                    //   2. Not TTL-expired, AND
+                    //   3. cum_cost hasn't passed the ceiling.
+                    // The cost-ceiling check catches drift: if the warm
+                    // step's path quality has degraded over many events,
+                    // we forcibly re-anchor by going cold.
                     let now_ms_local = now_ms();
-                    let warm_anchor: Option<Anchor> = if stateful {
-                        state_cache.get(&ctx.vehicle_id).and_then(|s| {
-                            if now_ms_local.saturating_sub(s.last_event_ms) <= state_ttl_ms
-                                && ctx.resolved_at_ms > s.last_event_ms
+                    let (warm_anchor, prev_cum_cost): (Option<Anchor>, u32) = if stateful {
+                        let read = state_cache.get(&ctx.vehicle_id);
+                        match read {
+                            Some(s)
+                                if now_ms_local.saturating_sub(s.last_event_ms) <= state_ttl_ms
+                                    && ctx.resolved_at_ms > s.last_event_ms
+                                    && s.last_cum_cost < cost_ceiling =>
                             {
-                                Some(Anchor { coord: s.last_matched.into() })
-                            } else {
-                                None
+                                (
+                                    Some(Anchor { coord: s.last_matched.into() }),
+                                    s.last_cum_cost,
+                                )
                             }
-                        })
+                            Some(s) if s.last_cum_cost >= cost_ceiling => {
+                                // Cost-ceiling trip-wire fired: drop state
+                                // and cold-start this event to re-anchor.
+                                drop(s);
+                                state_cache.remove(&ctx.vehicle_id);
+                                m.cost_ceiling_evictions.inc();
+                                (None, 0)
+                            }
+                            _ => (None, 0),
+                        }
                     } else {
-                        None
+                        (None, 0)
                     };
 
                     let (linestring, was_warm) = if let Some(anchor) = warm_anchor {
@@ -477,6 +519,7 @@ async fn main() -> anyhow::Result<()> {
                     let current_coord = ctx.current.coord;
                     let network_clone = Arc::clone(&network);
                     let anchor_for_solve = warm_anchor;
+                    let prev_cum_cost_capture = prev_cum_cost;
 
                     // Captured *before* spawn_blocking dispatches the
                     // task. Setup time = t_spawn_at - t_delivery. We
@@ -503,7 +546,7 @@ async fn main() -> anyhow::Result<()> {
                                 was_warm,
                             );
                         }
-                        (vehicle_id, resolved_at_ms, current_coord, debug_pts, result, solve_ms, t_delivery, was_warm, t_spawn_at)
+                        (vehicle_id, resolved_at_ms, current_coord, debug_pts, result, solve_ms, t_delivery, was_warm, t_spawn_at, prev_cum_cost_capture)
                     });
                 }
             }

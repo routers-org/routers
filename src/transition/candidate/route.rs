@@ -26,6 +26,12 @@ where
     /// a trip by "recovering" lost information, or understanding subtle details such as
     /// when the route left or joined a highway.
     pub interpolated: Path<E, M>,
+
+    /// The total Viterbi cost of the chosen path. Sum of emission +
+    /// transition costs across all layer-pair transitions in the
+    /// trellis. Used by streaming match to track cumulative cost
+    /// across events for divergence detection.
+    pub cost: u32,
 }
 
 impl<E, M> RoutedPath<E, M>
@@ -104,9 +110,11 @@ where
             Path { elements }
         };
 
+        let cost = collapsed_path.cost;
         RoutedPath {
             discretized,
             interpolated,
+            cost,
         }
     }
 }

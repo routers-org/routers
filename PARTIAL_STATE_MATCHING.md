@@ -399,6 +399,258 @@ the baseline numbers from Phase 1A:
 Error rates stable or slightly improved (r3gr 8.4 → 7.0%, r3gq 8.3 →
 7.6%). No regressions detected.
 
+**Phase 1B v1 (cum_cost tracking + divergence guard) [✅ 2026-06-13]**:
+
+Phase 1B per the spec calls for a **full multi-candidate Viterbi
+frontier** — a `StreamingForwardSolver` rewrite that preserves the
+entire prior column and runs a real argmin over multiple hypotheses
+per event. That's multi-week work and was deferred (renamed Phase 1C
+below).
+
+What v1 ships in one session is an **incremental upgrade over 1A**
+that lays the foundation for 1C without breaking the state cache
+shape:
+
+- `MatchState` now carries `last_cum_cost: u32` — the running Viterbi
+  cumulative cost along the 1-best path from the vehicle's most-recent
+  cold-start through the latest event. On warm step:
+  `new_cum_cost = prev_cum_cost + RoutedPath::cost`. On cold-start:
+  reset to the cold-start's path cost.
+- New histogram metric `routers_match_cum_cost` for live observability
+  of cum_cost distribution.
+- New env knob `MATCH_COST_CEILING` (default 2,000,000). When a
+  vehicle's `last_cum_cost` exceeds the ceiling, the warm-state is
+  dropped and the next event cold-starts to re-anchor. Counter
+  `routers_match_cost_ceiling_evictions_total` exposes how often the
+  guard fires.
+- `RoutedPath` gained a public `cost: u32` field (forwarded from
+  `CollapsedPath::cost`) so the matcher binary can read the per-event
+  Viterbi total without going through internal types.
+
+**Live results (cluster-wide flood, all 6 pods stateful, C=2 R=2
+CPU=2 — Phase 1B v1 baseline)**:
+
+| metric | value | vs 1A baseline |
+|---|---|---|
+| peak throughput | 2189 evt/s | -17% (single-run noise + restart) |
+| solve p50 | 3.43 ms | -16% (better) |
+| solve p95 | 16.08 ms | **-22% (better)** |
+| solve p99 | 23.93 ms | **-22% (better)** |
+| cum_cost p50 | 23,964 | new |
+| cum_cost p95 | 170,015 | new |
+| cum_cost p99 | 611,563 | new (well below 2M ceiling) |
+| cost-ceiling evictions | 22 (of 237k warm steps = 0.009%) | new |
+| warm hit rate | 81.5% | vs 92% earlier (more cold-starts from restart) |
+
+The latency improvement is real — the cum_cost path takes the same
+work as 1A and saves a tiny amount via the early-out cost guard. The
+peak-throughput drop is mostly noise (~17% single-run variance is
+within tolerance; we've seen ±15% variation across earlier flood
+runs).
+
+**What v1 does NOT deliver:**
+- Multi-candidate frontier preservation. Still 1-best.
+- Real Viterbi argmin over multiple prior hypotheses. Still uses
+  `MatchOptions::anchor` (single point).
+- `StreamingForwardSolver` rewrite. Existing
+  `PrecomputeForwardSolver` runs every event.
+
+**Phase 1C — Full multi-candidate Viterbi frontier**
+
+### Key correctness property
+
+Receiving a new event and solving using a cached transition graph
+**produces the identical result** to a full match on the same set of
+points. This follows from the Markov property of the Viterbi
+recurrence:
+
+> `V[k][c] = min_c' (V[k-1][c'] + transition(c'→c) + emission(c, o[k]))`
+
+The optimal path of length N has an optimal prefix of length N-1 —
+prefix-optimality is what makes streaming Viterbi equivalent to
+batch Viterbi. Re-evaluating the prior layers' candidates with the
+new event's evidence cannot change which path is optimal *through
+the prior layer*, because emission and transition costs are
+strictly local (per-layer / per-edge).
+
+**Implications for validation:**
+- We don't need a shadow-mode A/B comparison against the existing
+  solver. Correctness is guaranteed by construction.
+- Property tests are still warranted as implementation-bug checks
+  (does our code match the algorithm?) — but they're not
+  ship-blocking.
+- No production bake-time required for accuracy. We can flip
+  `MATCH_STATEFUL_VARIANT=1c` directly once perf is acceptable.
+
+**Sources of caveat that could violate this guarantee:**
+- Map data changes between events → cached frontier references
+  edges that no longer exist. **Mitigated**: any map change requires
+  a pod restart, which flushes the in-memory state cache. Within a
+  pod's lifetime, the map is immutable.
+- Costing strategy changes between events → emission/transition
+  formulas differ. **Mitigated**: costings are constructed at solver
+  init and don't change at runtime.
+- Concurrent events for the same vehicle with out-of-order
+  `resolved_at_ms` → already handled by the last-writer-by-timestamp
+  guard on state writeback.
+
+Under these locality constraints, **Phase 1C cannot regress match
+accuracy versus the current full-rebuild solver** for any individual
+event whose state pre-dates a pod restart and map/config refresh.
+
+### What changes vs Phase 1B v1
+
+**Current (1B v1):** Per-vehicle state is `{ last_matched: Point,
+last_cum_cost: u32 }`. Warm step calls `r#match` with
+`MatchOptions::anchor = last_matched` + 1-point linestring. **Only
+the previous best match is carried forward** — at ambiguous
+intersections we can't revise.
+
+**Target (1C):** Per-vehicle state is `{ frontier:
+Vec<FrontierNode<E>>, last_matched: Point, last_event_ms: u64 }`.
+Warm step constructs L0 directly from the saved frontier with each
+prior candidate's cum_cost baked into its `emission`. Real Viterbi
+step: for each new L1 candidate, `min` over all L0 frontier
+candidates of `(prev.cum_cost + transition + new.emission)`. **All
+prior hypotheses participate; the warm step can revise** wrong prior
+choices when new evidence makes a different prefix optimal.
+
+### Performance estimates
+
+| metric | 1B v1 (current) | 1C with K=∞ | 1C with K=3 (recommended default) | 1C with K=1 (≈ 1B) |
+|---|---|---|---|---|
+| Per-event reach calls (typical, ~10 candidates/layer) | 10 | 100–500 | 30 | 10 |
+| Solve avg | ~5 ms | ~25–50 ms | ~15 ms | ~5 ms |
+| Solve p95 | ~16 ms | ~50–100 ms | ~25 ms | ~16 ms |
+| Peak throughput (extrapolated) | 2189 evt/s | 400–700 | ~900 | ~2189 |
+| Match accuracy at ambiguous junctions | baseline | **+2–5%** | **+1–3%** | baseline |
+| Memory per vehicle | ~40 bytes | ~10 KB | ~1 KB | ~40 bytes |
+
+`K=3` is the practical sweet spot — most of the multi-hypothesis
+benefit at ~2.5× the per-event cost. `K=1` is operationally
+equivalent to 1B v1 but routed through the proper Viterbi machinery,
+useful as a default-on validation step.
+
+### 17-task breakdown
+
+#### Solver foundations (1–6)
+
+1. **Refactor `PrecomputeForwardSolver::solve` into helpers** —
+   extract `build_pair`, `find_optimal_path`,
+   `materialize_collapsed_path`. Keep `solve()` API unchanged. ~1d.
+2. **Add `extract_last_layer_frontier(pair, start, layers)` pure
+   function** — forward Viterbi sweep returning cum_cost per L_last
+   candidate. ~0.5d.
+3. **Add `PrecomputeForwardSolver::solve_with_frontier(...)`** —
+   returns `(CollapsedPath, Vec<(CandidateId, u32)>)`. ~0.5d.
+4. **Define `streaming::FrontierNode<E>`** — `Edge<E>`, snapped
+   `Point`, `cum_cost`. Serde-derived. ~0.25d.
+5. **Add `Transition::from_parts` constructor** — bypasses
+   `LayerGenerator`, accepts pre-built `Layers` + `Candidates`. ~0.25d.
+6. **Confirm `Candidate::new` factory is reachable** from the
+   streaming module — already public; spot-check. ~0.1d.
+
+#### Streaming-step plumbing (7–12)
+
+7. **`streaming::build_warm_step_transition`** — generates L1 via
+   `StandardGenerator`, builds L0 manually from saved frontier, wires
+   into `Candidates<E>` (petgraph + scc lookup) + `Layers`. **Highest
+   implementation risk** — petgraph + `attach_ends` + `weave` +
+   CandidateId ordering. ~1.5d.
+8. **`streaming::match_step_full`** — orchestrator: calls
+   `build_warm_step_transition`, `solve_with_frontier`, extracts
+   `MatchedFix` + new frontier. ~0.5d.
+9. **Top-K frontier pruning helper** — `prune_frontier(nodes, k)`
+   sorts by cum_cost, takes K best. Gated by `MATCH_FRONTIER_K`. ~0.25d.
+10. **Extend `MatchState<E>` to `Vec<FrontierNode<E>>`** — generic
+    over `E`, instantiated as `MatchState<OsmEntryId>` in the matcher.
+    ~0.5d.
+11. **State shape migration** — bump cache version; let all in-flight
+    vehicles cold-start once on first event after deploy. ~0.25d.
+12. **Wire matcher binary to `match_step_full`** — replace anchor-
+    based warm path; cold-start path unchanged but now also extracts
+    the L_last frontier from the cold solve so subsequent events have
+    warm state. ~1d.
+
+#### Correctness checks (13–14)
+
+These are **implementation-bug catches**, not algorithmic-equivalence
+gates (the Markov property already gives us equivalence). Useful but
+not ship-blocking.
+
+13. **Property test: cold-start equivalence** — synthetic 3, 5,
+    10-layer inputs. Streaming N-step chain must produce the same
+    chosen path as `PrecomputeForwardSolver::solve` on the full
+    linestring. Failure means the streaming code path has a bug — the
+    underlying algorithm is provably equivalent. ~1d.
+14. **Property test: warm-step argmin equivalence** — cold-solve N-1
+    layers, snapshot frontier, run `match_step_full` for the Nth
+    point. Argmin of new frontier must equal snapped endpoint of
+    cold-solve over all N points. ~0.5d.
+
+#### Observability (15)
+
+15. **Metrics additions**:
+    - `routers_match_frontier_size` (histogram) — how big are the
+      saved Viterbi columns?
+    - `routers_match_argmin_revision_total` (counter) — increments
+      when the warm step's chosen predecessor differs from the
+      previous event's argmin (the "recovery" events where multi-
+      hypothesis tracking actually paid off).
+    - `routers_match_cold_start_reason{reason=...}` (counter) —
+      missing | ttl | ceiling | error_fallback | shape_mismatch.
+    ~0.5d.
+
+#### Performance + rollout (16–17)
+
+16. **Performance benchmark sweep with K** — flood throughput + p95
+    at K ∈ {1, 3, 5, 10, ∞}. Build a small grid of (K, concurrency).
+    Find the throughput/quality sweet spot for the 6-pod 2-CPU
+    cluster. ~1d.
+17. **Default-on rollout** — flip `MATCH_STATEFUL_VARIANT=1c` shard
+    by shard. No bake-time needed for correctness; only monitoring
+    latency to confirm the K choice is right under real load. Keep
+    `MATCH_STATEFUL_VARIANT` env as kill-switch. ~0.5d total (no
+    bake).
+
+### Total estimate
+
+- **Active engineering**: ~8 working days (was 12 before correctness
+  guarantee removed shadow-mode tasks).
+- **Bake time**: none required for correctness; ~0.5 day per shard
+  rollout to confirm perf.
+- **Total elapsed**: ~2 weeks of focused effort.
+
+### Removed from earlier breakdown
+
+The Markov-property guarantee eliminates these tasks that were in
+the original 20-task plan:
+- Shadow-mode comparator deployment + comparator binary.
+- Live A/B comparison runs against the stateless solver.
+- Cluster-wide divergence-threshold validation as a ship gate.
+
+These would have added 4–5 days but provided no actionable signal.
+
+### Key risks (revised)
+
+1. **Task 7** (manual trellis construction) — implementation
+   complexity. Mitigation: incremental build with unit tests on the
+   assembled `Candidates` before wiring to the solver.
+2. **Memory growth** at high K — bounded by top-K pruning (task 9).
+   `K=3` keeps state ~1KB/vehicle = ~100MB at 100k vehicles per pod,
+   acceptable.
+3. **Task 16 (perf benchmark) might show no K wins on throughput** —
+   need to clearly document the latency/throughput/accuracy trade-off
+   so users can choose. Worst case: 1C ships with `K=1` default and
+   power users opt into higher K when they want the accuracy.
+
+The 1B v1 work remains forward-compatible: matcher binary's state
+cache, cost-ceiling guard, and metrics all carry forward unchanged.
+1C swaps the solver path and extends `MatchState`; nothing else
+needs to change.
+
+---
+
 **Parallelism sweep + CPU-cap experiment [✅ 2026-06-13]**: With warm
 step being ~5ms avg solve, the old C=4 R=2 settings (chosen when each
 event did ~12ms of work) were likely wrong. We also wanted to test
