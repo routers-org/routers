@@ -31,6 +31,38 @@ use crate::strategy::{ShardId, ShardingStrategy};
 pub type GraphStructure<E> =
     DiGraphMap<E, (Weight, DirectionAwareEdgeId<E>), BuildHasherDefault<FxHasher>>;
 
+/// Slim spatial-index entry for edges.
+#[derive(Clone, Copy, Debug)]
+pub struct EdgeRef<E: Entry> {
+    pub source: E,
+    pub target: E,
+
+    bbox_min: Point,
+    bbox_max: Point,
+}
+
+impl<E: Entry> EdgeRef<E> {
+    pub fn new(source: E, target: E, src_pos: Point, tgt_pos: Point) -> Self {
+        let (sx, sy) = src_pos.x_y();
+        let (tx, ty) = tgt_pos.x_y();
+
+        Self {
+            source,
+            target,
+
+            bbox_min: Point::new(sx.min(tx), sy.min(ty)),
+            bbox_max: Point::new(sx.max(tx), sy.max(ty)),
+        }
+    }
+}
+
+impl<E: Entry> rstar::RTreeObject for EdgeRef<E> {
+    type Envelope = AABB<Point>;
+    fn envelope(&self) -> Self::Envelope {
+        AABB::from_corners(self.bbox_min, self.bbox_max)
+    }
+}
+
 /// A data source from which a [`ShardedNetwork`] can be built.
 ///
 /// Implement this trait on any type that provides an iterable collection of
@@ -75,10 +107,13 @@ where
     pub hash: FxHashMap<E, Node<E>>,
     pub meta: FxHashMap<E, M>,
 
+    /// Spatial index over nodes.
     #[serde(skip)]
     pub index: RTree<Node<E>>,
+
+    /// Spatial index over edge (references).
     #[serde(skip)]
-    pub index_edge: RTree<Edge<Node<E>>>,
+    pub index_edge: RTree<EdgeRef<E>>,
 
     /// The shard this node has authority over.
     pub owned: S,
@@ -118,20 +153,38 @@ where
         let mut hash: FxHashMap<E, Node<E>> = FxHashMap::default();
         let mut meta: FxHashMap<E, M> = FxHashMap::default();
 
-        for (id, pos) in source.nodes() {
-            let shard = strategy.locate(pos);
-            if selection.contains(&shard) {
+        let all_nodes: FxHashMap<E, Point> = source.nodes().collect();
+
+        // Consider a node, if (either or..):
+        // 1. It's shard is in the loaded set, or
+        // 2. It's position falls within the optional padded buffer.
+        for (&id, &pos) in &all_nodes {
+            let admit = selection.padding_contains(pos) || {
+                let shard = strategy.locate(pos);
+                selection.contains(&shard)
+            };
+            if admit {
                 hash.insert(id, Node::new(pos, id));
                 graph.add_node(id);
             }
         }
 
         for (from, to, weight, m) in source.edges() {
-            if hash.contains_key(&from) && hash.contains_key(&to) {
-                let edge_id = DirectionAwareEdgeId::new(from);
-                graph.add_edge(from, to, (weight, edge_id));
-                meta.entry(from).or_insert(m);
+            if !hash.contains_key(&from) {
+                continue;
             }
+
+            if !hash.contains_key(&to) {
+                if let Some(&pos) = all_nodes.get(&to) {
+                    hash.insert(to, Node::new(pos, to));
+                    graph.add_node(to);
+                } else {
+                    continue;
+                }
+            }
+
+            graph.add_edge(from, to, (weight, DirectionAwareEdgeId::new(from)));
+            meta.entry(from).or_insert(m);
         }
 
         let mut net = Self {
@@ -143,42 +196,33 @@ where
             owned: selection.owned,
             loaded: selection.loaded.clone(),
         };
+
         net.rebuild_indices();
         Ok(net)
     }
 
-    /// Rebuild the spatial indices (`index` and `index_edge`) from the
-    /// `hash` and `graph` fields.
+    /// Rebuild the spatial indices from `hash` + `graph`.
     ///
-    /// The indices are intentionally not serialised — bulk-loading an
-    /// `RTree` from N items is O(N log N) and runs at hundreds of MB/s in
-    /// practice, which is faster than letting `postcard` decode a tree
-    /// structure that takes proportionally more bytes on disk. Call this
-    /// after deserialising a network in custom code paths;
-    /// [`from_cached`](Self::from_cached) does it for you.
+    /// Both the node RTree and the slim edge RTree are intentionally not
+    /// serialised — bulk-loading is O(N log N) at hundreds of MB/s,
+    /// faster than letting `postcard` decode tree structures that take
+    /// proportionally more bytes on disk.
     pub fn rebuild_indices(&mut self) {
-        // Bulk-loading the two `RTree`s is the dominant cost on cache hits
-        // (~350ms for a 9-shard Sydney load). The two trees are independent
-        // so we farm them out to `rayon::join` and pay one tree's worth of
-        // wall-clock time instead of the sum.
         let nodes: Vec<Node<E>> = self.hash.values().copied().collect();
-        let edges: Vec<Edge<Node<E>>> = self
+        let edges: Vec<EdgeRef<E>> = self
             .graph
             .all_edges()
-            .filter_map(|(s, t, &(weight, id))| {
+            .filter_map(|(s, t, _)| {
                 let source = *self.hash.get(&s)?;
                 let target = *self.hash.get(&t)?;
-                Some(Edge {
-                    source,
-                    target,
-                    id: DirectionAwareEdgeId::new(Node::new(Point::new(0., 0.), id.index()))
-                        .with_direction(id.direction()),
-                    weight,
-                })
+
+                Some(EdgeRef::new(s, t, source.position, target.position))
             })
             .collect();
+
         let (node_index, edge_index) =
             rayon::join(|| RTree::bulk_load(nodes), || RTree::bulk_load(edges));
+
         self.index = node_index;
         self.index_edge = edge_index;
     }
@@ -309,11 +353,30 @@ where
     fn edges_in_box<'a>(
         &'a self,
         aabb: AABB<Point>,
-    ) -> Box<dyn Iterator<Item = &'a Edge<Node<E>>> + Send + 'a>
+    ) -> Box<dyn Iterator<Item = Edge<Node<E>>> + Send + 'a>
     where
         E: 'a,
     {
-        Box::new(self.index_edge.locate_in_envelope_intersecting(&aabb))
+        Box::new(
+            self.index_edge
+                .locate_in_envelope_intersecting(&aabb)
+                .filter_map(move |EdgeRef { source, target, .. }| {
+                    let source = *self.hash.get(&source)?;
+                    let target = *self.hash.get(&target)?;
+
+                    let &(weight, id) = self.graph.edge_weight(source.id, target.id)?;
+
+                    let node = Node::new(Point::new(0., 0.), id.index());
+                    let id = DirectionAwareEdgeId::new(node).with_direction(id.direction());
+
+                    Some(Edge {
+                        source,
+                        target,
+                        id,
+                        weight,
+                    })
+                }),
+        )
     }
 
     fn nodes_in_box<'a>(

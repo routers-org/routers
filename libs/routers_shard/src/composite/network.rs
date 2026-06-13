@@ -9,7 +9,7 @@ use routers_network::{
 };
 
 use super::MultiShardNetwork;
-use crate::strategy::ShardId;
+use crate::{network::EdgeRef, strategy::ShardId};
 
 impl<E, M, S> Debug for MultiShardNetwork<E, M, S>
 where
@@ -84,11 +84,30 @@ where
     fn edges_in_box<'a>(
         &'a self,
         aabb: AABB<Point>,
-    ) -> Box<dyn Iterator<Item = &'a Edge<Node<E>>> + Send + 'a>
+    ) -> Box<dyn Iterator<Item = Edge<Node<E>>> + Send + 'a>
     where
         E: 'a,
     {
-        Box::new(self.index_edge.locate_in_envelope_intersecting(&aabb))
+        Box::new(
+            self.index_edge
+                .locate_in_envelope_intersecting(&aabb)
+                .filter_map(move |&EdgeRef { source, target, .. }| {
+                    let source = *self.hash.get(&source)?;
+                    let target = *self.hash.get(&target)?;
+
+                    let &(weight, id) = self.graph.edge_weight(*source, *target)?;
+
+                    let node = Node::new(Point::new(0., 0.), id.index());
+                    let id = DirectionAwareEdgeId::new(node).with_direction(id.direction());
+
+                    Some(Edge {
+                        source,
+                        target,
+                        id,
+                        weight,
+                    })
+                }),
+        )
     }
 
     fn nodes_in_box<'a>(
