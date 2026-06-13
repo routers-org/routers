@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.3] - 2026-06-13
+
+### 🚀 Features
+
+- Allow Compiling with `--all-features` ([#149](https://github.com/routers-org/routers/pull/149))
+- Sharding Implementation ([#148](https://github.com/routers-org/routers/pull/148))
+
+
+
 ## [0.1.2] - 2026-05-18
 
 ### 🚀 Features

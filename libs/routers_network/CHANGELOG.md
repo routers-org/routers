@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.4] - 2026-06-13
+
+### 🚀 Features
+
+- WASM Support ([#147](https://github.com/routers-org/routers/pull/147))
+- Allow Compiling with `--all-features` ([#149](https://github.com/routers-org/routers/pull/149))
+
+### 🐛 Bug Fixes
+
+- Double-Copying and Padded Strategy in Sharding ([#151](https://github.com/routers-org/routers/pull/151))
+
+
+
 ## [0.1.3] - 2026-05-18
 
 ### 🐛 Bug Fixes
