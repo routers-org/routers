@@ -210,7 +210,7 @@ monitor:
 # Set shards= to only send events in those geohashes (comma-separated).
 # Set pipeline= to pipeline N JetStream acks in flood mode (default 1 = sequential).
 # Example: just replay shards="r3grm,r3grh,r3grq,r3grw,r3grk,r3grj,r3grs,r3grt"
-replay speed="60" csv="" shards="" pipeline="1" loops="1":
+replay speed="60" csv="" shards="" deploy="1" pipeline="1" loops="1":
     #!/usr/bin/env bash
     set -euo pipefail
     kubectl port-forward -n {{ ns }} pod/nats-0 4222:4222 > /dev/null 2>&1 &
@@ -221,9 +221,9 @@ replay speed="60" csv="" shards="" pipeline="1" loops="1":
     export REPLAY_SPEED={{ speed }}
     export REPLAY_PIPELINE={{ pipeline }}
     export REPLAY_LOOPS={{ loops }}
+    export DEPLOY_SHARDS={{ deploy }}
     [[ -n "{{ csv }}" ]] && export CSV_FILE="{{ csv }}" || true
     [[ -n "{{ shards }}" ]] && export ACTIVE_SHARDS="{{ shards }}" || true
-    export DEPLOY_SHARDS=1
     export SHARD_CACHE="$(realpath "{{ justfile_directory() }}/../../target/shard_cache")"
     cargo run --release -p routers_realtime --example replay_large
 

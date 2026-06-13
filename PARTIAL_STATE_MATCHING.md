@@ -649,6 +649,135 @@ cache, cost-ceiling guard, and metrics all carry forward unchanged.
 1C swaps the solver path and extends `MatchState`; nothing else
 needs to change.
 
+### Phase 1C — Outcome [✅ 2026-06-13]
+
+Full multi-candidate Viterbi frontier shipped and rolled to all 6
+matcher pods. All 17 sub-tasks in the breakdown completed in a
+single session.
+
+**What landed:**
+
+- `PrecomputeForwardSolver` refactored into helpers (`prepare_trellis`,
+  `build_pair`, `find_optimal_path`, `materialize_collapsed_path`) plus
+  new `solve_with_frontier()` returning both the collapsed path and
+  the L_last Viterbi column.
+- `streaming` module added under `src/transition/streaming/`:
+  - `state.rs` — `FrontierNode<E>` + `MatchState<E>` (frontier as
+    `Vec<FrontierNode>`, `truncate_to_top(k)`).
+  - `viterbi.rs` — `ViterbiFrontier` struct wrapping the forward
+    sweep over `pair` + `Layers`.
+  - `matcher.rs` — `StreamingMatcher` with three substeps
+    (`from_frontier`, `observe_at`, `assemble`) composed into both
+    `step(prev, point, ts, runtime)` and `cold_start(linestring, ts,
+    runtime)`. Both finalise through a shared private helper.
+- `Transition::from_parts(map, heuristics, layers, candidates)`
+  bridges manually-constructed L0 (from prior frontier) + L1 (from
+  candidate generation) into the solver without going through
+  `LayerGenerator`.
+- Matcher binary uses `StreamingMatcher::step` / `cold_start`
+  directly; the old `MatchOptions::anchor` warm path is removed.
+  `MATCH_FRONTIER_K` env applies top-K pruning at writeback.
+- Property tests pin the Markov-equivalence guarantee (1C-13 / 1C-14).
+- New observability: `routers_match_frontier_size` (histogram),
+  `routers_match_argmin_revision_total` (counter),
+  `routers_match_cold_start_reason{reason}` (labelled counter with
+  `no_state` / `ttl_expired` / `stale_event` / `cost_ceiling` /
+  `empty_frontier`).
+- Benchmark `benches/streaming_match.rs` sweeps K ∈ {1, 4, 8, 16, ∞}
+  over the Ventura trip.
+
+**Measured perf at flood load (~1.2k matches/s, 6 pods, K=8, C=2):**
+
+| metric | 1B (memory) | 1C measured |
+|---|---|---|
+| p99 match_latency | ~50 ms | **24.24 ms** |
+| p50 match_latency | — | 3.30 ms |
+| solve p50 / p99 | — | 3.18 / 24.16 ms |
+| warm ratio | n/a (1-best) | 81% |
+| p50 / p99 frontier_size | n/a | 5.2 / 7.9 |
+| argmin_revisions / s | n/a | 735 (~72% of warm steps revise) |
+| cost_ceiling evict / s | n/a | 1.26 |
+| state_cache_size | n/a | 2,058 |
+
+p99 ~2× better than 1B. argmin_revisions confirms multi-hypothesis
+tracking is doing real work — under 1B's 1-best anchor those flips
+would have produced wrong matches that the next event silently
+corrected. K=8 is roughly right for this workload (p99 frontier =
+7.9); K=4 might shave a few more ms with minor quality loss.
+
+**1D experiment [rejected]:** Hypothesis was that the WIP costing on
+`feat-new-costing-functions` contributed to the p95/p99 tail. Tested
+by overlaying main's costing onto the 1C realtime work
+(`1d-rebase` branch). Result: catastrophic regression — main's
+costing produces cum_costs 100–1000× larger, saturating u32 in 5–8
+warm steps and tripping the eviction guard for 77% of events. Even
+with the ceiling raised to `u32::MAX`, the saturation itself causes
+`cum < cost_ceiling` to be false → still evicts. Warm-step p50 also
+jumps 3.18 → 23.66 ms, suggesting A* explores more candidates when
+costs are less discriminating. Conclusion: `feat-new-costing-functions`
+is essential to 1C's perf profile; revert is non-viable. The p99
+tail on 1C must be investigated elsewhere.
+
+**Stale/superseded items in earlier sections:**
+- The "Phase 1B" header at line 687 describes the design as
+  "deferred". 1C subsumed it — that header should be read as
+  historical context only.
+- "Cost-ceiling trip-wire: dropped from the design" in *Settled
+  decisions* is no longer accurate. The trip-wire shipped in 1B v1
+  (`MATCH_COST_CEILING=2_000_000`) and is load-bearing under 1C — it
+  catches cum_cost drift before the u32 saturates.
+- Phase 4 shadow-mode comparator is unneeded (Markov property); see
+  "Implications for validation".
+
+### Future ideas / improvements
+
+- **Separate warm-step latency from cold-start in the
+  `solve_latency_ms` histogram.** Currently both contribute to the
+  same buckets; with warm ratio at 81% the cold-start tail dominates
+  p99. A `warm` / `cold` label would let us see the warm-only p99
+  directly and target it. This is the most actionable next step for
+  shrinking the p99 tail.
+- **Per-candidate solve labels.** Beyond warm/cold, splitting by
+  frontier size or cum_cost would identify whether the tail comes
+  from dense junctions, vehicles approaching the cost ceiling, or
+  pathological GPS jumps.
+- **u64 cum_cost.** u32 was chosen when 1B's per-event costs were
+  ~5k–50k. Under future costing experiments the per-step cost
+  magnitude could grow; widening the accumulator is cheap insurance
+  and removes the saturation eviction failure mode entirely. Keep
+  the cost-ceiling guard but base its check on raw cum_cost rather
+  than overflow proximity.
+- **Renormalise the frontier periodically.** Subtracting `min_cum_cost`
+  from every node preserves relative argmin ordering and keeps the
+  numbers bounded indefinitely. Cheap (one `min` + one subtraction
+  per frontier node), and removes the need for the cost ceiling
+  entirely.
+- **Track argmin-revision *distance* not just count.** Currently the
+  metric records edge-id flips. A spatial measure (Haversine between
+  prev argmin and new argmin) would distinguish "same junction,
+  different edge" (cheap, expected) from "totally different prior
+  hypothesis won" (rare, interesting).
+- **Lower K under steady-state, raise on uncertainty.** Most warm
+  steps stay within a small frontier (p50=5.2). Adaptive K — drop to
+  ~3 when the top hypothesis has a comfortable margin, raise to 16
+  when the top two costs are close — could lower the per-step cost
+  in the common case without giving up accuracy at hard junctions.
+- **Investigate the 8% error rate** (`routers_matches_total_error`).
+  Pathological-trip sanity guards catch some but not all. Likely
+  vehicles with junk GPS, but worth labelling errors by cause to
+  rule out solver bugs hiding in the long tail.
+- **Bench the `K=4` configuration in production.** The
+  `streaming_match` bench predicts a meaningful speedup with
+  acceptable quality at K=4; a real-traffic A/B (one pod) would
+  validate the bench's assumption.
+- **HISTORY_MAX_POINTS bumped to 25 (from 5).** The TTL alignment
+  earlier in this doc capped age, not count. Cold-start cost was
+  bounded by point count — with the streaming matcher carrying the
+  full Viterbi history forward, cold-start frequency is the dominant
+  driver of latency tails. More history per cold-start = better
+  initial frontier seeds = potentially fewer subsequent
+  cold-restarts after drift. Measure impact post-deploy.
+
 ---
 
 **Parallelism sweep + CPU-cap experiment [✅ 2026-06-13]**: With warm
