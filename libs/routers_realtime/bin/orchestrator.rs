@@ -1,8 +1,7 @@
 use routers_realtime::{
     HistoryConfig, MemoryStore, ValkeyStore, WarmingMemoryStore,
     context::RawEvent,
-    metrics,
-    nats,
+    metrics, nats,
     nats_ingest::{self, NatsIngestOpts},
     orchestrate,
 };
@@ -19,8 +18,7 @@ fn make_source(
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let nats_url =
-        std::env::var("NATS_URL").unwrap_or_else(|_| "nats://127.0.0.1:4222".into());
+    let nats_url = std::env::var("NATS_URL").unwrap_or_else(|_| "nats://127.0.0.1:4222".into());
     let valkey_url =
         std::env::var("VALKEY_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".into());
     let store_mode = std::env::var("STORE").unwrap_or_else(|_| "valkey".into());
@@ -39,7 +37,7 @@ async fn main() -> anyhow::Result<()> {
     let history_max_points: usize = std::env::var("HISTORY_MAX_POINTS")
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or(25);
+        .unwrap_or(5);
     let history_max_age_ms: u64 = std::env::var("HISTORY_MAX_AGE_SECS")
         .ok()
         .and_then(|s| s.parse::<u64>().ok())
@@ -82,12 +80,17 @@ async fn main() -> anyhow::Result<()> {
 
     match store_mode.as_str() {
         "memory" => {
-            eprintln!(
-                "store: memory  parallelism=1  history_max_points={history_max_points}"
-            );
+            eprintln!("store: memory  parallelism=1  history_max_points={history_max_points}");
             let source = make_source(js, ingest_opts);
             let sink = nats::match_publish_sink::<S>(nc, "match".into());
-            orchestrate(source, sink, MemoryStore::<S>::new(valkey_max_len), &strategy, &history_cfg).await
+            orchestrate(
+                source,
+                sink,
+                MemoryStore::<S>::new(valkey_max_len),
+                &strategy,
+                &history_cfg,
+            )
+            .await
         }
         _ => {
             eprintln!(

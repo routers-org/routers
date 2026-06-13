@@ -36,8 +36,10 @@ use std::io::Write;
 use std::str::FromStr;
 use tokio::time::Instant;
 
-const DEFAULT_CSV: &str =
-    concat!(env!("CARGO_MANIFEST_DIR"), "/examples/sydney-dump-2026-thesis.csv");
+const DEFAULT_CSV: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/examples/sydney-dump-2026-thesis.csv"
+);
 const TIME_FORMAT_MS: &str = "%Y-%m-%d %H:%M:%S%.f";
 const TIME_FORMAT: &str = "%Y-%m-%d %H:%M:%S";
 
@@ -84,7 +86,14 @@ fn kubectl_apply(yaml: &str) -> Result<(), Box<dyn Error>> {
 
 fn kubectl_rollout_wait(deployment: &str, ns: &str) -> Result<(), Box<dyn Error>> {
     let status = std::process::Command::new("kubectl")
-        .args(["rollout", "status", &format!("deployment/{deployment}"), "-n", ns, "--timeout=120s"])
+        .args([
+            "rollout",
+            "status",
+            &format!("deployment/{deployment}"),
+            "-n",
+            ns,
+            "--timeout=120s",
+        ])
         .status()?;
     if !status.success() {
         eprintln!("[deploy] warning: rollout wait for {deployment} did not complete cleanly");
@@ -92,7 +101,13 @@ fn kubectl_rollout_wait(deployment: &str, ns: &str) -> Result<(), Box<dyn Error>
     Ok(())
 }
 
-fn matcher_yaml(shard: &Geohash, stub: bool, shard_cache: &str, ns: &str, shard_precision: u8) -> String {
+fn matcher_yaml(
+    shard: &Geohash,
+    stub: bool,
+    shard_cache: &str,
+    ns: &str,
+    shard_precision: u8,
+) -> String {
     // stub_env must end with a newline so it splices cleanly into the env list.
     let stub_env = if stub {
         "            - name: MATCH_STUB\n              value: \"1\"\n"
@@ -100,7 +115,8 @@ fn matcher_yaml(shard: &Geohash, stub: bool, shard_cache: &str, ns: &str, shard_
         ""
     };
     // Use real newlines (not \n\ continuations) so source indentation is preserved verbatim.
-    format!("apiVersion: apps/v1
+    format!(
+        "apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: matcher-{shard}
@@ -141,11 +157,22 @@ spec:
               value: \"{shard}\"
 {stub_env}            - name: RUST_LOG
               value: \"info\"
+            - name: MATCH_PROFILE_SAMPLE_N
+              value: \"50\"
+            - name: MATCH_STATEFUL
+              value: \"1\"
+            - name: MATCH_CONCURRENCY
+              value: \"8\"
+            - name: MATCH_FRONTIER_K
+              value: \"8\"
+            - name: MATCH_COST_CEILING
+              value: \"2000000\"
           resources:
             requests:
-              cpu: 100m
+              cpu: 500m
               memory: 512Mi
             limits:
+              cpu: \"2\"
               memory: 8Gi
           volumeMounts:
             - mountPath: /shards
@@ -156,11 +183,13 @@ spec:
           hostPath:
             path: {shard_cache}
             type: Directory
-")
+"
+    )
 }
 
 fn orchestrator_yaml(shard: &Geohash, ns: &str) -> String {
-    format!("apiVersion: apps/v1
+    format!(
+        "apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: orchestrator-{shard}
@@ -211,7 +240,8 @@ spec:
               memory: 256Mi
             limits:
               memory: 512Mi
-")
+"
+    )
 }
 
 fn deploy_shards(
@@ -221,7 +251,10 @@ fn deploy_shards(
     ns: &str,
     shard_precision: u8,
 ) -> Result<(), Box<dyn Error>> {
-    println!("Deploying matchers ({})...", if stub { "stub" } else { "real HMM" });
+    println!(
+        "Deploying matchers ({})...",
+        if stub { "stub" } else { "real HMM" }
+    );
     for shard in shards {
         kubectl_apply(&matcher_yaml(shard, stub, shard_cache, ns, shard_precision))?;
     }
@@ -248,8 +281,16 @@ fn deploy_shards(
     println!("Waiting for pods ready...");
     for shard in shards {
         let _ = std::process::Command::new("kubectl")
-            .args(["wait", "pod", "-l", &format!("app=orchestrator-shard,shard={shard}"), "-n", ns,
-                   "--for=condition=ready", "--timeout=90s"])
+            .args([
+                "wait",
+                "pod",
+                "-l",
+                &format!("app=orchestrator-shard,shard={shard}"),
+                "-n",
+                ns,
+                "--for=condition=ready",
+                "--timeout=90s",
+            ])
             .status();
     }
 
@@ -259,11 +300,27 @@ fn deploy_shards(
 fn teardown_shards(ns: &str) {
     println!("Scaling matchers to 0...");
     let _ = std::process::Command::new("kubectl")
-        .args(["scale", "deployment", "-l", "app=matcher", "-n", ns, "--replicas=0"])
+        .args([
+            "scale",
+            "deployment",
+            "-l",
+            "app=matcher",
+            "-n",
+            ns,
+            "--replicas=0",
+        ])
         .status();
     println!("Scaling per-shard orchestrators to 0...");
     let _ = std::process::Command::new("kubectl")
-        .args(["scale", "deployment", "-l", "app=orchestrator-shard", "-n", ns, "--replicas=0"])
+        .args([
+            "scale",
+            "deployment",
+            "-l",
+            "app=orchestrator-shard",
+            "-n",
+            ns,
+            "--replicas=0",
+        ])
         .status();
     println!("Restoring general orchestrator...");
     let _ = std::process::Command::new("kubectl")
@@ -304,8 +361,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .filter_map(|s| Geohash::from_str(s.trim()).ok())
         .collect();
 
-    let deploy = std::env::var("DEPLOY_SHARDS").is_ok();
-    let stub = std::env::var("MATCH_STUB").is_ok();
+    let truthy = |k: &str| match std::env::var(k) {
+        Ok(v) => matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        ),
+        Err(_) => false,
+    };
+    let deploy = truthy("DEPLOY_SHARDS");
+    let stub = truthy("MATCH_STUB");
     let ns = std::env::var("K8S_NS").unwrap_or_else(|_| "routers-dev".into());
 
     if deploy {
@@ -339,7 +403,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
     } else {
         let mut names: Vec<_> = active_shards.iter().map(|s| s.to_string()).collect();
         names.sort();
-        println!("Shard filter: {} shards — {}", names.len(), names.join(", "));
+        println!(
+            "Shard filter: {} shards — {}",
+            names.len(),
+            names.join(", ")
+        );
     }
 
     println!("Loading {}...", csv_path);
@@ -348,7 +416,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let n = df.height();
     if n == 0 {
         println!("No events found.");
-        if deploy { teardown_shards(&ns); }
+        if deploy {
+            teardown_shards(&ns);
+        }
         return Ok(());
     }
 
@@ -359,8 +429,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let latitudes = df.column("Latitude")?.f64()?;
     let longitudes = df.column("Longitude")?.f64()?;
 
-    let t_first = parse_time(event_times.get(0).unwrap_or(""))
-        .ok_or("could not parse first event time")?;
+    let t_first =
+        parse_time(event_times.get(0).unwrap_or("")).ok_or("could not parse first event time")?;
     let t_last = parse_time(event_times.get(n - 1).unwrap_or(""))
         .ok_or("could not parse last event time")?;
     let span_min = (t_last - t_first).num_seconds() as f64 / 60.0;
@@ -372,8 +442,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         t_load.elapsed().as_secs_f64(),
     );
 
-    let nats_url =
-        std::env::var("NATS_URL").unwrap_or_else(|_| "nats://127.0.0.1:4222".into());
+    let nats_url = std::env::var("NATS_URL").unwrap_or_else(|_| "nats://127.0.0.1:4222".into());
     println!("Connecting to NATS ({nats_url})...");
     let nc = async_nats::connect(&nats_url).await?;
     let js = async_nats::jetstream::new(nc);
@@ -383,7 +452,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
     println!("EVENTS stream ready — subject prefix={subject}");
 
     let effective_speed = if flood { f64::INFINITY } else { speed };
-    let loop_desc = |n: usize| if n == 0 { "∞".to_string() } else { n.to_string() };
+    let loop_desc = |n: usize| {
+        if n == 0 {
+            "∞".to_string()
+        } else {
+            n.to_string()
+        }
+    };
     if flood {
         println!(
             "Flood mode — sending at max rate  pipeline={pipeline}  loops={}",
@@ -494,30 +569,41 @@ async fn run(
             event_time: time_str.to_owned(),
             point: Coord::from((lon, lat)),
         };
-        let Ok(bytes) = serde_json::to_vec(&payload) else { continue };
+        let Ok(bytes) = serde_json::to_vec(&payload) else {
+            continue;
+        };
 
         if speed.is_infinite() && pipeline > 1 {
             match js.publish(event_subject, bytes.into()).await {
-                Ok(ack) => { pending.push(ack); sent += 1; }
+                Ok(ack) => {
+                    pending.push(ack);
+                    sent += 1;
+                }
                 Err(e) => eprintln!("\n[replay] publish error: {e}"),
             }
             if pending.len() >= pipeline {
-                for a in pending.drain(..) { let _ = a.await; }
+                for a in pending.drain(..) {
+                    let _ = a.await;
+                }
             }
         } else {
             match js.publish(event_subject, bytes.into()).await {
-                Ok(ack) => { let _ = ack.await; sent += 1; }
+                Ok(ack) => {
+                    let _ = ack.await;
+                    sent += 1;
+                }
                 Err(e) => eprintln!("\n[replay] publish error: {e}"),
             }
         }
 
         let now = Instant::now();
         if now.duration_since(last_report).as_secs_f64() >= 1.0 {
-            let rate =
-                (sent - last_sent) as f64 / now.duration_since(last_report).as_secs_f64();
+            let rate = (sent - last_sent) as f64 / now.duration_since(last_report).as_secs_f64();
             let pct = (sent + skipped) as f64 / n as f64 * 100.0;
             if skipped > 0 {
-                print!("\r  [{pct:5.1}%]  sent={sent:>7}  skipped={skipped:>7}  {rate:>8.0} events/s   ");
+                print!(
+                    "\r  [{pct:5.1}%]  sent={sent:>7}  skipped={skipped:>7}  {rate:>8.0} events/s   "
+                );
             } else {
                 print!("\r  [{pct:5.1}%]  {sent:>7}/{n}  {rate:>8.0} events/s   ");
             }
@@ -527,7 +613,9 @@ async fn run(
         }
     }
 
-    for a in pending.drain(..) { let _ = a.await; }
+    for a in pending.drain(..) {
+        let _ = a.await;
+    }
 
     if skipped > 0 {
         println!(

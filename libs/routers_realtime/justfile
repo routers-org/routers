@@ -221,7 +221,7 @@ replay speed="60" csv="" shards="" deploy="1" pipeline="1" loops="1":
     export REPLAY_SPEED={{ speed }}
     export REPLAY_PIPELINE={{ pipeline }}
     export REPLAY_LOOPS={{ loops }}
-    export DEPLOY_SHARDS={{ deploy }}
+    [[ "{{ deploy }}" == "1" || "{{ deploy }}" == "true" ]] && export DEPLOY_SHARDS=1 || unset DEPLOY_SHARDS
     [[ -n "{{ csv }}" ]] && export CSV_FILE="{{ csv }}" || true
     [[ -n "{{ shards }}" ]] && export ACTIVE_SHARDS="{{ shards }}" || true
     export SHARD_CACHE="$(realpath "{{ justfile_directory() }}/../../target/shard_cache")"

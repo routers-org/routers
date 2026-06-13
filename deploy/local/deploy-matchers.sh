@@ -80,8 +80,10 @@ spec:
               value: "debug"
             - name: MATCH_STATEFUL
               value: "1"
+            - name: MATCH_PROFILE_SAMPLE_N
+              value: "50"
             - name: MATCH_CONCURRENCY
-              value: "2"
+              value: "8"
             - name: MATCH_FRONTIER_K
               value: "8"
           volumeMounts:
@@ -93,7 +95,7 @@ spec:
               cpu: 500m
               memory: 256Mi
             limits:
-              cpu: 2000m
+              cpu: 4000m
               memory: 1536Mi
       volumes:
         - name: shards

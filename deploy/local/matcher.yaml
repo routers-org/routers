@@ -37,13 +37,23 @@ spec:
               value: "0.0.0.0:9092"
             - name: OWNED_SHARD
               value: "r3gr"
+            - name: MATCH_STATEFUL
+              value: "1"
+            - name: MATCH_CONCURRENCY
+              value: "8"
+            - name: MATCH_FRONTIER_K
+              value: "8"
+            - name: MATCH_COST_CEILING
+              value: "2000000"
+            - name: MATCH_PROFILE_SAMPLE_N
+              value: "50"
           volumeMounts:
             - name: shards
               mountPath: /shards
               readOnly: true
           resources:
             requests:
-              cpu: 100m
+              cpu: 1000m
               memory: 512Mi
             limits:
               memory: 8Gi
