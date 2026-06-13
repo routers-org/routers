@@ -347,7 +347,11 @@ impl Discovery<OsmEntryId> for OsmNetwork {
     where
         OsmEntryId: 'a,
     {
-        Box::new(self.index_edge.locate_in_envelope_intersecting(&aabb).copied())
+        Box::new(
+            self.index_edge
+                .locate_in_envelope_intersecting(&aabb)
+                .copied(),
+        )
     }
 
     fn nodes_in_box<'a>(
