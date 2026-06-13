@@ -6,15 +6,15 @@ use rstar::AABB;
 use crate::{Edge, Entry, Node};
 
 pub trait Discovery<E: Entry> {
-    /// TODO: Document
+    /// Returns an iterator of edges which fall within the given AABB.
     fn edges_in_box<'a>(
         &'a self,
         aabb: AABB<Point>,
-    ) -> Box<dyn Iterator<Item = &'a Edge<Node<E>>> + Send + 'a>
+    ) -> Box<dyn Iterator<Item = Edge<Node<E>>> + Send + 'a>
     where
         E: 'a;
 
-    /// TODO: Document
+    /// Returns an iterator of nodes which fall within the given AABB.
     fn nodes_in_box<'a>(
         &'a self,
         aabb: AABB<Point>,
@@ -58,7 +58,7 @@ pub trait Discovery<E: Entry> {
         &'a self,
         point: &Point,
         distance: f64,
-    ) -> Box<dyn Iterator<Item = &'a Edge<Node<E>>> + Send + 'a>
+    ) -> Box<dyn Iterator<Item = Edge<Node<E>>> + Send + 'a>
     where
         E: 'a,
     {
@@ -80,7 +80,7 @@ where
     fn edges_in_box<'a>(
         &'a self,
         aabb: AABB<Point>,
-    ) -> Box<dyn Iterator<Item = &'a Edge<Node<E>>> + Send + 'a>
+    ) -> Box<dyn Iterator<Item = Edge<Node<E>>> + Send + 'a>
     where
         E: 'a,
     {

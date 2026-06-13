@@ -109,11 +109,15 @@ impl Discovery<MockEntryId> for MockNetwork {
     fn edges_in_box<'a>(
         &'a self,
         aabb: AABB<Point>,
-    ) -> Box<dyn Iterator<Item = &'a Edge<Node<MockEntryId>>> + Send + 'a>
+    ) -> Box<dyn Iterator<Item = Edge<Node<MockEntryId>>> + Send + 'a>
     where
         MockEntryId: 'a,
     {
-        Box::new(self.edge_index.locate_in_envelope_intersecting(&aabb))
+        Box::new(
+            self.edge_index
+                .locate_in_envelope_intersecting(&aabb)
+                .cloned(),
+        )
     }
 
     fn nodes_in_box<'a>(

@@ -55,6 +55,61 @@ fn neighbour_mode_at_boundary_drops_to_fewer_neighbours() {
 }
 
 #[test]
+fn padded_mode_loaded_set_is_owned_only() {
+    // OwnedAndPadded never adds whole neighbour shards: the padded
+    // strip is carried as geometry, not as extra shard ids.
+    let strategy = GeohashStrategy::with_precision(3);
+    let owned = strategy.locate(Point::new(13.4, 52.5));
+    let sel = Selection::new(
+        &strategy,
+        owned,
+        SelectionMode::OwnedAndPadded {
+            padding_distance: 50.0,
+        },
+    );
+    assert_eq!(sel.loaded.len(), 1);
+    assert!(sel.contains(&owned));
+    assert!(sel.padding.is_some());
+}
+
+#[test]
+fn padded_buffer_extends_beyond_owned_bounds() {
+    let strategy = GeohashStrategy::with_precision(6);
+    let owned = strategy.locate(Point::new(13.4, 52.5));
+    let cell = strategy.bounds(&owned);
+    let sel = Selection::new(
+        &strategy,
+        owned,
+        SelectionMode::OwnedAndPadded {
+            padding_distance: 50.0,
+        },
+    );
+    let padding = sel.padding.expect("padded mode sets a buffer");
+    // The buffer encloses the cell strictly.
+    assert!(padding.min().x < cell.min().x);
+    assert!(padding.max().x > cell.max().x);
+    assert!(padding.min().y < cell.min().y);
+    assert!(padding.max().y > cell.max().y);
+
+    // A point well inside the cell is in the padding region; a point
+    // far outside it is not.
+    let centre = Point::new(
+        0.5 * (cell.min().x + cell.max().x),
+        0.5 * (cell.min().y + cell.max().y),
+    );
+    assert!(sel.padding_contains(centre));
+    assert!(!sel.padding_contains(Point::new(centre.x() + 10.0, centre.y())));
+}
+
+#[test]
+fn padding_contains_false_when_no_buffer() {
+    let strategy = QuadTreeStrategy::with_depth(8);
+    let owned = strategy.locate(Point::new(13.4, 52.5));
+    let sel = Selection::new(&strategy, owned, SelectionMode::Owned);
+    assert!(!sel.padding_contains(Point::new(13.4, 52.5)));
+}
+
+#[test]
 fn selection_contains_only_loaded() {
     let strategy = QuadTreeStrategy::with_depth(6);
     let owned = strategy.locate(Point::new(13.4, 52.5));
