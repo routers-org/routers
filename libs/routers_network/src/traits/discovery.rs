@@ -44,8 +44,16 @@ pub trait Discovery<E: Entry> {
         self.nodes_in_box(aabb)
     }
 
-    /// Owned-iterator counterpart to [`Discovery::edges_in_box`]. See its
-    /// doc-comment for why this yields by-value rather than by-reference.
+    /// A function which returns an unsorted iterator of [`FatEdge`] references which are within
+    /// the provided `distance` of the input [point](Point).
+    ///
+    /// ### Note
+    /// This function implements a square-scan.
+    ///
+    /// Therefore, it bounds the search to be within a square-radius of the origin. Therefore,
+    /// it may not select every node within the supplied distance, or it may select more nodes.
+    /// This resolution method is however significantly cheaper than a circular scan, so a wider
+    /// or shorter search radius may be required in some use-cases.
     fn edges_at_distance<'a>(
         &'a self,
         point: &Point,

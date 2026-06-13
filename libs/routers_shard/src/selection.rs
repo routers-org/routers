@@ -37,11 +37,14 @@ pub struct Selection<S: ShardId> {
     pub loaded: FxHashSet<S>,
     /// Optional geographic buffer around the owned shard's bounds.
     ///
-    /// When present, the network builder additionally admits any node
-    /// whose position lies inside this rectangle, regardless of which
-    /// shard it belongs to. Used by
-    /// [`SelectionMode::OwnedAndPadded`] to materialise a small strip of
-    /// cross-boundary data without loading whole neighbour shards.
+    /// Used by [`SelectionMode::OwnedAndPadded`] to obtain a small
+    /// strip of cross-boundary data without loading whole neighbour shards.
+    ///
+    /// As such, it scales more efficiently than [`SelectionMode::OwnedAndNeighbours`]
+    /// when the padding distance is constant and shard sizes are large.
+    ///
+    /// When given enough information about vehicle movement, an entire
+    /// shard can be excessive, and have higher memory usage than required.
     pub padding: Option<Rect>,
 }
 

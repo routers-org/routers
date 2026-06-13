@@ -35,8 +35,7 @@ where
     /// Spatial index over all unique nodes across all shards.
     index: RTree<Node<E>>,
 
-    /// Slim spatial index over edges — see `ShardedNetwork::index_edge`
-    /// for rationale. Required for correct HMM candidate enumeration.
+    /// Spatial index over unique edges, in all shards.
     index_edge: RTree<crate::network::EdgeRef<E>>,
 }
 

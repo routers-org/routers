@@ -202,11 +202,6 @@ where
     }
 
     /// Rebuild the spatial indices from `hash` + `graph`.
-    ///
-    /// Both the node RTree and the slim edge RTree are intentionally not
-    /// serialised — bulk-loading is O(N log N) at hundreds of MB/s,
-    /// faster than letting `postcard` decode tree structures that take
-    /// proportionally more bytes on disk.
     pub fn rebuild_indices(&mut self) {
         let nodes: Vec<Node<E>> = self.hash.values().copied().collect();
         let edges: Vec<EdgeRef<E>> = self
