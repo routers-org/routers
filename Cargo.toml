@@ -222,6 +222,10 @@ harness = false
 name = "total_ingestion"
 harness = false
 
+[[bench]]
+name = "streaming_match"
+harness = false
+
 [[example]]
 name = "shard_match"
 required-features = ["shard"]

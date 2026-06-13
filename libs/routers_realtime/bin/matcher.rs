@@ -4,6 +4,7 @@ use geo::{Distance, Haversine, LineString, Point};
 use routers::transition::r#match::DEFAULT_SEARCH_DISTANCE;
 use routers::transition::streaming::{MatchState, StreamingMatcher};
 use routers::transition::{CostingStrategies, MatchError, RoutedPath};
+use routers_network::DirectionAwareEdgeId;
 use routers_network::traits::metadata::Metadata;
 use routers_codec::osm::{OsmEdgeMetadata, OsmEntryId};
 use routers_realtime::{
@@ -52,8 +53,9 @@ type SolveResult = (
     Result<(RoutedPath<E, M>, MatchState<E>), MatchError>,
     f64,
     Instant,
-    bool,    // was_warm — true if warm step over a saved frontier was used
-    Instant, // t_spawn_at
+    bool,                              // was_warm — true if warm step over a saved frontier was used
+    Instant,                           // t_spawn_at
+    Option<DirectionAwareEdgeId<E>>,   // prev argmin edge id (Some only when was_warm) — drives argmin_revisions metric
 );
 
 fn frontier_k() -> Option<usize> {
@@ -242,7 +244,7 @@ async fn main() -> anyhow::Result<()> {
 
                 // Drain a completed solve and publish its result.
                 Some(task_result) = join_set.join_next(), if !join_set.is_empty() => {
-                    let (vehicle_id, resolved_at_ms, current_coord, debug_pts, match_result, solve_ms, t_delivery, was_warm, t_spawn_at) =
+                    let (vehicle_id, resolved_at_ms, current_coord, debug_pts, match_result, solve_ms, t_delivery, was_warm, t_spawn_at, prev_argmin_edge) =
                         match task_result {
                             Ok(r) => r,
                             Err(e) => {
@@ -285,6 +287,16 @@ async fn main() -> anyhow::Result<()> {
                                         new_state.truncate_to_top(k);
                                     }
                                     let new_cum_cost = new_state.last_cum_cost().unwrap_or(0);
+                                    m.frontier_size.observe(new_state.len() as f64);
+                                    if was_warm {
+                                        if let (Some(prev_edge), Some(new_node)) =
+                                            (prev_argmin_edge, new_state.argmin())
+                                        {
+                                            if new_node.edge.id != prev_edge {
+                                                m.argmin_revisions.inc();
+                                            }
+                                        }
+                                    }
                                     state_cache
                                         .entry(vehicle_id.clone())
                                         .and_modify(|s| {
@@ -464,41 +476,57 @@ async fn main() -> anyhow::Result<()> {
                     // Decide warm vs cold: if we have a non-stale frontier
                     // for this vehicle that's still under the cost ceiling,
                     // extend it by one observation via `StreamingMatcher::step`.
-                    // Otherwise cold-start with the full history linestring.
+                    // Otherwise cold-start with the full history linestring,
+                    // recording the reason for downstream observability.
                     let now_ms_local = now_ms();
-                    let warm_state: Option<MatchState<E>> = if stateful {
-                        let read = state_cache.get(&ctx.vehicle_id);
-                        match read {
-                            Some(s) => {
-                                let cum = s.last_cum_cost().unwrap_or(u32::MAX);
-                                let fresh = now_ms_local
-                                    .saturating_sub(s.last_event_ms)
-                                    <= state_ttl_ms
-                                    && ctx.resolved_at_ms > s.last_event_ms;
-                                let under_ceiling = cum < cost_ceiling;
-                                if !under_ceiling {
-                                    drop(s);
-                                    state_cache.remove(&ctx.vehicle_id);
-                                    m.cost_ceiling_evictions.inc();
-                                    None
-                                } else if fresh && !s.is_empty() {
-                                    Some(s.clone())
-                                } else {
-                                    None
+                    let (warm_state, cold_reason): (Option<MatchState<E>>, Option<&'static str>) =
+                        if stateful {
+                            let read = state_cache.get(&ctx.vehicle_id);
+                            match read {
+                                Some(s) => {
+                                    let cum = s.last_cum_cost().unwrap_or(u32::MAX);
+                                    let ttl_ok = now_ms_local
+                                        .saturating_sub(s.last_event_ms)
+                                        <= state_ttl_ms;
+                                    let event_ahead = ctx.resolved_at_ms > s.last_event_ms;
+                                    let under_ceiling = cum < cost_ceiling;
+                                    if !under_ceiling {
+                                        drop(s);
+                                        state_cache.remove(&ctx.vehicle_id);
+                                        m.cost_ceiling_evictions.inc();
+                                        (None, Some("cost_ceiling"))
+                                    } else if !ttl_ok {
+                                        (None, Some("ttl_expired"))
+                                    } else if !event_ahead {
+                                        (None, Some("stale_event"))
+                                    } else if s.is_empty() {
+                                        (None, Some("empty_frontier"))
+                                    } else {
+                                        (Some(s.clone()), None)
+                                    }
                                 }
+                                None => (None, Some("no_state")),
                             }
-                            None => None,
-                        }
-                    } else {
-                        None
-                    };
+                        } else {
+                            (None, None)
+                        };
 
                     let was_warm = warm_state.is_some();
                     if was_warm {
                         m.match_step_warm.inc();
                     } else {
                         m.match_step_cold.inc();
+                        if let Some(reason) = cold_reason {
+                            m.cold_start_reason.with_label_values(&[reason]).inc();
+                        }
                     }
+
+                    // Snapshot prev argmin edge before moving warm_state into the closure.
+                    // Drives the argmin_revisions metric in the drain.
+                    let prev_argmin_edge: Option<DirectionAwareEdgeId<E>> = warm_state
+                        .as_ref()
+                        .and_then(|s| s.argmin())
+                        .map(|n| n.edge.id);
 
                     let cold_points: Vec<Point> = if was_warm {
                         Vec::new()
@@ -546,7 +574,7 @@ async fn main() -> anyhow::Result<()> {
                                 was_warm,
                             );
                         }
-                        (vehicle_id, resolved_at_ms, current_coord, debug_pts, result, solve_ms, t_delivery, was_warm, t_spawn_at)
+                        (vehicle_id, resolved_at_ms, current_coord, debug_pts, result, solve_ms, t_delivery, was_warm, t_spawn_at, prev_argmin_edge)
                     });
                 }
             }

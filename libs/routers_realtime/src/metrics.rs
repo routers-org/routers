@@ -1,5 +1,7 @@
 use axum::{Router, routing::get};
-use prometheus::{Gauge, Histogram, HistogramOpts, IntCounter, Registry, TextEncoder, opts};
+use prometheus::{
+    Gauge, Histogram, HistogramOpts, IntCounter, IntCounterVec, Opts, Registry, TextEncoder, opts,
+};
 use std::net::SocketAddr;
 use std::sync::OnceLock;
 
@@ -25,6 +27,21 @@ pub struct MatcherMetrics {
     /// Number of state evictions caused by the cum_cost ceiling guard
     /// (`MATCH_COST_CEILING`). Should be near-zero in steady state.
     pub cost_ceiling_evictions: IntCounter,
+    /// Distribution of saved-frontier sizes after a warm step. With
+    /// `MATCH_FRONTIER_K` set this caps at K; otherwise it traces the
+    /// raw multi-candidate column produced by the solver.
+    pub frontier_size: Histogram,
+    /// Warm steps where the argmin candidate moved to a different
+    /// edge between events. Elevated rates indicate volatile / noisy
+    /// matching (GPS jitter at junctions, undersampled trips).
+    pub argmin_revisions: IntCounter,
+    /// Labelled counter of cold-start causes. Labels:
+    ///   `no_state` — no cache entry for vehicle
+    ///   `ttl_expired` — state present but `last_event_ms` past TTL
+    ///   `stale_event` — incoming event older than cached state
+    ///   `cost_ceiling` — cum_cost passed `MATCH_COST_CEILING`
+    ///   `empty_frontier` — saved state has no hypotheses
+    pub cold_start_reason: IntCounterVec,
     registry: Registry,
 }
 
@@ -116,6 +133,27 @@ pub fn matcher_global() -> &'static MatcherMetrics {
                 "routers_match_cost_ceiling_evictions_total",
                 "State evictions triggered by the cum_cost ceiling guard"
             ),
+            frontier_size: histogram!(
+                "routers_match_frontier_size",
+                "Number of hypotheses retained in the saved Viterbi frontier after a warm step",
+                vec![1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 64.0, 128.0]
+            ),
+            argmin_revisions: counter!(
+                "routers_match_argmin_revision_total",
+                "Warm steps where the argmin candidate moved to a different edge"
+            ),
+            cold_start_reason: {
+                let cv = IntCounterVec::new(
+                    Opts::new(
+                        "routers_match_cold_start_reason",
+                        "Cold-start causes labelled by reason",
+                    ),
+                    &["reason"],
+                )
+                .unwrap();
+                registry.register(Box::new(cv.clone())).unwrap();
+                cv
+            },
             registry,
         }
     })

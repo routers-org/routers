@@ -236,7 +236,7 @@ where
 mod tests {
     use super::*;
     use crate::r#match::DEFAULT_SEARCH_DISTANCE;
-    use crate::testing::{MockEntryId, MockNetwork, MockNetworkBuilder};
+    use crate::testing::{MockEntryId, MockMetadata, MockNetwork, MockNetworkBuilder};
     use geo::point;
     use routers_network::Discovery;
 
@@ -437,6 +437,107 @@ mod tests {
 
         let (_routed, new_state) = matcher.step(&prev, new_point, 250, &()).expect("step");
         assert_eq!(new_state.last_event_ms, 250);
+    }
+
+    /// Even spacing across `straight_road`'s 4 nodes
+    /// (-118.14 .. -118.17, y=34.1503). Returns `n` reachable points.
+    fn equivalence_points(n: usize) -> Vec<Point> {
+        let (start, end) = (-118.141_f64, -118.169_f64);
+        let step = (end - start) / ((n - 1) as f64);
+        (0..n)
+            .map(|i| point!(x: start + (i as f64) * step, y: 34.1503))
+            .collect()
+    }
+
+    /// Cold-start over a 2-point prefix, then warm-step the remainder
+    /// one point at a time. Mirrors the matcher binary's streaming path.
+    fn streaming_chain(
+        matcher: &StreamingMatcher<
+            '_,
+            MockEntryId,
+            MockMetadata,
+            MockNetwork,
+            crate::costing::DefaultEmissionCost,
+            crate::costing::DefaultTransitionCost,
+        >,
+        points: &[Point],
+    ) -> MatchState<MockEntryId> {
+        let seed = LineString(vec![points[0].into(), points[1].into()]);
+        let (_, mut state) = matcher.cold_start(seed, 100, &()).expect("seed cold-start");
+        for (i, p) in points.iter().enumerate().skip(2) {
+            let (_, ns) = matcher
+                .step(&state, *p, 100 * (i as u64 + 1), &())
+                .expect("warm step");
+            state = ns;
+        }
+        state
+    }
+
+    /// Solve the full N-point linestring in one shot.
+    fn full_solve(
+        matcher: &StreamingMatcher<
+            '_,
+            MockEntryId,
+            MockMetadata,
+            MockNetwork,
+            crate::costing::DefaultEmissionCost,
+            crate::costing::DefaultTransitionCost,
+        >,
+        points: &[Point],
+    ) -> MatchState<MockEntryId> {
+        let ls = LineString(points.iter().map(|p| (*p).into()).collect());
+        let (_, state) = matcher.cold_start(ls, 100, &()).expect("full cold-start");
+        state
+    }
+
+    /// 1C-13: by the Markov property, a streaming N-step chain must
+    /// agree with the equivalent full N-layer solve at every length.
+    /// We assert argmin equality (edge + snapped + cum_cost) — this
+    /// is the load-bearing invariant for the downstream `MatchResult`.
+    #[test]
+    fn streaming_chain_matches_full_solve_argmin() {
+        let net = straight_road();
+        let costing = CostingStrategies::default();
+        let matcher = StreamingMatcher::new(&net, &costing, DEFAULT_SEARCH_DISTANCE);
+
+        for n in [3usize, 4, 5] {
+            let points = equivalence_points(n);
+            let full = full_solve(&matcher, &points);
+            let stream = streaming_chain(&matcher, &points);
+
+            let f = full.argmin().expect("full argmin present");
+            let s = stream.argmin().expect("stream argmin present");
+            assert_eq!(f.cum_cost, s.cum_cost, "n={n}: cum_cost mismatch");
+            assert_eq!(f.snapped, s.snapped, "n={n}: snapped mismatch");
+            assert_eq!(f.edge.id, s.edge.id, "n={n}: edge mismatch");
+        }
+    }
+
+    /// 1C-14: focused warm-step argmin parity. A single warm extension
+    /// of an (N-1)-point cold-start must produce the same argmin as
+    /// the full N-point solve.
+    #[test]
+    fn warm_step_matches_full_solve_argmin() {
+        let net = straight_road();
+        let costing = CostingStrategies::default();
+        let matcher = StreamingMatcher::new(&net, &costing, DEFAULT_SEARCH_DISTANCE);
+
+        let points = equivalence_points(4);
+
+        let full_ls = LineString(points.iter().map(|p| (*p).into()).collect());
+        let (_, full_state) = matcher.cold_start(full_ls, 100, &()).expect("full");
+
+        let prefix_ls =
+            LineString(points[..3].iter().map(|p| (*p).into()).collect());
+        let (_, prev) = matcher.cold_start(prefix_ls, 100, &()).expect("prefix");
+        let (_, warm_state) =
+            matcher.step(&prev, points[3], 200, &()).expect("warm step");
+
+        let f = full_state.argmin().expect("full argmin");
+        let w = warm_state.argmin().expect("warm argmin");
+        assert_eq!(f.cum_cost, w.cum_cost, "cum_cost mismatch");
+        assert_eq!(f.snapped, w.snapped, "snapped mismatch");
+        assert_eq!(f.edge.id, w.edge.id, "edge mismatch");
     }
 
     fn dummy_edge() -> Edge<MockEntryId> {

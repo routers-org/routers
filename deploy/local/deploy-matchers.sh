@@ -78,6 +78,12 @@ spec:
               value: "${shard}"
             - name: RUST_LOG
               value: "debug"
+            - name: MATCH_STATEFUL
+              value: "1"
+            - name: MATCH_CONCURRENCY
+              value: "2"
+            - name: MATCH_FRONTIER_K
+              value: "8"
           volumeMounts:
             - name: shards
               mountPath: /shards
