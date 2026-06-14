@@ -1,0 +1,19 @@
+install:
+    helm install routers-realtime . \
+        -n routers-dev \
+        --create-namespace
+
+# Use a PersistentVolumeClaim for shard cache
+use-pvc: install
+    helm upgrade routers-realtime . \
+        --set shardCache.mode=pvc \
+        --set shardCache.pvc.claimName=routers-shards
+
+use-shards shards="r3gq,r3gr,r3gw": install
+    helm upgrade routers-realtime . \
+        --set 'shards={{{ shards }}}'
+
+use-shard-cache cache-dir="": install
+    helm upgrade routers-realtime . \
+        -f values-local-dev.yaml \
+        --set 'shardCache.hostPath={{ cache-dir }}/target/shard_cache'

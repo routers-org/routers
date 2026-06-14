@@ -1,0 +1,79 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: matcher
+  namespace: routers-dev
+  labels:
+    app: matcher
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: matcher
+  template:
+    metadata:
+      labels:
+        app: matcher
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9092"
+        prometheus.io/path: "/metrics"
+    spec:
+      containers:
+        - name: matcher
+          image: routers-matcher:latest
+          imagePullPolicy: Never
+          ports:
+            - name: metrics
+              containerPort: 9092
+          env:
+            - name: NATS_URL
+              value: "nats://nats.routers-dev.svc.cluster.local:4222"
+            - name: SHARD_DIR
+              value: "/shards"
+            - name: SHARD_PRECISION
+              value: "4"
+            - name: METRICS_ADDR
+              value: "0.0.0.0:9092"
+            - name: OWNED_SHARD
+              value: "r3gr"
+            - name: MATCH_STATEFUL
+              value: "1"
+            - name: MATCH_CONCURRENCY
+              value: "8"
+            - name: MATCH_FRONTIER_K
+              value: "8"
+            - name: MATCH_COST_CEILING
+              value: "2000000"
+            - name: MATCH_PROFILE_SAMPLE_N
+              value: "50"
+          volumeMounts:
+            - name: shards
+              mountPath: /shards
+              readOnly: true
+          resources:
+            requests:
+              cpu: 1000m
+              memory: 512Mi
+            limits:
+              memory: 8Gi
+      volumes:
+        - name: shards
+          hostPath:
+            path: /Users/benji/Documents/personal/routers/target/shard_cache
+            type: Directory
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: matcher-metrics
+  namespace: routers-dev
+  labels:
+    app: matcher
+spec:
+  selector:
+    app: matcher
+  ports:
+    - name: metrics
+      port: 9092
+      targetPort: 9092

@@ -1,0 +1,42 @@
+{{- if .Values.historian.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: historian
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "routers.labels" . | nindent 4 }}
+    app: historian
+spec:
+  replicas: {{ .Values.historian.replicas }}
+  selector:
+    matchLabels:
+      app: historian
+  template:
+    metadata:
+      labels:
+        {{- include "routers.labels" . | nindent 8 }}
+        app: historian
+    spec:
+      containers:
+        - name: historian
+          image: "{{ .Values.historian.image.repository }}:{{ .Values.historian.image.tag }}"
+          imagePullPolicy: {{ .Values.historian.image.pullPolicy }}
+          env:
+            - name: NATS_URL
+              value: {{ .Values.infra.natsUrl | quote }}
+            - name: EVENTS_CONSUMER
+              value: {{ .Values.historian.env.eventsConsumer | quote }}
+            - name: VALKEY_URL
+              value: {{ .Values.infra.valkeyUrl | quote }}
+            - name: SHARD_PRECISION
+              value: {{ .Values.shardPrecision | quote }}
+            - name: VALKEY_BATCH
+              value: {{ .Values.historian.env.valkeyBatch | quote }}
+            - name: VALKEY_BATCH_TIMEOUT_MS
+              value: {{ .Values.historian.env.valkeyBatchTimeoutMs | quote }}
+            - name: RUST_LOG
+              value: {{ .Values.historian.rustLog | quote }}
+          resources:
+            {{- toYaml .Values.historian.resources | nindent 12 }}
+{{- end }}
