@@ -57,6 +57,7 @@ jobs:
 
       - name: Run release-plz
         uses: release-plz/action@v0.5
+        id: release
         with:
           command: release
         env:
