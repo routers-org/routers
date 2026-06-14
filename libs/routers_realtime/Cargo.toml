@@ -9,6 +9,7 @@ license = "GPL-3.0-or-later"
 lapin = "4.7.0"
 futures = "0.3.32"
 tokio = { workspace = true }
+log = { workspace = true }
 
 anyhow = "1.0.102"
 chrono = "0.4.44"
@@ -35,3 +36,15 @@ path = "examples/process.rs"
 [[example]]
 name = "replay"
 path = "examples/replay.rs"
+
+[[bin]]
+name = "orchestrator"
+path = "bin/orchestrator.rs"
+
+[[bin]]
+name = "matcher"
+path = "bin/matcher.rs"
+
+[[bin]]
+name = "historian"
+path = "bin/historian.rs"

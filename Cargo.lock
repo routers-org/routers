@@ -6086,6 +6086,7 @@ dependencies = [
  "futures",
  "geo",
  "lapin",
+ "log",
  "routers",
  "routers_codec",
  "routers_fixtures",
