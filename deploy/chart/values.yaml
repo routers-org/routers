@@ -1,0 +1,93 @@
+# Default values for routers-realtime. Override with -f my-values.yaml or --set.
+
+namespace: routers-dev
+
+# Per-shard fan-out. One matcher Deployment and one orchestrator Deployment
+# is rendered for every entry. Geohash strings here drive the OWNED_SHARD env
+# var and the NATS subject suffix.
+shards:
+  - r3gq
+  - r3gr
+  - r3gw
+  - r3gx
+  - r652
+  - r658
+
+# Shared infra references (must already exist in the cluster).
+infra:
+  natsUrl: nats://nats.routers-dev.svc.cluster.local:4222
+  valkeyUrl: redis://valkey-primary.routers-dev.svc.cluster.local:6379
+
+# Geohash precision used by every component. The shards above must be at
+# this precision.
+shardPrecision: 4
+
+# Local host path containing {shard}.shard.rt files. Mounted read-only into
+# every matcher pod. For multi-node clusters swap to a real PV/PVC.
+shardCache:
+  hostPath: /Users/benji/Documents/personal/routers/target/shard_cache
+
+matcher:
+  image:
+    repository: routers-matcher
+    tag: latest
+    pullPolicy: Never
+  metricsPort: 9092
+  rustLog: debug
+  env:
+    stateful: "1"
+    profileSampleN: "50"
+    concurrency: "4"
+    frontierK: "4"
+    costCeiling: "2000000"
+  resources:
+    requests:
+      cpu: 500m
+      memory: 256Mi
+    limits:
+      cpu: 4000m
+      memory: 1536Mi
+
+orchestrator:
+  image:
+    repository: routers-orchestrator
+    tag: latest
+    pullPolicy: Never
+  metricsPort: 9091
+  rustLog: info
+  env:
+    parallelism: "1"
+    historyMaxPoints: "5"
+    historyMaxAgeSecs: "300"
+    store: memory
+  resources:
+    requests:
+      cpu: 500m
+      memory: 256Mi
+    limits:
+      memory: 512Mi
+
+historian:
+  enabled: true
+  image:
+    repository: routers-historian
+    tag: latest
+    pullPolicy: Never
+  replicas: 3
+  rustLog: debug
+  env:
+    eventsConsumer: historian
+    valkeyBatch: "64"
+    valkeyBatchTimeoutMs: "2"
+  resources:
+    requests:
+      cpu: 500m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+
+prometheusScrape:
+  enabled: true
+
+grafanaDashboard:
+  enabled: true

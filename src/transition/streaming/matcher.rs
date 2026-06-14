@@ -6,8 +6,8 @@ use crate::generation::StandardGenerator;
 use crate::primitives::MatchError;
 use crate::solver::PrecomputeForwardSolver;
 use crate::transition::candidate::{
-    Candidate, CandidateId, CandidateLocation, CandidateRef, Candidates, OpenCandidateGraph,
-    RoutedPath,
+    Candidate, CandidateId, CandidateLocation, CandidateRef, Candidates, OpenCandidateGraph, Path,
+    PathElement, RoutedPath,
 };
 use crate::transition::entity::Transition;
 use crate::transition::layer::definition::{Layer, Layers};
@@ -122,12 +122,22 @@ where
     /// prior state exists for a vehicle (first-ever event, or after
     /// state eviction / cost-ceiling re-anchor). The returned state
     /// can be fed back into [`Self::step`] on the next event.
+    ///
+    /// Single-point linestrings short-circuit to [`Self::match_single`]
+    /// — the Viterbi solver has nothing to do without a transition
+    /// between layers, and constructing/destroying a 1-layer trellis
+    /// fails inside `PrecomputeForwardSolver`. The fast-path picks the
+    /// lowest-emission candidate directly.
     pub fn cold_start(
         &self,
         linestring: LineString,
         event_ms: u64,
         runtime: &M::Runtime,
     ) -> Result<(RoutedPath<E, M>, MatchState<E>), MatchError> {
+        if linestring.0.len() == 1 {
+            return self.match_single(linestring.0[0].into(), event_ms);
+        }
+
         let generator =
             StandardGenerator::new(self.map, &self.heuristics.emission, self.search_distance);
         let transition = Transition::new(self.map, linestring, self.heuristics, generator);
@@ -135,6 +145,53 @@ where
         let solver = PrecomputeForwardSolver::<E, M, N>::default();
         let (collapsed, l_last) = solver.solve_with_frontier(transition, runtime)?;
         Ok(self.finalize(collapsed, l_last, event_ms))
+    }
+
+    /// Single-point degenerate match: snap to the best-emission
+    /// candidate within the search radius, skipping the Viterbi
+    /// machinery entirely. Returns a 1-element `RoutedPath` and a
+    /// 1-node `MatchState` so the result is shape-compatible with
+    /// the multi-point cold-start path.
+    pub fn match_single(
+        &self,
+        point: Point,
+        event_ms: u64,
+    ) -> Result<(RoutedPath<E, M>, MatchState<E>), MatchError> {
+        let layer = self.observe_at(point);
+        let best = layer
+            .candidates
+            .into_iter()
+            .min_by_key(|c| c.emission)
+            .ok_or(MatchError::NoPointsProvided)?;
+
+        let candidate = Candidate::new(
+            best.edge,
+            best.position,
+            best.emission,
+            CandidateLocation { layer_id: 0, node_id: 0 },
+        );
+
+        // Two PathElement constructions because PathElement isn't Clone;
+        // both refer to the same single matched candidate.
+        let discretized_el = PathElement::new(candidate, self.map)
+            .ok_or(MatchError::NoPointsProvided)?;
+        let interpolated_el = PathElement::new(candidate, self.map)
+            .ok_or(MatchError::NoPointsProvided)?;
+
+        let routed = RoutedPath {
+            discretized: Path { elements: vec![discretized_el] },
+            interpolated: Path { elements: vec![interpolated_el] },
+            cost: best.emission,
+        };
+        let state = MatchState::new(
+            vec![FrontierNode {
+                edge: best.edge,
+                snapped: best.position,
+                cum_cost: best.emission,
+            }],
+            event_ms,
+        );
+        Ok((routed, state))
     }
 
     /// Bundle a solver output into the public return shape: a

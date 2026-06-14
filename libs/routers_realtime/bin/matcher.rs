@@ -54,7 +54,9 @@ type SolveResult = (
     f64,
     Instant,
     bool,                              // was_warm — true if warm step over a saved frontier was used
+    &'static str,                      // reason — "warm" for warm steps, otherwise the cold-start cause
     Instant,                           // t_spawn_at
+    Instant,                           // t_solve_start (captured inside closure; queue_wait = t_solve_start - t_spawn_at)
     Option<DirectionAwareEdgeId<E>>,   // prev argmin edge id (Some only when was_warm) — drives argmin_revisions metric
 );
 
@@ -244,7 +246,7 @@ async fn main() -> anyhow::Result<()> {
 
                 // Drain a completed solve and publish its result.
                 Some(task_result) = join_set.join_next(), if !join_set.is_empty() => {
-                    let (vehicle_id, resolved_at_ms, current_coord, debug_pts, match_result, solve_ms, t_delivery, was_warm, t_spawn_at, prev_argmin_edge) =
+                    let (vehicle_id, resolved_at_ms, current_coord, debug_pts, match_result, solve_ms, t_delivery, was_warm, reason, t_spawn_at, t_solve_start, prev_argmin_edge) =
                         match task_result {
                             Ok(r) => r,
                             Err(e) => {
@@ -253,8 +255,12 @@ async fn main() -> anyhow::Result<()> {
                             }
                         };
 
-                    m.solve_latency_ms.observe(solve_ms);
+                    let kind = if was_warm { "warm" } else { "cold" };
+                    m.solve_latency_ms.with_label_values(&[kind, reason]).observe(solve_ms);
                     let setup_ms = (t_spawn_at - t_delivery).as_secs_f64() * 1000.0;
+                    let queue_wait_ms = (t_solve_start - t_spawn_at).as_secs_f64() * 1000.0;
+                    m.setup_ms.observe(setup_ms);
+                    m.queue_wait_ms.observe(queue_wait_ms);
                     let t_post_start = Instant::now();
 
                     match match_result {
@@ -353,22 +359,25 @@ async fn main() -> anyhow::Result<()> {
                         }
                     }
 
+                    let post_ms = t_post_start.elapsed().as_secs_f64() * 1000.0;
+                    m.post_ms.observe(post_ms);
                     let total_ms = t_delivery.elapsed().as_secs_f64() * 1000.0;
-                    m.match_latency_ms.observe(total_ms);
+                    m.match_latency_ms.with_label_values(&[kind, reason]).observe(total_ms);
 
                     // Sampled per-event timeline breakdown. setup_ms is
                     // matcher-binary overhead (decode + sanity + state
                     // lookup + linestring build + tokio dispatch hop).
-                    // solve_ms is the solver wall-clock. post_ms is the
-                    // publish + state writeback path. total_ms is
-                    // delivery → publish complete.
+                    // queue_wait_ms is the blocking-pool slot wait under
+                    // MATCH_CONCURRENCY saturation. solve_ms is the
+                    // solver wall-clock. post_ms is the publish + state
+                    // writeback path. total_ms is delivery → publish
+                    // complete.
                     let sample_n = match_profile_sample_n();
                     if sample_n > 0 && MATCH_PROFILE_COUNTER.fetch_add(1, Ordering::Relaxed) % sample_n == 0 {
-                        let post_ms = t_post_start.elapsed().as_secs_f64() * 1000.0;
                         log::info!(
                             target: "match_profile",
-                            "total={:.2}ms setup={:.2}ms solve={:.2}ms post={:.2}ms warm={} vid={}",
-                            total_ms, setup_ms, solve_ms, post_ms, was_warm, vehicle_id,
+                            "total={:.2}ms setup={:.2}ms queue={:.2}ms solve={:.2}ms post={:.2}ms warm={} vid={}",
+                            total_ms, setup_ms, queue_wait_ms, solve_ms, post_ms, was_warm, vehicle_id,
                         );
                     }
                 }
@@ -411,6 +420,7 @@ async fn main() -> anyhow::Result<()> {
                             continue 'reconnect;
                         }
                         m.match_latency_ms
+                            .with_label_values(&["stub", "stub"])
                             .observe(t_delivery.elapsed().as_secs_f64() * 1000.0);
                         continue;
                     }
@@ -455,6 +465,7 @@ async fn main() -> anyhow::Result<()> {
                             continue 'reconnect;
                         }
                         m.match_latency_ms
+                            .with_label_values(&["pathological", "pathological"])
                             .observe(t_delivery.elapsed().as_secs_f64() * 1000.0);
                         continue;
                     }
@@ -512,12 +523,21 @@ async fn main() -> anyhow::Result<()> {
                         };
 
                     let was_warm = warm_state.is_some();
+                    // `reason` doubles as the histogram label below. For
+                    // warm steps "warm"; for cold steps, the cold-start
+                    // cause. cold_reason is always Some(_) when stateful
+                    // and was_warm is false; defaults handle disabled mode.
+                    let reason: &'static str = if was_warm {
+                        "warm"
+                    } else {
+                        cold_reason.unwrap_or("disabled")
+                    };
                     if was_warm {
                         m.match_step_warm.inc();
                     } else {
                         m.match_step_cold.inc();
-                        if let Some(reason) = cold_reason {
-                            m.cold_start_reason.with_label_values(&[reason]).inc();
+                        if let Some(r) = cold_reason {
+                            m.cold_start_reason.with_label_values(&[r]).inc();
                         }
                     }
 
@@ -528,8 +548,17 @@ async fn main() -> anyhow::Result<()> {
                         .and_then(|s| s.argmin())
                         .map(|n| n.edge.id);
 
+                    // Stale events (resolved_at_ms ≤ cached state's
+                    // last_event_ms) re-anchor from the current point
+                    // alone — running a full cold-start with stale
+                    // history would do a multi-layer solve to land at
+                    // a position we already have a better estimate for.
+                    // The 1-point cold-start is effectively a single
+                    // emission lookup at the current coord.
                     let cold_points: Vec<Point> = if was_warm {
                         Vec::new()
+                    } else if cold_reason == Some("stale_event") {
+                        vec![ctx.current.coord]
                     } else {
                         points
                     };
@@ -546,6 +575,9 @@ async fn main() -> anyhow::Result<()> {
                     let t_spawn_at = Instant::now();
 
                     join_set.spawn_blocking(move || {
+                        // First instruction in the blocking-pool task —
+                        // gap to `t_spawn_at` measures slot wait time.
+                        let t_solve_start = Instant::now();
                         let costing = CostingStrategies::<_, _, E, M, _>::default();
                         let matcher = StreamingMatcher::new(
                             &*network_clone,
@@ -574,7 +606,7 @@ async fn main() -> anyhow::Result<()> {
                                 was_warm,
                             );
                         }
-                        (vehicle_id, resolved_at_ms, current_coord, debug_pts, result, solve_ms, t_delivery, was_warm, t_spawn_at, prev_argmin_edge)
+                        (vehicle_id, resolved_at_ms, current_coord, debug_pts, result, solve_ms, t_delivery, was_warm, reason, t_spawn_at, t_solve_start, prev_argmin_edge)
                     });
                 }
             }

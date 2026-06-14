@@ -71,7 +71,7 @@ spec:
             - name: SHARD_DIR
               value: "/shards"
             - name: SHARD_PRECISION
-              value: "5"
+              value: "4"
             - name: METRICS_ADDR
               value: "0.0.0.0:9092"
             - name: OWNED_SHARD
@@ -83,9 +83,11 @@ spec:
             - name: MATCH_PROFILE_SAMPLE_N
               value: "50"
             - name: MATCH_CONCURRENCY
-              value: "8"
+              value: "4"
             - name: MATCH_FRONTIER_K
-              value: "8"
+              value: "4"
+            - name: MATCH_COST_CEILING
+              value: "2000000"
           volumeMounts:
             - name: shards
               mountPath: /shards

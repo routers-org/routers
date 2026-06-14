@@ -1,6 +1,7 @@
 use axum::{Router, routing::get};
 use prometheus::{
-    Gauge, Histogram, HistogramOpts, IntCounter, IntCounterVec, Opts, Registry, TextEncoder, opts,
+    Gauge, Histogram, HistogramOpts, HistogramVec, IntCounter, IntCounterVec, Opts, Registry,
+    TextEncoder, opts,
 };
 use std::net::SocketAddr;
 use std::sync::OnceLock;
@@ -8,10 +9,21 @@ use std::sync::OnceLock;
 // ── Matcher metrics ───────────────────────────────────────────────────────────
 
 pub struct MatcherMetrics {
-    /// Wall-clock time from NATS delivery to match completion (ms).
-    pub match_latency_ms: Histogram,
-    /// How long network.r#match() itself takes inside the HMM solver (ms).
-    pub solve_latency_ms: Histogram,
+    /// Wall-clock time from NATS delivery to match completion (ms),
+    /// labelled by `kind={warm,cold}` so the warm-step tail can be read
+    /// directly without the cold-start mix dominating p99.
+    pub match_latency_ms: HistogramVec,
+    /// HMM solver wall time (ms), labelled by `kind={warm,cold}`.
+    pub solve_latency_ms: HistogramVec,
+    /// Matcher-binary setup overhead per event (ms): decode + sanity +
+    /// state lookup + linestring build, ending at `spawn_blocking` dispatch.
+    pub setup_ms: Histogram,
+    /// Time the spawned closure spent waiting on a tokio blocking-thread
+    /// slot before its first instruction ran (ms). Non-zero values mean
+    /// `MATCH_CONCURRENCY` saturation, not solver slowness.
+    pub queue_wait_ms: Histogram,
+    /// Publish + state writeback path after the solve completes (ms).
+    pub post_ms: Histogram,
     pub matches_success: IntCounter,
     pub matches_no_candidate: IntCounter,
     pub matches_error: IntCounter,
@@ -71,17 +83,52 @@ pub fn matcher_global() -> &'static MatcherMetrics {
 
         // Latency buckets: 1ms → 10s, covering fast in-memory matches up to slow cold starts.
         let lat = vec![1.0, 2.0, 5.0, 10.0, 25.0, 50.0, 100.0, 250.0, 500.0, 1000.0, 5000.0, 10000.0];
+        // Fine sub-ms buckets for the per-event pipeline stages — these
+        // are expected to be small but spike when contended.
+        let stage = vec![
+            0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0, 25.0, 50.0, 100.0, 250.0, 1000.0,
+        ];
+
+        macro_rules! histogram_vec {
+            ($name:expr, $help:expr, $buckets:expr, $labels:expr) => {{
+                let h = HistogramVec::new(
+                    HistogramOpts::new($name, $help).buckets($buckets),
+                    $labels,
+                )
+                .unwrap();
+                registry.register(Box::new(h.clone())).unwrap();
+                h
+            }};
+        }
 
         MatcherMetrics {
-            match_latency_ms: histogram!(
+            match_latency_ms: histogram_vec!(
                 "routers_match_latency_ms",
-                "End-to-end match latency: NATS delivery → result published (ms)",
-                lat.clone()
+                "End-to-end match latency: NATS delivery → result published (ms). \
+                 reason=warm for warm steps, otherwise the cold-start cause.",
+                lat.clone(),
+                &["kind", "reason"]
             ),
-            solve_latency_ms: histogram!(
+            solve_latency_ms: histogram_vec!(
                 "routers_solve_latency_ms",
-                "HMM solver wall time (ms)",
-                lat.clone()
+                "HMM solver wall time (ms). reason=warm for warm steps, otherwise the cold-start cause.",
+                lat.clone(),
+                &["kind", "reason"]
+            ),
+            setup_ms: histogram!(
+                "routers_match_setup_ms",
+                "Matcher-binary setup overhead per event: decode + sanity + state lookup + dispatch (ms)",
+                stage.clone()
+            ),
+            queue_wait_ms: histogram!(
+                "routers_match_queue_wait_ms",
+                "Time spent waiting for a blocking-thread slot before the solve closure started (ms)",
+                stage.clone()
+            ),
+            post_ms: histogram!(
+                "routers_match_post_ms",
+                "Per-event publish + state writeback path after the solve completes (ms)",
+                stage.clone()
             ),
             matches_success: counter!(
                 "routers_matches_total_success",
