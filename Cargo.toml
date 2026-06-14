@@ -42,6 +42,7 @@ routers_geo = "0.1.0"
 routers_rpc = "0.1.0"
 routers_tiles = "0.1.0"
 routers_network = "0.1.0"
+routers_shard = "0.1.0"
 routers_viewer = "0.1.0"
 routers_realtime = "0.1.0"
 routers_tz = { version = "0.1.0" }
