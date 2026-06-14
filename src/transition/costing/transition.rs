@@ -1,7 +1,7 @@
 use crate::ResolutionMethod;
 use crate::transition::candidate::{Candidate, CandidateId};
 use crate::transition::{RoutingContext, Strategy, Trip, VirtualTail};
-use geo::{Distance, Haversine, Point};
+use geo::{Bearing, Distance, Haversine, Point};
 use routers_network::{Entry, Metadata, Network};
 
 pub trait TransitionStrategy<E, M, N>: for<'a> Strategy<TransitionContext<'a, E, M, N>> {}
@@ -96,10 +96,24 @@ impl TransitionLengths {
     #[inline]
     pub fn deviance(&self) -> f64 {
         if self.route_length <= 0.0 {
-            return 0.0;
+            return 1.0;
         }
 
         self.straightline_distance / self.route_length
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_deviance_zero_length() {
+        let lengths = TransitionLengths {
+            straightline_distance: 0.0,
+            route_length: 0.0,
+        };
+        assert_eq!(lengths.deviance(), 1.0);
     }
 }
 
@@ -152,8 +166,48 @@ where
     /// target position. This is what cost heuristics should call so that the
     /// turn at the candidate→edge joints participates in the score.
     pub fn angular_complexity(&self) -> f64 {
-        self.optimal_path
-            .angular_complexity_with_endpoints(self.source_position, self.target_position)
+        let (source_c, target_c) = self.candidates();
+
+        let source_heading = self
+            .routing_context
+            .map
+            .point(&source_c.edge.source)
+            .and_then(|s| {
+                self.routing_context
+                    .map
+                    .point(&source_c.edge.target)
+                    .and_then(|t| {
+                        if Haversine.distance(s, t) < 1.0 {
+                            None
+                        } else {
+                            Some(Haversine.bearing(s, t))
+                        }
+                    })
+            });
+
+        let target_heading = self
+            .routing_context
+            .map
+            .point(&target_c.edge.source)
+            .and_then(|s| {
+                self.routing_context
+                    .map
+                    .point(&target_c.edge.target)
+                    .and_then(|t| {
+                        if Haversine.distance(s, t) < 1.0 {
+                            None
+                        } else {
+                            Some(Haversine.bearing(s, t))
+                        }
+                    })
+            });
+
+        self.optimal_path.angular_complexity_with_headings(
+            source_heading,
+            target_heading,
+            self.source_position,
+            self.target_position,
+        )
     }
 
     /// Returns the [`TransitionLengths`] of the context.

@@ -1,9 +1,7 @@
 use crate::transition::*;
-use core::f64::consts::E;
 use routers_network::{Entry, Metadata, Network};
 
 const PRECISION: f64 = 100.0f64;
-const OFFSET: f64 = E;
 
 pub trait Strategy<Ctx> {
     /// A calculable cost which can be any required
@@ -16,39 +14,28 @@ pub trait Strategy<Ctx> {
     /// The beta (β) value in the decay function.
     const BETA: f64;
 
-    /// The calculation cost you must implement
+    /// Returned values must be in the range `[0, 1]`, where `1` represents a
+    /// perfect (free) choice and `0` the most expensive possible cost.
     fn calculate(&self, context: Ctx) -> Option<Self::Cost>;
 
-    /// An optimal decay-based costing heuristic which accepts
-    /// the input value and transforms it using the associated
-    /// constants `ZETA` and `BETA` to calculate the resultant output
-    /// cost using the `decay` method.
-    ///
-    /// ### Formula
-    /// The scalar is given by `1 / ζ`. Therefore, if `ζ` is `1`, no
-    /// scaling is applied. The exponential component is the negative
-    /// value divided by `β`. The absolute value of the resultant is taken.
+    /// Converts the `[0, 1]` output of [`calculate`] to a `u32` edge cost.
     ///
     /// ```math
-    /// decay(value) = |(1 / ζ) * e^(-1 * value / β)| - offset
+    /// cost(v) = ζ · (1/v)^β · PRECISION
     /// ```
+    ///
+    /// [`calculate`]: Strategy::calculate
     #[inline(always)]
     fn cost(&self, ctx: Ctx) -> u32 {
-        // The base multiplier (1 / ζ)
-        let multiplier = 1.0 / Self::ZETA;
+        const EPSILON: f64 = 1e-6;
 
-        // The exponential cost heuristic (-1 * value / β)
-        let cost = -self.calculate(ctx).map_or(f64::INFINITY, |v| v.into()) / Self::BETA;
+        let v = self
+            .calculate(ctx)
+            .map_or(0.0, |v| v.into())
+            .clamp(EPSILON, 1.0);
 
-        // Shift so low-costs have low output costs (normalised)
-        let shifted = ((multiplier * cost.exp()) - OFFSET).max(0.);
-
-        // Since output must be `u32`, we shift by `PRECISION` to
-        // increase the cost precision.
-        //
-        // Note: This must be replicated for all cost heuristics since
-        //       this will determine the overall magnitude of costs.
-        (PRECISION * shifted) as u32
+        let cost = (1.0 / v).powf(Self::BETA);
+        (PRECISION * Self::ZETA * cost) as u32
     }
 }
 
@@ -63,6 +50,6 @@ where
     /// The emission costing function, returning a u32 cost value.
     fn emission(&self, context: EmissionContext) -> u32;
 
-    /// The emission costing function, returning a u32 cost value.
+    /// The transition costing function, returning a u32 cost value.
     fn transition(&self, context: TransitionContext<E, M, N>) -> u32;
 }

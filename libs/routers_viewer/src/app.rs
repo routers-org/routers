@@ -5,7 +5,7 @@ use eframe::CreationContext;
 use egui::{Color32, CursorIcon, SidePanel};
 use geo::Coord;
 use routers_codec::osm::OsmNetwork;
-use routers_fixtures::{SYDNEY, fixture};
+use routers_fixtures::{LOS_ANGELES, LOS_ANGELES_SAVED, SYDNEY, SYDNEY_SAVED, fixture};
 use walkers::{
     HttpTiles, MapMemory, Plugin, lon_lat,
     sources::{Mapbox, MapboxStyle, OpenStreetMap},
@@ -18,6 +18,7 @@ use crate::{
 };
 
 const FIXTURE_NETWORK: &'static str = "fixture-network";
+const SAVED_FIXTURE_NETWORK: &'static str = "saved-fixture-network";
 const MAPBOX_API_KEY: &'static str = "mapbox-api-key";
 
 pub struct Application {
@@ -38,18 +39,26 @@ impl Application {
             .context("could not find mapbox API key")
             .ok();
 
-        let default_path = fixture!(SYDNEY).clone();
-        let path = storage
+        let default_path = fixture!(LOS_ANGELES).clone();
+        let pbf_path = storage
             .get_string(FIXTURE_NETWORK)
             .map(|v| PathBuf::from(v))
             .unwrap_or(default_path);
 
-        path.try_exists()
-            .context(path.to_string_lossy().to_string())
+        let default_save_path = fixture!(LOS_ANGELES_SAVED).clone();
+        let save_path = storage
+            .get_string(SAVED_FIXTURE_NETWORK)
+            .map(|v| PathBuf::from(v))
+            .unwrap_or(default_save_path);
+
+        pbf_path
+            .try_exists()
+            .context(pbf_path.to_string_lossy().to_string())
             .context("The path must point to a valid file.")?;
 
-        log::info!("Opening road network at {:?}...", path);
-        let network = OsmNetwork::from_pbf(&path).map_err(|e| anyhow::anyhow!("{}", e))?;
+        log::info!("Opening road network at {:?}...", pbf_path);
+        let network = OsmNetwork::from_pbf_and_save(&pbf_path, &save_path)
+            .map_err(|e| anyhow::anyhow!("{}", e))?;
 
         let egui_ctx = ctx.egui_ctx.clone();
         let tiles = match api_key {
