@@ -2,8 +2,9 @@
 name = "routers_shard"
 version = "0.1.0"
 edition = "2024"
-description = "Sharding Primitives for Routers"
 license = "GPL-3.0-or-later"
+description = "Sharding Primitives for Routers"
+repository = "https://github.com/routers-org/routers"
 
 # Currently Private
 publish = false
