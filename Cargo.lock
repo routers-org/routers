@@ -5967,7 +5967,7 @@ dependencies = [
 
 [[package]]
 name = "routers"
-version = "0.2.6"
+version = "0.2.7"
 dependencies = [
  "approx 0.5.1",
  "codspeed-criterion-compat",
