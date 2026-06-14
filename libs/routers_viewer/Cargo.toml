@@ -17,7 +17,7 @@ quick-error = { workspace = true }
 geo = { workspace = true }
 wkt = { workspace = true }
 dotenv = { workspace = true }
-env_logger = "0.11"
+env_logger = { workspace = true }
 
 # UI Dependencies
 eframe = "0.33.0"

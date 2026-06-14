@@ -6083,6 +6083,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "csv",
+ "env_logger",
  "futures",
  "geo",
  "lapin",

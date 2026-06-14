@@ -9,6 +9,8 @@ license = "GPL-3.0-or-later"
 lapin = "4.7.0"
 futures = "0.3.32"
 tokio = { workspace = true }
+
+env_logger = { workspace = true }
 log = { workspace = true }
 
 anyhow = "1.0.102"
