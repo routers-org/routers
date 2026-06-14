@@ -1,0 +1,5 @@
+mod historian "historian"
+mod matcher "matcher"
+mod orchestrator "orchestrator"
+
+build: historian::build matcher::build orchestrator::build
