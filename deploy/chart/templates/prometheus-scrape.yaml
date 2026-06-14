@@ -1,0 +1,62 @@
+{{- if .Values.prometheusScrape.enabled }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: routers-additional-scrape
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "routers.labels" . | nindent 4 }}
+stringData:
+  scrape.yaml: |
+    - job_name: routers-orchestrator
+      scrape_interval: 1s
+      kubernetes_sd_configs:
+        - role: pod
+          namespaces:
+            names: [{{ .Values.namespace }}]
+      relabel_configs:
+        - source_labels: [__meta_kubernetes_pod_label_app]
+          action: keep
+          regex: orchestrator(-shard)?
+        - source_labels: [__meta_kubernetes_pod_ip, __meta_kubernetes_pod_annotation_prometheus_io_port]
+          separator: ":"
+          target_label: __address__
+        - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+          target_label: __metrics_path__
+          regex: (.+)
+          action: replace
+        - source_labels: [__meta_kubernetes_pod_name]
+          target_label: pod
+        - source_labels: [__meta_kubernetes_pod_node_name]
+          target_label: node
+
+    - job_name: routers-matcher
+      scrape_interval: 1s
+      kubernetes_sd_configs:
+        - role: pod
+          namespaces:
+            names: [{{ .Values.namespace }}]
+      relabel_configs:
+        - source_labels: [__meta_kubernetes_pod_label_app]
+          action: keep
+          regex: matcher
+        - source_labels: [__meta_kubernetes_pod_ip, __meta_kubernetes_pod_annotation_prometheus_io_port]
+          separator: ":"
+          target_label: __address__
+        - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+          target_label: __metrics_path__
+          regex: (.+)
+          action: replace
+        - source_labels: [__meta_kubernetes_pod_name]
+          target_label: pod
+        - source_labels: [__meta_kubernetes_pod_node_name]
+          target_label: node
+
+    - job_name: nats
+      scrape_interval: 10s
+      static_configs:
+        - targets:
+            - nats.{{ .Values.namespace }}.svc.cluster.local:7777
+          labels:
+            component: nats
+{{- end }}

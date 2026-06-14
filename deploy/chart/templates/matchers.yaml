@@ -1,0 +1,84 @@
+{{- range $shard := .Values.shards }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: matcher-{{ $shard }}
+  namespace: {{ $.Values.namespace }}
+  labels:
+    {{- include "routers.labels" $ | nindent 4 }}
+    app: matcher
+    shard: "{{ $shard }}"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: matcher
+      shard: "{{ $shard }}"
+  template:
+    metadata:
+      labels:
+        {{- include "routers.labels" $ | nindent 8 }}
+        app: matcher
+        shard: "{{ $shard }}"
+      annotations:
+        {{- include "routers.scrapeAnnotations" (dict "port" $.Values.matcher.metricsPort) | nindent 8 }}
+    spec:
+      containers:
+        - name: matcher
+          image: "{{ $.Values.matcher.image.repository }}:{{ $.Values.matcher.image.tag }}"
+          imagePullPolicy: {{ $.Values.matcher.image.pullPolicy }}
+          ports:
+            - name: metrics
+              containerPort: {{ $.Values.matcher.metricsPort }}
+          env:
+            - name: NATS_URL
+              value: {{ $.Values.infra.natsUrl | quote }}
+            - name: SHARD_DIR
+              value: "/shards"
+            - name: SHARD_PRECISION
+              value: {{ $.Values.shardPrecision | quote }}
+            - name: METRICS_ADDR
+              value: "0.0.0.0:{{ $.Values.matcher.metricsPort }}"
+            - name: OWNED_SHARD
+              value: {{ $shard | quote }}
+            - name: RUST_LOG
+              value: {{ $.Values.matcher.rustLog | quote }}
+            - name: MATCH_STATEFUL
+              value: {{ $.Values.matcher.env.stateful | quote }}
+            - name: MATCH_PROFILE_SAMPLE_N
+              value: {{ $.Values.matcher.env.profileSampleN | quote }}
+            - name: MATCH_CONCURRENCY
+              value: {{ $.Values.matcher.env.concurrency | quote }}
+            - name: MATCH_FRONTIER_K
+              value: {{ $.Values.matcher.env.frontierK | quote }}
+            - name: MATCH_COST_CEILING
+              value: {{ $.Values.matcher.env.costCeiling | quote }}
+          volumeMounts:
+            - name: shards
+              mountPath: /shards
+              readOnly: true
+          resources:
+            {{- toYaml $.Values.matcher.resources | nindent 12 }}
+      volumes:
+        - name: shards
+          hostPath:
+            path: {{ $.Values.shardCache.hostPath | quote }}
+            type: Directory
+{{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: matcher-metrics
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "routers.labels" . | nindent 4 }}
+    app: matcher
+spec:
+  selector:
+    app: matcher
+  ports:
+    - name: metrics
+      port: {{ .Values.matcher.metricsPort }}
+      targetPort: {{ .Values.matcher.metricsPort }}

@@ -1,0 +1,73 @@
+{{- range $shard := .Values.shards }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: orchestrator-{{ $shard }}
+  namespace: {{ $.Values.namespace }}
+  labels:
+    {{- include "routers.labels" $ | nindent 4 }}
+    app: orchestrator-shard
+    shard: "{{ $shard }}"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: orchestrator-shard
+      shard: "{{ $shard }}"
+  template:
+    metadata:
+      labels:
+        {{- include "routers.labels" $ | nindent 8 }}
+        app: orchestrator-shard
+        shard: "{{ $shard }}"
+      annotations:
+        {{- include "routers.scrapeAnnotations" (dict "port" $.Values.orchestrator.metricsPort) | nindent 8 }}
+    spec:
+      containers:
+        - name: orchestrator
+          image: "{{ $.Values.orchestrator.image.repository }}:{{ $.Values.orchestrator.image.tag }}"
+          imagePullPolicy: {{ $.Values.orchestrator.image.pullPolicy }}
+          ports:
+            - name: metrics
+              containerPort: {{ $.Values.orchestrator.metricsPort }}
+          env:
+            - name: NATS_URL
+              value: {{ $.Values.infra.natsUrl | quote }}
+            - name: VALKEY_URL
+              value: {{ $.Values.infra.valkeyUrl | quote }}
+            - name: METRICS_ADDR
+              value: "0.0.0.0:{{ $.Values.orchestrator.metricsPort }}"
+            - name: OWNED_SHARD
+              value: {{ $shard | quote }}
+            - name: SHARD_PRECISION
+              value: {{ $.Values.shardPrecision | quote }}
+            - name: PARALLELISM
+              value: {{ $.Values.orchestrator.env.parallelism | quote }}
+            - name: HISTORY_MAX_POINTS
+              value: {{ $.Values.orchestrator.env.historyMaxPoints | quote }}
+            - name: HISTORY_MAX_AGE_SECS
+              value: {{ $.Values.orchestrator.env.historyMaxAgeSecs | quote }}
+            - name: STORE
+              value: {{ $.Values.orchestrator.env.store | quote }}
+            - name: RUST_LOG
+              value: {{ $.Values.orchestrator.rustLog | quote }}
+          resources:
+            {{- toYaml $.Values.orchestrator.resources | nindent 12 }}
+{{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: orchestrator-metrics
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "routers.labels" . | nindent 4 }}
+    app: orchestrator-shard
+spec:
+  selector:
+    app: orchestrator-shard
+  ports:
+    - name: metrics
+      port: {{ .Values.orchestrator.metricsPort }}
+      targetPort: {{ .Values.orchestrator.metricsPort }}
