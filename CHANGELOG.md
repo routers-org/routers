@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.7] - 2026-06-14
+
+### 🚀 Features
+
+- New Costing Functions ([#143](https://github.com/routers-org/routers/pull/143))
+
+
+
 ## [0.2.6] - 2026-06-13
 
 ### 🚀 Features
