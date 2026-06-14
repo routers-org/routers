@@ -27,7 +27,7 @@ geo = { workspace = true }
 wkt = { workspace = true }
 
 # Reporting
-tabled = "0.17"
+tabled = "0.21"
 
 # Error handling
 anyhow = "1"

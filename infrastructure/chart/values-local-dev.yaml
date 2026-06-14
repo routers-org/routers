@@ -1,0 +1,12 @@
+# Local Development Chart Configuration (Debug Logging and Local Shard Cache)
+shardCache:
+  mode: hostPath
+  # Set this to a local path on your machine, if not the same.
+  # You may use the command: `just use-shard-cache <path>` to set this.
+  hostPath: ./target/shard_cache
+
+matcher:
+  rustLog: debug
+
+orchestrator:
+  rustLog: info

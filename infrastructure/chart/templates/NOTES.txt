@@ -1,0 +1,20 @@
+routers-realtime installed in namespace {{ .Values.namespace }}.
+
+Rendered for {{ len .Values.shards }} shard(s): {{ join ", " .Values.shards }}
+
+What was deployed:
+  - Matcher and Orchestrator services (for each shard)
+{{- if .Values.historian.enabled }}
+  - Historian (With x{{ .Values.historian.replicas }} replicas)
+{{- end }}
+{{- if .Values.prometheusScrape.enabled }}
+  - Prometheus Scraping Service
+{{- end }}
+{{- if .Values.grafanaDashboard.enabled }}
+  - Grafana Dashboard
+{{- end }}
+
+Pre-existing dependencies that this chart does NOT install:
+  - NATS at {{ .Values.infra.natsUrl }}
+  - Valkey at {{ .Values.infra.valkeyUrl }}
+  - kube-prometheus-stack (consumes the dashboard ConfigMap and scrape secret)

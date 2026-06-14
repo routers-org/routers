@@ -53,7 +53,7 @@ harness = false
 default = ["s2cell"]
 
 basic = []
-rtree = ["geo-index"]
+rtree = ["dep:geo-index"]
 s2cell = ["dep:s2"]
 
 [lints]

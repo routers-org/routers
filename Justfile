@@ -1,4 +1,5 @@
 mod tz "libs/routers_tz"
+mod infra "infrastructure"
 
 init VERSION="2026a":
     just tz download {{ VERSION }}

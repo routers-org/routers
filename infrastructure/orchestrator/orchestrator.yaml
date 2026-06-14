@@ -1,0 +1,64 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: orchestrator
+  namespace: routers-dev
+  labels:
+    app: orchestrator
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: orchestrator
+  template:
+    metadata:
+      labels:
+        app: orchestrator
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9091"
+        prometheus.io/path: "/metrics"
+    spec:
+      containers:
+        - name: orchestrator
+          image: routers-orchestrator:latest
+          imagePullPolicy: Never
+          ports:
+            - name: metrics
+              containerPort: 9091
+          env:
+            - name: NATS_URL
+              value: "nats://nats.routers-dev.svc.cluster.local:4222"
+            - name: VALKEY_URL
+              value: "redis://valkey-primary.routers-dev.svc.cluster.local:6379"
+            - name: METRICS_ADDR
+              value: "0.0.0.0:9091"
+            - name: PARALLELISM
+              value: "8"
+            - name: HISTORY_MAX_POINTS
+              value: "10"
+            - name: HISTORY_MAX_AGE_SECS
+              value: "300"
+            - name: RUST_LOG
+              value: "debug"
+          resources:
+            requests:
+              cpu: 1000m
+              memory: 256Mi
+            limits:
+              memory: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: orchestrator-metrics
+  namespace: routers-dev
+  labels:
+    app: orchestrator
+spec:
+  selector:
+    app: orchestrator
+  ports:
+    - name: metrics
+      port: 9091
+      targetPort: 9091

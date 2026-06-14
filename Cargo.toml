@@ -32,7 +32,6 @@ routers_schema = { path = "schema" }
 # === Workspace Deps ===
 [workspace.dependencies]
 # Private Members
-routers_shard = { path = "libs/routers_shard", version = "0.1.0" }
 routers_fixtures = { path = "libs/routers_fixtures" }
 
 # Members
@@ -42,6 +41,7 @@ routers_geo = "0.1.0"
 routers_rpc = "0.1.0"
 routers_tiles = "0.1.0"
 routers_network = "0.1.0"
+routers_shard = "0.1.0"
 routers_viewer = "0.1.0"
 routers_realtime = "0.1.0"
 routers_tz = { version = "0.1.0" }
@@ -61,6 +61,7 @@ log = { version = "0.4.28" }
 test-log = { version = "0.2.18", features = ["log"] }
 anyhow = "1.0.102"
 quick-error = "2.0.1"
+env_logger = "0.11"
 
 # ConnectRPC
 buffa = { version = "0.6.0", features = ["json"] }
