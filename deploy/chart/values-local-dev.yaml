@@ -1,0 +1,22 @@
+# Local-dev override for OrbStack / Docker Desktop running this repo
+# checked out under the user's home. The shard cache is generated into
+# `target/shard_cache` by the just bench / replay tooling.
+#
+# Usage:
+#   helm upgrade --install routers-realtime ./deploy/chart \
+#     -n routers-dev -f ./deploy/chart/values-local-dev.yaml \
+#     --set shardCache.hostPath=$PWD/target/shard_cache
+#
+# (the --set is necessary because helm cannot expand $PWD itself)
+
+shardCache:
+  mode: hostPath
+  # Leave as placeholder — must be overridden by --set with an absolute
+  # path on the developer's machine.
+  hostPath: REPLACE_ME
+
+matcher:
+  rustLog: debug
+
+orchestrator:
+  rustLog: info

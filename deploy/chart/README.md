@@ -9,10 +9,29 @@ Replaces the hand-maintained manifests under `deploy/local/` and the
 
 ## Install
 
+The shard cache directory must be supplied — its default is a generic
+node path (`/var/lib/routers-shards`) that won't exist on a dev box.
+
+For a local dev cluster (OrbStack / Docker Desktop) where shards are
+generated into `target/shard_cache`:
+
 ```sh
 helm upgrade --install routers-realtime ./deploy/chart \
-  -n routers-dev --create-namespace
+  -n routers-dev --create-namespace \
+  -f ./deploy/chart/values-local-dev.yaml \
+  --set shardCache.hostPath=$PWD/target/shard_cache
 ```
+
+For a multi-node cluster, switch to a PVC:
+
+```sh
+helm upgrade --install routers-realtime ./deploy/chart \
+  -n routers-dev --create-namespace \
+  --set shardCache.mode=pvc \
+  --set shardCache.pvc.claimName=routers-shards
+```
+
+(The chart does not create the PVC — bring your own.)
 
 ## Change the shard set
 

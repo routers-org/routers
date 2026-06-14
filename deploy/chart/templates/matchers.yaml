@@ -62,9 +62,16 @@ spec:
             {{- toYaml $.Values.matcher.resources | nindent 12 }}
       volumes:
         - name: shards
+          {{- if eq $.Values.shardCache.mode "hostPath" }}
           hostPath:
             path: {{ $.Values.shardCache.hostPath | quote }}
             type: Directory
+          {{- else if eq $.Values.shardCache.mode "pvc" }}
+          persistentVolumeClaim:
+            claimName: {{ $.Values.shardCache.pvc.claimName }}
+          {{- else }}
+          {{- fail (printf "shardCache.mode must be 'hostPath' or 'pvc', got %q" $.Values.shardCache.mode) }}
+          {{- end }}
 {{- end }}
 ---
 apiVersion: v1

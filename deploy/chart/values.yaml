@@ -22,10 +22,24 @@ infra:
 # this precision.
 shardPrecision: 4
 
-# Local host path containing {shard}.shard.rt files. Mounted read-only into
-# every matcher pod. For multi-node clusters swap to a real PV/PVC.
+# Source for the {shard}.shard.rt files mounted read-only into every
+# matcher pod. Two modes:
+#
+#   mode: hostPath  → bind-mount a directory from the node filesystem.
+#                     Suitable for single-node dev clusters (OrbStack,
+#                     Docker Desktop, kind). Set `hostPath` to the
+#                     directory containing the shard files.
+#   mode: pvc       → mount a PersistentVolumeClaim. The chart does NOT
+#                     create the PVC — bring your own, named in
+#                     `pvc.claimName`. Suitable for multi-node clusters.
+#
+# Override hostPath via -f or --set; the default below is intentionally
+# a node-generic path so this chart is portable.
 shardCache:
-  hostPath: /Users/benji/Documents/personal/routers/target/shard_cache
+  mode: hostPath
+  hostPath: /var/lib/routers-shards
+  pvc:
+    claimName: routers-shards
 
 matcher:
   image:
