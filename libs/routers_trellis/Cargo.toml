@@ -1,0 +1,18 @@
+[package]
+name = "routers_trellis"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+description = "Transition Graph Trellis Structure"
+repository = "https://github.com/routers-org/routers"
+
+[dependencies]
+
+[features]
+default = []
+
+[dev-dependencies]
+routers_fixtures = { workspace = true }
+
+[lints]
+workspace = true
