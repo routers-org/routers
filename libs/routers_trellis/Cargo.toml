@@ -14,6 +14,7 @@ default = ["avx512"]
 avx512 = []
 
 [dev-dependencies]
+criterion = { workspace = true }
 routers_fixtures = { workspace = true }
 
 [[bench]]

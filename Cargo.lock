@@ -6192,6 +6192,7 @@ dependencies = [
 name = "routers_trellis"
 version = "0.1.0"
 dependencies = [
+ "codspeed-criterion-compat",
  "routers_fixtures",
  "thiserror 2.0.18",
 ]
