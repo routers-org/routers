@@ -7,12 +7,19 @@ description = "Transition Graph Trellis Structure"
 repository = "https://github.com/routers-org/routers"
 
 [dependencies]
+thiserror = { workspace = true }
 
 [features]
-default = []
+default = ["avx512"]
+avx512 = []
 
 [dev-dependencies]
 routers_fixtures = { workspace = true }
+
+[[bench]]
+name = "solver"
+path = "bench/solver.rs"
+harness = false
 
 [lints]
 workspace = true

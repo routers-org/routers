@@ -6189,6 +6189,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "routers_trellis"
+version = "0.1.0"
+dependencies = [
+ "routers_fixtures",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "routers_tz"
 version = "0.1.2"
 dependencies = [
