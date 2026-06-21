@@ -1,4 +1,8 @@
-use crate::{Path, Solve, SolveError, Trellis, trellis::INF_W};
+use crate::{
+    Path, Solve, SolveError, Trellis,
+    trellis::INF_W,
+    types::{LayerId, NodeId},
+};
 
 /// Correctness reference: enumerates every possible path and picks the cheapest.
 ///
@@ -20,7 +24,11 @@ impl BruteForceSolver {
     fn path_cost(t: &Trellis, nodes: &[usize]) -> u32 {
         let mut cost = 0u32;
         for layer in 0..nodes.len() - 1 {
-            let edge = t.edge_weight(layer, nodes[layer], nodes[layer + 1]);
+            let edge = t.edge_weight(
+                LayerId(layer as u32),
+                NodeId(nodes[layer] as u32),
+                NodeId(nodes[layer + 1] as u32),
+            );
             cost = cost.saturating_add(edge);
         }
         cost
@@ -38,11 +46,11 @@ impl Solve for BruteForceSolver {
 
         // Single-layer trellis: no transitions, trivially cost-zero.
         if layers == 1 {
-            return Ok(Path::new(vec![0], 0, true));
+            return Ok(Path::new(vec![NodeId(0)], 0, true));
         }
 
         let mut best_cost = INF_W;
-        let mut best_nodes = Vec::new();
+        let mut best_nodes: Vec<usize> = Vec::new();
 
         // Enumerate all paths as a multi-digit counter over node indices.
         let mut path = vec![0usize; layers];
@@ -58,7 +66,7 @@ impl Solve for BruteForceSolver {
             for layer in (0..layers).rev() {
                 if carry {
                     path[layer] += 1;
-                    if path[layer] < widths[layer] {
+                    if path[layer] < widths[layer] as usize {
                         carry = false;
                     } else {
                         path[layer] = 0;
@@ -71,7 +79,8 @@ impl Solve for BruteForceSolver {
         }
 
         Ok(if best_cost < INF_W {
-            Path::new(best_nodes, best_cost, true)
+            let nodes = best_nodes.iter().map(|&n| NodeId(n as u32)).collect();
+            Path::new(nodes, best_cost, true)
         } else {
             Path::new(Vec::new(), best_cost, false)
         })

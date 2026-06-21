@@ -3,16 +3,17 @@ use crate::{
     backend::Backend,
     path::Path,
     trellis::{INF_W, Trellis},
+    types::{LayerId, NodeId},
 };
 
 /// Reusable Viterbi solver with SIMD acceleration.
 ///
 /// Owns scratch buffers so repeated solves are allocation-free after warm-up.
-/// Create one per worker thread; see [`solve_batch`] for multi-threaded use.
+/// Create one per worker thread; see `solve_batch` for multi-threaded use.
 pub struct ViterbiSolver {
     dist: Vec<u32>,
     offsets: Vec<usize>,
-    path: Vec<usize>,
+    path: Vec<usize>, // internal scratch; converted to Vec<NodeId> on output
     backend: Backend,
 }
 
@@ -35,17 +36,17 @@ impl ViterbiSolver {
     /// Fill `self.dist` with the minimum-cost distance to every node.
     fn forward_pass(&mut self, t: &Trellis) {
         // Every first-layer node starts at cost zero (virtual source).
-        let first_width = t.widths()[0];
+        let first_width = t.widths()[0] as usize;
         for cost in &mut self.dist[..first_width] {
             *cost = 0;
         }
 
         for layer in 0..t.layers() - 1 {
-            let cur_width = t.widths()[layer];
-            let next_width = t.widths()[layer + 1];
+            let cur_width = t.widths()[layer] as usize;
+            let next_width = t.widths()[layer + 1] as usize;
             let cur_start = self.offsets[layer];
             let next_start = self.offsets[layer + 1];
-            let weights = t.layer(layer).unwrap(); // safe: all resolved
+            let weights = t.layer(LayerId(layer as u32)).unwrap(); // safe: all resolved
 
             // split_at_mut lets us hold a mutable `next` slice and an immutable
             // `cur` slice simultaneously without aliasing.
@@ -61,11 +62,11 @@ impl ViterbiSolver {
     /// Trace the optimal path backwards through `self.dist`.
     fn backtrack(&mut self, t: &Trellis) -> Path {
         let last_layer = t.layers() - 1;
-        let last_width = t.widths()[last_layer];
+        let last_width = t.widths()[last_layer] as usize;
         let last_start = self.offsets[last_layer];
 
         // Pick the best node in the final layer.
-        let mut best_final_node = 0;
+        let mut best_final_node = 0usize;
         let mut best_cost = INF_W;
         for node in 0..last_width {
             let cost = self.dist[last_start + node];
@@ -84,12 +85,12 @@ impl ViterbiSolver {
         // Walk backwards: for each layer find which predecessor leads here cheapest.
         for layer in (0..last_layer).rev() {
             let next_node = self.path[layer + 1];
-            let cur_width = t.widths()[layer];
-            let next_width = t.widths()[layer + 1];
+            let cur_width = t.widths()[layer] as usize;
+            let next_width = t.widths()[layer + 1] as usize;
             let cur_start = self.offsets[layer];
-            let weights = t.layer(layer).unwrap(); // safe: all resolved
+            let weights = t.layer(LayerId(layer as u32)).unwrap(); // safe: all resolved
 
-            let mut best_cur_node = 0;
+            let mut best_cur_node = 0usize;
             let mut best_candidate = INF_W;
             for node in 0..cur_width {
                 let edge_weight = weights[node * next_width + next_node];
@@ -103,7 +104,11 @@ impl ViterbiSolver {
             self.path[layer] = best_cur_node;
         }
 
-        Path::new(self.path[..t.layers()].to_vec(), best_cost, true)
+        let nodes = self.path[..t.layers()]
+            .iter()
+            .map(|&n| NodeId(n as u32))
+            .collect();
+        Path::new(nodes, best_cost, true)
     }
 }
 
@@ -119,7 +124,7 @@ impl Solve for ViterbiSolver {
         self.offsets.clear();
         self.offsets.push(0);
         for &width in t.widths() {
-            let next = self.offsets.last().unwrap() + width;
+            let next = self.offsets.last().unwrap() + width as usize;
             self.offsets.push(next);
         }
         let total_nodes = *self.offsets.last().unwrap();

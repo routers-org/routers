@@ -1,4 +1,7 @@
-use crate::transition::Transition;
+use crate::{
+    transition::Transition,
+    types::{LayerId, NodeId},
+};
 use thiserror::Error;
 
 /// Reserved sentinel meaning "no edge / absent". Real weights must be `<= MAX_WEIGHT`.
@@ -17,16 +20,16 @@ pub enum TrellisError {
     #[error("trellis is empty")]
     Empty,
     #[error("layer {0} has zero width")]
-    ZeroWidthLayer(usize),
+    ZeroWidthLayer(LayerId),
     #[error("layer out of range: {0}")]
-    LayerOutOfRange(usize),
+    LayerOutOfRange(LayerId),
     #[error("node out of range: layer={layer} node={node}")]
-    NodeOutOfRange { layer: usize, node: usize },
+    NodeOutOfRange { layer: LayerId, node: NodeId },
     #[error("weight too large: {0}")]
     WeightTooLarge(u32),
     #[error("transition length mismatch: layer={layer} expected={expected} got={got}")]
     TransitionLenMismatch {
-        layer: usize,
+        layer: LayerId,
         expected: usize,
         got: usize,
     },
@@ -42,29 +45,26 @@ type Result<T> = std::result::Result<T, TrellisError>;
 /// transition is resolved.
 #[derive(Clone, Debug)]
 pub struct Trellis {
-    widths: Vec<usize>,
+    widths: Vec<u32>,
     transitions: Vec<Transition>,
 }
 
 impl Trellis {
     /// New trellis with the given per-layer node counts. All transitions start `Pending`.
-    pub fn new(widths: Vec<usize>) -> Result<Self> {
+    pub fn new(widths: Vec<u32>) -> Result<Self> {
         if widths.is_empty() {
             return Err(TrellisError::Empty);
         }
         if let Some(l) = widths.iter().position(|&w| w == 0) {
-            return Err(TrellisError::ZeroWidthLayer(l));
+            return Err(TrellisError::ZeroWidthLayer(LayerId(l as u32)));
         }
 
         let transitions = widths.windows(2).map(|_| Transition::Pending).collect();
 
-        Ok(Trellis {
-            widths,
-            transitions,
-        })
+        Ok(Trellis { widths, transitions })
     }
 
-    /// Number of layers (nodes, not transitions).
+    /// Number of layers (node columns, not transitions).
     #[inline]
     pub fn layers(&self) -> usize {
         self.widths.len()
@@ -72,15 +72,15 @@ impl Trellis {
 
     /// Per-layer node counts.
     #[inline]
-    pub fn widths(&self) -> &[usize] {
+    pub fn widths(&self) -> &[u32] {
         &self.widths
     }
 
     /// Whether the transition from `layer` to `layer+1` is resolved.
     #[inline]
-    pub fn is_resolved(&self, layer: usize) -> bool {
+    pub fn is_resolved(&self, layer: LayerId) -> bool {
         self.transitions
-            .get(layer)
+            .get(layer.index())
             .map(Transition::is_resolved)
             .unwrap_or(false)
     }
@@ -91,32 +91,35 @@ impl Trellis {
     }
 
     /// Index of the first `Pending` transition, or `None` if all resolved.
-    pub fn first_pending(&self) -> Option<usize> {
-        self.transitions.iter().position(|t| !t.is_resolved())
+    pub fn first_pending(&self) -> Option<LayerId> {
+        self.transitions
+            .iter()
+            .position(|t| !t.is_resolved())
+            .map(|i| LayerId(i as u32))
     }
 
-    /// Reset a resolved transition back to `Pending`, clearing its edges.
-    pub fn mark_pending(&mut self, layer: usize) -> Result<()> {
-        if layer >= self.transitions.len() {
+    /// Reset a transition back to `Pending`, discarding its edges.
+    pub fn mark_pending(&mut self, layer: LayerId) -> Result<()> {
+        if layer.index() >= self.transitions.len() {
             return Err(TrellisError::LayerOutOfRange(layer));
         }
-        self.transitions[layer] = Transition::Pending;
+        self.transitions[layer.index()] = Transition::Pending;
         Ok(())
     }
 
     /// Raw edge weights for a transition, row-major `[from * next_width + to]`.
     /// Returns `None` if the transition is still `Pending`.
-    pub fn layer(&self, layer: usize) -> Option<&[u32]> {
-        self.transitions.get(layer)?.weights()
+    pub fn layer(&self, layer: LayerId) -> Option<&[u32]> {
+        self.transitions.get(layer.index())?.weights()
     }
 
     /// Weight of a single edge across the `layer → layer+1` boundary.
     /// Returns `INF_W` if the transition is pending or the edge is absent.
-    pub fn edge_weight(&self, layer: usize, from: usize, to: usize) -> u32 {
-        let next_width = self.widths[layer + 1];
-        self.transitions[layer]
+    pub fn edge_weight(&self, layer: LayerId, from: NodeId, to: NodeId) -> u32 {
+        let next_width = self.widths[layer.index() + 1] as usize;
+        self.transitions[layer.index()]
             .weights()
-            .map(|w| w[from * next_width + to])
+            .map(|w| w[from.index() * next_width + to.index()])
             .unwrap_or(INF_W)
     }
 
@@ -124,29 +127,39 @@ impl Trellis {
     ///
     /// If the transition was `Pending`, it becomes `Resolved` with all other
     /// edges initialised to absent (`INF_W`).
-    pub fn set_edge(&mut self, layer: usize, from: usize, to: usize, weight: u32) -> Result<()> {
+    pub fn set_edge(
+        &mut self,
+        layer: LayerId,
+        from: NodeId,
+        to: NodeId,
+        weight: u32,
+    ) -> Result<()> {
         if weight > MAX_WEIGHT {
             return Err(TrellisError::WeightTooLarge(weight));
         }
 
-        let next_layer = layer + 1;
-        if next_layer >= self.widths.len() {
+        let layer_idx = layer.index();
+        let next_idx = layer_idx + 1;
+        if next_idx >= self.widths.len() {
             return Err(TrellisError::LayerOutOfRange(layer));
         }
 
-        let (cur_width, next_width) = (self.widths[layer], self.widths[next_layer]);
-        if from >= cur_width {
+        let cur_width = self.widths[layer_idx] as usize;
+        let next_width = self.widths[next_idx] as usize;
+
+        if from.index() >= cur_width {
             return Err(TrellisError::NodeOutOfRange { layer, node: from });
         }
-        if to >= next_width {
+        if to.index() >= next_width {
             return Err(TrellisError::NodeOutOfRange {
-                layer: next_layer,
+                layer: LayerId(next_idx as u32),
                 node: to,
             });
         }
 
-        self.transitions[layer].ensure_resolved(cur_width * next_width);
-        self.transitions[layer].weights_mut().unwrap()[from * next_width + to] = weight;
+        self.transitions[layer_idx].ensure_resolved(cur_width * next_width);
+        self.transitions[layer_idx].weights_mut().unwrap()
+            [from.index() * next_width + to.index()] = weight;
         Ok(())
     }
 
@@ -154,12 +167,14 @@ impl Trellis {
     ///
     /// Entries equal to `NO_EDGE` are stored as absent; all other entries must
     /// be `<= MAX_WEIGHT`. Replaces any previous edge data (pending or resolved).
-    pub fn fill_transition(&mut self, layer: usize, rows: &[u32]) -> Result<()> {
-        if layer + 1 >= self.widths.len() {
+    pub fn fill_transition(&mut self, layer: LayerId, rows: &[u32]) -> Result<()> {
+        let layer_idx = layer.index();
+        if layer_idx + 1 >= self.widths.len() {
             return Err(TrellisError::LayerOutOfRange(layer));
         }
 
-        let expected = self.widths[layer] * self.widths[layer + 1];
+        let expected =
+            (self.widths[layer_idx] as usize) * (self.widths[layer_idx + 1] as usize);
         if rows.len() != expected {
             return Err(TrellisError::TransitionLenMismatch {
                 layer,
@@ -178,7 +193,7 @@ impl Trellis {
             .iter()
             .map(|&w| if w == NO_EDGE { INF_W } else { w })
             .collect();
-        self.transitions[layer] = Transition::Resolved(weights);
+        self.transitions[layer_idx] = Transition::Resolved(weights);
         Ok(())
     }
 }

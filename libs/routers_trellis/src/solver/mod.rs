@@ -1,4 +1,4 @@
-use crate::{Path, Trellis};
+use crate::{Path, Trellis, types::LayerId};
 use thiserror::Error;
 
 mod brute;
@@ -15,5 +15,5 @@ pub trait Solve {
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum SolveError {
     #[error("transition at layer {0} is not yet resolved")]
-    NotResolved(usize),
+    NotResolved(LayerId),
 }
