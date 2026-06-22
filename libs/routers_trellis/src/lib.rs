@@ -9,7 +9,6 @@
 //! - [`ViterbiSolver`]: Viterbi with SIMD acceleration. Reusable per thread.
 //! - [`BruteForceSolver`]: Correctness reference — never use in production.
 
-mod backend;
 mod path;
 mod solver;
 mod transition;

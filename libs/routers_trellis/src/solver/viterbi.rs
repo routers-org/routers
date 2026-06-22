@@ -1,6 +1,5 @@
 use crate::{
     Solve, SolveError,
-    backend::Backend,
     path::Path,
     trellis::{INF_W, Trellis},
     types::{LayerId, NodeId},
@@ -14,7 +13,6 @@ pub struct ViterbiSolver {
     dist: Vec<u32>,
     offsets: Vec<usize>,
     path: Vec<usize>, // internal scratch; converted to Vec<NodeId> on output
-    backend: Backend,
 }
 
 impl Default for ViterbiSolver {
@@ -29,7 +27,6 @@ impl ViterbiSolver {
             dist: Vec::new(),
             offsets: Vec::new(),
             path: Vec::new(),
-            backend: Backend::default(),
         }
     }
 
@@ -61,8 +58,23 @@ impl ViterbiSolver {
             let cur_costs = &head[cur_start..cur_start + cur_width];
             let next_costs = &mut tail[..next_width];
 
-            self.backend
-                .dispatch(cur_costs, weights, cur_width, next_width, next_costs);
+            for x in next_costs[..next_width].iter_mut() {
+                *x = INF_W;
+            }
+
+            for i in 0..cur_width {
+                let ci = cur_costs[i];
+                if ci == INF_W {
+                    continue;
+                }
+                let row = &weights[i * next_width..i * next_width + next_width];
+                for j in 0..next_width {
+                    let v = ci + row[j];
+                    if v < next_costs[j] {
+                        next_costs[j] = v;
+                    }
+                }
+            }
         }
     }
 
