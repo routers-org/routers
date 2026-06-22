@@ -36,7 +36,23 @@ impl BruteForceSolver {
 }
 
 impl Solve for BruteForceSolver {
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(
+            level = "debug",
+            name = "brute_force",
+            skip(self, t),
+            fields(layers = t.layers())
+        )
+    )]
     fn solve(&mut self, t: &Trellis) -> Result<Path, SolveError> {
+        log::warn!(
+            "BruteForceSolver: O(∏ widths × layers) — never use in production \
+             (layers={}, widths={:?})",
+            t.layers(),
+            t.widths(),
+        );
+
         if let Some(layer) = t.first_pending() {
             return Err(SolveError::NotResolved(layer));
         }
@@ -77,6 +93,11 @@ impl Solve for BruteForceSolver {
                 break; // All combinations exhausted.
             }
         }
+
+        log::debug!(
+            "BruteForceSolver: done — best_cost={best_cost} reachable={}",
+            best_cost < INF_W,
+        );
 
         Ok(if best_cost < INF_W {
             let nodes = best_nodes.iter().map(|&n| NodeId(n as u32)).collect();

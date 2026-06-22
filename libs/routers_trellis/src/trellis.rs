@@ -51,6 +51,10 @@ pub struct Trellis {
 
 impl Trellis {
     /// New trellis with the given per-layer node counts. All transitions start `Pending`.
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(level = "debug", skip(widths), fields(layers = widths.len()))
+    )]
     pub fn new(widths: Vec<u32>) -> Result<Self> {
         if widths.is_empty() {
             return Err(TrellisError::Empty);
@@ -60,8 +64,14 @@ impl Trellis {
         }
 
         let transitions = widths.windows(2).map(|_| Transition::Pending).collect();
+        let t = Trellis { widths, transitions };
 
-        Ok(Trellis { widths, transitions })
+        log::debug!(
+            "trellis created: {} layers, widths={:?}",
+            t.layers(),
+            t.widths()
+        );
+        Ok(t)
     }
 
     /// Number of layers (node columns, not transitions).
@@ -99,11 +109,13 @@ impl Trellis {
     }
 
     /// Reset a transition back to `Pending`, discarding its edges.
+    #[cfg_attr(feature = "tracing", tracing::instrument(level = "debug", skip(self)))]
     pub fn mark_pending(&mut self, layer: LayerId) -> Result<()> {
         if layer.index() >= self.transitions.len() {
             return Err(TrellisError::LayerOutOfRange(layer));
         }
         self.transitions[layer.index()] = Transition::Pending;
+        log::debug!("mark_pending: L{layer}");
         Ok(())
     }
 
@@ -127,6 +139,7 @@ impl Trellis {
     ///
     /// If the transition was `Pending`, it becomes `Resolved` with all other
     /// edges initialised to absent (`INF_W`).
+    #[cfg_attr(feature = "tracing", tracing::instrument(level = "debug", skip(self)))]
     pub fn set_edge(
         &mut self,
         layer: LayerId,
@@ -160,6 +173,8 @@ impl Trellis {
         self.transitions[layer_idx].ensure_resolved(cur_width * next_width);
         self.transitions[layer_idx].weights_mut().unwrap()
             [from.index() * next_width + to.index()] = weight;
+
+        log::debug!("set_edge: L{layer} {from}→{to} w={weight}");
         Ok(())
     }
 
@@ -167,6 +182,10 @@ impl Trellis {
     ///
     /// Entries equal to `NO_EDGE` are stored as absent; all other entries must
     /// be `<= MAX_WEIGHT`. Replaces any previous edge data (pending or resolved).
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(level = "debug", skip(self, rows), fields(edges = rows.len()))
+    )]
     pub fn fill_transition(&mut self, layer: LayerId, rows: &[u32]) -> Result<()> {
         let layer_idx = layer.index();
         if layer_idx + 1 >= self.widths.len() {
@@ -194,6 +213,8 @@ impl Trellis {
             .map(|&w| if w == NO_EDGE { INF_W } else { w })
             .collect();
         self.transitions[layer_idx] = Transition::Resolved(weights);
+
+        log::debug!("fill_transition: L{layer} ({} edges)", rows.len());
         Ok(())
     }
 }

@@ -34,6 +34,7 @@ impl ViterbiSolver {
     }
 
     /// Fill `self.dist` with the minimum-cost distance to every node.
+    #[cfg_attr(feature = "tracing", tracing::instrument(level = "trace", skip_all))]
     fn forward_pass(&mut self, t: &Trellis) {
         // Every first-layer node starts at cost zero (virtual source).
         let first_width = t.widths()[0] as usize;
@@ -48,6 +49,12 @@ impl ViterbiSolver {
             let next_start = self.offsets[layer + 1];
             let weights = t.layer(LayerId(layer as u32)).unwrap(); // safe: all resolved
 
+            log::trace!(
+                "forward_pass: layer {}/{} cur_width={cur_width} next_width={next_width}",
+                layer,
+                t.layers() - 1,
+            );
+
             // split_at_mut lets us hold a mutable `next` slice and an immutable
             // `cur` slice simultaneously without aliasing.
             let (head, tail) = self.dist.split_at_mut(next_start);
@@ -60,6 +67,7 @@ impl ViterbiSolver {
     }
 
     /// Trace the optimal path backwards through `self.dist`.
+    #[cfg_attr(feature = "tracing", tracing::instrument(level = "trace", skip_all))]
     fn backtrack(&mut self, t: &Trellis) -> Path {
         let last_layer = t.layers() - 1;
         let last_width = t.widths()[last_layer] as usize;
@@ -75,6 +83,8 @@ impl ViterbiSolver {
                 best_final_node = node;
             }
         }
+
+        log::trace!("backtrack: best_final_node={best_final_node} best_cost={best_cost}");
 
         if best_cost >= INF_W {
             return Path::new(Vec::new(), best_cost, false);
@@ -114,8 +124,20 @@ impl ViterbiSolver {
 
 impl Solve for ViterbiSolver {
     /// Minimum-cost path through `t`. Reuses internal buffers across calls.
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(
+            level = "debug",
+            name = "viterbi",
+            skip(self, t),
+            fields(layers = t.layers())
+        )
+    )]
     fn solve(&mut self, t: &Trellis) -> Result<Path, SolveError> {
+        log::debug!("ViterbiSolver::solve: {} layers, widths={:?}", t.layers(), t.widths());
+
         if let Some(layer) = t.first_pending() {
+            log::debug!("ViterbiSolver::solve: aborted — L{layer} is pending");
             return Err(SolveError::NotResolved(layer));
         }
 
@@ -138,6 +160,13 @@ impl Solve for ViterbiSolver {
         }
 
         self.forward_pass(t);
-        Ok(self.backtrack(t))
+        let path = self.backtrack(t);
+
+        log::debug!(
+            "ViterbiSolver::solve: done — cost={} reachable={}",
+            path.cost,
+            path.reachable,
+        );
+        Ok(path)
     }
 }
