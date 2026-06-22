@@ -4,7 +4,8 @@ use routers_trellis::*;
 fn line(weights: &[u32]) -> Trellis {
     let mut t = Trellis::new(vec![1u32; weights.len() + 1]).unwrap();
     for (l, &w) in weights.iter().enumerate() {
-        t.set_edge(LayerId(l as u32), NodeId(0), NodeId(0), w).unwrap();
+        t.set_edge(LayerId(l as u32), NodeId(0), NodeId(0), w)
+            .unwrap();
     }
     t
 }
@@ -108,7 +109,8 @@ fn resolved_but_disconnected_is_unreachable_not_pending() {
 #[test]
 fn fill_transition_matches_set_edge() {
     let mut a = Trellis::new(vec![2u32, 2]).unwrap();
-    a.fill_transition(LayerId(0), &[1, NO_EDGE, NO_EDGE, 4]).unwrap();
+    a.fill_transition(LayerId(0), &[1, NO_EDGE, NO_EDGE, 4])
+        .unwrap();
     let mut b = Trellis::new(vec![2u32, 2]).unwrap();
     b.set_edge(LayerId(0), NodeId(0), NodeId(0), 1).unwrap();
     b.set_edge(LayerId(0), NodeId(1), NodeId(1), 4).unwrap();
@@ -143,7 +145,10 @@ fn rejects_oversized_weight() {
         t.set_edge(LayerId(0), NodeId(0), NodeId(0), MAX_WEIGHT + 1),
         Err(TrellisError::WeightTooLarge(_))
     ));
-    assert!(t.set_edge(LayerId(0), NodeId(0), NodeId(0), MAX_WEIGHT).is_ok());
+    assert!(
+        t.set_edge(LayerId(0), NodeId(0), NodeId(0), MAX_WEIGHT)
+            .is_ok()
+    );
 }
 
 // ---- A/B conformance: Viterbi vs BruteForce ----
@@ -158,8 +163,16 @@ fn conformance(t: &Trellis) {
     );
     assert_eq!(viterbi.reachable, brute.reachable, "reachability mismatch");
     if viterbi.reachable {
-        assert_eq!(path_cost(t, &viterbi.nodes), viterbi.cost, "viterbi path cost incorrect");
-        assert_eq!(path_cost(t, &brute.nodes), brute.cost, "brute path cost incorrect");
+        assert_eq!(
+            path_cost(t, &viterbi.nodes),
+            viterbi.cost,
+            "viterbi path cost incorrect"
+        );
+        assert_eq!(
+            path_cost(t, &brute.nodes),
+            brute.cost,
+            "brute path cost incorrect"
+        );
     }
 }
 

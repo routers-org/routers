@@ -134,7 +134,11 @@ impl Solve for ViterbiSolver {
         )
     )]
     fn solve(&mut self, t: &Trellis) -> Result<Path, SolveError> {
-        log::debug!("ViterbiSolver::solve: {} layers, widths={:?}", t.layers(), t.widths());
+        log::debug!(
+            "ViterbiSolver::solve: {} layers, widths={:?}",
+            t.layers(),
+            t.widths()
+        );
 
         if let Some(layer) = t.first_pending() {
             log::debug!("ViterbiSolver::solve: aborted — L{layer} is pending");

@@ -64,7 +64,10 @@ impl Trellis {
         }
 
         let transitions = widths.windows(2).map(|_| Transition::Pending).collect();
-        let t = Trellis { widths, transitions };
+        let t = Trellis {
+            widths,
+            transitions,
+        };
 
         log::debug!(
             "trellis created: {} layers, widths={:?}",
@@ -192,8 +195,7 @@ impl Trellis {
             return Err(TrellisError::LayerOutOfRange(layer));
         }
 
-        let expected =
-            (self.widths[layer_idx] as usize) * (self.widths[layer_idx + 1] as usize);
+        let expected = (self.widths[layer_idx] as usize) * (self.widths[layer_idx + 1] as usize);
         if rows.len() != expected {
             return Err(TrellisError::TransitionLenMismatch {
                 layer,
