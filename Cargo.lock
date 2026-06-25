@@ -6189,6 +6189,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "routers_transition"
+version = "0.1.0"
+dependencies = [
+ "codspeed-criterion-compat",
+ "log",
+ "routers_fixtures",
+ "serde",
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
 name = "routers_trellis"
 version = "0.1.0"
 dependencies = [

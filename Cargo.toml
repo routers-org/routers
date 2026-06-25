@@ -5,7 +5,7 @@ members = [
     "libs/routers_shard", "libs/routers_tiles", "libs/routers_fixtures",
     "libs/routers_network", "libs/routers_viewer", "libs/routers_realtime",
     "libs/routers_tz", "libs/routers_tz_types",
-    "libs/routers_trellis",
+    "libs/routers_trellis", "libs/routers_transition",
     "conformance", "schema"
 ]
 
@@ -29,6 +29,8 @@ routers_fixtures = { path = "libs/routers_fixtures" }
 routers_tz = { path = "libs/routers_tz" }
 routers_tz_types = { path = "libs/routers_tz_types" }
 routers_schema = { path = "schema" }
+routers_trellis = { path = "libs/routers_trellis" }
+routers_transition = { path = "libs/routers_transition" }
 
 # === Workspace Deps ===
 [workspace.dependencies]
@@ -47,6 +49,8 @@ routers_viewer = "0.1.0"
 routers_realtime = "0.1.0"
 routers_tz = { version = "0.1.0" }
 routers_tz_types = "0.1.0"
+routers_trellis = "0.1.0"
+routers_transition = "0.1.0"
 routers = "0.2.1"
 
 # Optimisation Crates
