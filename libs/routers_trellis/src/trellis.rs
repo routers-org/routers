@@ -4,6 +4,9 @@ use crate::{
 };
 use thiserror::Error;
 
+#[cfg(feature = "serde")]
+use serde::{Deserialize, Serialize};
+
 /// Reserved sentinel meaning "no edge / absent". Real weights must be `<= MAX_WEIGHT`.
 pub const NO_EDGE: u32 = u32::MAX;
 
@@ -44,6 +47,7 @@ type Result<T> = std::result::Result<T, TrellisError>;
 /// [`set_edge`] or [`fill_transition`]. Solvers refuse to run until every
 /// transition is resolved.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct Trellis {
     widths: Vec<u32>,
     transitions: Vec<Transition>,

@@ -6195,6 +6195,7 @@ dependencies = [
  "codspeed-criterion-compat",
  "log",
  "routers_fixtures",
+ "serde",
  "thiserror 2.0.18",
  "tracing",
 ]

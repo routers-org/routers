@@ -1,7 +1,11 @@
+#[cfg(feature = "serde")]
+use serde::{Deserialize, Serialize};
+
 use crate::trellis::INF_W;
 
 /// The two states of a layer-to-layer transition.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum Transition {
     /// Weights/edges to the next layer have not been generated yet.
     Pending,

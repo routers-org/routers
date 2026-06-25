@@ -10,10 +10,12 @@ repository = "https://github.com/routers-org/routers"
 log = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true, optional = true }
+serde = { workspace = true, features = ["derive"], optional = true }
 
 [features]
-default = ["avx512"]
-avx512 = []
+default = ["serde"]
+
+serde = ["dep:serde"]
 tracing = ["dep:tracing"]
 
 [dev-dependencies]
