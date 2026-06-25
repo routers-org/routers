@@ -5,6 +5,7 @@ members = [
     "libs/routers_shard", "libs/routers_tiles", "libs/routers_fixtures",
     "libs/routers_network", "libs/routers_viewer", "libs/routers_realtime",
     "libs/routers_tz", "libs/routers_tz_types",
+    "libs/routers_trellis",
     "conformance", "schema"
 ]
 
