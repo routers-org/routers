@@ -167,15 +167,15 @@ bench = false
 # === Root Dependencies ===
 [dependencies]
 routers_network = { workspace = true }
-routers_shard = { workspace = true, optional = true }
+routers_shard = { workspace = true }
 routers_transition = { workspace = true }
+routers_codec = { workspace = true }
 
 [dev-dependencies]
 wkt = { workspace = true }
 insta = { workspace = true }
 criterion = { workspace = true }
 routers_fixtures = { workspace = true }
-routers_codec = { workspace = true }
 
 [[bench]]
 name = "map_match"
@@ -188,12 +188,6 @@ harness = false
 [[example]]
 name = "shard_match"
 required-features = ["shard"]
-
-[features]
-shard = ["dep:routers_shard"]
-
-[package.metadata.docs.rs]
-features = []
 
 [lints]
 workspace = true

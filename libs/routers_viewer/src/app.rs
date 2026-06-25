@@ -5,7 +5,7 @@ use eframe::CreationContext;
 use egui::{Color32, CursorIcon, SidePanel};
 use geo::Coord;
 use routers_codec::osm::OsmNetwork;
-use routers_fixtures::{LOS_ANGELES, LOS_ANGELES_SAVED, SYDNEY, SYDNEY_SAVED, fixture};
+use routers_fixtures::{LOS_ANGELES, LOS_ANGELES_SAVED, fixture};
 use walkers::{
     HttpTiles, MapMemory, Plugin, lon_lat,
     sources::{Mapbox, MapboxStyle, OpenStreetMap},
