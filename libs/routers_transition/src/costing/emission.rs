@@ -1,4 +1,4 @@
-use crate::transition::Strategy;
+use crate::Strategy;
 use routers_network::edge::Weight;
 
 pub trait EmissionStrategy: for<'a> Strategy<EmissionContext<'a>> {}

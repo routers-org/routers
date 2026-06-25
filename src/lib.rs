@@ -3,8 +3,7 @@
 
 extern crate alloc;
 
-pub mod transition;
-pub use transition::*;
+pub use routers_transition::*;
 
 #[cfg(test)]
 pub mod test;

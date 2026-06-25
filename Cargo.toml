@@ -168,40 +168,7 @@ bench = false
 [dependencies]
 routers_network = { workspace = true }
 routers_shard = { workspace = true, optional = true }
-
-# Algorithm
-rstar = { workspace = true }
-
-petgraph = { workspace = true }
-serde = { workspace = true }
-
-# Root-Specific Crates
-approx = "0.5.1"
-pathfinding = "4.14.0"
-measure_time = "0.9.0"
-rustc-hash = { workspace = true }
-
-# Logging Utility
-log = { workspace = true }
-
-# GeoRust
-geo = { workspace = true }
-wkt = { workspace = true }
-
-# Tracing [Optional-"tracing"]
-tracing = { workspace = true, optional = true }
-tracing-subscriber = { workspace = true, optional = true }
-opentelemetry = { workspace = true, optional = true }
-opentelemetry_sdk = { workspace = true, optional = true }
-tracing-opentelemetry = { workspace = true, optional = true }
-opentelemetry-otlp = { workspace = true, optional = true }
-
-# Optimisations and Compression
-rayon = { workspace = true }
-scc = { workspace = true }
-itertools = { workspace = true }
-indexmap = { workspace = true }
-thiserror = { workspace = true }
+routers_transition = { workspace = true }
 
 [dev-dependencies]
 wkt = { workspace = true }
@@ -224,14 +191,6 @@ required-features = ["shard"]
 
 [features]
 shard = ["dep:routers_shard"]
-tracing = [
-    "dep:tracing",
-    "tracing-subscriber",
-    "opentelemetry",
-    "opentelemetry_sdk",
-    "tracing-opentelemetry",
-    "opentelemetry-otlp",
-]
 
 [package.metadata.docs.rs]
 features = []

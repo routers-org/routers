@@ -1,4 +1,4 @@
-use crate::transition::primitives::Fraction;
+use crate::primitives::Fraction;
 
 use core::cmp::Ordering;
 use core::ops::Add;

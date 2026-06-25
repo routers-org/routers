@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::transition::{MatchError, RoutedPath};
+use crate::{MatchError, RoutedPath};
 use crate::{PredicateCache, SolverVariant};
 
 use geo::LineString;
