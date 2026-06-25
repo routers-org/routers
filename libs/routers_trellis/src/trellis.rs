@@ -219,4 +219,25 @@ impl Trellis {
         log::debug!("fill_transition: L{layer} ({} edges)", rows.len());
         Ok(())
     }
+
+    /// Allocates a new layer with the given width and pending transition.
+    #[cfg_attr(feature = "tracing", tracing::instrument(level = "debug", skip(self)))]
+    pub fn add_layer(&mut self, width: u32) -> Result<()> {
+        self.widths.push(width);
+        self.transitions.push(Transition::Pending);
+
+        Ok(())
+    }
+
+    /// Resolves the transition for the given layer with the given rows of weights.
+    #[cfg_attr(feature = "tracing", tracing::instrument(level = "debug", skip(self)))]
+    pub fn resolve_layer(&mut self, layer: LayerId, rows: Vec<u32>) -> Result<()> {
+        if let Some(transition) = self.transitions.get_mut(layer.index()) {
+            *transition = Transition::Resolved(rows);
+        } else {
+            return Err(TrellisError::LayerOutOfRange(layer));
+        }
+
+        Ok(())
+    }
 }
