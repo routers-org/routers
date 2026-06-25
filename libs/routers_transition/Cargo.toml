@@ -1,0 +1,26 @@
+[package]
+name = "routers_transition"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+description = "Map-Matching Transition Graph"
+repository = "https://github.com/routers-org/routers"
+
+[dependencies]
+log = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true, optional = true }
+serde = { workspace = true, features = ["derive"], optional = true }
+
+[features]
+default = ["serde"]
+
+serde = ["dep:serde"]
+tracing = ["dep:tracing"]
+
+[dev-dependencies]
+criterion = { workspace = true }
+routers_fixtures = { workspace = true }
+
+[lints]
+workspace = true
