@@ -185,6 +185,28 @@ impl Trellis {
         Ok(())
     }
 
+    /// Allocates a new layer with the given width and pending transition.
+    #[cfg_attr(feature = "tracing", tracing::instrument(level = "debug", skip(self)))]
+    pub fn add_layer(&mut self, width: u32) -> Result<()> {
+        self.widths.push(width);
+        self.transitions.push(Transition::Pending);
+
+        Ok(())
+    }
+
+    /// Resolves the transition for the given layer with the given rows of weights.
+    /// Fixed weights, row-major [from * next_width + to]; absent edges = INF_W.
+    #[cfg_attr(feature = "tracing", tracing::instrument(level = "debug", skip(self)))]
+    pub fn fill_layer(&mut self, layer: LayerId, rows: Vec<u32>) -> Result<()> {
+        if let Some(transition) = self.transitions.get_mut(layer.index()) {
+            *transition = Transition::Resolved(rows);
+        } else {
+            return Err(TrellisError::LayerOutOfRange(layer));
+        }
+
+        Ok(())
+    }
+
     /// Bulk-fill a transition, row-major `[from * next_width + to]`.
     ///
     /// Entries equal to `NO_EDGE` are stored as absent; all other entries must
@@ -221,27 +243,6 @@ impl Trellis {
         self.transitions[layer_idx] = Transition::Resolved(weights);
 
         log::debug!("fill_transition: L{layer} ({} edges)", rows.len());
-        Ok(())
-    }
-
-    /// Allocates a new layer with the given width and pending transition.
-    #[cfg_attr(feature = "tracing", tracing::instrument(level = "debug", skip(self)))]
-    pub fn add_layer(&mut self, width: u32) -> Result<()> {
-        self.widths.push(width);
-        self.transitions.push(Transition::Pending);
-
-        Ok(())
-    }
-
-    /// Resolves the transition for the given layer with the given rows of weights.
-    #[cfg_attr(feature = "tracing", tracing::instrument(level = "debug", skip(self)))]
-    pub fn resolve_layer(&mut self, layer: LayerId, rows: Vec<u32>) -> Result<()> {
-        if let Some(transition) = self.transitions.get_mut(layer.index()) {
-            *transition = Transition::Resolved(rows);
-        } else {
-            return Err(TrellisError::LayerOutOfRange(layer));
-        }
-
         Ok(())
     }
 }
