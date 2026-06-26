@@ -25,8 +25,8 @@ jobs:
       contents: write
     outputs:
       # Expose these variables so the matrix job can read them
-      did_release: ${{ steps.release.outputs.releases != '[]' && steps.release.outputs.releases != '' }}
-      tag: ${{ steps.parse_tag.outputs.ROUTERS_TAG }}
+      did_release: ${{ steps.parse_tag.outputs.is_released }}
+      tag: ${{ steps.parse_tag.outputs.tag }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -68,10 +68,18 @@ jobs:
         id: parse_tag
         if: steps.release.outputs.releases != '[]' && steps.release.outputs.releases != ''
         run: |
+          echo "is_released=false" >> "$GITHUB_OUTPUT"
+
           # https://release-plz.dev/docs/usage/release#json-output
+          RELEASED=$(echo "$RELEASES_JSON" | jq -r 'any(.[]; .package_name == "routers")')
           TAG=$(echo '${{ steps.release.outputs.releases }}' | jq -r '.[] | select(.package_name == "routers") | .tag')
-          echo "ROUTERS_TAG=$TAG" >> "$GITHUB_OUTPUT"
-          echo "Successfully released and tagged: $TAG"
+
+          if [ "$RELEASED" = "true" ]; then
+            echo "is_released=true" >> "$GITHUB_OUTPUT"
+            echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+            echo "Successfully released and tagged: $TAG"
+          fi
 
   build-containers:
     name: Build and push containers
