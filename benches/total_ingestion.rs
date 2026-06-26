@@ -2,12 +2,10 @@ use routers_codec::osm::OsmNetwork;
 use routers_fixtures::{DISTRICT_OF_COLUMBIA, fixture};
 
 use criterion::criterion_main;
-use log::info;
 
 fn ingest_as_full_graph() {
     let graph =
         OsmNetwork::from_pbf(fixture!(DISTRICT_OF_COLUMBIA)).expect("Could not generate graph");
-    info!("OSM network generated with {} nodes", graph.num_nodes());
 }
 
 fn ingestion_benchmark(c: &mut criterion::Criterion) {
