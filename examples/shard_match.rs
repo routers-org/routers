@@ -1,9 +1,9 @@
 use geo::{Centroid, Coord, LineString, Point, centroid};
 use routers::r#match::MatchSimpleExt;
-use routers_fixtures::{SYDNEY, SYNDEY_TRIP, fixture};
-use routers_shard::{
+use routers::shard::{
     QuadTreeStrategy, Selection, SelectionMode, ShardedNetwork, ShardingStrategy, osm::OsmSource,
 };
+use routers_fixtures::{SYDNEY, SYNDEY_TRIP, fixture};
 use wkt::TryFromWkt;
 
 fn main() {

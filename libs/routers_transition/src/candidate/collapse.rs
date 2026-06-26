@@ -1,5 +1,5 @@
 use crate::Reachable;
-use crate::transition::candidate::*;
+use crate::candidate::*;
 use geo::LineString;
 use routers_network::Edge;
 use routers_network::Network;

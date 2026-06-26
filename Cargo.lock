@@ -5969,32 +5969,15 @@ dependencies = [
 name = "routers"
 version = "0.2.7"
 dependencies = [
- "approx 0.5.1",
  "codspeed-criterion-compat",
  "geo",
- "indexmap 2.14.0",
  "insta",
- "itertools 0.14.0",
- "log",
- "measure_time",
- "opentelemetry",
- "opentelemetry-otlp",
- "opentelemetry_sdk",
- "pathfinding",
- "petgraph",
- "rayon",
  "routers_codec",
  "routers_fixtures",
  "routers_network",
  "routers_shard",
- "rstar 0.12.2",
- "rustc-hash 2.1.2",
- "scc",
+ "routers_transition",
  "serde",
- "thiserror 2.0.18",
- "tracing",
- "tracing-opentelemetry",
- "tracing-subscriber",
  "wkt",
 ]
 
@@ -6189,6 +6172,39 @@ dependencies = [
 ]
 
 [[package]]
+name = "routers_transition"
+version = "0.1.0"
+dependencies = [
+ "approx 0.5.1",
+ "codspeed-criterion-compat",
+ "geo",
+ "indexmap 2.14.0",
+ "insta",
+ "itertools 0.14.0",
+ "log",
+ "measure_time",
+ "opentelemetry",
+ "opentelemetry-otlp",
+ "opentelemetry_sdk",
+ "pathfinding",
+ "petgraph",
+ "rayon",
+ "routers_codec",
+ "routers_fixtures",
+ "routers_network",
+ "routers_shard",
+ "rstar 0.12.2",
+ "rustc-hash 2.1.2",
+ "scc",
+ "serde",
+ "thiserror 2.0.18",
+ "tracing",
+ "tracing-opentelemetry",
+ "tracing-subscriber",
+ "wkt",
+]
+
+[[package]]
 name = "routers_trellis"
 version = "0.1.0"
 dependencies = [
@@ -6248,6 +6264,7 @@ dependencies = [
  "routers_codec",
  "routers_fixtures",
  "routers_network",
+ "routers_transition",
  "rstar 0.12.2",
  "rustc-hash 2.1.2",
  "serde",

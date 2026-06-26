@@ -1,6 +1,6 @@
 use crate::ResolutionMethod;
-use crate::transition::candidate::{Candidate, CandidateId};
-use crate::transition::{RoutingContext, Strategy, Trip, VirtualTail};
+use crate::candidate::{Candidate, CandidateId};
+use crate::{RoutingContext, Strategy, Trip, VirtualTail};
 use geo::{Bearing, Distance, Haversine, Point};
 use routers_network::{Entry, Metadata, Network};
 

@@ -1,4 +1,4 @@
-use crate::transition::*;
+use crate::*;
 
 use crate::definition::Layers;
 use crate::generation::LayerGeneration;
@@ -125,22 +125,5 @@ where
     ) -> Result<CollapsedPath<E>, MatchError> {
         // Indirection to call.
         solver.solve(self, runtime)
-    }
-
-    /// Collapses the Hidden Markov Model (See [HMM]) into a
-    /// [`CollapsedPath`] result (solve).
-    ///
-    /// Consumes the transition structure in doing so.
-    /// This is because it makes irreversible modifications
-    /// to the candidate graph that put it in a collapsable
-    /// position, and therefore breaks atomicity, and should
-    /// not be re-used.
-    ///
-    /// [HMM]: https://en.wikipedia.org/wiki/Hidden_Markov_model
-    pub(crate) fn collapse(self) -> Result<CollapsedPath<E>, MatchError> {
-        // Use the candidates to collapse the graph into a single route.
-        self.candidates
-            .collapse()
-            .map_err(MatchError::CollapseFailure)
     }
 }

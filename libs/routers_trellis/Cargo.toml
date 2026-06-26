@@ -24,7 +24,6 @@ routers_fixtures = { workspace = true }
 
 [[bench]]
 name = "solver"
-path = "bench/solver.rs"
 harness = false
 
 [lints]

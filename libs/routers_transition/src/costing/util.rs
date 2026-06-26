@@ -1,4 +1,4 @@
-use crate::transition::*;
+use crate::*;
 use routers_network::{Entry, Metadata, Network};
 
 const PRECISION: f64 = 100.0f64;

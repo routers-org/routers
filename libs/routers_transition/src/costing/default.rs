@@ -1,7 +1,7 @@
 pub mod emission {
     use std::ops::{Div, Neg};
 
-    use crate::transition::*;
+    use crate::*;
 
     /// 5 meters (85th% GPS error)
     const DEFAULT_EMISSION_ERROR: f64 = 25.0;
@@ -66,7 +66,7 @@ pub mod emission {
 }
 
 pub mod transition {
-    use crate::transition::*;
+    use crate::*;
     use routers_network::{Edge, Entry, Metadata, Network};
 
     /// Calculates the transition cost between two candidates.

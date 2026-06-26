@@ -19,3 +19,6 @@ libs/routers_fixtures/resources/*
 
 .work
 conformance/external
+
+*.csv
+*.csv.zip

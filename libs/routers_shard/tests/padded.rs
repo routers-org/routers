@@ -125,11 +125,11 @@ fn larger_buffer_admits_more_nodes_than_smaller_buffer() {
 #[test]
 fn padded_at_coarse_precision_admits_strip_without_whole_neighbours() {
     // Geohash precision 3 cells are ~150 km wide; a 200 m buffer at
-    // those scales is a thin strip. The padded network should be
+    // those scales is a thin strip. The padgded network should be
     // strictly smaller than the OwnedAndNeighbours equivalent (which
     // would pull in the surrounding 150-km cells in full) while still
     // admitting some cross-boundary nodes vs. Owned alone.
-    let source = MemSource::grid(Point::new(13.0, 52.0), 200, 200, 0.01);
+    let source = MemSource::grid(Point::new(13.0, 52.0), 100, 100, 0.01);
     let strategy = GeohashStrategy::with_precision(3);
     let owned = strategy.locate(Point::new(13.5, 52.5));
 

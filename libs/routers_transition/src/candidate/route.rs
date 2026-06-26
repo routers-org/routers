@@ -1,4 +1,4 @@
-use crate::{ResolutionMethod, transition::candidate::*};
+use crate::{ResolutionMethod, candidate::*};
 use core::ops::Deref;
 use routers_network::{Edge, Entry, Metadata, Network, Node};
 use serde::Serialize;

@@ -1,0 +1,55 @@
+[package]
+name = "routers_transition"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+description = "Map-Matching Transition Graph"
+repository = "https://github.com/routers-org/routers"
+
+[dependencies]
+routers_network = { workspace = true }
+routers_shard = { workspace = true, optional = true }
+
+# Algorithm
+rstar = { workspace = true }
+
+petgraph = { workspace = true }
+serde = { workspace = true }
+
+# Root-Specific Crates
+approx = "0.5.1"
+pathfinding = "4.14.0"
+measure_time = "0.9.0"
+rustc-hash = { workspace = true }
+
+# Logging Utility
+log = { workspace = true }
+
+# GeoRust
+geo = { workspace = true }
+wkt = { workspace = true }
+
+# Tracing [Optional-"tracing"]
+tracing = { workspace = true, optional = true }
+tracing-subscriber = { workspace = true, optional = true }
+opentelemetry = { workspace = true, optional = true }
+opentelemetry_sdk = { workspace = true, optional = true }
+tracing-opentelemetry = { workspace = true, optional = true }
+opentelemetry-otlp = { workspace = true, optional = true }
+
+# Optimisations and Compression
+rayon = { workspace = true }
+scc = { workspace = true }
+itertools = { workspace = true }
+indexmap = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+wkt = { workspace = true }
+insta = { workspace = true }
+criterion = { workspace = true }
+routers_fixtures = { workspace = true }
+routers_codec = { workspace = true }
+
+[lints]
+workspace = true

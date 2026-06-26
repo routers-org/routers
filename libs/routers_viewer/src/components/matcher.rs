@@ -3,11 +3,11 @@ use std::sync::Arc;
 use egui::Response;
 use geo::{Coord, LineString};
 use routers::PredicateCache;
-use routers::transition::{
+use routers_codec::osm::{OsmEdgeMetadata, OsmEntryId, OsmNetwork, OsmTripConfiguration};
+use routers_transition::{
     costing::CostingStrategies, entity::Transition, layer::generation::StandardGenerator,
     solver::selective_forward::SelectiveForwardSolver,
 };
-use routers_codec::osm::{OsmEdgeMetadata, OsmEntryId, OsmNetwork, OsmTripConfiguration};
 
 use crate::utils::{Component, MatchCandidate, MatchData, MatchLayer};
 

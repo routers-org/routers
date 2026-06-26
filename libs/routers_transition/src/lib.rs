@@ -2,6 +2,9 @@
 //! transition module that allows for
 //! matching raw data to an underlying
 //! network.
+//!
+
+extern crate alloc;
 
 pub mod candidate;
 pub mod costing;

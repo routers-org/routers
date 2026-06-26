@@ -141,7 +141,7 @@ pub trait Calculable<E: CacheKey, M: Metadata, N: Network<E, M>, V> {
 
 mod successor {
     use super::*;
-    use crate::{primitives::WeightAndDistance, transition::*};
+    use crate::{primitives::WeightAndDistance, *};
 
     use geo::Haversine;
     use routers_network::DirectionAwareEdgeId;

@@ -9,6 +9,7 @@ routers = { workspace = true }
 routers_network = { workspace = true }
 routers_codec = { workspace = true }
 routers_fixtures = { workspace = true }
+routers_transition = { workspace = true }
 
 log = { workspace = true }
 anyhow = { workspace = true }
