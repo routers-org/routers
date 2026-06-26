@@ -4,9 +4,9 @@ use geo::LineString;
 use routers::{Match, PredicateCache, r#match::MatchOptions};
 use routers_codec::osm::{OsmEdgeMetadata, OsmEntryId, OsmNetwork};
 use routers_network::Metadata;
-use wkt::TryFromWkt;
 
 use routers_fixtures::{SYDNEY, SYDNEY_SAVED, SYNDEY_TRIP, fixture};
+use wkt::TryFromWkt;
 
 fn main() {
     let prog_start = std::time::Instant::now();

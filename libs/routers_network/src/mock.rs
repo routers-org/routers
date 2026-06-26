@@ -1,3 +1,5 @@
+#[!cfg(test)]
+
 //! A mock implementation of [`Network`] for unit-testing the map-matching
 //! algorithm without requiring real OSM data.
 //!

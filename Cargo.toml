@@ -171,11 +171,16 @@ routers_shard = { workspace = true }
 routers_transition = { workspace = true }
 routers_codec = { workspace = true }
 
+serde = { workspace = true }
+
 [dev-dependencies]
 wkt = { workspace = true }
 insta = { workspace = true }
+
 criterion = { workspace = true }
 routers_fixtures = { workspace = true }
+
+geo = { workspace = true }
 
 [[bench]]
 name = "map_match"

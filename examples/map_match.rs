@@ -1,8 +1,7 @@
 use std::time::Instant;
 
 use geo::{LineString, Point};
-use routers::r#match::MatchSimpleExt;
-use routers_codec::osm::OsmNetwork;
+use routers::{codec::osm::OsmNetwork, r#match::MatchSimpleExt};
 use wkt::TryFromWkt;
 
 use routers_fixtures::{SYDNEY, SYDNEY_SAVED, SYNDEY_TRIP, fixture};

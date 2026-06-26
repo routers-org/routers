@@ -5970,12 +5970,14 @@ name = "routers"
 version = "0.2.7"
 dependencies = [
  "codspeed-criterion-compat",
+ "geo",
  "insta",
  "routers_codec",
  "routers_fixtures",
  "routers_network",
  "routers_shard",
  "routers_transition",
+ "serde",
  "wkt",
 ]
 

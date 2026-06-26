@@ -1,4 +1,4 @@
-use crate::transition::Trip;
+use crate::Trip;
 use routers_codec::osm::OsmEntryId;
 
 use approx::assert_relative_eq;
@@ -140,7 +140,7 @@ fn validate_through_lower_cost() {
 
 #[test]
 fn validate_slip_road_optimality() {
-    use crate::transition::Trip;
+    use crate::Trip;
 
     let linestring_sliproad = wkt! {
         LINESTRING (-118.138707 33.917051, -118.13859 33.917027, -118.138402 33.916998, -118.138172 33.916897, -118.138106 33.916837, -118.138078 33.916778, -118.138076 33.916697, -118.138251 33.916449, -118.138268 33.916424)
