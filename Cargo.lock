@@ -6507,6 +6507,7 @@ dependencies = [
  "routers_network",
  "routers_shard",
  "serde",
+ "thiserror 2.0.18",
  "tokio",
  "url",
 ]

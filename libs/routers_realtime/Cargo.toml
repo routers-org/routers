@@ -12,7 +12,8 @@ env_logger = { workspace = true }
 log = { workspace = true }
 
 # Error handling
-anyhow = "1.0.102"
+anyhow = { workspace = true }
+thiserror = { workspace = true }
 chrono = "0.4.44"
 
 # Utilities

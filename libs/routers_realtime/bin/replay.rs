@@ -10,7 +10,7 @@ use indicatif_log_bridge::LogWrapper;
 use itertools::izip;
 use log::{debug, info};
 use polars::prelude::*;
-use routers_realtime::{bus::JetStreamSink, event::Payload};
+use routers_realtime::{bus::NATSSink, event::Payload};
 use routers_shard::{GeohashStrategy, ShardingStrategy};
 use std::{fmt::Write, path::PathBuf, time::Duration};
 use tokio::time::Instant;
@@ -93,7 +93,7 @@ async fn main() -> anyhow::Result<()> {
         .await?;
 
     let strategy = GeohashStrategy::with_precision(args.precision);
-    let jetstream = JetStreamSink::<Payload>::new(client, move |Payload { point, .. }| {
+    let nats = NATSSink::<Payload>::new(client, move |Payload { point, .. }| {
         let shard = strategy.locate(Point::new(point.x, point.y));
         format!("{}.{}", args.subject, shard)
     });
@@ -128,7 +128,7 @@ async fn main() -> anyhow::Result<()> {
     let flood = args.speed <= 0.0;
     let speed = if flood { f64::INFINITY } else { args.speed };
 
-    let mut sink = jetstream.buffer(BUFFERED_PUBLISH_SIZE);
+    let mut sink = nats.buffer(BUFFERED_PUBLISH_SIZE);
 
     let pb = ProgressBar::new(df.height() as u64);
     pb.set_style(

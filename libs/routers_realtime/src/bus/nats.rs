@@ -4,10 +4,11 @@ use std::task::{Context as Ctx, Poll, ready};
 use anyhow::Context;
 use async_nats::jetstream::{self};
 use futures::future::BoxFuture;
-use futures::{FutureExt, Sink};
+use futures::{FutureExt, Sink, Stream, StreamExt};
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 
-pub struct JetStreamSink<T: Serialize> {
+pub struct NATSSink<T: Serialize> {
     client: async_nats::Client, // kept for an explicit flush on shutdown
     js: jetstream::Context,
     subject_of: Box<dyn Fn(&T) -> String>,
@@ -16,7 +17,12 @@ pub struct JetStreamSink<T: Serialize> {
     _phantom: std::marker::PhantomData<T>,
 }
 
-impl<T: Serialize> JetStreamSink<T> {
+pub struct NATSStream<T: DeserializeOwned> {
+    subscriber: Option<async_nats::Subscriber>,
+    _phantom: std::marker::PhantomData<T>,
+}
+
+impl<T: Serialize> NATSSink<T> {
     pub fn new(client: async_nats::Client, subject_of: impl Fn(&T) -> String + 'static) -> Self {
         let js = jetstream::new(client.clone());
 
@@ -47,7 +53,7 @@ impl<T: Serialize> JetStreamSink<T> {
     }
 }
 
-impl<T: Serialize + Unpin> Sink<T> for JetStreamSink<T> {
+impl<T: Serialize + Unpin> Sink<T> for NATSSink<T> {
     type Error = anyhow::Error;
 
     fn poll_ready(self: Pin<&mut Self>, cx: &mut Ctx<'_>) -> Poll<Result<(), Self::Error>> {
@@ -79,5 +85,34 @@ impl<T: Serialize + Unpin> Sink<T> for JetStreamSink<T> {
 
     fn poll_close(self: Pin<&mut Self>, cx: &mut Ctx<'_>) -> Poll<Result<(), Self::Error>> {
         self.get_mut().poll_in_flight(cx)
+    }
+}
+
+impl<T: DeserializeOwned> NATSStream<T> {
+    pub fn new(subscriber: async_nats::Subscriber) -> Self {
+        Self {
+            subscriber: Some(subscriber),
+            _phantom: std::marker::PhantomData,
+        }
+    }
+}
+
+impl<T> Stream for NATSStream<T>
+where
+    T: Serialize + DeserializeOwned + Unpin,
+{
+    type Item = T;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Ctx<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+
+        let Some(subscriber) = &mut this.subscriber else {
+            return Poll::Ready(None);
+        };
+
+        match ready!(subscriber.poll_next_unpin(cx)) {
+            Some(message) => Poll::Ready(postcard::from_bytes(&message.payload).ok()),
+            None => Poll::Ready(None),
+        }
     }
 }

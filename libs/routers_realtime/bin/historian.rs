@@ -1,12 +1,13 @@
+use anyhow::Context;
+use async_nats::{ConnectOptions, ServerAddr};
 use clap::Parser;
 use futures::StreamExt;
-use log::info;
-use routers::shard::{Geohash, GeohashStrategy};
+use log::{error, info};
 use std::time::Duration;
 use tokio::time::{Instant, timeout_at};
 use url::Url;
 
-use async_nats::{ServerAddr, connect, jetstream};
+use routers_realtime::{bus::NATSStream, event::Payload, store::RedisStore};
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -19,59 +20,68 @@ struct Args {
     #[arg(short, long)]
     redis: Url,
 
-    /// Shard precision level
-    #[arg(short, long, default_value_t = 5)]
-    shard_precision: u8,
+    /// The subject to use for the NATS events stream
+    #[arg(long, default_value = "events.raw.>")]
+    subject: String,
+
+    /// The number of events to keep in the Redis history
+    #[arg(long, default_value_t = 25)]
+    history: usize,
 
     /// Batch size for Redis publishing
-    #[arg(short, long, default_value_t = 256)]
+    #[arg(long, default_value_t = 1024)]
     batch_size: usize,
 
     /// Batch timeout for Redis publishing
-    #[arg(short, long, value_parser = humantime::parse_duration, default_value = "100ms")]
+    #[arg(long, value_parser = humantime::parse_duration, default_value = "100ms")]
     batch_timeout: Duration,
 }
-
-struct Position {/* TODO */}
-type Event = (String, Geohash, Position);
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     env_logger::init();
     let args = Args::parse();
 
-    info!("historian starting: {:#?}", args);
+    info!("historian starting: {:?}", args);
 
-    let _strategy = GeohashStrategy::with_precision(args.shard_precision);
+    let nats_url = ServerAddr::from_url(args.nats).context("could not create NATS url")?;
 
-    let nats_url =
-        ServerAddr::from_url(args.nats).map_err(|e| anyhow::anyhow!("NATS URL parse: {e}"))?;
-
-    let nc = connect(nats_url)
+    let client = ConnectOptions::new()
+        .name("HistorianService")
+        .connect(nats_url)
         .await
-        .map_err(|e| anyhow::anyhow!("NATS connect: {e}"))?;
+        .context("could not connect to NATS")?;
+    let subscriber = client
+        .subscribe(args.subject)
+        .await
+        .context("could not subscribe to NATS subject")?;
 
-    let _jetstream = jetstream::new(nc);
+    let mut nats = NATSStream::<Payload>::new(subscriber);
 
-    let mut batch: Vec<Event> = Vec::with_capacity(args.batch_size);
+    let mut kv = RedisStore::<Payload>::new(args.redis)
+        .await
+        .context("could not connect to redis store")?;
+    let mut batch: Vec<Payload> = Vec::with_capacity(args.batch_size);
 
     loop {
         batch.clear();
         let deadline = Instant::now() + args.batch_timeout;
 
-        // TODO: Create event stream
-        let mut events = futures::stream::iter(Vec::<Event>::new());
-
-        while let Ok(Some(e)) = timeout_at(deadline, events.next()).await {
-            batch.push(e);
-
-            if batch.len() >= args.batch_size {
-                break;
+        while batch.len() < batch.capacity() {
+            match timeout_at(deadline, nats.next()).await {
+                Ok(Some(e)) => batch.push(e),
+                _ => break,
             }
         }
 
-        // if let Err(e) = valkey.write_many(&batch).await {
-        //     eprintln!("historian: Valkey write error: {e}");
-        // }
+        if batch.is_empty() {
+            continue;
+        }
+
+        if let Err(e) = kv.write_many(&batch, args.history).await {
+            error!("write error: {e}");
+        } else {
+            info!("archived {} event(s)", batch.len());
+        }
     }
 }
