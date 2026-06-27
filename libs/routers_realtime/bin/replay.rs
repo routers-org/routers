@@ -1,9 +1,9 @@
-use anyhow::Context;
-use async_nats::{ServerAddr, jetstream};
 /// Loads and sorts the full dataset, then walks events in
 /// chronological order. Publishes directly to the NATS EVENTS JetStream stream.
+use anyhow::Context;
+use async_nats::ServerAddr;
 use clap::Parser;
-use futures::{Sink, SinkExt};
+use futures::SinkExt;
 use geo::{Coord, Point};
 use itertools::izip;
 use log::{debug, info};

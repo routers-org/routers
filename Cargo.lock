@@ -7069,7 +7069,6 @@ dependencies = [
  "redis",
  "routers",
  "routers_codec",
- "routers_fixtures",
  "routers_network",
  "routers_shard",
  "serde",
