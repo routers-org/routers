@@ -147,10 +147,7 @@ async fn main() -> anyhow::Result<()> {
         sink.flush().await?;
     }
 
-    Ok(())
-}
-
-async fn perform_iteration(df: &DataFrame, sink: impl Sink<Payload>) -> anyhow::Result<()> {
+    sink.close().await?;
     Ok(())
 }
 
