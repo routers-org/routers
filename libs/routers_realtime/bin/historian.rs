@@ -1,12 +1,87 @@
-use log::info;
-use std::thread::sleep;
+use anyhow::Context;
+use async_nats::{ConnectOptions, ServerAddr};
+use clap::Parser;
+use futures::StreamExt;
+use log::{error, info};
 use std::time::Duration;
+use tokio::time::{Instant, timeout_at};
+use url::Url;
 
-fn main() -> anyhow::Result<()> {
+use routers_realtime::{bus::NATSStream, event::Payload, store::RedisStore};
+
+#[derive(Parser, Debug)]
+#[command(version, about, long_about = None)]
+struct Args {
+    /// URL of the NATS server
+    #[arg(short, long)]
+    nats: Url,
+
+    /// URL of the Redis cluster
+    #[arg(short, long)]
+    redis: Url,
+
+    /// The subject to use for the NATS events stream
+    #[arg(long, default_value = "events.raw.>")]
+    subject: String,
+
+    /// The number of events to keep in the Redis history
+    #[arg(long, default_value_t = 25)]
+    history: usize,
+
+    /// Batch size for Redis publishing
+    #[arg(long, default_value_t = 1024)]
+    batch_size: usize,
+
+    /// Batch timeout for Redis publishing
+    #[arg(long, value_parser = humantime::parse_duration, default_value = "100ms")]
+    batch_timeout: Duration,
+}
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
     env_logger::init();
-    info!("historian started");
+    let args = Args::parse();
+
+    info!("historian starting: {:?}", args);
+
+    let nats_url = ServerAddr::from_url(args.nats).context("could not create NATS url")?;
+
+    let client = ConnectOptions::new()
+        .name("HistorianService")
+        .connect(nats_url)
+        .await
+        .context("could not connect to NATS")?;
+    let subscriber = client
+        .subscribe(args.subject)
+        .await
+        .context("could not subscribe to NATS subject")?;
+
+    let mut nats = NATSStream::<Payload>::new(subscriber);
+
+    let mut kv = RedisStore::<Payload>::new(args.redis)
+        .await
+        .context("could not connect to redis store")?;
+    let mut batch: Vec<Payload> = Vec::with_capacity(args.batch_size);
 
     loop {
-        sleep(Duration::from_secs(1));
+        batch.clear();
+        let deadline = Instant::now() + args.batch_timeout;
+
+        while batch.len() < batch.capacity() {
+            match timeout_at(deadline, nats.next()).await {
+                Ok(Some(e)) => batch.push(e),
+                _ => break,
+            }
+        }
+
+        if batch.is_empty() {
+            continue;
+        }
+
+        if let Err(e) = kv.write_many(&batch, args.history).await {
+            error!("write error: {e}");
+        } else {
+            info!("archived {} event(s)", batch.len());
+        }
     }
 }

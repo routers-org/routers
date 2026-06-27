@@ -1,23 +1,8 @@
-use geo::Coord;
+use geo::{Coord, Point};
+use routers_shard::{Geohash, GeohashStrategy, ShardingStrategy};
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Deserialize)]
-pub struct CsvReplayEvent {
-    #[serde(rename = "TripID")]
-    pub trip_id: String,
-    #[serde(rename = "VehicleID")]
-    pub vehicle_id: String,
-    #[serde(rename = "Provider")]
-    pub provider: String,
-    #[serde(rename = "EventTime")]
-    pub event_time: String, // e.g., "2026-03-31 22:08:26 UTC"
-    #[serde(rename = "Latitude")]
-    pub latitude: f64,
-    #[serde(rename = "Longitude")]
-    pub longitude: f64,
-    #[serde(rename = "PointGeom")]
-    _point_geom: String, // Ignored in the final payload, but parsed from CSV
-}
+use crate::store::Storable;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Payload {
@@ -25,7 +10,20 @@ pub struct Payload {
     pub vehicle_id: String,
 
     pub provider: String,
-    pub event_time: String,
+    pub event_ms: u64,
 
     pub point: Coord,
+}
+
+impl Storable for Payload {
+    type ShardId = Geohash;
+    type Key = String;
+
+    fn shard_id(&self) -> Self::ShardId {
+        GeohashStrategy::with_precision(5).locate(Point::new(self.point.x, self.point.y))
+    }
+
+    fn key(&self) -> Self::Key {
+        self.vehicle_id.clone()
+    }
 }
