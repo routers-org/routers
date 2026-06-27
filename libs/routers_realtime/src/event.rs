@@ -1,5 +1,5 @@
 use geo::{Coord, Point};
-use routers_shard::{Geohash, GeohashStrategy, ShardId, ShardingStrategy};
+use routers_shard::{Geohash, GeohashStrategy, ShardingStrategy};
 use serde::{Deserialize, Serialize};
 
 use crate::store::Storable;

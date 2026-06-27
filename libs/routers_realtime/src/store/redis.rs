@@ -1,5 +1,3 @@
-use std::fmt::format;
-
 use thiserror::Error;
 use url::Url;
 
