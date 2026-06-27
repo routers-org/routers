@@ -1,107 +1,116 @@
-use chrono::NaiveDateTime;
-use csv::ReaderBuilder;
-use geo::Coord;
-use routers_realtime::event::{CsvReplayEvent, Payload};
-use routers_realtime::{Topic, TopicOpts};
-use std::error::Error;
-use std::fs::File;
-use std::io::BufReader;
-use std::sync::Arc;
-use tokio::time::{Instant, sleep_until};
+/// Loads and sorts the full dataset, then walks events in
+/// chronological order. Publishes directly to the NATS EVENTS JetStream stream.
+use clap::Parser;
+use log::{debug, info};
+use polars::prelude::*;
+use std::{path::PathBuf, time::Duration};
+use url::Url;
 
-const CSV_FILE_PATH: &str = "examples/events.csv";
-const TIME_FORMAT: &str = "%Y-%m-%d %H:%M:%S";
+#[derive(Parser, Debug)]
+#[command(version, about, long_about = None)]
+struct Args {
+    /// The URL of the input file, to replay
+    #[arg(short, long)]
+    file: PathBuf,
+
+    /// The URL of the NATS server
+    #[arg(short, long)]
+    nats: Url,
+
+    /// The replay speed, as a multiplier of the original event rate.
+    /// Any negative, or zero-value will default to FLOOD mode, where events are published as fast as possible.
+    #[arg(short, long, default_value_t = 1.0)]
+    speed: f64,
+
+    /// The number of times to replay the input file.
+    /// Defaults to 1, but a higher value can be used for saturation testing.
+    #[arg(short, long, default_value_t = 1)]
+    loops: usize,
+
+    /// Shard precision level to send the events as
+    #[arg(short, long, default_value_t = 5)]
+    precision: u8,
+}
+
+// 2026-04-01 03:40:02 UTC, or 2026-04-01 03:40:02.123456 UTC
+const TIME_FORMAT: &str = "%Y-%m-%d %H:%M:%S %Z";
+const TIME_FORMAT_FRACTIONAL: &str = "%Y-%m-%d %H:%M:%S%.f %Z";
+
+// Column names
+const VEHICLE_ID_COL: &str = "VehicleID";
+const TRIP_ID_COL: &str = "TripID";
+
+const PROVIDER_COL: &str = "Provider";
+const EVENT_TIME_COL: &str = "EventTime";
+
+const LATITUDE_COL: &str = "Latitude";
+const LONGITUDE_COL: &str = "Longitude";
+
+fn parse_datetime(fmt: &str) -> Expr {
+    col(EVENT_TIME_COL).str().to_datetime(
+        Some(TimeUnit::Microseconds),
+        None,
+        StrptimeOptions {
+            format: Some(fmt.into()),
+            strict: false,
+            ..Default::default()
+        },
+        lit("raise"),
+    )
+}
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
-    println!("Connecting to topic...");
-    let opts = TopicOpts::default().with_queue("queue.replay");
-    let topic = Arc::new(Topic::new(opts).await?);
-    println!("Connected to topic.");
+async fn main() -> anyhow::Result<()> {
+    env_logger::init();
 
-    println!("Loading and parsing CSV...");
-    let file = File::open(CSV_FILE_PATH)?;
-    let reader = BufReader::new(file);
+    let args = Args::parse();
+    info!("replay starting: {:?}", args);
 
-    let reader = ReaderBuilder::new()
-        .flexible(true)
-        .has_headers(true)
-        .from_reader(reader);
+    let df = LazyCsvReader::new(args.file)
+        .with_has_header(true)
+        .finish()?
+        .sort([EVENT_TIME_COL], SortMultipleOptions::default())
+        .select([
+            col(TRIP_ID_COL),
+            col(VEHICLE_ID_COL),
+            col(PROVIDER_COL),
+            parse_datetime(TIME_FORMAT).fill_null(parse_datetime(TIME_FORMAT_FRACTIONAL)),
+            col(LATITUDE_COL),
+            col(LONGITUDE_COL),
+        ])
+        .collect()
+        .map_err(|e| anyhow::anyhow!("dataframe parse: {e}"))?;
 
-    println!("Reader created.");
-
-    let mut events = reader
-        .into_deserialize::<CsvReplayEvent>()
-        .filter_map(|event| match event {
-            Ok(event) => {
-                match NaiveDateTime::parse_from_str(
-                    event.event_time.trim_end_matches(" UTC"),
-                    TIME_FORMAT,
-                ) {
-                    Ok(parsed) => Some((parsed, event)),
-                    _ => None,
-                }
-            }
-            Err(_) => None,
-        })
-        .collect::<Vec<_>>();
-
-    if events.is_empty() {
-        println!("No events found in CSV.");
+    let n = df.height();
+    if n == 0 {
+        debug!("no events found.");
         return Ok(());
     }
 
-    // Sort globally by timestamp to guarantee chronological order
-    // This fixes any grouping artifacts from the BigQuery export
-    events.sort_by_key(|(time, _)| *time);
+    let times = df.column(EVENT_TIME_COL)?.datetime()?;
+    let timespan_s =
+        Duration::from_micros(times.max().unwrap() as u64 - times.min().unwrap() as u64)
+            .as_secs_f64();
+    debug!("loaded {n:>7} events spanning {timespan_s:.1} s");
 
-    let t0_event_time = events[0].0;
-    let w0_wall_clock = Instant::now();
+    let flood = args.speed <= 0.0;
+    let speed = if flood { f64::INFINITY } else { args.speed };
 
-    println!(
-        "Loaded {} events. Spawning async replay tasks...",
-        events.len()
-    );
-
-    let mut handles = Vec::new();
-
-    for (event_time, record) in events {
-        // Calculate exact duration offset from the first event
-        let offset = (event_time - t0_event_time).to_std().unwrap_or_default();
-        let target_fire_time = w0_wall_clock + offset;
-
-        let payload = Payload {
-            trip_id: record.trip_id,
-            vehicle_id: record.vehicle_id,
-            provider: record.provider,
-            event_time: record.event_time,
-            point: Coord::from((record.longitude, record.latitude)),
-        };
-
-        let value = topic.clone();
-
-        // Spawn a standalone task for EVERY event
-        let handle = tokio::spawn(async move {
-            // Task goes to sleep. Tokio's reactor will wake it at the exact Instant.
-            sleep_until(target_fire_time).await;
-
-            let payload_bytes = serde_json::to_vec(&payload).unwrap();
-            let _ = value.send(&payload_bytes).await;
-        });
-
-        handles.push(handle);
+    if flood {
+        info!("[flood-mode] sending at max rate for loops={0}", args.loops);
+    } else {
+        info!(
+            "[walk-mode] replaying at {speed}x for loops={0} (walltime-per-loop={1:.1} s)",
+            args.loops,
+            timespan_s / speed,
+        );
     }
 
-    println!(
-        "All {} tasks scheduled. Replay in progress...",
-        handles.len()
-    );
+    for iteration in 0..args.loops {
+        debug!("loop {iteration}/{0}", args.loops);
 
-    // Wait for all spawned tasks to finish
-    for handle in handles {
-        let _ = handle.await;
+        // Do work.
     }
 
-    println!("Replay complete.");
     Ok(())
 }
