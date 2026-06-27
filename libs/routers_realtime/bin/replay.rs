@@ -1,7 +1,7 @@
 /// Loads and sorts the full dataset, then walks events in
 /// chronological order. Publishes directly to the NATS EVENTS JetStream stream.
 use anyhow::Context;
-use async_nats::ServerAddr;
+use async_nats::{ConnectOptions, ServerAddr};
 use clap::Parser;
 use futures::SinkExt;
 use geo::{Coord, Point};
@@ -87,9 +87,10 @@ async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     info!("replay starting: {:?}", args);
 
-    let nats_url =
-        ServerAddr::from_url(args.nats).map_err(|e| anyhow::anyhow!("NATS URL parse: {e}"))?;
-    let client = async_nats::connect(nats_url).await?;
+    let client = ConnectOptions::new()
+        .name("ReplayService")
+        .connect(ServerAddr::from_url(args.nats)?)
+        .await?;
 
     let strategy = GeohashStrategy::with_precision(args.precision);
     let jetstream = JetStreamSink::<Payload>::new(client, move |Payload { point, .. }| {
