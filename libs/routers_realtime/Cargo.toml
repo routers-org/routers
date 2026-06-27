@@ -23,6 +23,7 @@ humantime = "2.1"
 clap = { workspace = true, features = ["derive"] }
 url = { workspace = true }
 geo = { workspace = true, features = ["serde"] }
+postcard = { workspace = true }
 
 # Systems
 async-nats = "0.38.0"
@@ -36,6 +37,7 @@ routers_network = { workspace = true }
 routers_fixtures = { workspace = true }
 routers_shard = { workspace = true }
 
+itertools = "0.12"
 polars = { version = "0.46", default-features = false, features = ["lazy", "csv", "strings", "dtype-full"] }
 
 [lints]

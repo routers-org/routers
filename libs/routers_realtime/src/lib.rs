@@ -12,6 +12,8 @@ use lapin::{
     types::FieldTable,
 };
 
+pub mod bus;
+
 pub struct Topic {
     connection: Connection,
     consumer: Consumer,
