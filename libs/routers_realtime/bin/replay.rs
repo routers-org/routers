@@ -5,12 +5,14 @@ use async_nats::ServerAddr;
 use clap::Parser;
 use futures::SinkExt;
 use geo::{Coord, Point};
+use indicatif::{ProgressBar, ProgressState, ProgressStyle};
+use indicatif_log_bridge::LogWrapper;
 use itertools::izip;
 use log::{debug, info};
 use polars::prelude::*;
 use routers_realtime::{bus::JetStreamSink, event::Payload};
 use routers_shard::{GeohashStrategy, ShardingStrategy};
-use std::{path::PathBuf, time::Duration};
+use std::{fmt::Write, path::PathBuf, time::Duration};
 use tokio::time::Instant;
 use url::Url;
 
@@ -75,7 +77,12 @@ fn parse_datetime(fmt: &str) -> Expr {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    env_logger::init();
+    let logger = env_logger::Builder::from_default_env().build();
+    let level = logger.filter();
+
+    let multi = indicatif::MultiProgress::new();
+    LogWrapper::new(multi.clone(), logger).try_init().unwrap();
+    log::set_max_level(level);
 
     let args = Args::parse();
     info!("replay starting: {:?}", args);
@@ -120,24 +127,39 @@ async fn main() -> anyhow::Result<()> {
     let flood = args.speed <= 0.0;
     let speed = if flood { f64::INFINITY } else { args.speed };
 
-    if flood {
-        info!("[flood-mode] sending at max rate for loops={0}", args.loops);
-    } else {
-        info!(
-            "[walk-mode] replaying at {speed}x for loops={0} (walltime-per-loop={1:.1} s)",
-            args.loops,
-            timespan_s / speed,
-        );
-    }
-
     let mut sink = jetstream.buffer(BUFFERED_PUBLISH_SIZE);
 
+    let pb = ProgressBar::new(df.height() as u64);
+    pb.set_style(
+        ProgressStyle::with_template(
+            "[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg} ({speed} evt/s sent)",
+        )
+        .unwrap()
+        .progress_chars("##-")
+        .with_key("speed", |state: &ProgressState, w: &mut dyn Write| {
+            write!(w, "{:>6.1}", state.per_sec()).unwrap();
+        }),
+    );
+    let pg = multi.add(pb);
+
+    if flood {
+        pg.set_message("[flood-mode] speed=∞x".to_string());
+    } else {
+        pg.set_message(format!(
+            "[walk-mode] speed={speed}x (walltime={timespan_s:.1} s)"
+        ));
+    }
+
     for iteration in 0..args.loops {
+        pg.reset();
+
         debug!("loop {iteration}/{0}", args.loops);
         let rows = rows_of(&df).context("could not deserialize rows from dataframe")?;
 
         let start = Instant::now();
         for (time, payload) in rows {
+            pg.inc(1);
+
             let offset = Duration::from_micros(time - min).div_f64(speed);
             tokio::time::sleep_until(start + offset).await;
 
@@ -145,9 +167,12 @@ async fn main() -> anyhow::Result<()> {
         }
 
         sink.flush().await?;
+        pg.finish();
     }
 
+    multi.remove(&pg);
     sink.close().await?;
+
     Ok(())
 }
 
