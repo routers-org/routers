@@ -1,4 +1,6 @@
 use geo::Point;
+use routers::RoutedPath;
+use routers_network::{Entry, Metadata};
 use routers_shard::{Geohash, GeohashStrategy, ShardingStrategy};
 use serde::{Deserialize, Serialize};
 
@@ -7,6 +9,13 @@ use crate::store::Storable;
 #[derive(Debug, Serialize, Deserialize)]
 pub struct MatchContext {
     pub history: Vec<Point>,
+    pub vehicle_id: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct MatchResult<E: Entry, M: Metadata> {
+    pub path: RoutedPath<E, M>,
+    pub vehicle_id: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -30,7 +39,7 @@ impl Payload {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RawEvent {
     pub vehicle_id: String,
     pub point: Point,

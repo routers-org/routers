@@ -4,7 +4,7 @@ use anyhow::Context;
 use async_nats::{ConnectOptions, ServerAddr};
 use clap::Parser;
 use futures::SinkExt;
-use geo::{Point};
+use geo::Point;
 use indicatif::{ProgressBar, ProgressState, ProgressStyle};
 use indicatif_log_bridge::LogWrapper;
 use itertools::izip;

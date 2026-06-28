@@ -5,7 +5,7 @@ use futures::{SinkExt, StreamExt};
 use log::info;
 use routers_realtime::bus::{NATSSink, NATSStream};
 use routers_realtime::event::{MatchContext, Payload, RawEvent};
-use routers_realtime::store::RedisStore;
+use routers_realtime::store::{CachedRedisStore, RedisStore};
 use url::Url;
 
 #[derive(Parser, Debug)]
@@ -58,9 +58,11 @@ async fn main() -> anyhow::Result<()> {
         .context("could not subscribe to NATS subject")?;
     let mut source = NATSStream::<Payload>::new(subscriber);
 
-    let mut kv = RedisStore::<RawEvent>::new(args.redis)
+    let kv = RedisStore::<RawEvent>::new(args.redis)
         .await
         .context("could not connect to redis store")?;
+
+    let mut kv = CachedRedisStore::new(kv);
 
     while let Some(payload) = source.next().await {
         let context = kv
@@ -72,9 +74,12 @@ async fn main() -> anyhow::Result<()> {
 
         let history = std::iter::once(payload.point).chain(context).collect();
 
-        sink.send(MatchContext { history })
-            .await
-            .context("could not send match context")?;
+        sink.send(MatchContext {
+            history,
+            vehicle_id: payload.vehicle_id,
+        })
+        .await
+        .context("could not send match context")?;
     }
 
     sink.close().await?;

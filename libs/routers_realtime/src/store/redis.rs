@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use redis::streams::StreamRangeReply;
 use thiserror::Error;
 use url::Url;
@@ -85,5 +87,33 @@ impl<T: Storable> RedisStore<T> {
 
         let _: () = pipe.query_async(&mut self.conn).await?;
         Ok(())
+    }
+}
+
+pub struct CachedRedisStore<T: Storable> {
+    store: RedisStore<T>,
+    cache: HashMap<String, Vec<T>>,
+}
+
+impl<T: Storable> CachedRedisStore<T> {
+    pub fn new(store: RedisStore<T>) -> Self {
+        Self {
+            store,
+            cache: HashMap::new(),
+        }
+    }
+
+    pub async fn get_many(&mut self, vehicle_id: &str, len: usize) -> Result<Vec<T>> {
+        if let Some(cached) = self.cache.get(vehicle_id).cloned() {
+            return Ok(cached);
+        }
+
+        let entries = self.store.get_many(vehicle_id, len).await?;
+        self.cache.insert(vehicle_id.to_string(), entries.clone());
+        Ok(entries)
+    }
+
+    pub async fn write_many(&mut self, batch: &[T], limit: usize) -> Result<()> {
+        self.store.write_many(batch, limit).await
     }
 }
