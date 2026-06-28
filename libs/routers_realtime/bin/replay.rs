@@ -4,7 +4,7 @@ use anyhow::Context;
 use async_nats::{ConnectOptions, ServerAddr};
 use clap::Parser;
 use futures::SinkExt;
-use geo::{Coord, Point};
+use geo::Point;
 use indicatif::{ProgressBar, ProgressState, ProgressStyle};
 use indicatif_log_bridge::LogWrapper;
 use itertools::izip;
@@ -20,29 +20,29 @@ use url::Url;
 #[command(version, about, long_about = None)]
 struct Args {
     /// The URL of the input file, to replay
-    #[arg(short, long)]
+    #[arg(short, env, long)]
     file: PathBuf,
 
     /// The URL of the NATS server
-    #[arg(short, long)]
+    #[arg(short, env, long)]
     nats: Url,
 
     /// The replay speed, as a multiplier of the original event rate.
     /// Any negative, or zero-value will default to FLOOD mode, where events are published as fast as possible.
-    #[arg(short, long, default_value_t = 1.0)]
+    #[arg(short, env, long, default_value_t = 1.0)]
     speed: f64,
 
     /// The number of times to replay the input file.
     /// Defaults to 1, but a higher value can be used for saturation testing.
-    #[arg(short, long, default_value_t = 1)]
+    #[arg(short, env, long, default_value_t = 1)]
     loops: usize,
 
     /// Shard precision level to send the events as
-    #[arg(short, long, default_value_t = 5)]
+    #[arg(short, env, long, default_value_t = 5)]
     precision: u8,
 
     /// The subject prefix to use for the NATS events stream
-    #[arg(long, default_value = "events.raw")]
+    #[arg(long, env, default_value = "events.raw")]
     subject: String,
 }
 
@@ -93,9 +93,8 @@ async fn main() -> anyhow::Result<()> {
         .await?;
 
     let strategy = GeohashStrategy::with_precision(args.precision);
-    let nats = NATSSink::<Payload>::new(client, move |Payload { point, .. }| {
-        let shard = strategy.locate(Point::new(point.x, point.y));
-        format!("{}.{}", args.subject, shard)
+    let nats = NATSSink::<Payload>::new(client, move |&Payload { point, .. }| {
+        format!("{}.{}", args.subject, strategy.locate(point))
     });
 
     let df = LazyCsvReader::new(args.file)
@@ -199,10 +198,7 @@ fn rows_of(df: &DataFrame) -> PolarsResult<impl Iterator<Item = (u64, Payload)> 
             vehicle_id: vehicle.unwrap_or_default().to_owned(),
             provider: provider.unwrap_or_default().to_owned(),
             event_ms: etime.unwrap_or_default().to_owned() as u64,
-            point: Coord {
-                x: lon.unwrap(),
-                y: lat.unwrap(),
-            },
+            point: Point::new(lon.unwrap(), lat.unwrap()),
         };
 
         (etime.unwrap() as u64, payload)

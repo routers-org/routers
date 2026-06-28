@@ -21,7 +21,7 @@ humantime = "2.1"
 futures = "0.3.32"
 tokio = { workspace = true }
 itertools = "0.12"
-clap = { workspace = true, features = ["derive"] }
+clap = { workspace = true, features = ["derive", "env"] }
 url = { workspace = true }
 geo = { workspace = true, features = ["serde"] }
 indicatif = "0.18.4"

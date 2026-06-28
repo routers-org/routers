@@ -1,13 +1,13 @@
 use crate::{ResolutionMethod, candidate::*};
 use core::ops::Deref;
 use routers_network::{Edge, Entry, Metadata, Network, Node};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use geo::Coord;
 
 /// A route representing the parsed output from a function
 /// passed through the transition graph.
-#[derive(Serialize, Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct RoutedPath<E, M>
 where
     E: Entry,
@@ -121,7 +121,7 @@ where
 
 /// A representation of a path taken.
 /// Consists of an array of [PathElement]s, containing relevant information for positioning.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Path<E, M>
 where
     E: Entry,
@@ -159,7 +159,7 @@ where
 /// element represents within the path, as well as metadata (Meta)
 /// for the path element, and the edge within the source network at
 /// which the element exists.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct PathElement<E, M>
 where
     E: Entry,
