@@ -6,7 +6,7 @@ use crate::store::Storable;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct MatchContext {
-    pub point: Point,
+    pub history: Vec<Point>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -20,7 +20,24 @@ pub struct Payload {
     pub point: Point,
 }
 
-impl Storable for Payload {
+impl Payload {
+    pub fn as_event(&self) -> RawEvent {
+        RawEvent {
+            vehicle_id: self.vehicle_id.clone(),
+            point: self.point,
+            event_ms: self.event_ms,
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RawEvent {
+    pub vehicle_id: String,
+    pub point: Point,
+    pub event_ms: u64,
+}
+
+impl Storable for RawEvent {
     type ShardId = Geohash;
     type Key = String;
 

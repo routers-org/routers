@@ -4,9 +4,8 @@ use clap::Parser;
 use futures::{SinkExt, StreamExt};
 use log::info;
 use routers_realtime::bus::{NATSSink, NATSStream};
-use routers_realtime::event::{MatchContext, Payload};
+use routers_realtime::event::{MatchContext, Payload, RawEvent};
 use routers_realtime::store::RedisStore;
-use routers_shard::Geohash;
 use url::Url;
 
 #[derive(Parser, Debug)]
@@ -29,6 +28,10 @@ struct Args {
     /// For example, `events.match.{shard}` where shard is the geohash shard identifier.
     #[arg(short, long = "out", env)]
     outbound_subject: String,
+
+    /// The number of context entries to retrieve from Redis for each vehicle.
+    #[arg(short, long = "context-window", env, default_value = "10")]
+    context_window: usize,
 }
 
 #[tokio::main]
@@ -55,12 +58,21 @@ async fn main() -> anyhow::Result<()> {
         .context("could not subscribe to NATS subject")?;
     let mut source = NATSStream::<Payload>::new(subscriber);
 
-    let mut kv = RedisStore::<Payload>::new(args.redis)
+    let mut kv = RedisStore::<RawEvent>::new(args.redis)
         .await
         .context("could not connect to redis store")?;
 
-    while let Some(event) = source.next().await {
-        sink.send(MatchContext { point: event.point })
+    while let Some(payload) = source.next().await {
+        let context = kv
+            .get_many(&payload.vehicle_id, args.context_window)
+            .await
+            .context("could not get entries from redis store")?
+            .into_iter()
+            .map(|RawEvent { point, .. }| point);
+
+        let history = std::iter::once(payload.point).chain(context).collect();
+
+        sink.send(MatchContext { history })
             .await
             .context("could not send match context")?;
     }

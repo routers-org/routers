@@ -1,3 +1,4 @@
+use redis::streams::StreamRangeReply;
 use thiserror::Error;
 use url::Url;
 
@@ -31,6 +32,33 @@ impl<T: Storable> RedisStore<T> {
 }
 
 impl<T: Storable> RedisStore<T> {
+    pub async fn get_many(&mut self, vehicle_id: &str, len: usize) -> Result<Vec<T>> {
+        let key = format!("vehicle:{}:positions", vehicle_id);
+
+        let reply: StreamRangeReply = redis::cmd("XREVRANGE")
+            .arg(&key)
+            .arg("+")
+            .arg("-")
+            .arg("COUNT")
+            .arg(len)
+            .query_async(&mut self.conn)
+            .await?;
+
+        let mut entries = Vec::with_capacity(reply.ids.len());
+
+        for stream_id in &reply.ids {
+            let value = match stream_id.map.get("val") {
+                Some(redis::Value::BulkString(b)) => b.as_slice(),
+                _ => continue,
+            };
+
+            let entry: T = postcard::from_bytes(value)?;
+            entries.push(entry);
+        }
+
+        Ok(entries)
+    }
+
     pub async fn write_many(&mut self, batch: &[T], limit: usize) -> Result<()> {
         if batch.is_empty() {
             return Ok(());

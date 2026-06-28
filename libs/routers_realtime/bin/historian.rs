@@ -7,7 +7,11 @@ use std::time::Duration;
 use tokio::time::{Instant, timeout_at};
 use url::Url;
 
-use routers_realtime::{bus::NATSStream, event::Payload, store::RedisStore};
+use routers_realtime::{
+    bus::NATSStream,
+    event::{Payload, RawEvent},
+    store::RedisStore,
+};
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -58,10 +62,10 @@ async fn main() -> anyhow::Result<()> {
 
     let mut nats = NATSStream::<Payload>::new(subscriber);
 
-    let mut kv = RedisStore::<Payload>::new(args.redis)
+    let mut kv = RedisStore::<RawEvent>::new(args.redis)
         .await
         .context("could not connect to redis store")?;
-    let mut batch: Vec<Payload> = Vec::with_capacity(args.batch_size);
+    let mut batch: Vec<RawEvent> = Vec::with_capacity(args.batch_size);
 
     loop {
         batch.clear();
@@ -69,7 +73,7 @@ async fn main() -> anyhow::Result<()> {
 
         while batch.len() < batch.capacity() {
             match timeout_at(deadline, nats.next()).await {
-                Ok(Some(e)) => batch.push(e),
+                Ok(Some(e)) => batch.push(e.as_event()),
                 _ => break,
             }
         }
