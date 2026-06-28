@@ -4,8 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [0.1.1] - 2026-06-28
 
-### 🐛 Bug Fixes
+### 🚀 Features
 
-- *(root)* Update imports of tests and examples
+- *(realtime)* Write-up naive-method matcher binary
 
 

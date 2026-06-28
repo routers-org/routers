@@ -2,6 +2,31 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.0] - 2026-06-28
+
+### 🚀 Features
+
+- *(trellis)* Initial revision of a trellis graphs structure
+- *(trellis)* Use `criteron` for benchmarking to integrate with CI
+- *(realtime)* Add partial historian implementation
+
+### 🐛 Bug Fixes
+
+- *(trellis)* Include tracing on methods and in statements
+- *(trellis)* Allow data structure to be serialized
+- *(*)* Add both to manifest
+- *(transition)* Migrate all transition content into sub-crate
+- *(root)* Re-export sub-crates under modules
+- *(root)* Update imports of tests and examples
+- *(realtime)* Re-write replay script to use polars as a dataframe layer
+- *(realtime)* Abstract NATS into a futures-impl send/sync, use in replay
+- *(realtime)* Cleanup directory, move replay into binaries
+- *(realtime)* Reorganise cargo toml
+- *(realtime)* Include a well-formatted progress bar
+- *(realtime)* Operational historian against a cluster
+
+
+
 ## [0.2.7] - 2026-06-14
 
 ### 🚀 Features
