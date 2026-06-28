@@ -1,8 +1,13 @@
-use geo::{Coord, Point};
+use geo::Point;
 use routers_shard::{Geohash, GeohashStrategy, ShardingStrategy};
 use serde::{Deserialize, Serialize};
 
 use crate::store::Storable;
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct MatchContext {
+    pub point: Point,
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Payload {
@@ -12,7 +17,7 @@ pub struct Payload {
     pub provider: String,
     pub event_ms: u64,
 
-    pub point: Coord,
+    pub point: Point,
 }
 
 impl Storable for Payload {
@@ -20,7 +25,7 @@ impl Storable for Payload {
     type Key = String;
 
     fn shard_id(&self) -> Self::ShardId {
-        GeohashStrategy::with_precision(5).locate(Point::new(self.point.x, self.point.y))
+        GeohashStrategy::with_precision(5).locate(self.point)
     }
 
     fn key(&self) -> Self::Key {

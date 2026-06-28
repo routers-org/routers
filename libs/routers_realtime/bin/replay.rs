@@ -20,29 +20,29 @@ use url::Url;
 #[command(version, about, long_about = None)]
 struct Args {
     /// The URL of the input file, to replay
-    #[arg(short, long)]
+    #[arg(short, env, long)]
     file: PathBuf,
 
     /// The URL of the NATS server
-    #[arg(short, long)]
+    #[arg(short, env, long)]
     nats: Url,
 
     /// The replay speed, as a multiplier of the original event rate.
     /// Any negative, or zero-value will default to FLOOD mode, where events are published as fast as possible.
-    #[arg(short, long, default_value_t = 1.0)]
+    #[arg(short, env, long, default_value_t = 1.0)]
     speed: f64,
 
     /// The number of times to replay the input file.
     /// Defaults to 1, but a higher value can be used for saturation testing.
-    #[arg(short, long, default_value_t = 1)]
+    #[arg(short, env, long, default_value_t = 1)]
     loops: usize,
 
     /// Shard precision level to send the events as
-    #[arg(short, long, default_value_t = 5)]
+    #[arg(short, env, long, default_value_t = 5)]
     precision: u8,
 
     /// The subject prefix to use for the NATS events stream
-    #[arg(long, default_value = "events.raw")]
+    #[arg(long, env, default_value = "events.raw")]
     subject: String,
 }
 

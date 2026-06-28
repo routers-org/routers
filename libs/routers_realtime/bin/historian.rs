@@ -13,27 +13,27 @@ use routers_realtime::{bus::NATSStream, event::Payload, store::RedisStore};
 #[command(version, about, long_about = None)]
 struct Args {
     /// URL of the NATS server
-    #[arg(short, long)]
+    #[arg(short, env, long)]
     nats: Url,
 
     /// URL of the Redis cluster
-    #[arg(short, long)]
+    #[arg(short, env, long)]
     redis: Url,
 
     /// The subject to use for the NATS events stream
-    #[arg(long, default_value = "events.raw.>")]
+    #[arg(long, env, default_value = "events.raw.>")]
     subject: String,
 
     /// The number of events to keep in the Redis history
-    #[arg(long, default_value_t = 25)]
+    #[arg(long, env, default_value_t = 25)]
     history: usize,
 
     /// Batch size for Redis publishing
-    #[arg(long, default_value_t = 1024)]
+    #[arg(long, env, default_value_t = 1024)]
     batch_size: usize,
 
     /// Batch timeout for Redis publishing
-    #[arg(long, value_parser = humantime::parse_duration, default_value = "100ms")]
+    #[arg(long, env, value_parser = humantime::parse_duration, default_value = "100ms")]
     batch_timeout: Duration,
 }
 
