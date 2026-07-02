@@ -3,7 +3,6 @@ apiVersion: v1
 kind: Secret
 metadata:
   name: routers-additional-scrape
-  namespace: {{ .Values.namespace }}
   labels:
     {{- include "routers.labels" . | nindent 4 }}
 stringData:
@@ -13,7 +12,7 @@ stringData:
       kubernetes_sd_configs:
         - role: pod
           namespaces:
-            names: [{{ .Values.namespace }}]
+            names: [{{ .Release.Namespace }}]
       relabel_configs:
         - source_labels: [__meta_kubernetes_pod_label_app]
           action: keep
@@ -35,7 +34,7 @@ stringData:
       kubernetes_sd_configs:
         - role: pod
           namespaces:
-            names: [{{ .Values.namespace }}]
+            names: [{{ .Release.Namespace }}]
       relabel_configs:
         - source_labels: [__meta_kubernetes_pod_label_app]
           action: keep
@@ -56,7 +55,7 @@ stringData:
       scrape_interval: 10s
       static_configs:
         - targets:
-            - nats.{{ .Values.namespace }}.svc.cluster.local:7777
+            - {{ .Values.infra.natsMetricsTarget }}
           labels:
             component: nats
 {{- end }}

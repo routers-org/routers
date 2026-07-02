@@ -1,5 +1,5 @@
 # Default values for routers-realtime.
-namespace: routers-dev
+# The release namespace is controlled by `helm -n <ns>`; templates use .Release.Namespace.
 
 # One shard per matcher+orchestrator pair.
 # Here's a suitable default for Sydney.
@@ -15,6 +15,7 @@ shards:
 infra:
   natsUrl: nats://nats.routers-dev.svc.cluster.local:4222
   valkeyUrl: redis://valkey-primary.routers-dev.svc.cluster.local:6379
+  natsMetricsTarget: nats.routers-dev.svc.cluster.local:7777
 
 # Shard precision passed to the matcher. Ensure shards are generated for this precision level.
 shardPrecision: 4

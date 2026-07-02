@@ -5,8 +5,6 @@ use approx::assert_relative_eq;
 use geo::wkt;
 use routers_network::Node;
 
-const SHARED_DISTANCE: f64 = 900.0;
-
 #[test]
 fn test_trip() {
     use geo::Point;
@@ -123,8 +121,6 @@ fn validate_through_lower_cost() {
         .map(|p| Node::new(p, OsmEntryId::null()));
     let around = Trip::new(nodes);
 
-    const SHARED_DISTANCE: f64 = 227.;
-
     let imm_angle = around.angular_complexity();
     assert_relative_eq!(imm_angle, 0.56, max_relative = 0.1);
 
@@ -161,8 +157,6 @@ fn validate_slip_road_optimality() {
         .into_iter()
         .map(|p| Node::new(p, OsmEntryId::null()));
     let around = Trip::new(nodes);
-
-    const SHARED_DISTANCE: f64 = 90.;
 
     let tot_angle = sliproad.total_angle();
     assert_relative_eq!(tot_angle, 114.1, max_relative = 0.1);

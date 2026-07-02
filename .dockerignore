@@ -1,0 +1,22 @@
+target/
+.git/
+.github/
+.idea/
+.vscode/
+.env
+.DS_Store
+
+# Local dev artefacts
+.work/
+conformance/external/
+
+# Large fixtures — Dockerfiles don't need them
+*.csv
+*.csv.zip
+*.wkt
+*.geojson
+*.rt
+*.osm.pbf
+
+# Editor/OS junk
+**/*.swp

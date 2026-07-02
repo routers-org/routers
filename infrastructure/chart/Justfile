@@ -1,21 +1,28 @@
-install:
-    @out=$(helm upgrade --install routers-realtime . -n routers-dev --create-namespace 2>&1) || { echo "$out"; exit 1; }
+install namespace="routers-dev":
+    @out=$(helm upgrade --install routers-realtime . -n {{ namespace }} --create-namespace 2>&1) || { echo "$out"; exit 1; }
+
+# Bring up a parallel install in a fresh namespace, reusing nats/valkey from routers-dev.
+# Example: `just chart::bringup routers-dev-2`
+bringup namespace="routers-dev-2":
+    helm upgrade --install routers-realtime . \
+        -n {{ namespace }} --create-namespace \
+        -f values-local-dev.yaml
 
 # Use a PersistentVolumeClaim for shard cache
-use-pvc: install
+use-pvc namespace="routers-dev": (install namespace)
     helm upgrade routers-realtime . \
-        -n routers-dev \
+        -n {{ namespace }} \
         --set shardCache.mode=pvc \
         --set shardCache.pvc.claimName=routers-shards
 
-use-shards shards="{r3gq,r3gr,r3gw}": install
+use-shards shards="{r3gq,r3gr,r3gw}" namespace="routers-dev": (install namespace)
     helm upgrade routers-realtime . \
-        -n routers-dev \
+        -n {{ namespace }} \
         --set 'shards={{ shards }}'
 
-use-shard-cache cache-dir="": install
+use-shard-cache cache-dir="" namespace="routers-dev": (install namespace)
     helm upgrade routers-realtime . \
-        -n routers-dev \
+        -n {{ namespace }} \
         -f values-local-dev.yaml \
         --set 'shardCache.hostPath={{ cache-dir }}/target/shard_cache'
 

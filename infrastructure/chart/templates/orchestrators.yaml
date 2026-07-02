@@ -4,7 +4,6 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: orchestrator-{{ $shard }}
-  namespace: {{ $.Values.namespace }}
   labels:
     {{- include "routers.labels" $ | nindent 4 }}
     app: orchestrator-shard
@@ -32,24 +31,14 @@ spec:
             - name: metrics
               containerPort: {{ $.Values.orchestrator.metricsPort }}
           env:
-            - name: NATS_URL
+            - name: NATS
               value: {{ $.Values.infra.natsUrl | quote }}
-            - name: VALKEY_URL
+            - name: REDIS
               value: {{ $.Values.infra.valkeyUrl | quote }}
-            - name: METRICS_ADDR
-              value: "0.0.0.0:{{ $.Values.orchestrator.metricsPort }}"
-            - name: OWNED_SHARD
-              value: {{ $shard | quote }}
-            - name: SHARD_PRECISION
-              value: {{ $.Values.shardPrecision | quote }}
-            - name: PARALLELISM
-              value: {{ $.Values.orchestrator.env.parallelism | quote }}
-            - name: HISTORY_MAX_POINTS
-              value: {{ $.Values.orchestrator.env.historyMaxPoints | quote }}
-            - name: HISTORY_MAX_AGE_SECS
-              value: {{ $.Values.orchestrator.env.historyMaxAgeSecs | quote }}
-            - name: STORE
-              value: {{ $.Values.orchestrator.env.store | quote }}
+            - name: INBOUND_SUBJECT
+              value: "events.raw.{{ $shard }}"
+            - name: OUTBOUND_SUBJECT
+              value: "events.match.{{ $shard }}"
             - name: RUST_LOG
               value: {{ $.Values.orchestrator.rustLog | quote }}
           resources:
@@ -60,7 +49,6 @@ apiVersion: v1
 kind: Service
 metadata:
   name: orchestrator-metrics
-  namespace: {{ .Values.namespace }}
   labels:
     {{- include "routers.labels" . | nindent 4 }}
     app: orchestrator-shard

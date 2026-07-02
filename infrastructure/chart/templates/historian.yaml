@@ -3,7 +3,6 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: historian
-  namespace: {{ .Values.namespace }}
   labels:
     {{- include "routers.labels" . | nindent 4 }}
     app: historian
@@ -23,18 +22,12 @@ spec:
           image: "{{ .Values.historian.image.repository }}:{{ .Values.historian.image.tag }}"
           imagePullPolicy: {{ .Values.historian.image.pullPolicy }}
           env:
-            - name: NATS_URL
+            - name: NATS
               value: {{ .Values.infra.natsUrl | quote }}
-            - name: EVENTS_CONSUMER
-              value: {{ .Values.historian.env.eventsConsumer | quote }}
-            - name: VALKEY_URL
+            - name: REDIS
               value: {{ .Values.infra.valkeyUrl | quote }}
-            - name: SHARD_PRECISION
-              value: {{ .Values.shardPrecision | quote }}
-            - name: VALKEY_BATCH
-              value: {{ .Values.historian.env.valkeyBatch | quote }}
-            - name: VALKEY_BATCH_TIMEOUT_MS
-              value: {{ .Values.historian.env.valkeyBatchTimeoutMs | quote }}
+            - name: SUBJECT
+              value: "events.raw.>"
             - name: RUST_LOG
               value: {{ .Values.historian.rustLog | quote }}
           resources:
