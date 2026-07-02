@@ -1,12 +1,16 @@
+default-shard-cache := `cd .. && cd .. && pwd` + "/target/shard_cache"
+
 install namespace="routers-dev":
     @out=$(helm upgrade --install routers-realtime . -n {{ namespace }} --create-namespace 2>&1) || { echo "$out"; exit 1; }
 
 # Bring up a parallel install in a fresh namespace, reusing nats/valkey from routers-dev.
+# shard-cache must be an absolute path on the node (OrbStack VM).
 # Example: `just chart::bringup routers-dev-2`
-bringup namespace="routers-dev-2":
+bringup namespace="routers-dev-2" shard-cache=default-shard-cache:
     helm upgrade --install routers-realtime . \
         -n {{ namespace }} --create-namespace \
-        -f values-local-dev.yaml
+        -f values-local-dev.yaml \
+        --set shardCache.hostPath={{ shard-cache }}
 
 # Use a PersistentVolumeClaim for shard cache
 use-pvc namespace="routers-dev": (install namespace)
