@@ -7,3 +7,5 @@ mod chart "chart"
 build: historian::build matcher::build orchestrator::build
 
 bringup: chart::bringup
+
+teardown: chart::teardown

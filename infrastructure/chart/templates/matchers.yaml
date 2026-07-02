@@ -32,7 +32,7 @@ spec:
               containerPort: {{ $.Values.matcher.metricsPort }}
           env:
             - name: NATS
-              value: {{ $.Values.infra.natsUrl | quote }}
+              value: {{ $.Values.infra.nats.url | quote }}
             - name: DIRECTORY
               value: "/shards"
             - name: PRECISION

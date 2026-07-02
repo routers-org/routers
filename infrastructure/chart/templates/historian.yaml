@@ -1,3 +1,4 @@
+{{- include "routers.requireInfra" . -}}
 {{- if .Values.historian.enabled }}
 apiVersion: apps/v1
 kind: Deployment
@@ -23,9 +24,9 @@ spec:
           imagePullPolicy: {{ .Values.historian.image.pullPolicy }}
           env:
             - name: NATS
-              value: {{ .Values.infra.natsUrl | quote }}
+              value: {{ .Values.infra.nats.url | quote }}
             - name: REDIS
-              value: {{ .Values.infra.valkeyUrl | quote }}
+              value: {{ .Values.infra.valkey.url | quote }}
             - name: SUBJECT
               value: "events.raw.>"
             - name: RUST_LOG

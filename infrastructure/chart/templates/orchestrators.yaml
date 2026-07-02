@@ -32,9 +32,9 @@ spec:
               containerPort: {{ $.Values.orchestrator.metricsPort }}
           env:
             - name: NATS
-              value: {{ $.Values.infra.natsUrl | quote }}
+              value: {{ $.Values.infra.nats.url | quote }}
             - name: REDIS
-              value: {{ $.Values.infra.valkeyUrl | quote }}
+              value: {{ $.Values.infra.valkey.url | quote }}
             - name: INBOUND_SUBJECT
               value: "events.raw.{{ $shard }}"
             - name: OUTBOUND_SUBJECT

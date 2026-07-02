@@ -51,11 +51,13 @@ stringData:
         - source_labels: [__meta_kubernetes_pod_node_name]
           target_label: node
 
+{{- with .Values.infra.nats.metricsTarget }}
     - job_name: nats
       scrape_interval: 10s
       static_configs:
         - targets:
-            - {{ .Values.infra.natsMetricsTarget }}
+            - {{ . }}
           labels:
             component: nats
+{{- end }}
 {{- end }}

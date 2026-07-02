@@ -11,11 +11,20 @@ shards:
   - r652
   - r658
 
-# Shared infra references (must already exist in the cluster).
+# External infra references. Environment-specific values must be supplied via
+# an overlay file (`-f values-<env>.yaml`) or `--set`; the chart intentionally
+# does not ship real defaults so a bare `helm install` fails fast rather than
+# silently pointing at the wrong cluster.
 infra:
-  natsUrl: nats://nats.routers-dev.svc.cluster.local:4222
-  valkeyUrl: redis://valkey-primary.routers-dev.svc.cluster.local:6379
-  natsMetricsTarget: nats.routers-dev.svc.cluster.local:7777
+  nats:
+    # Client connection URL used by matcher, orchestrator, historian.
+    url: ""
+    # `host:port` for the NATS Prometheus /varz endpoint. Consumed by the
+    # additional-scrape secret; leave empty to disable NATS scraping.
+    metricsTarget: ""
+  valkey:
+    # Client connection URL used by orchestrator and historian.
+    url: ""
 
 # Shard precision passed to the matcher. Ensure shards are generated for this precision level.
 shardPrecision: 4
