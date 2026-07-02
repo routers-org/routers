@@ -37,9 +37,11 @@ struct Args {
 #[group(required = true, multiple = false)]
 struct FileInput {
     /// The path to the PBF file to load.
+    #[arg(long)]
     pbf: Option<PathBuf>,
 
     /// The path to the RT file to load.
+    #[arg(long)]
     rt: Option<PathBuf>,
 }
 
