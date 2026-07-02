@@ -6555,8 +6555,11 @@ dependencies = [
 name = "routers_shard"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "clap",
  "env_logger",
  "geo",
+ "itertools 0.14.0",
  "js-sys",
  "log",
  "petgraph",

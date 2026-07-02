@@ -14,10 +14,12 @@ log = { workspace = true }
 # Error handling
 anyhow = { workspace = true }
 thiserror = { workspace = true }
+
+# Time
 chrono = "0.4.44"
+humantime = "2.1"
 
 # Utilities
-humantime = "2.1"
 futures = "0.3.32"
 tokio = { workspace = true }
 itertools = "0.12"

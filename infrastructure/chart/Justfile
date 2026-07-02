@@ -1,22 +1,48 @@
+# Per-invocation knobs. Environment-static config (infra URLs, log levels)
+# lives in values-*.yaml. Override via env var:
+#   ROUTERS_NAMESPACE      release namespace
+#   ROUTERS_VALUES         values file to layer on top of values.yaml
+#   ROUTERS_SHARD_CACHE    absolute hostPath for the shard directory
+namespace := env("ROUTERS_NAMESPACE", "routers-dev")
+values := env("ROUTERS_VALUES", "values-local-dev.yaml")
+shard-cache := env("ROUTERS_SHARD_CACHE", `cd .. && cd .. && pwd` + "/target/shard_cache")
+
 install:
-    @out=$(helm upgrade --install routers-realtime . -n routers-dev --create-namespace 2>&1) || { echo "$out"; exit 1; }
+    @out=$(helm upgrade --install routers-realtime . -n {{ namespace }} --create-namespace 2>&1) || { echo "$out"; exit 1; }
+
+# Bring up a full install layered with an environment-specific values file.
+# Point at prod by exporting `ROUTERS_VALUES=values-prod.yaml` (or similar).
+bringup:
+    helm upgrade --install routers-realtime . \
+        -n {{ namespace }} --create-namespace \
+        -f {{ values }} \
+        --set shardCache.hostPath={{ shard-cache }}
+
+# Uninstall the release. Set ROUTERS_DELETE_NAMESPACE=1 to also drop the
+# namespace (only safe if nothing else lives in it).
+teardown:
+    helm uninstall routers-realtime -n {{ namespace }} --ignore-not-found
+    @if [ "${ROUTERS_DELETE_NAMESPACE:-0}" = "1" ]; then \
+        echo "Deleting namespace {{ namespace }}"; \
+        kubectl delete namespace {{ namespace }} --ignore-not-found; \
+    fi
 
 # Use a PersistentVolumeClaim for shard cache
 use-pvc: install
     helm upgrade routers-realtime . \
-        -n routers-dev \
+        -n {{ namespace }} \
         --set shardCache.mode=pvc \
         --set shardCache.pvc.claimName=routers-shards
 
 use-shards shards="{r3gq,r3gr,r3gw}": install
     helm upgrade routers-realtime . \
-        -n routers-dev \
+        -n {{ namespace }} \
         --set 'shards={{ shards }}'
 
 use-shard-cache cache-dir="": install
     helm upgrade routers-realtime . \
-        -n routers-dev \
-        -f values-local-dev.yaml \
+        -n {{ namespace }} \
+        -f {{ values }} \
         --set 'shardCache.hostPath={{ cache-dir }}/target/shard_cache'
 
 lint:
