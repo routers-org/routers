@@ -1,8 +1,19 @@
-# Local Development Chart Configuration (Debug Logging and Local Shard Cache)
+# Local Development Chart Configuration.
+# Debug logging + local-hostPath shard cache + in-cluster infra addresses
+# assumed to live in the `routers-dev` namespace of the same cluster.
+
+infra:
+  nats:
+    url: nats://nats.routers-dev.svc.cluster.local:4222
+    metricsTarget: nats.routers-dev.svc.cluster.local:7777
+  valkey:
+    url: redis://valkey-primary.routers-dev.svc.cluster.local:6379
+
 shardCache:
   mode: hostPath
-  # Set this to a local path on your machine, if not the same.
-  # You may use the command: `just use-shard-cache <path>` to set this.
+  # Overridden per-invocation by the Justfile so relative paths become absolute
+  # against the developer's checkout. If invoking helm directly, pass an
+  # absolute path via `--set shardCache.hostPath=<abs-dir>`.
   hostPath: ./target/shard_cache
 
 matcher:

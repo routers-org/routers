@@ -24,8 +24,9 @@ struct Args {
     #[arg(short, env, long)]
     redis: Url,
 
-    /// The subject to use for the NATS events stream
-    #[arg(long, env, default_value = "events.raw.>")]
+    /// The subject to use for the NATS events stream.
+    /// For example, "events.raw.>" to consume all raw events.
+    #[arg(short, long, env)]
     subject: String,
 
     /// The number of events to keep in the Redis history

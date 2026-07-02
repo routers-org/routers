@@ -10,15 +10,28 @@ repository = "https://github.com/routers-org/routers"
 routers_network = { workspace = true }
 routers_codec = { workspace = true, optional = true }
 
+# Logging
+env_logger = { workspace = true }
+log = { workspace = true }
+
+# Error Handling
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+# Geography
 geo = { workspace = true }
 rstar = { workspace = true }
 petgraph = { workspace = true }
+
+# Utilities
 rustc-hash = { workspace = true }
+rayon = { workspace = true }
+itertools = { workspace = true }
+clap = { workspace = true, features = ["derive", "env"] }
+
+# Serialization
 serde = { workspace = true }
 postcard = { workspace = true }
-log = { workspace = true }
-rayon = { workspace = true }
-thiserror = { workspace = true }
 
 # `web_time::Instant` is a drop-in replacement for `std::time::Instant` that
 # works on `wasm32-unknown-unknown` (where `std::time` panics). On native
@@ -46,9 +59,13 @@ osm = ["dep:routers_codec"]
 routers_fixtures = { workspace = true }
 routers_codec = { workspace = true }
 routers = { workspace = true }
+
 wkt = { workspace = true }
-env_logger = { workspace = true }
 tokio = { workspace = true }
+
+[[bin]]
+name = "generate-shards"
+path = "bin/generate-shards.rs"
 
 [lints]
 workspace = true
