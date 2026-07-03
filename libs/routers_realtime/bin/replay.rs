@@ -38,7 +38,7 @@ struct Args {
     loops: usize,
 
     /// Shard precision level to send the events as
-    #[arg(short, env, long, default_value_t = 5)]
+    #[arg(short, env, long, default_value_t = 4)]
     precision: u8,
 
     /// The subject prefix to use for the NATS events stream
@@ -126,6 +126,7 @@ async fn main() -> anyhow::Result<()> {
 
     let flood = args.speed <= 0.0;
     let speed = if flood { f64::INFINITY } else { args.speed };
+    let realtime_s = if flood { 0.0 } else { timespan_s / speed };
 
     let mut sink = nats.buffer(BUFFERED_PUBLISH_SIZE);
 
@@ -146,7 +147,7 @@ async fn main() -> anyhow::Result<()> {
         pg.set_message("[flood-mode] speed=∞x".to_string());
     } else {
         pg.set_message(format!(
-            "[walk-mode] speed={speed}x (walltime={timespan_s:.1} s)"
+            "[walk-mode] speed={speed}x (walltime={timespan_s:.1} s, realtime={realtime_s:.1} s)"
         ));
     }
 

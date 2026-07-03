@@ -1,0 +1,69 @@
+namespace := "routers-dev"
+
+bringup: repos
+    helm upgrade --install nats nats/nats \
+        -n {{ namespace }} --create-namespace \
+        --set promExporter.enabled=true \
+        --set promExporter.port=7777 \
+        --set promExporter.podMonitor.enabled=true \
+        --set-json 'promExporter.podMonitor.merge={"spec":{"podMetricsEndpoints":[{"port":"prom-metrics","interval":"1s"}]}}'
+    helm upgrade --install valkey oci://registry-1.docker.io/bitnamicharts/valkey \
+        -n {{ namespace }} --create-namespace \
+        --set auth.enabled=false
+    helm upgrade --install kube-prometheus-stack prometheus-community/kube-prometheus-stack \
+        -n {{ namespace }} --create-namespace \
+        -f kube-prometheus-stack-values.yaml
+    @echo ""
+    @echo "Dev stack ready. To open Grafana:  just dev grafana"
+
+# Port-forward Grafana on localhost:{{ port }} (default 3030) and open the
+# routers-realtime dashboard in the browser. Anonymous Admin is enabled in
+# the dev values, so no login is required. Ctrl-C to stop the forward.
+grafana port="3030":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    url="http://localhost:{{ port }}/d/routers-realtime/routers-realtime?orgId=1&from=now-15m&to=now&timezone=browser&refresh=5s"
+    echo "Grafana: $url"
+    kubectl port-forward -n {{ namespace }} svc/kube-prometheus-stack-grafana {{ port }}:80 &
+    pf_pid=$!
+    trap 'kill $pf_pid 2>/dev/null || true' EXIT
+    # Wait for the forward to accept connections before opening the browser.
+    for _ in $(seq 1 40); do
+        if curl -sf -o /dev/null "http://localhost:{{ port }}/api/health"; then break; fi
+        sleep 0.25
+    done
+    (command -v open >/dev/null && open "$url") || (command -v xdg-open >/dev/null && xdg-open "$url") || true
+    wait $pf_pid
+
+# Re-apply devstack helm values against existing releases and roll workloads
+# to pick up config changes. Assumes `bringup` has run.
+patch: repos
+    helm upgrade nats nats/nats \
+        -n {{ namespace }} \
+        --set promExporter.enabled=true \
+        --set promExporter.port=7777 \
+        --set promExporter.podMonitor.enabled=true \
+        --set-json 'promExporter.podMonitor.merge={"spec":{"podMetricsEndpoints":[{"port":"prom-metrics","interval":"1s"}]}}'
+    helm upgrade valkey oci://registry-1.docker.io/bitnamicharts/valkey \
+        -n {{ namespace }} \
+        --set auth.enabled=false
+    helm upgrade kube-prometheus-stack prometheus-community/kube-prometheus-stack \
+        -n {{ namespace }} \
+        -f kube-prometheus-stack-values.yaml
+    kubectl rollout restart deployment,statefulset -n {{ namespace }}
+
+teardown:
+    helm uninstall kube-prometheus-stack -n {{ namespace }} --ignore-not-found
+    helm uninstall valkey -n {{ namespace }} --ignore-not-found
+    helm uninstall nats -n {{ namespace }} --ignore-not-found
+    @if [ "${ROUTERS_DEVSTACK_DELETE_NAMESPACE:-0}" = "1" ]; then \
+        echo "Deleting namespace {{ namespace }}"; \
+        kubectl delete namespace {{ namespace }} --ignore-not-found; \
+    fi
+
+# Ensure required helm repos are available. The valkey chart is pulled via
+# OCI so needs no `helm repo add`.
+repos:
+    @helm repo list 2>/dev/null | grep -q '^nats\s' || helm repo add nats https://nats-io.github.io/k8s/helm/charts/
+    @helm repo list 2>/dev/null | grep -q '^prometheus-community\s' || helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+    @helm repo update nats prometheus-community >/dev/null

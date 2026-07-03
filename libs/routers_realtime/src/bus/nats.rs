@@ -2,15 +2,13 @@ use std::pin::Pin;
 use std::task::{Context as Ctx, Poll, ready};
 
 use anyhow::Context;
-use async_nats::jetstream::{self};
 use futures::future::BoxFuture;
 use futures::{FutureExt, Sink, Stream, StreamExt};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 pub struct NATSSink<T: Serialize> {
-    client: async_nats::Client, // kept for an explicit flush on shutdown
-    js: jetstream::Context,
+    client: async_nats::Client,
     subject_of: Box<dyn Fn(&T) -> String>,
     in_flight: Option<BoxFuture<'static, anyhow::Result<()>>>,
 
@@ -24,11 +22,8 @@ pub struct NATSStream<T: DeserializeOwned> {
 
 impl<T: Serialize> NATSSink<T> {
     pub fn new(client: async_nats::Client, subject_of: impl Fn(&T) -> String + 'static) -> Self {
-        let js = jetstream::new(client.clone());
-
         Self {
             client,
-            js,
             subject_of: Box::new(subject_of),
             in_flight: None,
             _phantom: std::marker::PhantomData,
@@ -65,13 +60,11 @@ impl<T: Serialize + Unpin> Sink<T> for NATSSink<T> {
         let payload: Vec<u8> = postcard::to_allocvec(&item).context("failed to serialize")?;
 
         let subject = this.subject_for(&item);
-        let js = this.js.clone();
+        let client = this.client.clone();
 
         this.in_flight = Some(
             async move {
-                // resolves once the message is handed to the connection buffer;
-                // the returned ack future is dropped (fire-and-forget).
-                let _ack = js.publish(subject, payload.into()).await?;
+                client.publish(subject, payload.into()).await?;
                 Ok::<(), anyhow::Error>(())
             }
             .boxed(),

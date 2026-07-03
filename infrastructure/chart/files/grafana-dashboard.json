@@ -30,7 +30,7 @@
           "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
         },
         {
-          "expr": "sum(rate(routers_events_published_total[3s]))",
+          "expr": "sum(rate(nats_varz_in_msgs[3s]))",
           "legendFormat": "published to NATS",
           "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
         },

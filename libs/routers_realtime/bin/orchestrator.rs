@@ -1,7 +1,10 @@
+use std::time::Duration;
+
 use anyhow::Context;
 use async_nats::{ConnectOptions, ServerAddr};
 use clap::Parser;
 use futures::{SinkExt, StreamExt};
+use geo::{Distance, Haversine};
 use log::info;
 use routers_realtime::bus::{NATSSink, NATSStream};
 use routers_realtime::event::{MatchContext, Payload, RawEvent};
@@ -32,6 +35,16 @@ struct Args {
     /// The number of context entries to retrieve from Redis for each vehicle.
     #[arg(short, long = "context-window", env, default_value = "10")]
     context_window: usize,
+
+    /// Points older than this will be discarded from history, regardless
+    /// of if it's within the KV store, or not.
+    #[arg(long, env, value_parser = humantime::parse_duration, default_value = "120s")]
+    gap: Duration,
+
+    /// Consecutive points further away than this will be treated as a "teleport",
+    /// and dropped along with everything older.
+    #[arg(long, env, default_value = "2000")]
+    jump: f64,
 }
 
 #[tokio::main]
@@ -70,7 +83,25 @@ async fn main() -> anyhow::Result<()> {
             .await
             .context("could not get entries from redis store")?
             .into_iter()
-            .map(|RawEvent { point, .. }| point);
+            .scan(
+                (payload.point, payload.event_ms),
+                |(prev_p, prev_ms),
+                 RawEvent {
+                     point, event_ms, ..
+                 }| {
+                    let duration = Duration::from_millis(prev_ms.abs_diff(event_ms));
+                    let distance = Haversine.distance(*prev_p, point);
+
+                    if duration <= args.gap && distance <= args.jump {
+                        *prev_p = point;
+                        *prev_ms = event_ms;
+                        Some(point)
+                    } else {
+                        None
+                    }
+                },
+            )
+            .collect::<Vec<_>>();
 
         let history = std::iter::once(payload.point).chain(context).collect();
 

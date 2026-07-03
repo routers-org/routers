@@ -2,7 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: matcher
-  namespace: routers-dev
+  namespace: routers
   labels:
     app: matcher
 spec:
@@ -67,7 +67,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: matcher-metrics
-  namespace: routers-dev
+  namespace: routers
   labels:
     app: matcher
 spec:
