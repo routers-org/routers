@@ -3,7 +3,7 @@
 #   ROUTERS_NAMESPACE      release namespace
 #   ROUTERS_VALUES         values file to layer on top of values.yaml
 #   ROUTERS_SHARD_CACHE    absolute hostPath for the shard directory
-namespace := env("ROUTERS_NAMESPACE", "routers-dev")
+namespace := env("ROUTERS_NAMESPACE", "routers")
 values := env("ROUTERS_VALUES", "values-local-dev.yaml")
 shard-cache := env("ROUTERS_SHARD_CACHE", `cd .. && cd .. && pwd` + "/target/shard_cache")
 
@@ -17,6 +17,15 @@ bringup:
         -n {{ namespace }} --create-namespace \
         -f {{ values }} \
         --set shardCache.hostPath={{ shard-cache }}
+
+# Re-apply the chart against an existing release and roll workloads so any
+# configmap/env changes actually reach the pods. Assumes `bringup` has run.
+patch:
+    helm upgrade routers-realtime . \
+        -n {{ namespace }} \
+        -f {{ values }} \
+        --set shardCache.hostPath={{ shard-cache }}
+    kubectl rollout restart deployment,statefulset -n {{ namespace }}
 
 # Uninstall the release. Set ROUTERS_DELETE_NAMESPACE=1 to also drop the
 # namespace (only safe if nothing else lives in it).

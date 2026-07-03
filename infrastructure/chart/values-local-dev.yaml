@@ -1,6 +1,8 @@
 # Local Development Chart Configuration.
 # Debug logging + local-hostPath shard cache + in-cluster infra addresses
-# assumed to live in the `routers-dev` namespace of the same cluster.
+# assumed to live in the `routers-dev` devstack namespace of the same cluster
+# (see `infrastructure/devstack/`). The routers release itself lives in
+# `routers` by default.
 
 infra:
   nats:

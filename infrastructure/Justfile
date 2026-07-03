@@ -3,9 +3,12 @@ mod matcher "matcher"
 mod orchestrator "orchestrator"
 
 mod chart "chart"
+mod devstack "devstack"
 
 build: historian::build matcher::build orchestrator::build
 
 bringup: chart::bringup
+
+patch: chart::patch
 
 teardown: chart::teardown
