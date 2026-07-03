@@ -1,0 +1,54 @@
+namespace := "routers-dev"
+
+bringup: repos
+    helm upgrade --install nats nats/nats \
+        -n {{ namespace }} --create-namespace \
+        --set config.jetstream.enabled=true \
+        --set promExporter.enabled=true \
+        --set promExporter.port=7777
+    helm upgrade --install valkey oci://registry-1.docker.io/bitnamicharts/valkey \
+        -n {{ namespace }} --create-namespace \
+        --set auth.enabled=false
+    helm upgrade --install kube-prometheus-stack prometheus-community/kube-prometheus-stack \
+        -n {{ namespace }} --create-namespace \
+        -f kube-prometheus-stack-values.yaml
+    @echo ""
+    @echo "Devstack ready. To open Grafana:  just devstack grafana"
+
+# Port-forward Grafana on localhost:3000. Anonymous Admin is enabled in the
+# devstack values, so no login is required. Ctrl-C to stop the forward.
+grafana port="3000":
+    @echo "Grafana: http://localhost:{{ port }}"
+    kubectl port-forward -n {{ namespace }} svc/kube-prometheus-stack-grafana {{ port }}:80
+
+# Re-apply devstack helm values against existing releases and roll workloads
+# to pick up config changes. Assumes `bringup` has run.
+patch: repos
+    helm upgrade nats nats/nats \
+        -n {{ namespace }} \
+        --set config.jetstream.enabled=true \
+        --set promExporter.enabled=true \
+        --set promExporter.port=7777
+    helm upgrade valkey oci://registry-1.docker.io/bitnamicharts/valkey \
+        -n {{ namespace }} \
+        --set auth.enabled=false
+    helm upgrade kube-prometheus-stack prometheus-community/kube-prometheus-stack \
+        -n {{ namespace }} \
+        -f kube-prometheus-stack-values.yaml
+    kubectl rollout restart deployment,statefulset -n {{ namespace }}
+
+teardown:
+    helm uninstall kube-prometheus-stack -n {{ namespace }} --ignore-not-found
+    helm uninstall valkey -n {{ namespace }} --ignore-not-found
+    helm uninstall nats -n {{ namespace }} --ignore-not-found
+    @if [ "${ROUTERS_DEVSTACK_DELETE_NAMESPACE:-0}" = "1" ]; then \
+        echo "Deleting namespace {{ namespace }}"; \
+        kubectl delete namespace {{ namespace }} --ignore-not-found; \
+    fi
+
+# Ensure required helm repos are available. The valkey chart is pulled via
+# OCI so needs no `helm repo add`.
+repos:
+    @helm repo list 2>/dev/null | grep -q '^nats\s' || helm repo add nats https://nats-io.github.io/k8s/helm/charts/
+    @helm repo list 2>/dev/null | grep -q '^prometheus-community\s' || helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+    @helm repo update nats prometheus-community >/dev/null

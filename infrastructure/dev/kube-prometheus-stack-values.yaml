@@ -1,0 +1,11 @@
+# Local-dev only: Grafana with no login. Anyone hitting the port-forward is
+# logged in as Admin. Do not use these values outside a developer's machine.
+grafana:
+  grafana.ini:
+    auth.anonymous:
+      enabled: true
+      org_role: Admin
+    auth:
+      disable_login_form: true
+    users:
+      allow_sign_up: false
