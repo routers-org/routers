@@ -11,7 +11,7 @@ pub enum SolverImpl<E: Entry, M: Metadata, N: Network<E, M>> {
     Selective(SelectiveForwardSolver<E, M, N>),
 }
 
-#[derive(Default, Clone)]
+#[derive(Default, Clone, Debug)]
 pub enum SolverVariant {
     #[default]
     Fastest,

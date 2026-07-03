@@ -8,6 +8,7 @@ use routers_network::{Entry, Metadata, Network};
 
 pub const DEFAULT_SEARCH_DISTANCE: f64 = 50.0; // 50m
 
+#[derive(Clone, Debug)]
 pub struct MatchOptions<E: Entry, M: Metadata, N: Network<E, M>> {
     /// The distance the solver will use to search for candidates
     /// around every given input position.

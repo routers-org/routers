@@ -2,6 +2,7 @@ use anyhow::Context;
 use async_nats::{ConnectOptions, ServerAddr};
 use clap::Parser;
 use futures::{SinkExt, StreamExt};
+use geo::LineString;
 use log::{error, info};
 use routers::r#match::MatchOptions;
 use routers::{Match, PredicateCache, SolverVariant};
@@ -88,25 +89,26 @@ async fn main() -> anyhow::Result<()> {
     let cache = Arc::new(PredicateCache::<E, M, _>::default());
     let runtime = OsmEdgeMetadata::runtime(None);
 
+    let opts = MatchOptions::new()
+        .with_runtime(runtime.clone())
+        .with_cache(cache.clone())
+        .with_solver(SolverVariant::Fastest)
+        .with_search_distance(args.search_distance);
+
     while let Some(MatchContext {
         history,
         vehicle_id,
     }) = source.next().await
     {
-        let opts = MatchOptions::new()
-            .with_runtime(runtime.clone())
-            .with_cache(cache.clone())
-            .with_solver(SolverVariant::Fastest)
-            .with_search_distance(args.search_distance);
-
-        match network.r#match(history.into(), opts) {
+        let linestring = LineString::from(history);
+        match network.r#match(linestring.clone(), opts.clone()) {
             Ok(path) => {
                 sink.send(MatchResult { path, vehicle_id })
                     .await
                     .context("could not emit result to sink")?;
             }
             Err(err) => {
-                error!("unable to match payload: {err}");
+                error!("unable to match payload: {err} (linestring={linestring:?})");
             }
         }
     }
