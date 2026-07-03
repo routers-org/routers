@@ -13,13 +13,26 @@ bringup: repos
         -n {{ namespace }} --create-namespace \
         -f kube-prometheus-stack-values.yaml
     @echo ""
-    @echo "Devstack ready. To open Grafana:  just devstack grafana"
+    @echo "Dev stack ready. To open Grafana:  just dev grafana"
 
-# Port-forward Grafana on localhost:3000. Anonymous Admin is enabled in the
-# devstack values, so no login is required. Ctrl-C to stop the forward.
-grafana port="3000":
-    @echo "Grafana: http://localhost:{{ port }}"
-    kubectl port-forward -n {{ namespace }} svc/kube-prometheus-stack-grafana {{ port }}:80
+# Port-forward Grafana on localhost:{{ port }} (default 3030) and open the
+# routers-realtime dashboard in the browser. Anonymous Admin is enabled in
+# the dev values, so no login is required. Ctrl-C to stop the forward.
+grafana port="3030":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    url="http://localhost:{{ port }}/d/routers-realtime/routers-realtime?orgId=1&from=now-15m&to=now&timezone=browser&refresh=5s"
+    echo "Grafana: $url"
+    kubectl port-forward -n {{ namespace }} svc/kube-prometheus-stack-grafana {{ port }}:80 &
+    pf_pid=$!
+    trap 'kill $pf_pid 2>/dev/null || true' EXIT
+    # Wait for the forward to accept connections before opening the browser.
+    for _ in $(seq 1 40); do
+        if curl -sf -o /dev/null "http://localhost:{{ port }}/api/health"; then break; fi
+        sleep 0.25
+    done
+    (command -v open >/dev/null && open "$url") || (command -v xdg-open >/dev/null && xdg-open "$url") || true
+    wait $pf_pid
 
 # Re-apply devstack helm values against existing releases and roll workloads
 # to pick up config changes. Assumes `bringup` has run.
