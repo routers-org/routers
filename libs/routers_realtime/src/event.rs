@@ -51,7 +51,7 @@ impl Storable for RawEvent {
     type Key = String;
 
     fn shard_id(&self) -> Self::ShardId {
-        GeohashStrategy::with_precision(5).locate(self.point)
+        GeohashStrategy::with_precision(4).locate(self.point)
     }
 
     fn key(&self) -> Self::Key {

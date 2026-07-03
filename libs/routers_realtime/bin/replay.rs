@@ -10,7 +10,6 @@ use indicatif_log_bridge::LogWrapper;
 use itertools::izip;
 use log::{debug, info};
 use polars::prelude::*;
-use routers::Reachable;
 use routers_realtime::{bus::NATSSink, event::Payload};
 use routers_shard::{GeohashStrategy, ShardingStrategy};
 use std::{fmt::Write, path::PathBuf, time::Duration};
@@ -39,7 +38,7 @@ struct Args {
     loops: usize,
 
     /// Shard precision level to send the events as
-    #[arg(short, env, long, default_value_t = 5)]
+    #[arg(short, env, long, default_value_t = 4)]
     precision: u8,
 
     /// The subject prefix to use for the NATS events stream
