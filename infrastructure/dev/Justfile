@@ -3,9 +3,10 @@ namespace := "routers-dev"
 bringup: repos
     helm upgrade --install nats nats/nats \
         -n {{ namespace }} --create-namespace \
-        --set config.jetstream.enabled=true \
         --set promExporter.enabled=true \
-        --set promExporter.port=7777
+        --set promExporter.port=7777 \
+        --set promExporter.podMonitor.enabled=true \
+        --set-json 'promExporter.podMonitor.merge={"spec":{"podMetricsEndpoints":[{"port":"prom-metrics","interval":"1s"}]}}'
     helm upgrade --install valkey oci://registry-1.docker.io/bitnamicharts/valkey \
         -n {{ namespace }} --create-namespace \
         --set auth.enabled=false
@@ -39,9 +40,10 @@ grafana port="3030":
 patch: repos
     helm upgrade nats nats/nats \
         -n {{ namespace }} \
-        --set config.jetstream.enabled=true \
         --set promExporter.enabled=true \
-        --set promExporter.port=7777
+        --set promExporter.port=7777 \
+        --set promExporter.podMonitor.enabled=true \
+        --set-json 'promExporter.podMonitor.merge={"spec":{"podMetricsEndpoints":[{"port":"prom-metrics","interval":"1s"}]}}'
     helm upgrade valkey oci://registry-1.docker.io/bitnamicharts/valkey \
         -n {{ namespace }} \
         --set auth.enabled=false

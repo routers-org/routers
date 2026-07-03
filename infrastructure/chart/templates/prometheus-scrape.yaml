@@ -1,63 +1,48 @@
 {{- if .Values.prometheusScrape.enabled }}
-apiVersion: v1
-kind: Secret
+# ServiceMonitor CRs consumed by kube-prometheus-stack's Prometheus (which
+# lives in a different namespace — see infrastructure/dev). For the operator
+# to pick these up cross-namespace, the Prometheus resource must be
+# configured with a permissive `serviceMonitorNamespaceSelector` and
+# `serviceMonitorSelector` (see the dev values file).
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
 metadata:
-  name: routers-additional-scrape
+  name: routers-orchestrator
   labels:
     {{- include "routers.labels" . | nindent 4 }}
-stringData:
-  scrape.yaml: |
-    - job_name: routers-orchestrator
-      scrape_interval: 1s
-      kubernetes_sd_configs:
-        - role: pod
-          namespaces:
-            names: [{{ .Release.Namespace }}]
-      relabel_configs:
-        - source_labels: [__meta_kubernetes_pod_label_app]
-          action: keep
-          regex: orchestrator(-shard)?
-        - source_labels: [__meta_kubernetes_pod_ip, __meta_kubernetes_pod_annotation_prometheus_io_port]
-          separator: ":"
-          target_label: __address__
-        - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
-          target_label: __metrics_path__
-          regex: (.+)
-          action: replace
-        - source_labels: [__meta_kubernetes_pod_name]
-          target_label: pod
-        - source_labels: [__meta_kubernetes_pod_node_name]
-          target_label: node
-
-    - job_name: routers-matcher
-      scrape_interval: 1s
-      kubernetes_sd_configs:
-        - role: pod
-          namespaces:
-            names: [{{ .Release.Namespace }}]
-      relabel_configs:
-        - source_labels: [__meta_kubernetes_pod_label_app]
-          action: keep
-          regex: matcher
-        - source_labels: [__meta_kubernetes_pod_ip, __meta_kubernetes_pod_annotation_prometheus_io_port]
-          separator: ":"
-          target_label: __address__
-        - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
-          target_label: __metrics_path__
-          regex: (.+)
-          action: replace
-        - source_labels: [__meta_kubernetes_pod_name]
-          target_label: pod
-        - source_labels: [__meta_kubernetes_pod_node_name]
-          target_label: node
-
-{{- with .Values.infra.nats.metricsTarget }}
-    - job_name: nats
-      scrape_interval: 10s
-      static_configs:
-        - targets:
-            - {{ . }}
-          labels:
-            component: nats
-{{- end }}
+spec:
+  namespaceSelector:
+    matchNames: [{{ .Release.Namespace }}]
+  selector:
+    matchLabels:
+      app: orchestrator-shard
+  endpoints:
+    - port: metrics
+      interval: 1s
+      relabelings:
+        - sourceLabels: [__meta_kubernetes_pod_name]
+          targetLabel: pod
+        - sourceLabels: [__meta_kubernetes_pod_node_name]
+          targetLabel: node
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: routers-matcher
+  labels:
+    {{- include "routers.labels" . | nindent 4 }}
+spec:
+  namespaceSelector:
+    matchNames: [{{ .Release.Namespace }}]
+  selector:
+    matchLabels:
+      app: matcher
+  endpoints:
+    - port: metrics
+      interval: 1s
+      relabelings:
+        - sourceLabels: [__meta_kubernetes_pod_name]
+          targetLabel: pod
+        - sourceLabels: [__meta_kubernetes_pod_node_name]
+          targetLabel: node
 {{- end }}

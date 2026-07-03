@@ -10,6 +10,7 @@ use indicatif_log_bridge::LogWrapper;
 use itertools::izip;
 use log::{debug, info};
 use polars::prelude::*;
+use routers::Reachable;
 use routers_realtime::{bus::NATSSink, event::Payload};
 use routers_shard::{GeohashStrategy, ShardingStrategy};
 use std::{fmt::Write, path::PathBuf, time::Duration};
@@ -126,6 +127,7 @@ async fn main() -> anyhow::Result<()> {
 
     let flood = args.speed <= 0.0;
     let speed = if flood { f64::INFINITY } else { args.speed };
+    let realtime_s = if flood { 0.0 } else { timespan_s / speed };
 
     let mut sink = nats.buffer(BUFFERED_PUBLISH_SIZE);
 
@@ -146,7 +148,7 @@ async fn main() -> anyhow::Result<()> {
         pg.set_message("[flood-mode] speed=∞x".to_string());
     } else {
         pg.set_message(format!(
-            "[walk-mode] speed={speed}x (walltime={timespan_s:.1} s)"
+            "[walk-mode] speed={speed}x (walltime={timespan_s:.1} s, realtime={realtime_s:.1} s)"
         ));
     }
 
