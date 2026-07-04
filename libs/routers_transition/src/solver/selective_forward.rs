@@ -1,6 +1,6 @@
 use crate::{
     CollapseError, CollapsedPath, Costing, MatchError, PredicateCache, Reachable, Solver,
-    TransitionContext, Trip,
+    TransitionContext,
     candidate::{CandidateEdge, CandidateId},
     costing::{EmissionStrategy, TransitionStrategy},
     entity::Transition,
@@ -108,7 +108,6 @@ where
                 .into_iter()
                 .filter_map(move |mut reachable| {
                     let path_vec = reachable.path_nodes().collect_vec();
-                    let optimal_path = Trip::new_with_map(context.map, &path_vec);
 
                     let source = context.candidate(&reachable.source)?;
                     let target = context.candidate(&reachable.target)?;
@@ -119,11 +118,7 @@ where
 
                     let transition_ctx = TransitionContext::new(
                         context,
-                        &reachable.source,
-                        &reachable.target,
-                        source.position,
-                        target.position,
-                        optimal_path,
+                        (&reachable.source, &reachable.target),
                         &path_vec,
                         layer_width,
                         reachable.resolution_method,

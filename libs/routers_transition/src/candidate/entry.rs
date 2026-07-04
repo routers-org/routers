@@ -88,11 +88,7 @@ where
         edge.line_locate_point(&self.position)
     }
 
-    /// Bearing of the candidate's edge (source endpoint → target endpoint).
-    /// `None` if either endpoint is missing from the map, or if the edge is
-    /// degenerate (endpoints under 1m apart) — in which case the bearing is
-    /// meaningless and callers should elide the associated turn from any
-    /// angular-complexity calculation rather than folding in a bogus value.
+    /// Get the bearing of the candidate's edge (source endpoint -> target endpoint).
     pub fn edge_heading<M, N>(&self, ctx: &RoutingContext<E, M, N>) -> Option<f64>
     where
         M: Metadata,
@@ -100,7 +96,13 @@ where
     {
         let s = ctx.map.point(&self.edge.source)?;
         let t = ctx.map.point(&self.edge.target)?;
-        (Haversine.distance(s, t) >= 1.0).then(|| Haversine.bearing(s, t))
+
+        // Consider degenerate case
+        if Haversine.distance(s, t) < 1.0 {
+            return None;
+        }
+
+        Some(Haversine.bearing(s, t))
     }
 
     /// Calculates the offset, in meters, of the candidate to it's edge by the [`VirtualTail`].

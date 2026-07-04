@@ -144,13 +144,13 @@ where
 {
     /// Builds the context, precomputing all network-derived values so the
     /// resulting struct is generic only over the entry type.
+    ///
+    /// Candidate positions and the [`Trip`] representation of the optimal
+    /// path are derived internally — the caller supplies the candidate IDs
+    /// and the map-node sequence between them.
     pub fn new<M, N>(
         routing_context: &'a RoutingContext<'a, E, M, N>,
-        source_candidate: &'a CandidateId,
-        target_candidate: &'a CandidateId,
-        source_position: Point,
-        target_position: Point,
-        optimal_path: Trip<E>,
+        (source_candidate, target_candidate): (&'a CandidateId, &'a CandidateId),
         map_path: &'a [E],
         layer_width: f64,
         requested_resolution_method: ResolutionMethod,
@@ -173,9 +173,9 @@ where
         };
 
         Some(Self {
-            optimal_path,
-            source_position,
-            target_position,
+            optimal_path: Trip::new_with_map(routing_context.map, map_path),
+            source_position: source.position,
+            target_position: target.position,
             map_path,
             source_candidate,
             target_candidate,
@@ -206,10 +206,6 @@ where
         (self.source_candidate(), self.target_candidate())
     }
 
-    /// Angular complexity of the full intra-transition geometry: the
-    /// candidate source position, the interior map nodes, and the candidate
-    /// target position. This is what cost heuristics should call so that the
-    /// turn at the candidate→edge joints participates in the score.
     pub fn angular_complexity(&self) -> f64 {
         self.optimal_path.angular_complexity_with_headings(
             self.headings.source,
