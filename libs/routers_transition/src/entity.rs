@@ -1,3 +1,5 @@
+use std::marker::PhantomData;
+
 use crate::*;
 
 use crate::definition::Layers;
@@ -62,10 +64,12 @@ where
     Transition: TransitionStrategy<E>,
 {
     pub(crate) map: &'a N,
-    pub(crate) heuristics: &'a CostingStrategies<Emission, Transition, E, M, N>,
+    pub(crate) heuristics: &'a CostingStrategies<Emission, Transition, E>,
 
     pub(crate) candidates: Candidates<E>,
     pub(crate) layers: Layers,
+
+    _phantom: PhantomData<M>,
 }
 
 impl<'a, Emmis, Trans, E, M, N> Transition<'a, Emmis, Trans, E, M, N>
@@ -89,7 +93,7 @@ where
     pub fn new(
         map: &'a N,
         linestring: LineString,
-        heuristics: &'a CostingStrategies<Emmis, Trans, E, M, N>,
+        heuristics: &'a CostingStrategies<Emmis, Trans, E>,
         generator: impl LayerGeneration<E>,
     ) -> Transition<'a, Emmis, Trans, E, M, N> {
         let points = linestring.into_points();
@@ -102,6 +106,7 @@ where
             candidates,
             layers,
             heuristics,
+            _phantom: PhantomData,
         }
     }
 

@@ -1,5 +1,5 @@
 use crate::*;
-use routers_network::{Entry, Metadata, Network};
+use routers_network::Entry;
 
 const PRECISION: f64 = 100.0f64;
 
@@ -39,11 +39,9 @@ pub trait Strategy<Ctx> {
     }
 }
 
-pub trait Costing<Emission, Transition, E, M, N>
+pub trait Costing<Emission, Transition, E>
 where
     E: Entry,
-    M: Metadata,
-    N: Network<E, M>,
     Transition: TransitionStrategy<E>,
     Emission: EmissionStrategy,
 {

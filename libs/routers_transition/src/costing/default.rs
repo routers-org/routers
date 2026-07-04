@@ -177,29 +177,23 @@ pub mod costing {
         Costing, EmissionContext, EmissionStrategy, TransitionContext, TransitionStrategy,
     };
     use core::marker::PhantomData;
-    use routers_network::{Entry, Metadata, Network};
+    use routers_network::Entry;
 
-    pub struct CostingStrategies<Emmis, Trans, E, M, N>
+    pub struct CostingStrategies<Emmis, Trans, E>
     where
         E: Entry,
-        M: Metadata,
-        N: Network<E, M>,
         Emmis: EmissionStrategy,
         Trans: TransitionStrategy<E>,
     {
         pub emission: Emmis,
         pub transition: Trans,
 
-        _phantom: core::marker::PhantomData<E>,
-        _phantom2: core::marker::PhantomData<M>,
-        _phantom3: core::marker::PhantomData<N>,
+        _phantom: PhantomData<E>,
     }
 
-    impl<Emmis, Trans, E, M, N> CostingStrategies<Emmis, Trans, E, M, N>
+    impl<Emmis, Trans, E> CostingStrategies<Emmis, Trans, E>
     where
         E: Entry,
-        M: Metadata,
-        N: Network<E, M>,
         Emmis: EmissionStrategy,
         Trans: TransitionStrategy<E>,
     {
@@ -209,29 +203,22 @@ pub mod costing {
                 transition,
 
                 _phantom: PhantomData,
-                _phantom2: PhantomData,
-                _phantom3: PhantomData,
             }
         }
     }
 
-    impl<E, M, N> Default for CostingStrategies<DefaultEmissionCost, DefaultTransitionCost, E, M, N>
+    impl<E> Default for CostingStrategies<DefaultEmissionCost, DefaultTransitionCost, E>
     where
         E: Entry,
-        M: Metadata,
-        N: Network<E, M>,
     {
         fn default() -> Self {
             CostingStrategies::new(DefaultEmissionCost::default(), DefaultTransitionCost)
         }
     }
 
-    impl<Emmis, Trans, E, M, N> Costing<Emmis, Trans, E, M, N>
-        for CostingStrategies<Emmis, Trans, E, M, N>
+    impl<Emmis, Trans, E> Costing<Emmis, Trans, E> for CostingStrategies<Emmis, Trans, E>
     where
         E: Entry,
-        M: Metadata,
-        N: Network<E, M>,
         Trans: TransitionStrategy<E>,
         Emmis: EmissionStrategy,
     {
