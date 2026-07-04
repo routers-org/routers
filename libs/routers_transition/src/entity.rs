@@ -8,9 +8,6 @@ use geo::LineString;
 use routers_network::Network;
 use routers_network::{Entry, Metadata};
 
-type LayerId = usize;
-type NodeId = usize;
-
 /// A map-specific transition graph based on the Hidden-Markov-Model structure.
 ///
 /// This is the orchestration point for solving transition graphs for making
