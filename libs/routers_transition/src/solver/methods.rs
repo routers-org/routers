@@ -29,7 +29,7 @@ where
     ) -> Result<CollapsedPath<E>, MatchError>
     where
         Emmis: EmissionStrategy + Send + Sync,
-        Trans: TransitionStrategy<E, M, N> + Send + Sync;
+        Trans: TransitionStrategy<E> + Send + Sync;
 
     /// Creates a path from the source up the parent map until no more parents
     /// are found. This assumes there is only one relation between parent and children.

@@ -72,7 +72,7 @@ where
     ) -> Vec<(CandidateId, CandidateEdge)>
     where
         Emmis: EmissionStrategy + Send + Sync,
-        Trans: TransitionStrategy<E, M, N> + Send + Sync,
+        Trans: TransitionStrategy<E> + Send + Sync,
         'b: 'a,
     {
         let successors = transition.candidates.next_layer(source);
@@ -117,20 +117,18 @@ where
                     let tl = transition.layers.layers.get(target.location.layer_id)?;
                     let layer_width = Haversine.distance(sl.origin, tl.origin);
 
-                    let transition_cost = transition.heuristics.transition(TransitionContext {
-                        map_path: &path_vec,
-                        requested_resolution_method: reachable.resolution_method,
-
-                        source_candidate: &reachable.source,
-                        target_candidate: &reachable.target,
-                        routing_context: context,
-
-                        source_position: source.position,
-                        target_position: target.position,
-
-                        layer_width,
+                    let transition_ctx = TransitionContext::new(
+                        context,
+                        &reachable.source,
+                        &reachable.target,
+                        source.position,
+                        target.position,
                         optimal_path,
-                    });
+                        &path_vec,
+                        layer_width,
+                        reachable.resolution_method,
+                    )?;
+                    let transition_cost = transition.heuristics.transition(transition_ctx);
 
                     let cost = target.emission.saturating_add(transition_cost);
                     #[cfg(debug_assertions)]
@@ -242,7 +240,7 @@ where
     ) -> Result<CollapsedPath<E>, MatchError>
     where
         Emmis: EmissionStrategy + Send + Sync,
-        Trans: TransitionStrategy<E, M, N> + Send + Sync,
+        Trans: TransitionStrategy<E> + Send + Sync,
     {
         let (start, end) = {
             // Compute cost ~= free

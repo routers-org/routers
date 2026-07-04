@@ -3,7 +3,7 @@ use crate::RoutingContext;
 use core::cmp::Ordering;
 use core::fmt::Debug;
 use core::ops::Add;
-use geo::{Distance, Haversine, LineLocatePoint, LineString, Point};
+use geo::{Bearing, Distance, Haversine, LineLocatePoint, LineString, Point};
 use pathfinding::num_traits::Zero;
 use routers_network::{Edge, Entry, Metadata, Network};
 
@@ -86,6 +86,21 @@ where
             .collect::<LineString>();
 
         edge.line_locate_point(&self.position)
+    }
+
+    /// Bearing of the candidate's edge (source endpoint → target endpoint).
+    /// `None` if either endpoint is missing from the map, or if the edge is
+    /// degenerate (endpoints under 1m apart) — in which case the bearing is
+    /// meaningless and callers should elide the associated turn from any
+    /// angular-complexity calculation rather than folding in a bogus value.
+    pub fn edge_heading<M, N>(&self, ctx: &RoutingContext<E, M, N>) -> Option<f64>
+    where
+        M: Metadata,
+        N: Network<E, M>,
+    {
+        let s = ctx.map.point(&self.edge.source)?;
+        let t = ctx.map.point(&self.edge.target)?;
+        (Haversine.distance(s, t) >= 1.0).then(|| Haversine.bearing(s, t))
     }
 
     /// Calculates the offset, in meters, of the candidate to it's edge by the [`VirtualTail`].

@@ -56,7 +56,7 @@ impl<E: Entry, M: Metadata, N: Network<E, M>> Solver<E, M, N> for SolverImpl<E, 
     ) -> Result<CollapsedPath<E>, MatchError>
     where
         Emmis: EmissionStrategy + Send + Sync,
-        Trans: TransitionStrategy<E, M, N> + Send + Sync,
+        Trans: TransitionStrategy<E> + Send + Sync,
     {
         match self {
             SolverImpl::Precompute(precompute) => precompute.solve(transition, runtime),

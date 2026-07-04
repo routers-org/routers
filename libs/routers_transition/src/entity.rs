@@ -59,7 +59,7 @@ where
     M: Metadata,
     N: Network<E, M>,
     Emission: EmissionStrategy,
-    Transition: TransitionStrategy<E, M, N>,
+    Transition: TransitionStrategy<E>,
 {
     pub(crate) map: &'a N,
     pub(crate) heuristics: &'a CostingStrategies<Emission, Transition, E, M, N>,
@@ -74,7 +74,7 @@ where
     M: Metadata,
     N: Network<E, M>,
     Emmis: EmissionStrategy + Send + Sync,
-    Trans: TransitionStrategy<E, M, N> + Send + Sync,
+    Trans: TransitionStrategy<E> + Send + Sync,
 {
     /// Creates a new transition graph from the input linestring and heuristics.
     ///

@@ -67,7 +67,7 @@ pub mod emission {
 
 pub mod transition {
     use crate::*;
-    use routers_network::{Edge, Entry, Metadata, Network};
+    use routers_network::{Edge, Entry};
 
     /// Calculates the transition cost between two candidates.
     ///
@@ -121,11 +121,9 @@ pub mod transition {
     /// [amortize]: https://en.wikipedia.org/wiki/Amortized_analysis
     pub struct DefaultTransitionCost;
 
-    impl<'a, E, M, N> Strategy<TransitionContext<'a, E, M, N>> for DefaultTransitionCost
+    impl<'a, E> Strategy<TransitionContext<'a, E>> for DefaultTransitionCost
     where
         E: Entry,
-        M: Metadata,
-        N: Network<E, M>,
     {
         type Cost = f64;
 
@@ -133,7 +131,7 @@ pub mod transition {
         const BETA: f64 = 1.;
 
         #[inline]
-        fn calculate(&self, context: TransitionContext<'a, E, M, N>) -> Option<Self::Cost> {
+        fn calculate(&self, context: TransitionContext<'a, E>) -> Option<Self::Cost> {
             const EPSILON: f64 = 1e-6;
 
             // Find the transition lengths (shortest path, trip length)
@@ -187,7 +185,7 @@ pub mod costing {
         M: Metadata,
         N: Network<E, M>,
         Emmis: EmissionStrategy,
-        Trans: TransitionStrategy<E, M, N>,
+        Trans: TransitionStrategy<E>,
     {
         pub emission: Emmis,
         pub transition: Trans,
@@ -203,7 +201,7 @@ pub mod costing {
         M: Metadata,
         N: Network<E, M>,
         Emmis: EmissionStrategy,
-        Trans: TransitionStrategy<E, M, N>,
+        Trans: TransitionStrategy<E>,
     {
         pub fn new(emission: Emmis, transition: Trans) -> Self {
             Self {
@@ -234,7 +232,7 @@ pub mod costing {
         E: Entry,
         M: Metadata,
         N: Network<E, M>,
-        Trans: TransitionStrategy<E, M, N>,
+        Trans: TransitionStrategy<E>,
         Emmis: EmissionStrategy,
     {
         #[inline(always)]
@@ -243,7 +241,7 @@ pub mod costing {
         }
 
         #[inline(always)]
-        fn transition(&self, context: TransitionContext<E, M, N>) -> u32 {
+        fn transition(&self, context: TransitionContext<E>) -> u32 {
             self.transition.cost(context)
         }
     }
