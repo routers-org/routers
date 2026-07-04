@@ -68,11 +68,10 @@ where
     /// Candidate registry used to resolve candidates into full [`Candidate`] values.
     pub candidates: &'a Candidates<E>,
 
-    /// The length between the layer nodes
-    pub layer_width: f64,
-
     /// The requested [resolution method](ResolutionMethod) by which the transition costing function
-    /// should attempt to cost (resolve) the two candidates.
+    /// should attempt to cost (resolve) the two candidates. Defaults to
+    /// [`ResolutionMethod::Standard`]; override with
+    /// [`with_resolution_method`](Self::with_resolution_method).
     pub requested_resolution_method: ResolutionMethod,
 
     /// Edge bearings for source and target candidates.
@@ -152,8 +151,6 @@ where
         routing_context: &'a RoutingContext<'a, E, M, N>,
         (source_candidate, target_candidate): (&'a CandidateId, &'a CandidateId),
         map_path: &'a [E],
-        layer_width: f64,
-        requested_resolution_method: ResolutionMethod,
     ) -> Option<Self>
     where
         M: Metadata,
@@ -180,11 +177,17 @@ where
             source_candidate,
             target_candidate,
             candidates: routing_context.candidates,
-            layer_width,
-            requested_resolution_method,
+            requested_resolution_method: ResolutionMethod::default(),
             headings,
             virtual_tails,
         })
+    }
+
+    /// Overrides the [resolution method](ResolutionMethod) used when costing
+    /// the transition. Defaults to [`ResolutionMethod::Standard`].
+    pub fn with_resolution_method(mut self, method: ResolutionMethod) -> Self {
+        self.requested_resolution_method = method;
+        self
     }
 
     /// Obtains the source [candidate](Candidate) from the context.
