@@ -48,6 +48,10 @@ where
         }
     }
 
+    pub fn candidates<'a>(&'a self) -> (&'a CandidateId, &'a CandidateId) {
+        (&self.source, &self.target)
+    }
+
     /// Consumes and modifies a reachable element to request the
     /// [`DistanceOnly`](ResolutionMethod::DistanceOnly) option.
     pub fn distance_only(self) -> Self {

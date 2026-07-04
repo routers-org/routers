@@ -148,43 +148,46 @@ where
     /// path are derived internally — the caller supplies the candidate IDs
     /// and the map-node sequence between them.
     pub fn new<M, N>(
-        routing_context: &'a RoutingContext<'a, E, M, N>,
-        (source_candidate, target_candidate): (&'a CandidateId, &'a CandidateId),
+        ctx: &'a RoutingContext<'a, E, M, N>,
+        (src, trg): (&'a CandidateId, &'a CandidateId),
         map_path: &'a [E],
     ) -> Option<Self>
     where
         M: Metadata,
         N: Network<E, M>,
     {
-        let source = routing_context.candidate(source_candidate)?;
-        let target = routing_context.candidate(target_candidate)?;
+        let source = ctx.candidate(src)?;
+        let target = ctx.candidate(trg)?;
 
         let headings = Headings {
-            source: source.edge_heading(routing_context),
-            target: target.edge_heading(routing_context),
+            source: source.edge_heading(ctx),
+            target: target.edge_heading(ctx),
         };
 
         let virtual_tails = VirtualTails {
-            source: source.offset(routing_context, VirtualTail::ToTarget),
-            target: target.offset(routing_context, VirtualTail::ToSource),
+            source: source.offset(ctx, VirtualTail::ToTarget),
+            target: target.offset(ctx, VirtualTail::ToSource),
         };
 
         Some(Self {
-            optimal_path: Trip::new_with_map(routing_context.map, map_path),
+            optimal_path: Trip::new_with_map(ctx.map, map_path),
+            candidates: ctx.candidates,
+            requested_resolution_method: ResolutionMethod::default(),
+
             source_position: source.position,
             target_position: target.position,
+
+            source_candidate: src,
+            target_candidate: trg,
+
             map_path,
-            source_candidate,
-            target_candidate,
-            candidates: routing_context.candidates,
-            requested_resolution_method: ResolutionMethod::default(),
             headings,
             virtual_tails,
         })
     }
 
     /// Overrides the [resolution method](ResolutionMethod) used when costing
-    /// the transition. Defaults to [`ResolutionMethod::Standard`].
+    /// the transition.
     pub fn with_resolution_method(mut self, method: ResolutionMethod) -> Self {
         self.requested_resolution_method = method;
         self

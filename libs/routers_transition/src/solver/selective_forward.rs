@@ -109,12 +109,10 @@ where
                     let path_vec = reachable.path_nodes().collect_vec();
                     let target = context.candidate(&reachable.target)?;
 
-                    let transition_ctx = TransitionContext::new(
-                        context,
-                        (&reachable.source, &reachable.target),
-                        &path_vec,
-                    )?
-                    .with_resolution_method(reachable.resolution_method);
+                    let transition_ctx =
+                        TransitionContext::new(context, reachable.candidates(), &path_vec)?
+                            .with_resolution_method(reachable.resolution_method);
+
                     let transition_cost = transition.heuristics.transition(transition_ctx);
 
                     let cost = target.emission.saturating_add(transition_cost);
