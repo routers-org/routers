@@ -1,21 +1,37 @@
 use crate::ResolutionMethod;
-use crate::candidate::{Candidate, CandidateId};
+use crate::candidate::{Candidate, CandidateId, Candidates};
 use crate::{RoutingContext, Strategy, Trip, VirtualTail};
-use geo::{Bearing, Distance, Haversine, Point};
+use geo::{Distance, Haversine, Point};
 use routers_network::{Entry, Metadata, Network};
 
-pub trait TransitionStrategy<E, M, N>: for<'a> Strategy<TransitionContext<'a, E, M, N>> {}
-impl<T, N, E, M> TransitionStrategy<E, M, N> for T where
-    T: for<'a> Strategy<TransitionContext<'a, E, M, N>>
-{
+pub trait TransitionStrategy<E>: for<'a> Strategy<TransitionContext<'a, E>> {}
+impl<T, E> TransitionStrategy<E> for T where T: for<'a> Strategy<TransitionContext<'a, E>> {}
+
+/// Edge-level bearings for the source and target candidate edges.
+///
+/// A field is `None` when [`Candidate::edge_heading`] could not resolve
+/// a bearing where either the endpoint is missing from the map, or the edge
+/// is degenerate (endpoints small distance apart).
+#[derive(Clone, Copy, Debug)]
+pub struct Headings {
+    pub source: Option<f64>,
+    pub target: Option<f64>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct VirtualTails {
+    /// [`VirtualTail::ToTarget`] on the source candidate:
+    /// Effectively `distance(source_position, source.edge.target)`.
+    pub source: Option<f64>,
+    /// [`VirtualTail::ToSource`] on the target candidate:
+    /// Effectively `distance(target.edge.source, target_position)`.
+    pub target: Option<f64>,
 }
 
 #[derive(Clone, Debug)]
-pub struct TransitionContext<'a, E, M, N>
+pub struct TransitionContext<'a, E>
 where
-    M: Metadata + 'a,
     E: Entry + 'a,
-    N: Network<E, M>,
 {
     /// The optimal path travelled between the
     /// source candidate and target candidate, used
@@ -49,16 +65,20 @@ where
     /// position for which the path ends at.
     pub target_candidate: &'a CandidateId,
 
-    /// Further context to provide access to determine routing information,
-    /// such as node positions upon the map, and referencing other candidates.
-    pub routing_context: &'a RoutingContext<'a, E, M, N>,
-
-    /// The length between the layer nodes
-    pub layer_width: f64,
+    /// Candidate registry used to resolve candidates into full [`Candidate`] values.
+    pub candidates: &'a Candidates<E>,
 
     /// The requested [resolution method](ResolutionMethod) by which the transition costing function
-    /// should attempt to cost (resolve) the two candidates.
+    /// should attempt to cost (resolve) the two candidates. Defaults to
+    /// [`ResolutionMethod::Standard`]; override with
+    /// [`with_resolution_method`](Self::with_resolution_method).
     pub requested_resolution_method: ResolutionMethod,
+
+    /// Edge bearings for source and target candidates.
+    pub headings: Headings,
+
+    /// Per-candidate virtual-tail distances.
+    pub virtual_tails: VirtualTails,
 }
 
 pub struct TransitionLengths {
@@ -117,24 +137,74 @@ mod tests {
     }
 }
 
-impl<E, M, N> TransitionContext<'_, E, M, N>
+impl<'a, E> TransitionContext<'a, E>
 where
     E: Entry,
-    M: Metadata,
-    N: Network<E, M>,
 {
+    /// Builds the context, precomputing all network-derived values so the
+    /// resulting struct is generic only over the entry type.
+    ///
+    /// Candidate positions and the [`Trip`] representation of the optimal
+    /// path are derived internally — the caller supplies the candidate IDs
+    /// and the map-node sequence between them.
+    pub fn new<M, N>(
+        ctx: &'a RoutingContext<'a, E, M, N>,
+        (src, trg): (&'a CandidateId, &'a CandidateId),
+        map_path: &'a [E],
+    ) -> Option<Self>
+    where
+        M: Metadata,
+        N: Network<E, M>,
+    {
+        let source = ctx.candidate(src)?;
+        let target = ctx.candidate(trg)?;
+
+        let headings = Headings {
+            source: source.edge_heading(ctx),
+            target: target.edge_heading(ctx),
+        };
+
+        let virtual_tails = VirtualTails {
+            source: source.offset(ctx, VirtualTail::ToTarget),
+            target: target.offset(ctx, VirtualTail::ToSource),
+        };
+
+        Some(Self {
+            optimal_path: Trip::new_with_map(ctx.map, map_path),
+            candidates: ctx.candidates,
+            requested_resolution_method: ResolutionMethod::default(),
+
+            source_position: source.position,
+            target_position: target.position,
+
+            source_candidate: src,
+            target_candidate: trg,
+
+            map_path,
+            headings,
+            virtual_tails,
+        })
+    }
+
+    /// Overrides the [resolution method](ResolutionMethod) used when costing
+    /// the transition.
+    pub fn with_resolution_method(mut self, method: ResolutionMethod) -> Self {
+        self.requested_resolution_method = method;
+        self
+    }
+
     /// Obtains the source [candidate](Candidate) from the context.
     pub fn source_candidate(&self) -> Candidate<E> {
-        self.routing_context
+        self.candidates
             .candidate(self.source_candidate)
-            .expect("source candidate not found in routing context")
+            .expect("source candidate not found")
     }
 
     /// Obtains the target [candidate](Candidate) from the context.
     pub fn target_candidate(&self) -> Candidate<E> {
-        self.routing_context
+        self.candidates
             .candidate(self.target_candidate)
-            .expect("target candidate not found in routing context")
+            .expect("target candidate not found")
     }
 
     /// Returns a [candidate](Candidate) pair of (source, target)
@@ -142,72 +212,28 @@ where
         (self.source_candidate(), self.target_candidate())
     }
 
+    pub fn angular_complexity(&self) -> f64 {
+        self.optimal_path.angular_complexity_with_headings(
+            self.headings.source,
+            self.headings.target,
+            self.source_position,
+            self.target_position,
+        )
+    }
+
     /// Calculates the total offset, of both source and target positions within the context,
-    /// considering the resolution method requested
+    /// considering the resolution method requested.
     pub fn total_offset(&self, source: &Candidate<E>, target: &Candidate<E>) -> Option<f64> {
         match self.requested_resolution_method {
             ResolutionMethod::Standard => {
-                // Also validate that this isn't the only way we need to calculate the distances,
-                // since its perfectly possible to need the other way around (virt. tail) depending on which
-                // invariants are upheld upstream
-                let inner_offset = source.offset(self.routing_context, VirtualTail::ToTarget)?;
-                let outer_offset = target.offset(self.routing_context, VirtualTail::ToSource)?;
-
+                let inner_offset = self.virtual_tails.source?;
+                let outer_offset = self.virtual_tails.target?;
                 Some(inner_offset + outer_offset)
             }
             ResolutionMethod::DistanceOnly => {
                 Some(Haversine.distance(source.position, target.position))
             }
         }
-    }
-
-    /// Angular complexity of the full intra-transition geometry: the
-    /// candidate source position, the interior map nodes, and the candidate
-    /// target position. This is what cost heuristics should call so that the
-    /// turn at the candidate→edge joints participates in the score.
-    pub fn angular_complexity(&self) -> f64 {
-        let (source_c, target_c) = self.candidates();
-
-        let source_heading = self
-            .routing_context
-            .map
-            .point(&source_c.edge.source)
-            .and_then(|s| {
-                self.routing_context
-                    .map
-                    .point(&source_c.edge.target)
-                    .and_then(|t| {
-                        if Haversine.distance(s, t) < 1.0 {
-                            None
-                        } else {
-                            Some(Haversine.bearing(s, t))
-                        }
-                    })
-            });
-
-        let target_heading = self
-            .routing_context
-            .map
-            .point(&target_c.edge.source)
-            .and_then(|s| {
-                self.routing_context
-                    .map
-                    .point(&target_c.edge.target)
-                    .and_then(|t| {
-                        if Haversine.distance(s, t) < 1.0 {
-                            None
-                        } else {
-                            Some(Haversine.bearing(s, t))
-                        }
-                    })
-            });
-
-        self.optimal_path.angular_complexity_with_headings(
-            source_heading,
-            target_heading,
-            self.source_position,
-            self.target_position,
-        )
     }
 
     /// Returns the [`TransitionLengths`] of the context.

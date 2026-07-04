@@ -1,5 +1,5 @@
 use crate::*;
-use routers_network::{Entry, Metadata, Network};
+use routers_network::Entry;
 
 const PRECISION: f64 = 100.0f64;
 
@@ -39,17 +39,15 @@ pub trait Strategy<Ctx> {
     }
 }
 
-pub trait Costing<Emission, Transition, E, M, N>
+pub trait Costing<Emission, Transition, E>
 where
     E: Entry,
-    M: Metadata,
-    N: Network<E, M>,
-    Transition: TransitionStrategy<E, M, N>,
+    Transition: TransitionStrategy<E>,
     Emission: EmissionStrategy,
 {
     /// The emission costing function, returning a u32 cost value.
     fn emission(&self, context: EmissionContext) -> u32;
 
     /// The transition costing function, returning a u32 cost value.
-    fn transition(&self, context: TransitionContext<E, M, N>) -> u32;
+    fn transition(&self, context: TransitionContext<E>) -> u32;
 }

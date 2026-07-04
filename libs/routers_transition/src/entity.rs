@@ -1,3 +1,5 @@
+use std::marker::PhantomData;
+
 use crate::*;
 
 use crate::definition::Layers;
@@ -59,13 +61,15 @@ where
     M: Metadata,
     N: Network<E, M>,
     Emission: EmissionStrategy,
-    Transition: TransitionStrategy<E, M, N>,
+    Transition: TransitionStrategy<E>,
 {
     pub(crate) map: &'a N,
-    pub(crate) heuristics: &'a CostingStrategies<Emission, Transition, E, M, N>,
+    pub(crate) heuristics: &'a CostingStrategies<Emission, Transition, E>,
 
     pub(crate) candidates: Candidates<E>,
     pub(crate) layers: Layers,
+
+    _phantom: PhantomData<M>,
 }
 
 impl<'a, Emmis, Trans, E, M, N> Transition<'a, Emmis, Trans, E, M, N>
@@ -74,7 +78,7 @@ where
     M: Metadata,
     N: Network<E, M>,
     Emmis: EmissionStrategy + Send + Sync,
-    Trans: TransitionStrategy<E, M, N> + Send + Sync,
+    Trans: TransitionStrategy<E> + Send + Sync,
 {
     /// Creates a new transition graph from the input linestring and heuristics.
     ///
@@ -89,7 +93,7 @@ where
     pub fn new(
         map: &'a N,
         linestring: LineString,
-        heuristics: &'a CostingStrategies<Emmis, Trans, E, M, N>,
+        heuristics: &'a CostingStrategies<Emmis, Trans, E>,
         generator: impl LayerGeneration<E>,
     ) -> Transition<'a, Emmis, Trans, E, M, N> {
         let points = linestring.into_points();
@@ -102,6 +106,7 @@ where
             candidates,
             layers,
             heuristics,
+            _phantom: PhantomData,
         }
     }
 

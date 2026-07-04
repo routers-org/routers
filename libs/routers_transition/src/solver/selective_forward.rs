@@ -1,6 +1,6 @@
 use crate::{
     CollapseError, CollapsedPath, Costing, MatchError, PredicateCache, Reachable, Solver,
-    TransitionContext, Trip,
+    TransitionContext,
     candidate::{CandidateEdge, CandidateId},
     costing::{EmissionStrategy, TransitionStrategy},
     entity::Transition,
@@ -14,7 +14,6 @@ use core::cell::RefCell;
 use rustc_hash::FxHashMap;
 use std::{marker::PhantomData, sync::Arc};
 
-use geo::{Distance, Haversine};
 use itertools::Itertools;
 use measure_time::debug_time;
 use pathfinding::{num_traits::Zero, prelude::*};
@@ -72,7 +71,7 @@ where
     ) -> Vec<(CandidateId, CandidateEdge)>
     where
         Emmis: EmissionStrategy + Send + Sync,
-        Trans: TransitionStrategy<E, M, N> + Send + Sync,
+        Trans: TransitionStrategy<E> + Send + Sync,
         'b: 'a,
     {
         let successors = transition.candidates.next_layer(source);
@@ -108,29 +107,13 @@ where
                 .into_iter()
                 .filter_map(move |mut reachable| {
                     let path_vec = reachable.path_nodes().collect_vec();
-                    let optimal_path = Trip::new_with_map(context.map, &path_vec);
-
-                    let source = context.candidate(&reachable.source)?;
                     let target = context.candidate(&reachable.target)?;
 
-                    let sl = transition.layers.layers.get(source.location.layer_id)?;
-                    let tl = transition.layers.layers.get(target.location.layer_id)?;
-                    let layer_width = Haversine.distance(sl.origin, tl.origin);
+                    let transition_ctx =
+                        TransitionContext::new(context, reachable.candidates(), &path_vec)?
+                            .with_resolution_method(reachable.resolution_method);
 
-                    let transition_cost = transition.heuristics.transition(TransitionContext {
-                        map_path: &path_vec,
-                        requested_resolution_method: reachable.resolution_method,
-
-                        source_candidate: &reachable.source,
-                        target_candidate: &reachable.target,
-                        routing_context: context,
-
-                        source_position: source.position,
-                        target_position: target.position,
-
-                        layer_width,
-                        optimal_path,
-                    });
+                    let transition_cost = transition.heuristics.transition(transition_ctx);
 
                     let cost = target.emission.saturating_add(transition_cost);
                     #[cfg(debug_assertions)]
@@ -242,7 +225,7 @@ where
     ) -> Result<CollapsedPath<E>, MatchError>
     where
         Emmis: EmissionStrategy + Send + Sync,
-        Trans: TransitionStrategy<E, M, N> + Send + Sync,
+        Trans: TransitionStrategy<E> + Send + Sync,
     {
         let (start, end) = {
             // Compute cost ~= free
