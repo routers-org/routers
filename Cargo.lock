@@ -6478,7 +6478,9 @@ version = "0.1.4"
 dependencies = [
  "geo",
  "num-traits",
+ "petgraph",
  "rstar 0.12.2",
+ "rustc-hash 2.1.2",
  "serde",
  "tracing",
 ]

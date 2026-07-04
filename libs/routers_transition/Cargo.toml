@@ -50,6 +50,12 @@ insta = { workspace = true }
 criterion = { workspace = true }
 routers_fixtures = { workspace = true }
 routers_codec = { workspace = true }
+# Pull in the MockNetwork test-support harness for integration tests + benches.
+routers_network = { workspace = true, features = ["testing"] }
+
+[[bench]]
+name = "matching"
+harness = false
 
 [lints]
 workspace = true

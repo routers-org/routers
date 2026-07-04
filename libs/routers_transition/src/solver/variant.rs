@@ -11,7 +11,7 @@ pub enum SolverImpl<E: Entry, M: Metadata, N: Network<E, M>> {
     Trellis(TrellisForwardSolver<E, M, N>),
 }
 
-#[derive(Default, Clone, Debug)]
+#[derive(Default, Clone, Copy, Debug)]
 pub enum SolverVariant {
     /// Fastest available solver. Currently the eager, dense, Viterbi-backed
     /// [`TrellisForwardSolver`].
