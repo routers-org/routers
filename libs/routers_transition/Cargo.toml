@@ -8,12 +8,12 @@ repository = "https://github.com/routers-org/routers"
 
 [dependencies]
 routers_network = { workspace = true }
+routers_trellis = { workspace = true }
 routers_shard = { workspace = true, optional = true }
 
 # Algorithm
 rstar = { workspace = true }
 
-petgraph = { workspace = true }
 serde = { workspace = true }
 
 # Root-Specific Crates

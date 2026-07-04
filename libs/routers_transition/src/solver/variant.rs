@@ -1,22 +1,30 @@
 use std::sync::Arc;
 
 use crate::{
-    CollapsedPath, EmissionStrategy, MatchError, PrecomputeForwardSolver, PredicateCache,
-    SelectiveForwardSolver, Solver, Transition, TransitionStrategy,
+    CollapsedPath, EmissionStrategy, MatchError, PredicateCache, SelectiveForwardSolver, Solver,
+    Transition, TransitionStrategy, TrellisForwardSolver,
 };
 use routers_network::{Entry, Metadata, Network};
 
 pub enum SolverImpl<E: Entry, M: Metadata, N: Network<E, M>> {
-    Precompute(PrecomputeForwardSolver<E, M, N>),
     Selective(SelectiveForwardSolver<E, M, N>),
+    Trellis(TrellisForwardSolver<E, M, N>),
 }
 
 #[derive(Default, Clone, Debug)]
 pub enum SolverVariant {
+    /// Fastest available solver. Currently the eager, dense, Viterbi-backed
+    /// [`TrellisForwardSolver`].
     #[default]
     Fastest,
+    /// Eager solver: materialises the whole transition matrix and solves with a
+    /// Viterbi DP on top of `routers_trellis`. (Formerly the petgraph/astar
+    /// "precompute" solver; now backed by the trellis.)
     Precompute,
+    /// Lazy Upper-Bounded-Dijkstra solver: expands only the frontier it visits.
     Selective,
+    /// Explicit alias for the eager trellis solver (same as `Precompute`/`Fastest`).
+    Trellis,
 }
 
 impl SolverVariant {
@@ -24,9 +32,9 @@ impl SolverVariant {
         self,
     ) -> SolverImpl<E, M, N> {
         match self {
-            SolverVariant::Fastest => SolverImpl::Precompute(PrecomputeForwardSolver::default()),
-            SolverVariant::Precompute => SolverImpl::Precompute(PrecomputeForwardSolver::default()),
             SolverVariant::Selective => SolverImpl::Selective(SelectiveForwardSolver::default()),
+            // Fastest / Precompute / Trellis all resolve to the eager trellis solver.
+            _ => SolverImpl::Trellis(TrellisForwardSolver::default()),
         }
     }
 
@@ -35,15 +43,10 @@ impl SolverVariant {
         cache: Arc<PredicateCache<E, M, N>>,
     ) -> SolverImpl<E, M, N> {
         match self {
-            SolverVariant::Fastest => {
-                SolverImpl::Precompute(PrecomputeForwardSolver::default().use_cache(cache))
-            }
-            SolverVariant::Precompute => {
-                SolverImpl::Precompute(PrecomputeForwardSolver::default().use_cache(cache))
-            }
             SolverVariant::Selective => {
                 SolverImpl::Selective(SelectiveForwardSolver::default().use_cache(cache))
             }
+            _ => SolverImpl::Trellis(TrellisForwardSolver::default().use_cache(cache)),
         }
     }
 }
@@ -59,8 +62,8 @@ impl<E: Entry, M: Metadata, N: Network<E, M>> Solver<E, M, N> for SolverImpl<E, 
         Trans: TransitionStrategy<E> + Send + Sync,
     {
         match self {
-            SolverImpl::Precompute(precompute) => precompute.solve(transition, runtime),
             SolverImpl::Selective(selective) => selective.solve(transition, runtime),
+            SolverImpl::Trellis(trellis) => trellis.solve(transition, runtime),
         }
     }
 }

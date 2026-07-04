@@ -1,14 +1,11 @@
 use crate::{
     CollapseError, CollapsedPath, Costing, MatchError, PredicateCache, Reachable, Solver,
-    TransitionContext,
-    candidate::{CandidateEdge, CandidateId},
-    costing::{EmissionStrategy, TransitionStrategy},
-    entity::Transition,
-    primitives::RoutingContext,
+    TransitionContext, candidate::CandidateId, costing::{EmissionStrategy, TransitionStrategy},
+    entity::Transition, primitives::RoutingContext,
 };
 use routers_network::{Entry, Metadata, Network};
 
-use log::{debug, info};
+use log::info;
 
 use core::cell::RefCell;
 use rustc_hash::FxHashMap;
@@ -16,11 +13,21 @@ use std::{marker::PhantomData, sync::Arc};
 
 use itertools::Itertools;
 use measure_time::debug_time;
-use pathfinding::{num_traits::Zero, prelude::*};
+use pathfinding::prelude::*;
 
-/// A Upper-Bounded Dijkstra (UBD) algorithm.
+/// Synthetic source node: connects (at emission cost) to every first-layer
+/// candidate. Not a real candidate, so it is absent from the lookup and is
+/// filtered out of the reconstructed route.
+const START: CandidateId = CandidateId(u32::MAX);
+/// Synthetic sink node: every last-layer candidate connects to it at zero cost.
+const END: CandidateId = CandidateId(u32::MAX - 1);
+
+/// A lazy, Upper-Bounded-Dijkstra (UBD) forward solver.
 ///
-/// TODO: Docs
+/// Explores the layered candidate structure on demand with `pathfinding::astar`,
+/// only expanding (`reach`ing) candidates the frontier actually visits — so it
+/// avoids materialising the full N:N transition set on long routes. Contrast with
+/// the eager [`TrellisForwardSolver`](crate::TrellisForwardSolver).
 pub struct SelectiveForwardSolver<E, M, N>
 where
     E: Entry,
@@ -62,148 +69,99 @@ where
         }
     }
 
-    fn reach<'a, 'b, Emmis, Trans>(
-        &'b self,
-        transition: &'b Transition<'b, Emmis, Trans, E, M, N>,
-        context: &'b RoutingContext<'b, E, M, N>,
-        (start, end): (CandidateId, CandidateId),
+    /// Successors of `source` and their edge costs, for the astar frontier.
+    ///
+    /// Handles the synthetic [`START`]/[`END`] endpoints implicitly (there is no
+    /// explicit graph): `START` fans out to the first layer at emission cost, the
+    /// last layer connects to `END` at zero cost, and interior candidates expand to
+    /// the next layer with `emission(target) + transition_cost` — stashing each
+    /// [`Reachable`] for later reconstruction.
+    fn reach<Emmis, Trans>(
+        &self,
+        transition: &Transition<'_, Emmis, Trans, E, M, N>,
+        context: &RoutingContext<'_, E, M, N>,
         source: &CandidateId,
-    ) -> Vec<(CandidateId, CandidateEdge)>
+    ) -> Vec<(CandidateId, u32)>
     where
         Emmis: EmissionStrategy + Send + Sync,
         Trans: TransitionStrategy<E> + Send + Sync,
-        'b: 'a,
     {
-        let successors = transition.candidates.next_layer(source);
-
-        // #[cold]
-        if *source == start {
-            // Include the emission cost of the first node in the sequence.
-            return successors
-                .into_iter()
-                .filter_map(|candidate| {
-                    let c = context.candidate(&candidate)?;
-                    Some((candidate, CandidateEdge::new(c.emission)))
+        // Virtual source → every first-layer candidate, carrying its emission cost.
+        if *source == START {
+            return transition
+                .candidates
+                .coords
+                .first()
+                .map(|layer0| {
+                    layer0
+                        .iter()
+                        .filter_map(|c| context.candidate(c).map(|cand| (*c, cand.emission)))
+                        .collect::<Vec<_>>()
                 })
-                .collect::<Vec<_>>();
+                .unwrap_or_default();
         }
 
-        // Fast-track to the finish line
-        if successors.contains(&end) {
-            debug!("End-Successors: {successors:?}");
-            return vec![(end, CandidateEdge::zero())];
+        let Some(src_cand) = context.candidate(source) else {
+            return Vec::new();
+        };
+
+        // Last real layer → virtual sink at zero cost.
+        let last_layer = transition.layers.layers.len().saturating_sub(1);
+        if src_cand.location.layer_id >= last_layer {
+            return vec![(END, 0)];
         }
 
+        let successors = transition.candidates.next_layer(source);
         let reachable = self
             .reachable(context, source, successors.as_slice())
             .unwrap_or_default();
 
-        // Note: `reachable` ~= free, `reach` ~= 0.1ms (some overhead- how?)
-        {
-            debug_time!("Format Reachable Elements");
-            let mut hash = self.reachable_hash.borrow_mut();
+        debug_time!("Format Reachable Elements");
+        let mut hash = self.reachable_hash.borrow_mut();
 
-            reachable
-                .into_iter()
-                .filter_map(move |mut reachable| {
-                    let path_vec = reachable.path_nodes().collect_vec();
-                    let target = context.candidate(&reachable.target)?;
+        reachable
+            .into_iter()
+            .filter_map(move |mut reachable| {
+                let path_vec = reachable.path_nodes().collect_vec();
+                let target = context.candidate(&reachable.target)?;
 
-                    let transition_ctx =
-                        TransitionContext::new(context, reachable.candidates(), &path_vec)?
-                            .with_resolution_method(reachable.resolution_method);
+                let transition_ctx =
+                    TransitionContext::new(context, reachable.candidates(), &path_vec)?
+                        .with_resolution_method(reachable.resolution_method);
 
-                    let transition_cost = transition.heuristics.transition(transition_ctx);
+                let transition_cost = transition.heuristics.transition(transition_ctx);
+                let cost = target.emission.saturating_add(transition_cost);
+                #[cfg(debug_assertions)]
+                {
+                    reachable.cost = cost;
+                }
 
-                    let cost = target.emission.saturating_add(transition_cost);
-                    #[cfg(debug_assertions)]
-                    {
-                        reachable.cost = cost;
-                    }
-
-                    hash.insert(reachable.hash(), reachable.clone());
-                    Some((reachable.target, CandidateEdge::new(cost)))
-                })
-                .collect::<Vec<_>>()
-        }
+                hash.insert(reachable.hash(), reachable.clone());
+                Some((reachable.target, cost))
+            })
+            .collect::<Vec<_>>()
     }
 
-    /// Derives which candidates are reachable by the source candidate.
-    ///
-    /// Provides a slice of target candidate IDs, `targets`. The solver
-    /// will use these to procure all candidates which are reachable,
-    /// and the path of routable entries ([`OsmEntryId`]) which are used
-    /// to reach the target.
+    /// Derives which candidates are reachable from `source`, and by which routed
+    /// path, delegating to the shared expansion core (SPEC §O1).
     fn reachable<'a>(
         &self,
         ctx: &'a RoutingContext<'a, E, M, N>,
         source: &CandidateId,
         targets: &'a [CandidateId],
     ) -> Option<Vec<Reachable<E>>> {
-        let source_candidate = ctx.candidate(source)?;
-
-        // Upper-Bounded reachable map containing a Child:Parent relation
-        // Note: Parent is OsmEntryId::NULL, which will not be within the map,
-        //       indicating the root element.
-        let predicate_map = {
-            debug_time!("query predicate for {source:?}");
-
-            self.predicate.query(ctx, source_candidate.edge.target)
-        };
+        // Fail fast if the source candidate is unknown (preserves prior behaviour).
+        ctx.candidate(source)?;
 
         let reachable = {
             debug_time!("predicates {source:?} -> reachable");
 
+            // The predicate cache is read-through and keyed by the source edge, so
+            // the per-target queries collapse to one computation + cache hits.
             targets
                 .iter()
                 .filter_map(|target| {
-                    // Get the candidate information of the target found
-                    let candidate = ctx.candidate(target)?;
-
-                    // Both candidates are on the same edge
-                    'stmt: {
-                        if candidate.edge.id.index() == source_candidate.edge.id.index() {
-                            let common_source =
-                                candidate.edge.source == source_candidate.edge.source;
-                            let common_target =
-                                candidate.edge.target == source_candidate.edge.target;
-
-                            let tracking_forward = common_source && common_target;
-
-                            let source_percentage = source_candidate.percentage(ctx.map)?;
-                            let target_percentage = candidate.percentage(ctx.map)?;
-
-                            return if tracking_forward && source_percentage <= target_percentage {
-                                // We are moving forward, it is simply the distance between the nodes
-                                Some(Reachable::new(*source, *target, vec![]).distance_only())
-                            } else {
-                                // We are going "backwards", behaviour becomes dependent on
-                                // the directionality of the edge. However, to return across the
-                                // node is an independent transition, and is not covered.
-                                break 'stmt;
-                            };
-                        }
-                    }
-
-                    // Generate the path to this target using the predicate map
-                    let path_to_target = Self::path_builder(
-                        &candidate.edge.source,
-                        &source_candidate.edge.target,
-                        &predicate_map,
-                    )?;
-
-                    let path = path_to_target
-                        .windows(2)
-                        .filter_map(|pair| {
-                            if let [a, b] = pair {
-                                return ctx.edge(a, b);
-                            }
-
-                            None
-                        })
-                        .collect::<Vec<_>>();
-
-                    Some(Reachable::new(*source, *target, path))
+                    super::expansion::reachable_between(ctx, &self.predicate, source, target)
                 })
                 .collect::<Vec<_>>()
         };
@@ -220,78 +178,46 @@ where
 {
     fn solve<Emmis, Trans>(
         &self,
-        mut transition: Transition<Emmis, Trans, E, M, N>,
+        transition: Transition<Emmis, Trans, E, M, N>,
         runtime: &M::Runtime,
     ) -> Result<CollapsedPath<E>, MatchError>
     where
         Emmis: EmissionStrategy + Send + Sync,
         Trans: TransitionStrategy<E> + Send + Sync,
     {
-        let (start, end) = {
-            // Compute cost ~= free
-            transition
-                .candidates
-                .attach_ends(&transition.layers)
-                .map_err(MatchError::EndAttachFailure)?
-        };
-
-        debug!("Attached Ends");
-        transition.candidates.weave(&transition.layers);
-        debug!("Weaved all candidate layers.");
-
-        info!("Solving: Start={start:?}. End={end:?}. ");
+        info!("Solving (selective): start={START:?} end={END:?}");
         let context = transition.context(runtime);
-
-        // Note: For every candidate, generate their reachable elements, then run the solver overtop.
-        //       This means we can do it in parallel, which is more efficient - however will have to
-        //       compute for *every* candidate, not just the likely ones, which will lead to poor
-        //       scalability for really long-routes.
-        //
-        //       This behaviour can be implemented using the `AllForwardSolver` going forward.
 
         let Some((path, cost)) = ({
             debug_time!("Solved transition graph");
 
             astar(
-                &start,
-                |source| self.reach(&transition, &context, (start, end), source),
-                |_| CandidateEdge::zero(),
-                |node| *node == end,
+                &START,
+                |source| self.reach(&transition, &context, source),
+                |_| 0u32,
+                |node| *node == END,
             )
         }) else {
             return Err(MatchError::CollapseFailure(CollapseError::NoPathFound));
         };
 
-        info!("Total cost of solve: {}", cost.weight);
+        info!("Total cost of solve: {cost}");
         let reached = path
             .windows(2)
-            .filter_map(|nodes| {
-                if let [a, b] = nodes {
-                    self.reachable_hash
-                        .borrow()
-                        .get(&(a.index(), b.index()))
-                        .map(|r| r.clone())
-                } else {
-                    None
-                }
+            .filter_map(|nodes| match nodes {
+                [a, b] => self
+                    .reachable_hash
+                    .borrow()
+                    .get(&(a.index(), b.index()))
+                    .cloned(),
+                _ => None,
             })
             .collect::<Vec<_>>();
 
-        // Update candidate graph with calculated weights
-        #[cfg(debug_assertions)]
-        for (&(a_idx, b_idx), &Reachable { cost, .. }) in self.reachable_hash.borrow().iter() {
-            let a = CandidateId::new(a_idx);
-            let b = CandidateId::new(b_idx);
-
-            if let Some(edge_idx) = transition.candidates.graph.find_edge(a, b) {
-                if let Some(edge) = transition.candidates.graph.edge_weight_mut(edge_idx) {
-                    edge.weight = cost;
-                }
-            }
-        }
-
+        // `context` is unused past this point, so NLL ends its borrow of
+        // `transition`, freeing `transition.candidates` to move below.
         Ok(CollapsedPath::new(
-            cost.weight,
+            cost,
             reached,
             path,
             transition.candidates,

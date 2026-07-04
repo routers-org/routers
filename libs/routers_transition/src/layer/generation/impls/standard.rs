@@ -60,7 +60,7 @@ where
     Emmis: EmissionStrategy + Send + Sync,
 {
     fn generate(self, input: &[Point]) -> (Layers, Candidates<E>) {
-        let per_layer: Vec<Vec<(Candidate<E>, CandidateRef)>> = input
+        let per_layer: Vec<Vec<Candidate<E>>> = input
             .into_par_iter()
             .enumerate()
             .map(|(layer_id, origin)| {
@@ -77,34 +77,35 @@ where
                             edge.weight,
                         ));
 
-                        (
-                            Candidate::new(edge.thin(), position, emission, location),
-                            CandidateRef::new(emission),
-                        )
+                        Candidate::new(edge.thin(), position, emission, location)
                     })
                     .collect()
             })
             .collect();
 
-        // Petgraph node insertion must be sequential to produce stable CandidateIds.
+        // Assign stable, per-layer-sequential CandidateIds. `coords` mirrors each
+        // layer's node ids so it serves as the (LayerId, NodeId) -> CandidateId table.
         let total: usize = per_layer.iter().map(Vec::len).sum();
-        let mut graph = OpenCandidateGraph::with_capacity(total, 0);
         let lookup = scc::HashMap::with_capacity(total);
+        let mut coords: Vec<Vec<CandidateId>> = Vec::with_capacity(per_layer.len());
+        let mut next_id = 0usize;
 
         let layers: Vec<Layer> = per_layer
             .into_iter()
             .zip(input.iter())
             .map(|(candidates, &origin)| {
                 let mut nodes = Vec::with_capacity(candidates.len());
-                for (candidate, candidate_ref) in candidates {
-                    let id = graph.add_node(candidate_ref);
+                for candidate in candidates {
+                    let id = CandidateId::new(next_id);
+                    next_id += 1;
                     let _ = lookup.insert(id, candidate);
                     nodes.push(id);
                 }
+                coords.push(nodes.clone());
                 Layer { nodes, origin }
             })
             .collect();
 
-        (Layers { layers }, Candidates::new(graph, lookup))
+        (Layers { layers }, Candidates::new(lookup, coords))
     }
 }

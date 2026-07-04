@@ -1,10 +1,7 @@
 use crate::RoutingContext;
 
-use core::cmp::Ordering;
 use core::fmt::Debug;
-use core::ops::Add;
 use geo::{Bearing, Distance, Haversine, LineLocatePoint, LineString, Point};
-use pathfinding::num_traits::Zero;
 use routers_network::{Edge, Entry, Metadata, Network};
 
 /// The location of a candidate within a solution.
@@ -133,66 +130,5 @@ where
             emission,
             location,
         }
-    }
-}
-
-/// Represents the edge of this candidate within the candidate graph.
-///
-/// This is distinct from [`Edge`] since it exists within the candidate graph
-/// of the [`Transition`](crate::route::graph::Transition), not of [`Graph`].
-///
-/// This edge stores the weight associated with traversing this edge.
-///
-#[derive(Clone, Copy, Debug, Default)]
-#[repr(transparent)]
-pub struct CandidateEdge {
-    pub weight: u32,
-}
-
-impl Eq for CandidateEdge {}
-
-impl PartialEq<Self> for CandidateEdge {
-    fn eq(&self, other: &Self) -> bool {
-        self.weight.eq(&other.weight)
-    }
-}
-
-impl PartialOrd<Self> for CandidateEdge {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for CandidateEdge {
-    fn cmp(&self, other: &Self) -> Ordering {
-        self.weight.cmp(&other.weight)
-    }
-}
-
-impl Zero for CandidateEdge {
-    fn zero() -> Self {
-        CandidateEdge::default()
-    }
-
-    fn is_zero(&self) -> bool {
-        self.weight.is_zero()
-    }
-}
-
-impl Add<Self> for CandidateEdge {
-    type Output = Self;
-
-    #[inline]
-    fn add(self, rhs: Self) -> Self::Output {
-        CandidateEdge {
-            weight: self.weight.saturating_add(rhs.weight),
-        }
-    }
-}
-
-impl CandidateEdge {
-    #[inline]
-    pub fn new(weight: u32) -> Self {
-        Self { weight }
     }
 }

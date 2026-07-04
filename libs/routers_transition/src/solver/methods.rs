@@ -1,7 +1,5 @@
 use crate::*;
-use core::hash::Hash;
 use routers_network::{Entry, Metadata, Network};
-use rustc_hash::FxHashMap;
 
 /// Defines a structure which can be supplied to the [`Transition::solve`] function
 /// in order to solve the transition graph.
@@ -30,28 +28,4 @@ where
     where
         Emmis: EmissionStrategy + Send + Sync,
         Trans: TransitionStrategy<E> + Send + Sync;
-
-    /// Creates a path from the source up the parent map until no more parents
-    /// are found. This assumes there is only one relation between parent and children.
-    ///
-    /// Returns in the order `[source, ..., target]`.
-    ///
-    /// If the target is not found by the builder, `None` is returned.
-    #[inline]
-    fn path_builder<K, C>(target: &K, source: &K, parents: &FxHashMap<K, (K, C)>) -> Option<Vec<K>>
-    where
-        K: Eq + Hash + Copy,
-    {
-        let mut path = vec![*target];
-        let mut next = target;
-
-        while next != source {
-            let (parent, _) = parents.get(next)?;
-            path.push(*parent);
-            next = parent;
-        }
-
-        path.reverse();
-        Some(path)
-    }
 }
