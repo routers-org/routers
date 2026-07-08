@@ -15,8 +15,8 @@
 //! still parameterised on `<E, M>` for backwards compatibility; the two
 //! styles bridge via the blanket impl in `network.rs`.
 
-use core::fmt::Debug;
 use alloc::sync::Arc;
+use core::fmt::Debug;
 
 use crate::{DirectionAwareEdgeId, Edge, Entry, Metadata, Node, edge::Weight};
 use geo::Point;
