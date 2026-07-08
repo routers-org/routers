@@ -1,15 +1,15 @@
 //! End-to-end map-matching tests over the `routers_network` `MockNetwork`
 //! harness (enabled via its `testing` feature).
 //!
-//! These were transplanted out of `routers_network`'s mock tests (which must not
-//! depend on `routers_transition`) and extended with edge cases and a
-//! Trellis-vs-Selective conformance suite.
+//! Transplanted out of `routers_network`'s mock tests (which must not depend on
+//! `routers_transition`) and extended with edge cases. All matches use the
+//! default all-compute solver via [`MatchSimpleExt::match_simple`].
 
 use geo::{LineString, point, wkt};
-use routers_network::mock::{MockEntryId, MockMetadata, MockNetwork, MockNetworkBuilder};
+use routers_network::mock::{MockMetadata, MockNetwork, MockNetworkBuilder};
 use routers_network::{DataPlane, Direction, Metadata};
+use routers_transition::SolverVariant;
 use routers_transition::r#match::{Match, MatchOptions, MatchSimpleExt};
-use routers_transition::{MatchError, RoutedPath, SolverVariant};
 
 // ── helpers ────────────────────────────────────────────────────────────────
 
@@ -24,18 +24,9 @@ fn straight_road() -> MockNetwork {
         .build()
 }
 
-/// Run a match with an explicit solver variant.
-fn match_with(
-    net: &MockNetwork,
-    ls: &LineString,
-    variant: SolverVariant,
-) -> Result<RoutedPath<MockEntryId, MockMetadata>, MatchError> {
-    net.r#match(ls.clone(), MatchOptions::new().with_solver(variant))
-}
-
 /// The ordered (source, target) node-id pairs of the discretized match.
-fn discretized_edges(net: &MockNetwork, ls: &LineString, variant: SolverVariant) -> Vec<(i64, i64)> {
-    match_with(net, ls, variant)
+fn discretized_edges(net: &MockNetwork, ls: LineString) -> Vec<(i64, i64)> {
+    net.match_simple(ls)
         .expect("map match must succeed")
         .discretized
         .elements
@@ -55,7 +46,9 @@ fn map_match_straight_road() {
         LINESTRING(-118.151 34.1503, -118.155 34.1503, -118.160 34.1503, -118.165 34.1503)
     };
 
-    let result = net.match_simple(linestring).expect("map match must succeed");
+    let result = net
+        .match_simple(linestring)
+        .expect("map match must succeed");
 
     for element in &result.discretized.elements {
         assert!(
@@ -84,7 +77,9 @@ fn map_match_interpolated_path_crosses_intermediate_edge() {
         .build();
 
     let linestring: LineString = wkt! { LINESTRING(-118.141 34.1503, -118.169 34.1503) };
-    let result = net.match_simple(linestring).expect("map match must succeed");
+    let result = net
+        .match_simple(linestring)
+        .expect("map match must succeed");
 
     assert!(
         !result.interpolated.elements.is_empty(),
@@ -114,7 +109,9 @@ fn map_match_prefers_straight_over_turn() {
             -118.141 34.1503, -118.151 34.1503, -118.158 34.1503
         )
     };
-    let result = net.match_simple(linestring).expect("map match must succeed");
+    let result = net
+        .match_simple(linestring)
+        .expect("map match must succeed");
 
     assert!(!result.discretized.elements.is_empty());
     let matched: Vec<i64> = result
@@ -146,7 +143,9 @@ fn map_match_highway_preferred_over_offramp() {
         .build();
 
     let linestring: LineString = wkt! { LINESTRING(-118.102 34.1503, -118.111 34.1488) };
-    let result = net.match_simple(linestring).expect("map match must succeed");
+    let result = net
+        .match_simple(linestring)
+        .expect("map match must succeed");
 
     assert!(!result.interpolated.elements.is_empty());
     let interpolated: Vec<i64> = result
@@ -181,7 +180,9 @@ fn map_match_follows_turn_at_junction() {
             -118.1297 34.1503, -118.1297 34.153, -118.1297 34.163
         )
     };
-    let result = net.match_simple(linestring).expect("map match must succeed");
+    let result = net
+        .match_simple(linestring)
+        .expect("map match must succeed");
 
     assert!(!result.discretized.elements.is_empty());
     let matched: Vec<i64> = result
@@ -211,7 +212,9 @@ fn map_match_interpolated_path_includes_candidate_edges() {
         .build();
 
     let linestring: LineString = wkt! { LINESTRING(-118.141 34.1503, -118.169 34.1503) };
-    let result = net.match_simple(linestring).expect("map match must succeed");
+    let result = net
+        .match_simple(linestring)
+        .expect("map match must succeed");
 
     let nodes: Vec<i64> = result
         .interpolated
@@ -219,23 +222,27 @@ fn map_match_interpolated_path_includes_candidate_edges() {
         .iter()
         .flat_map(|e| [e.edge.source.id.0, e.edge.target.id.0])
         .collect();
-    assert!(nodes.contains(&1), "node 1 (first candidate edge) must appear");
-    assert!(nodes.contains(&4), "node 4 (last candidate edge) must appear");
+    assert!(
+        nodes.contains(&1),
+        "node 1 (first candidate edge) must appear"
+    );
+    assert!(
+        nodes.contains(&4),
+        "node 4 (last candidate edge) must appear"
+    );
     assert!(
         nodes.contains(&2) && nodes.contains(&3),
         "bridging edge (2→3) must appear"
     );
 }
 
-/// The long-trip / trip-momentum regression: drifted layers near a weight-10
-/// side road must not dip off the weight-1 primary. Exercised with Selective.
+/// The trip-momentum regression: drifted layers near a weight-10 side road must
+/// not dip off the weight-1 primary.
 #[test]
 fn long_trip_avoids_side_road_dip() {
     let net = side_road_dip_net();
-    let linestring = side_road_dip_trip();
-
     let result = net
-        .r#match(linestring, MatchOptions::new().with_solver(SolverVariant::Selective))
+        .match_simple(side_road_dip_trip())
         .expect("map match must succeed");
 
     for element in &result.discretized.elements {
@@ -285,72 +292,75 @@ fn side_road_dip_trip() -> LineString {
     }
 }
 
-// ── Trellis-vs-Selective conformance ─────────────────────────────────────────
+// ── all-compute vs selective conformance ────────────────────────────────────
 
-/// On a route with a single obvious optimum, the eager trellis solver and the
-/// lazy selective solver must produce the *same* discretized match. (Equal-cost
-/// tie-breaks can differ between Viterbi and astar — SPEC §O4 — so this uses an
-/// unambiguous route.)
-#[test]
-fn trellis_and_selective_agree_on_straight_road() {
-    let net = straight_road();
-    let ls: LineString = wkt! {
-        LINESTRING(-118.151 34.1503, -118.155 34.1503, -118.160 34.1503, -118.165 34.1503)
-    };
-    let trellis = discretized_edges(&net, &ls, SolverVariant::Trellis);
-    let selective = discretized_edges(&net, &ls, SolverVariant::Selective);
-
-    assert!(!trellis.is_empty(), "trellis produced an empty match");
-    assert_eq!(trellis, selective, "trellis and selective disagree");
+fn discretized_with(net: &MockNetwork, ls: LineString, variant: SolverVariant) -> Vec<(i64, i64)> {
+    net.r#match(ls, MatchOptions::new().with_solver(variant))
+        .expect("map match must succeed")
+        .discretized
+        .elements
+        .iter()
+        .map(|e| (e.edge.source.id.0, e.edge.target.id.0))
+        .collect()
 }
 
-/// Same conformance on the side-road-dip network, which has a clear optimum.
+/// When no layer exceeds the selective fan-out, the selective solver weighs every
+/// transition — so it must agree with the all-compute solver exactly. (The test
+/// nets have only a handful of candidates per layer.)
 #[test]
-fn trellis_and_selective_agree_on_side_road_dip() {
+fn all_compute_and_selective_agree_when_unpruned() {
     let net = side_road_dip_net();
     let ls = side_road_dip_trip();
     assert_eq!(
-        discretized_edges(&net, &ls, SolverVariant::Trellis),
-        discretized_edges(&net, &ls, SolverVariant::Selective),
+        discretized_with(&net, ls.clone(), SolverVariant::Fastest),
+        discretized_with(&net, ls, SolverVariant::Selective),
     );
 }
 
-/// Both solvers must stay on the weight-1 primary (the regression, via Trellis).
+/// The side-road-dip regression must hold for the selective solver too.
 #[test]
-fn trellis_also_avoids_side_road_dip() {
+fn selective_avoids_side_road_dip() {
     let net = side_road_dip_net();
     let result = net
-        .r#match(side_road_dip_trip(), MatchOptions::new().with_solver(SolverVariant::Trellis))
+        .r#match(
+            side_road_dip_trip(),
+            MatchOptions::new().with_solver(SolverVariant::Selective),
+        )
         .expect("map match must succeed");
     for element in &result.discretized.elements {
-        assert_eq!(element.edge.weight, 1, "trellis dipped onto the side road");
+        assert_eq!(
+            element.edge.weight, 1,
+            "selective dipped onto the side road"
+        );
     }
 }
 
 // ── edge cases ───────────────────────────────────────────────────────────────
 
-/// A single-point trajectory yields a single-layer trellis (no transitions) and
-/// still returns exactly one matched element.
+/// A degenerate single-position trajectory (one layer, no transitions) must not
+/// panic and returns a non-empty match.
 #[test]
 fn single_point_trajectory() {
     let net = straight_road();
     let ls: LineString = wkt! { LINESTRING(-118.155 34.1503, -118.155 34.1503) };
-    // Two identical points -> two layers, but degenerate; must not panic.
-    let result = net.match_simple(ls).expect("single/degenerate match must succeed");
+    let result = net
+        .match_simple(ls)
+        .expect("single/degenerate match must succeed");
     assert!(!result.discretized.elements.is_empty());
 }
 
 /// Consecutive duplicate points (zero-distance bearing) must be handled without
-/// panicking and still match.
+/// panicking and still match deterministically.
 #[test]
 fn duplicate_consecutive_points() {
     let net = straight_road();
     let ls: LineString = wkt! {
         LINESTRING(-118.152 34.1503, -118.152 34.1503, -118.160 34.1503, -118.160 34.1503)
     };
-    let both = [SolverVariant::Trellis, SolverVariant::Selective]
-        .map(|v| discretized_edges(&net, &ls, v));
-    assert_eq!(both[0], both[1], "solvers disagree on duplicate-point input");
+    let first = discretized_edges(&net, ls.clone());
+    let second = discretized_edges(&net, ls);
+    assert!(!first.is_empty());
+    assert_eq!(first, second, "duplicate-point match must be deterministic");
 }
 
 /// Two disconnected components >2 km apart (beyond the predicate bound): each
@@ -359,50 +369,44 @@ fn duplicate_consecutive_points() {
 #[test]
 fn disconnected_components_yield_no_path() {
     let net = MockNetworkBuilder::new()
-        // Component A near -118.15
         .node(1, point!(x: -118.150, y: 34.150))
         .node(2, point!(x: -118.151, y: 34.150))
         .edge(1, 2)
-        // Component B ~4 km east, no connecting edge
         .node(3, point!(x: -118.100, y: 34.150))
         .node(4, point!(x: -118.101, y: 34.150))
         .edge(3, 4)
         .build();
 
     let ls: LineString = wkt! { LINESTRING(-118.1505 34.1503, -118.1005 34.1503) };
-    for variant in [SolverVariant::Trellis, SolverVariant::Selective] {
-        let result = match_with(&net, &ls, variant);
-        assert!(
-            result.is_err(),
-            "{variant:?}: disconnected components must not produce a match"
-        );
-    }
+    assert!(
+        net.match_simple(ls).is_err(),
+        "disconnected components must not produce a match"
+    );
 }
 
 /// An empty trajectory must error cleanly (no panic, no empty-index access).
 #[test]
 fn empty_trajectory_errors() {
     let net = straight_road();
-    let ls = LineString::new(vec![]);
-    for variant in [SolverVariant::Trellis, SolverVariant::Selective] {
-        assert!(
-            match_with(&net, &ls, variant).is_err(),
-            "{variant:?}: empty trajectory must error"
-        );
-    }
+    assert!(
+        net.match_simple(LineString::new(vec![])).is_err(),
+        "empty trajectory must error"
+    );
 }
 
-/// A reused network / repeated matches must be deterministic and consistent
-/// (the predicate cache is reused internally without state bleed).
+/// Repeated matches must be deterministic and consistent (the predicate cache is
+/// reused internally without state bleed).
 #[test]
 fn repeated_matches_are_deterministic() {
     let net = straight_road();
     let ls: LineString = wkt! {
         LINESTRING(-118.151 34.1503, -118.158 34.1503, -118.165 34.1503)
     };
-    let first = discretized_edges(&net, &ls, SolverVariant::Trellis);
-    let second = discretized_edges(&net, &ls, SolverVariant::Trellis);
-    assert_eq!(first, second, "repeated matches diverged");
+    assert_eq!(
+        discretized_edges(&net, ls.clone()),
+        discretized_edges(&net, ls),
+        "repeated matches diverged"
+    );
 }
 
 /// Sanity: mock metadata is accessible in every direction (guards trait wiring).

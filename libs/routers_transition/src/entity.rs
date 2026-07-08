@@ -7,6 +7,7 @@ use crate::generation::LayerGeneration;
 use geo::LineString;
 use routers_network::Network;
 use routers_network::{Entry, Metadata};
+use routers_trellis::Trellis;
 
 /// A map-specific transition graph based on the Hidden-Markov-Model structure.
 ///
@@ -119,13 +120,54 @@ where
         }
     }
 
-    /// Solves the transition graph, using the provided [`Solver`].
+    /// Per-layer candidate counts — the trellis widths for this transition.
+    pub fn widths(&self) -> Vec<u32> {
+        self.layers
+            .layers
+            .iter()
+            .map(|layer| layer.nodes.len() as u32)
+            .collect()
+    }
+
+    /// Allocate an empty (all-pending) [`Trellis`] sized for this transition's
+    /// layers.
+    ///
+    /// Trellis *construction* is deliberately separated from weight-solving so a
+    /// solver only has to fill weights (phase 1) and the graph solve (phase 2) is
+    /// left to [`routers_trellis`]. Callers may equally build/inject their own.
+    pub fn trellis(&self) -> Result<Trellis, MatchError> {
+        Trellis::new(self.widths())
+            .map_err(|_| MatchError::CollapseFailure(CollapseError::NoPathFound))
+    }
+
+    /// Map a solved trellis node-path back to the candidate route (layer-local
+    /// [`routers_trellis::NodeId`]s → [`CandidateId`]s via the layer node tables).
+    pub fn route_of(&self, path: &routers_trellis::Path) -> Vec<CandidateId> {
+        path.nodes
+            .iter()
+            .enumerate()
+            .filter_map(|(layer, node)| {
+                self.layers
+                    .layers
+                    .get(layer)?
+                    .nodes
+                    .get(node.0 as usize)
+                    .copied()
+            })
+            .collect()
+    }
+
+    /// Solves the transition graph with the provided [`Solver`], allocating the
+    /// backing [`Trellis`] here (the caller of the solver owns it).
+    ///
+    /// Advanced callers that want to own/reuse/inspect the trellis can build one
+    /// with [`Transition::trellis`] and call [`Solver::solve`] directly.
     pub fn solve(
         self,
         solver: impl Solver<E, M, N>,
         runtime: &M::Runtime,
     ) -> Result<CollapsedPath<E>, MatchError> {
-        // Indirection to call.
-        solver.solve(self, runtime)
+        let mut trellis = self.trellis()?;
+        solver.solve(self, runtime, &mut trellis)
     }
 }

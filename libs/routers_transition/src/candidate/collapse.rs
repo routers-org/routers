@@ -1,5 +1,5 @@
-use crate::Reachable;
 use crate::candidate::*;
+use crate::{Reachable, SideTable};
 use geo::LineString;
 use routers_network::Edge;
 use routers_network::Network;
@@ -54,6 +54,37 @@ where
             #[cfg(debug_assertions)]
             considered,
         }
+    }
+
+    /// Assemble a collapsed path from a solved candidate `route` and the per-edge
+    /// [`SideTable`] gathered while weighing.
+    ///
+    /// Shared by every solver: it interleaves one [`Reachable`] per real
+    /// candidate hop (looked up by the `(from, to)` pair) — virtual source/sink
+    /// hops simply miss the table and are skipped. `route` must contain only real
+    /// candidates, in layer order.
+    pub fn assemble(
+        cost: u32,
+        route: Vec<CandidateId>,
+        side: &SideTable<E>,
+        candidates: Candidates<E>,
+    ) -> Self {
+        let interpolated = route
+            .windows(2)
+            .filter_map(|pair| match pair {
+                [a, b] => side.get(&(*a, *b)).cloned(),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+
+        CollapsedPath::new(
+            cost,
+            interpolated,
+            route,
+            candidates,
+            #[cfg(debug_assertions)]
+            side.values().cloned().collect(),
+        )
     }
 
     /// Returns the vector of [`Candidate`]s involved in a match.

@@ -11,8 +11,8 @@
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use geo::{Coord, LineString, point};
 use routers_network::mock::{MockNetwork, MockNetworkBuilder};
-use routers_transition::r#match::{Match, MatchOptions};
-use routers_transition::{SolverVariant, Transition};
+use routers_transition::Transition;
+use routers_transition::r#match::MatchSimpleExt;
 
 /// A straight west-bound road of `n` nodes (`n-1` unit edges), ~92 m spacing.
 fn straight_net(n: usize) -> MockNetwork {
@@ -39,25 +39,16 @@ fn trip(points: usize) -> LineString {
     )
 }
 
-/// Full match (layer generation + solve + reconstruction) for each solver × route
-/// length. The single most important regression signal for the whole pipeline.
+/// Full match (layer generation + weigh + graph solve + reconstruction) across
+/// route lengths. The single most important regression signal for the pipeline.
 fn bench_full_match(c: &mut Criterion) {
     let mut group = c.benchmark_group("full_match");
     for &len in &[8usize, 32, 128] {
         let net = straight_net(len + 4);
         let ls = trip(len);
-        for variant in [SolverVariant::Trellis, SolverVariant::Selective] {
-            group.bench_with_input(
-                BenchmarkId::new(format!("{variant:?}"), len),
-                &len,
-                |bench, _| {
-                    bench.iter(|| {
-                        net.r#match(ls.clone(), MatchOptions::new().with_solver(variant))
-                            .expect("match must succeed")
-                    });
-                },
-            );
-        }
+        group.bench_with_input(BenchmarkId::from_parameter(len), &len, |bench, _| {
+            bench.iter(|| net.match_simple(ls.clone()).expect("match must succeed"));
+        });
     }
     group.finish();
 }

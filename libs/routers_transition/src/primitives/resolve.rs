@@ -1,7 +1,14 @@
 use itertools::Either;
 use routers_network::{Edge, Entry};
+use rustc_hash::FxHashMap;
 
 use crate::CandidateId;
+
+/// Per-edge side-data gathered while weighing a transition, keyed by the
+/// `(source, target)` candidate pair. Solvers stash the [`Reachable`] for each
+/// costed transition here so the routed path can be reconstructed from a solved
+/// candidate sequence (see [`CollapsedPath::assemble`](crate::CollapsedPath::assemble)).
+pub type SideTable<E> = FxHashMap<(CandidateId, CandidateId), Reachable<E>>;
 
 #[derive(Debug, Default, Copy, Clone)]
 pub enum ResolutionMethod {

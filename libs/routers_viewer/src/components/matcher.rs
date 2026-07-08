@@ -6,7 +6,7 @@ use routers::PredicateCache;
 use routers_codec::osm::{OsmEdgeMetadata, OsmEntryId, OsmNetwork, OsmTripConfiguration};
 use routers_transition::{
     costing::CostingStrategies, entity::Transition, layer::generation::StandardGenerator,
-    solver::selective_forward::SelectiveForwardSolver,
+    solver::all_compute::AllComputeSolver,
 };
 
 use crate::utils::{Component, MatchCandidate, MatchData, MatchLayer};
@@ -77,7 +77,7 @@ fn run_match(
     let costing = CostingStrategies::default();
     let generator = StandardGenerator::new(network, &costing.emission, 100.0);
     let transition = Transition::new(network, linestring.clone(), &costing, generator);
-    let solver = SelectiveForwardSolver::default().use_cache(cache);
+    let solver = AllComputeSolver::default().use_cache(cache);
     let runtime = OsmTripConfiguration::default();
 
     let start = std::time::Instant::now();

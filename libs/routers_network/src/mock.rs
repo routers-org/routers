@@ -512,5 +512,4 @@ mod tests {
         // Nodes 1→3 exist but 3→1 is unreachable in a one-way network.
         assert!(net.route_nodes(MockEntryId(3), MockEntryId(1)).is_none());
     }
-
 }
