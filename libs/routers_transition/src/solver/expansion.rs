@@ -1,105 +1,97 @@
-//! Shared candidate-expansion core.
-//!
-//! Computes, for a `(source, target)` candidate pair, whether the target is
-//! reachable from the source on the underlying road network and by which path
-//! ([`Reachable`]). This is the network-routing half of a solve and is shared by
-//! every solver driver (eager trellis fill, lazy frontier `astar`).
-//!
-//! Extracted verbatim from the per-target logic in the forward solvers so the
-//! drivers differ only in *how* they consume it (materialise all vs. on demand).
+//! Candidate expansion: how one candidate is reached from another on the road
+//! network. Shared by every solver strategy.
 
 use core::hash::Hash;
 
-use routers_network::{Entry, Metadata, Network};
+use routers_network::{Edge, Entry, Metadata, Network};
 use rustc_hash::FxHashMap;
 
-use crate::{PredicateCache, Reachable, RoutingContext, candidate::CandidateId};
+use crate::{Candidate, CandidateId, PredicateCache, Reachable, RoutingContext};
 
-/// Reconstruct a path from `source` up the `parents` map to `target`, returned in
-/// `[source, ..., target]` order. `None` if `target` is unreachable in the map.
-///
-/// (Free-function form of the former `Solver::path_builder`, so every driver and
-/// the shared expansion core can call it without a solver instance.)
-#[inline]
-pub(crate) fn path_builder<K, C>(
-    target: &K,
-    source: &K,
-    parents: &FxHashMap<K, (K, C)>,
-) -> Option<Vec<K>>
+/// A parent-pointer map — each node mapped to its parent (and the cost to it) —
+/// as produced by the predicate cache's bounded Dijkstra.
+trait ParentPath<K> {
+    /// The nodes from `root` to `leaf` inclusive, followed via parent pointers,
+    /// or `None` if `leaf` is absent from the map.
+    fn path(&self, root: &K, leaf: &K) -> Option<Vec<K>>;
+}
+
+impl<K, C> ParentPath<K> for FxHashMap<K, (K, C)>
 where
     K: Eq + Hash + Copy,
 {
-    let mut path = vec![*target];
-    let mut next = target;
+    fn path(&self, root: &K, leaf: &K) -> Option<Vec<K>> {
+        let mut nodes = vec![*leaf];
+        let mut cursor = leaf;
 
-    while next != source {
-        let (parent, _) = parents.get(next)?;
-        path.push(*parent);
-        next = parent;
+        while cursor != root {
+            let (parent, _) = self.get(cursor)?;
+            nodes.push(*parent);
+            cursor = parent;
+        }
+
+        nodes.reverse();
+        Some(nodes)
     }
-
-    path.reverse();
-    Some(path)
 }
 
-/// Derive the [`Reachable`] describing how `target_id` is reached from
-/// `source_id`, or `None` if it is not reachable within the predicate bound.
-///
-/// Mirrors `PrecomputeForwardSolver::get_reachable` / the per-target body of
-/// `SelectiveForwardSolver::reachable`:
-/// - Same-edge candidates resolve to a [`ResolutionMethod::DistanceOnly`] hop when
-///   tracking forward; otherwise they fall through to a routed path.
-/// - Otherwise an upper-bounded Dijkstra predicate map is walked to build the
-///   routed edge path between the two candidate edges.
-pub(crate) fn reachable_between<E, M, N>(
-    ctx: &RoutingContext<'_, E, M, N>,
-    predicate: &PredicateCache<E, M, N>,
-    source_id: &CandidateId,
-    target_id: &CandidateId,
-) -> Option<Reachable<E>>
+/// Answers "how is candidate `to` reached from candidate `from`?" against the
+/// road network, pairing the [`RoutingContext`] with the [`PredicateCache`] that
+/// serves bounded reachability queries.
+pub(crate) struct Expansion<'a, E, M, N>
 where
     E: Entry,
     M: Metadata,
     N: Network<E, M>,
 {
-    let source = ctx.candidate(source_id)?;
-    let predicate_map = predicate.query(ctx, source.edge.target);
-    let candidate = ctx.candidate(target_id)?;
+    ctx: &'a RoutingContext<'a, E, M, N>,
+    predicate: &'a PredicateCache<E, M, N>,
+}
 
-    // Both candidates are on the same edge.
-    'stmt: {
-        if candidate.edge.id.index() == source.edge.id.index() {
-            let common_source = candidate.edge.source == source.edge.source;
-            let common_target = candidate.edge.target == source.edge.target;
-
-            let tracking_forward = common_source && common_target;
-
-            let source_percentage = source.percentage(ctx.map)?;
-            let target_percentage = candidate.percentage(ctx.map)?;
-
-            return if tracking_forward && source_percentage <= target_percentage {
-                // Moving forward on the same edge — just the distance between them.
-                Some(Reachable::new(*source_id, *target_id, vec![]).distance_only())
-            } else {
-                // Going "backwards" across the node is an independent transition,
-                // not covered here.
-                break 'stmt;
-            };
-        }
+impl<'a, E, M, N> Expansion<'a, E, M, N>
+where
+    E: Entry,
+    M: Metadata,
+    N: Network<E, M>,
+{
+    pub(crate) fn new(
+        ctx: &'a RoutingContext<'a, E, M, N>,
+        predicate: &'a PredicateCache<E, M, N>,
+    ) -> Self {
+        Self { ctx, predicate }
     }
 
-    // Generate the path to this target using the predicate map.
-    let path_to_target = path_builder(&candidate.edge.source, &source.edge.target, &predicate_map)?;
+    /// The [`Reachable`] describing how `to` is reached from `from`, or `None`
+    /// when `to` lies outside the predicate bound.
+    ///
+    /// Candidates already sharing a directed edge resolve directly (by distance);
+    /// otherwise the routed path between their edges is walked from the predicate
+    /// map.
+    pub(crate) fn reach(&self, from: CandidateId, to: CandidateId) -> Option<Reachable<E>> {
+        let source = self.ctx.candidate(&from)?;
+        let target = self.ctx.candidate(&to)?;
 
-    let path = path_to_target
-        .windows(2)
-        .filter_map(|pair| {
-            if let [a, b] = pair {
-                return ctx.edge(a, b);
-            }
-            None
-        })
-        .collect::<Vec<_>>();
+        if source.directly_reachable(&target, self.ctx.map)? {
+            return Some(Reachable::direct(from, to));
+        }
 
-    Some(Reachable::new(*source_id, *target_id, path))
+        Some(Reachable::new(from, to, self.route(&source, &target)?))
+    }
+
+    /// The road edges linking `source`'s edge to `target`'s edge, walked from the
+    /// bounded-Dijkstra predicate map rooted at `source`'s edge target.
+    fn route(&self, source: &Candidate<E>, target: &Candidate<E>) -> Option<Vec<Edge<E>>> {
+        let parents = self.predicate.query(self.ctx, source.edge.target);
+        let nodes = parents.path(&source.edge.target, &target.edge.source)?;
+
+        Some(
+            nodes
+                .windows(2)
+                .filter_map(|pair| match pair {
+                    [a, b] => self.ctx.edge(a, b),
+                    _ => None,
+                })
+                .collect(),
+        )
+    }
 }

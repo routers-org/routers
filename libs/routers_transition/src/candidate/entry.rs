@@ -85,6 +85,27 @@ where
         edge.line_locate_point(&self.position)
     }
 
+    /// Whether `other` is reachable from `self` by travelling along their shared
+    /// edge alone — i.e. both sit on the same directed edge with `other` at or
+    /// ahead of `self`. `None` when the shared edge is too degenerate to locate a
+    /// position on. A `Some(false)` covers candidates on different edges (which
+    /// must be routed between) and same-edge back-tracking.
+    pub fn directly_reachable<M: Metadata>(
+        &self,
+        other: &Candidate<E>,
+        graph: &dyn Network<E, M>,
+    ) -> Option<bool> {
+        if self.edge.id.index() != other.edge.id.index() {
+            return Some(false);
+        }
+
+        let same_direction =
+            self.edge.source == other.edge.source && self.edge.target == other.edge.target;
+        let ahead = self.percentage(graph)? <= other.percentage(graph)?;
+
+        Some(same_direction && ahead)
+    }
+
     /// Get the bearing of the candidate's edge (source endpoint -> target endpoint).
     pub fn edge_heading<M, N>(&self, ctx: &RoutingContext<E, M, N>) -> Option<f64>
     where

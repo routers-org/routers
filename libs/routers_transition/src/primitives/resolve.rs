@@ -41,9 +41,8 @@ impl<E> Reachable<E>
 where
     E: Entry,
 {
-    /// Creates a new reachable element, supplied a source, target and path.
-    ///
-    /// This assumes the default resolution method.
+    /// A reachable with an explicit routed `path` and the default (routed)
+    /// resolution method.
     pub fn new(source: CandidateId, target: CandidateId, path: Vec<Edge<E>>) -> Self {
         Self {
             source,
@@ -53,6 +52,12 @@ where
             #[cfg(debug_assertions)]
             cost: 0,
         }
+    }
+
+    /// A same-edge reachable: no routed path, resolved by
+    /// [`DistanceOnly`](ResolutionMethod::DistanceOnly).
+    pub fn direct(source: CandidateId, target: CandidateId) -> Self {
+        Self::new(source, target, Vec::new()).distance_only()
     }
 
     pub fn candidates<'a>(&'a self) -> (&'a CandidateId, &'a CandidateId) {

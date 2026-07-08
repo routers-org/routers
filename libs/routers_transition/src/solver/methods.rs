@@ -2,6 +2,7 @@ use crate::{
     Candidate, CandidateId, CollapseError, CollapsedPath, Costing, MatchError, PredicateCache,
     Reachable, RoutingContext, SideTable, Transition, TransitionContext,
     costing::{EmissionStrategy, TransitionStrategy},
+    solver::expansion::Expansion,
 };
 use routers_network::{Entry, Metadata, Network};
 use routers_trellis::{LayerId, MAX_WEIGHT, NO_EDGE, NodeId, Solve, Trellis, ViterbiSolver};
@@ -58,7 +59,7 @@ where
         Emmis: EmissionStrategy + Send + Sync,
         Trans: TransitionStrategy<E> + Send + Sync,
     {
-        let reachable = super::expansion::reachable_between(ctx, self.cache(), &from, &to)?;
+        let reachable = Expansion::new(ctx, self.cache()).reach(from, to)?;
         let target = ctx.candidate(&to)?;
 
         let path = reachable.path_nodes().collect_vec();
