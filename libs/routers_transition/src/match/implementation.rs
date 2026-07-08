@@ -1,4 +1,5 @@
 use crate::Match;
+use crate::Solver;
 use crate::candidate::RoutedPath;
 use crate::costing::CostingStrategies;
 use crate::entity::Transition;
@@ -28,16 +29,18 @@ where
 
         let costing = CostingStrategies::default();
         let generator = StandardGenerator::new(self, &costing.emission, opts.search_distance);
-
-        // Create our hidden markov model solver
         let transition = Transition::new(self, linestring, &costing, generator);
+
         let solver = match opts.cache {
             Some(cache) => opts.solver.instance(cache),
             None => opts.solver.without_cache(),
         };
 
-        transition
-            .solve(solver, &opts.runtime)
+        // This layer owns the trellis; a fresh match starts from an empty one.
+        let mut trellis = transition.trellis()?;
+
+        solver
+            .solve(transition, &opts.runtime, &mut trellis)
             .map(|collapsed| RoutedPath::new(collapsed, self))
     }
 

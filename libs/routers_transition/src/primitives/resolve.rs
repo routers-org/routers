@@ -68,9 +68,7 @@ where
         }
     }
 
-    /// A collection of all nodes within the reachable's path.
-    /// This represents the path as a collection of nodes, as opposed
-    /// to the default representation being a collection of edges.
+    /// The path as its sequence of nodes rather than edges.
     pub fn path_nodes(&self) -> impl Iterator<Item = E> {
         match self.path.last() {
             Some(last) => Either::Left(
@@ -81,12 +79,5 @@ where
             ),
             None => Either::Right(core::iter::empty()),
         }
-    }
-
-    /// Converts a reachable element into a (source, target) index pair
-    /// used for hashing the structure as a path lookup between the
-    /// source and target.
-    pub fn hash(&self) -> (usize, usize) {
-        (self.source.index(), self.target.index())
     }
 }

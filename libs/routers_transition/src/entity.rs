@@ -7,7 +7,7 @@ use crate::generation::LayerGeneration;
 use geo::LineString;
 use routers_network::Network;
 use routers_network::{Entry, Metadata};
-use routers_trellis::Trellis;
+use routers_trellis::{LayerId, Trellis};
 
 /// A map-specific transition graph based on the Hidden-Markov-Model structure.
 ///
@@ -21,37 +21,17 @@ use routers_trellis::Trellis;
 /// see all the available ways to interpret the resultant solution, see
 /// the [`CollapsedPath`] structure.
 ///
-/// ```rust
-/// use geo::LineString;
-/// use routers_codec::Metadata;
-/// use routers_codec::osm::element::Tags;
-/// use routers_codec::osm::{OsmEdgeMetadata, OsmEntryId};
-/// use routers::{Graph, Transition};
-/// use routers::transition::{CostingStrategies, SelectiveForwardSolver};
+/// ```ignore
+/// let costing = CostingStrategies::default();
+/// let generator = StandardGenerator::new(&map, &costing.emission, DEFAULT_SEARCH_DISTANCE);
+/// let transition = Transition::new(&map, route, &costing, generator);
 ///
-/// // An example function to find the interpolated path of a trip.
-/// fn match_trip(map: &Graph<OsmEntryId, OsmEdgeMetadata>, route: LineString) -> Option<LineString> {
-///     // Use the default costing strategies
-///     let costing = CostingStrategies::default();
+/// // The caller owns the trellis — build one (or reuse an existing one) and hand
+/// // it to the solver; it is never created inside the solve.
+/// let mut trellis = transition.trellis()?;
+/// let solved = AllComputeSolver::default().solve(transition, &runtime, &mut trellis)?;
 ///
-///     // Create our transition graph, supplying our map for context,
-///     // and the route we wish to load as the layer data.
-///     let transition = Transition::new(&map, route, costing);
-///
-///     // For example, let's choose the selective-forward solver.
-///     let solver = SelectiveForwardSolver::default();
-///
-///     // Create our runtime conditions.
-///     // These allow us to make on-the-fly changes to costing, such as
-///     // our transport mode (Car, Bus, ..) or otherwise.
-///     let runtime = OsmEdgeMetadata::runtime();
-///
-///     // Now.. we simply solve the transition graph using the solver
-///     let solution = transition.solve(solver, runtime).ok()?;
-///
-///     // Then, we can return the interpolated path, just like that!
-///     Some(solution.interpolated(map))
-/// }
+/// let interpolated = solved.interpolated(&map);
 /// ```
 pub struct Transition<'a, Emission, Transition, E, M, N>
 where
@@ -140,34 +120,20 @@ where
             .map_err(|_| MatchError::CollapseFailure(CollapseError::NoPathFound))
     }
 
-    /// Map a solved trellis node-path back to the candidate route (layer-local
-    /// [`routers_trellis::NodeId`]s → [`CandidateId`]s via the layer node tables).
+    /// The candidate ids of the two layers a [`boundary`](LayerId) joins:
+    /// `(from, to)` for the layers on each side of it.
+    pub fn boundary(&self, boundary: LayerId) -> (&[CandidateId], &[CandidateId]) {
+        let from = boundary.index();
+        (&self.layers.layers[from].nodes, &self.layers.layers[from + 1].nodes)
+    }
+
+    /// Map a solved trellis node-path back to the chosen candidate per layer.
     pub fn route_of(&self, path: &routers_trellis::Path) -> Vec<CandidateId> {
         path.nodes
             .iter()
             .enumerate()
-            .filter_map(|(layer, node)| {
-                self.layers
-                    .layers
-                    .get(layer)?
-                    .nodes
-                    .get(node.0 as usize)
-                    .copied()
-            })
+            .filter_map(|(layer, node)| self.layers.layers.get(layer)?.nodes.get(node.index()).copied())
             .collect()
     }
 
-    /// Solves the transition graph with the provided [`Solver`], allocating the
-    /// backing [`Trellis`] here (the caller of the solver owns it).
-    ///
-    /// Advanced callers that want to own/reuse/inspect the trellis can build one
-    /// with [`Transition::trellis`] and call [`Solver::solve`] directly.
-    pub fn solve(
-        self,
-        solver: impl Solver<E, M, N>,
-        runtime: &M::Runtime,
-    ) -> Result<CollapsedPath<E>, MatchError> {
-        let mut trellis = self.trellis()?;
-        solver.solve(self, runtime, &mut trellis)
-    }
 }

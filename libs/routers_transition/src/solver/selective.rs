@@ -1,42 +1,30 @@
-//! Selective forward solver.
+//! Selective forward solver — weighs only a pruned subset of transitions.
 //!
-//! Same trellis-backed pipeline as [`AllComputeSolver`](crate::AllComputeSolver),
-//! but *selective* about which transitions it computes: for each source candidate
-//! it only weighs the `fanout` geometrically-nearest candidates in the next layer,
-//! leaving the rest `NO_EDGE`. This turns the O(N²) reachability computation per
-//! boundary into O(N·fanout) — the win the old upper-bounded-Dijkstra solver
-//! sought, expressed as a sparse trellis fill.
+//! [`select`](Solver::select) keeps, per source, the `fanout` next-layer
+//! candidates nearest by straight-line distance, cutting the O(N²) reachability
+//! computation per boundary to O(N·fanout). Everything else is inherited from the
+//! [`Solver`] pipeline.
 //!
-//! It respects trellis semantics (only fills pending boundaries) and uses the
-//! default [`Solver::solve`] (Viterbi + reconstruct), so it composes with a
-//! partially-solved trellis exactly like the all-compute solver.
+//! Because it never re-weighs resolved boundaries, it is the natural choice for
+//! extending a partially-solved trellis (e.g. streaming a growing trip) rather
+//! than a from-scratch match.
 //!
 //! # Exactness
-//! Pruning by geometric proximity is a heuristic: on pathological layers the true
-//! optimum could involve a far target and be missed. `fanout` trades exactness for
-//! speed; the default is generous. For guaranteed-exact matching use
-//! [`AllComputeSolver`](crate::AllComputeSolver).
+//! Proximity pruning is a heuristic: a far-but-optimal target can be missed. For
+//! guaranteed-exact matching use [`AllComputeSolver`](crate::AllComputeSolver).
 
 use std::{marker::PhantomData, sync::Arc};
 
-use crate::{
-    CollapseError, MatchError, PredicateCache, Reachable, SideTable, Solver, Transition,
-    candidate::CandidateId,
-    costing::{EmissionStrategy, TransitionStrategy},
-};
-
+use crate::{Candidate, CandidateId, PredicateCache, RoutingContext, Solver};
 use geo::{Distance, Haversine};
-use rayon::prelude::*;
 use routers_network::{Entry, Metadata, Network};
-use routers_trellis::{LayerId, NO_EDGE, Trellis};
-
-use super::all_compute::weigh_edge;
-use super::expansion::reachable_between;
+use routers_trellis::NodeId;
 
 /// Default per-source fan-out: how many nearest next-layer candidates to weigh.
 pub const DEFAULT_FANOUT: usize = 16;
 
-/// Selective (pruned) parallel weigher. Uses the default trellis graph solve.
+/// Weighs the `fanout` nearest next-layer candidates per source. Inherits the
+/// full [`Solver`] pipeline.
 pub struct SelectiveSolver<E, M, N>
 where
     E: Entry,
@@ -88,78 +76,28 @@ where
     M: Metadata,
     N: Network<E, M>,
 {
-    fn weigh<Emmis, Trans>(
+    fn cache(&self) -> &PredicateCache<E, M, N> {
+        &self.predicate
+    }
+
+    fn select(
         &self,
-        transition: &Transition<Emmis, Trans, E, M, N>,
-        runtime: &M::Runtime,
-        trellis: &mut Trellis,
-        side: &mut SideTable<E>,
-    ) -> Result<(), MatchError>
-    where
-        Emmis: EmissionStrategy + Send + Sync,
-        Trans: TransitionStrategy<E> + Send + Sync,
-    {
-        let context = transition.context(runtime);
-        let layers = &transition.layers.layers;
+        ctx: &RoutingContext<E, M, N>,
+        source: &Candidate<E>,
+        to_layer: &[CandidateId],
+    ) -> Vec<NodeId> {
+        let distance_to = |target: &CandidateId| {
+            ctx.candidate(target)
+                .map(|c| Haversine.distance(source.position, c.position))
+                .unwrap_or(f64::INFINITY)
+        };
 
-        for k in 0..layers.len().saturating_sub(1) {
-            if trellis.is_resolved(LayerId(k as u32)) {
-                continue;
-            }
-
-            let cur = &layers[k].nodes;
-            let nxt = &layers[k + 1].nodes;
-            let nw = nxt.len();
-
-            let per_source: Vec<Vec<(usize, u32, Reachable<E>)>> = cur
-                .par_iter()
-                .enumerate()
-                .map(|(i, src)| {
-                    let Some(src_cand) = context.candidate(src) else {
-                        return Vec::new();
-                    };
-                    let src_emission = if k == 0 { src_cand.emission } else { 0 };
-
-                    // Select the `fanout` nearest next-layer candidates (by
-                    // straight-line distance) — the only ones we pay `reach` for.
-                    let mut ranked: Vec<(usize, &CandidateId)> = nxt.iter().enumerate().collect();
-                    if ranked.len() > self.fanout {
-                        ranked.sort_by(|(_, a), (_, b)| {
-                            let da = context
-                                .candidate(a)
-                                .map(|c| Haversine.distance(src_cand.position, c.position))
-                                .unwrap_or(f64::INFINITY);
-                            let db = context
-                                .candidate(b)
-                                .map(|c| Haversine.distance(src_cand.position, c.position))
-                                .unwrap_or(f64::INFINITY);
-                            da.total_cmp(&db)
-                        });
-                        ranked.truncate(self.fanout);
-                    }
-
-                    ranked
-                        .into_iter()
-                        .filter_map(|(j, tgt)| {
-                            let reachable = reachable_between(&context, &self.predicate, src, tgt)?;
-                            let cost = weigh_edge(&context, transition, &reachable, src_emission)?;
-                            Some((i * nw + j, cost, reachable))
-                        })
-                        .collect::<Vec<_>>()
-                })
-                .collect();
-
-            let mut rows = vec![NO_EDGE; cur.len() * nw];
-            for (idx, cost, reachable) in per_source.into_iter().flatten() {
-                rows[idx] = cost;
-                side.insert((reachable.source, reachable.target), reachable);
-            }
-
-            trellis
-                .fill_transition(LayerId(k as u32), &rows)
-                .map_err(|_| MatchError::CollapseFailure(CollapseError::NoPathFound))?;
+        let mut nearest = (0..to_layer.len()).collect::<Vec<_>>();
+        if nearest.len() > self.fanout {
+            nearest.sort_by(|&a, &b| distance_to(&to_layer[a]).total_cmp(&distance_to(&to_layer[b])));
+            nearest.truncate(self.fanout);
         }
 
-        Ok(())
+        nearest.into_iter().map(|i| NodeId(i as u32)).collect()
     }
 }

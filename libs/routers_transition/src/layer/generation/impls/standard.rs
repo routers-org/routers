@@ -83,11 +83,10 @@ where
             })
             .collect();
 
-        // Assign stable, per-layer-sequential CandidateIds. `coords` mirrors each
-        // layer's node ids so it serves as the (LayerId, NodeId) -> CandidateId table.
+        // Assign stable, per-layer-sequential CandidateIds. Each layer keeps its
+        // own node ids in order (`Layer.nodes`), which the solver maps back to.
         let total: usize = per_layer.iter().map(Vec::len).sum();
         let lookup = scc::HashMap::with_capacity(total);
-        let mut coords: Vec<Vec<CandidateId>> = Vec::with_capacity(per_layer.len());
         let mut next_id = 0usize;
 
         let layers: Vec<Layer> = per_layer
@@ -101,11 +100,10 @@ where
                     let _ = lookup.insert(id, candidate);
                     nodes.push(id);
                 }
-                coords.push(nodes.clone());
                 Layer { nodes, origin }
             })
             .collect();
 
-        (Layers { layers }, Candidates::new(lookup, coords))
+        (Layers { layers }, Candidates::new(lookup))
     }
 }

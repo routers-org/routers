@@ -87,6 +87,12 @@ impl Trellis {
         self.widths.len()
     }
 
+    /// The layer-to-layer boundaries, each identified by its lower [`LayerId`]
+    /// (boundary `k` connects layer `k` to layer `k+1`).
+    pub fn boundaries(&self) -> impl Iterator<Item = LayerId> {
+        (0..self.transitions.len()).map(|k| LayerId(k as u32))
+    }
+
     /// Per-layer node counts.
     #[inline]
     pub fn widths(&self) -> &[u32] {

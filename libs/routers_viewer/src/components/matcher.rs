@@ -5,7 +5,7 @@ use geo::{Coord, LineString};
 use routers::PredicateCache;
 use routers_codec::osm::{OsmEdgeMetadata, OsmEntryId, OsmNetwork, OsmTripConfiguration};
 use routers_transition::{
-    costing::CostingStrategies, entity::Transition, layer::generation::StandardGenerator,
+    Solver, costing::CostingStrategies, entity::Transition, layer::generation::StandardGenerator,
     solver::all_compute::AllComputeSolver,
 };
 
@@ -79,10 +79,11 @@ fn run_match(
     let transition = Transition::new(network, linestring.clone(), &costing, generator);
     let solver = AllComputeSolver::default().use_cache(cache);
     let runtime = OsmTripConfiguration::default();
+    let mut trellis = transition.trellis().map_err(|e| format!("{e:?}"))?;
 
     let start = std::time::Instant::now();
-    let collapsed = transition
-        .solve(solver, &runtime)
+    let collapsed = solver
+        .solve(transition, &runtime, &mut trellis)
         .map_err(|e| format!("{e:?}"))?;
     let time = start.elapsed();
 

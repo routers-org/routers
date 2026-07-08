@@ -9,15 +9,17 @@ pub struct LayerId(pub u32);
 pub struct NodeId(pub u32);
 
 impl LayerId {
+    /// This id as a `usize`, for indexing parallel per-layer collections.
     #[inline]
-    pub(crate) fn index(self) -> usize {
+    pub fn index(self) -> usize {
         self.0 as usize
     }
 }
 
 impl NodeId {
+    /// This id as a `usize`, for indexing parallel per-node collections.
     #[inline]
-    pub(crate) fn index(self) -> usize {
+    pub fn index(self) -> usize {
         self.0 as usize
     }
 }

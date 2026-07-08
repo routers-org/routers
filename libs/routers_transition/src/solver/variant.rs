@@ -1,17 +1,14 @@
 use std::sync::Arc;
 
 use crate::{
-    AllComputeSolver, CollapsedPath, EmissionStrategy, MatchError, PredicateCache, SelectiveSolver,
-    SideTable, Solver, Transition, TransitionStrategy,
+    AllComputeSolver, Candidate, CandidateId, PredicateCache, RoutingContext, SelectiveSolver,
+    Solver,
 };
 use routers_network::{Entry, Metadata, Network};
-use routers_trellis::Trellis;
+use routers_trellis::NodeId;
 
-/// A concrete dispatcher over the available [`Solver`] strategies.
-///
-/// This is what [`SolverVariant`] hands back — a value that is used purely
-/// through the [`Solver`] trait, so callers stay decoupled from any specific
-/// solver struct.
+/// A [`Solver`] chosen at runtime by [`SolverVariant`]. Used purely through the
+/// [`Solver`] trait, so callers stay decoupled from any concrete solver struct.
 pub enum SolverImpl<E: Entry, M: Metadata, N: Network<E, M>> {
     AllCompute(AllComputeSolver<E, M, N>),
     Selective(SelectiveSolver<E, M, N>),
@@ -20,12 +17,13 @@ pub enum SolverImpl<E: Entry, M: Metadata, N: Network<E, M>> {
 /// Selects which [`Solver`] strategy a match should use.
 #[derive(Default, Clone, Copy, Debug)]
 pub enum SolverVariant {
-    /// Fastest available solver (the all-compute, fully-parallel weigher).
+    /// Fastest from-scratch solver: the exact, fully-parallel all-compute weigher.
     #[default]
     Fastest,
-    /// Exhaustive all-compute weigher (alias of [`Fastest`](Self::Fastest)).
+    /// Alias of [`Fastest`](Self::Fastest).
     Precompute,
-    /// Selective (pruned fan-out) weigher — fewer reachability computations.
+    /// Selective (pruned fan-out) weigher — fewer reachability computations, best
+    /// for extending a partially-solved trellis.
     Selective,
 }
 
@@ -52,37 +50,25 @@ impl SolverVariant {
     }
 }
 
+/// Dispatches the two strategy hooks to the chosen solver; the rest of the
+/// pipeline is inherited from [`Solver`]'s provided methods.
 impl<E: Entry, M: Metadata, N: Network<E, M>> Solver<E, M, N> for SolverImpl<E, M, N> {
-    fn weigh<Emmis, Trans>(
-        &self,
-        transition: &Transition<Emmis, Trans, E, M, N>,
-        runtime: &M::Runtime,
-        trellis: &mut Trellis,
-        side: &mut SideTable<E>,
-    ) -> Result<(), MatchError>
-    where
-        Emmis: EmissionStrategy + Send + Sync,
-        Trans: TransitionStrategy<E> + Send + Sync,
-    {
+    fn cache(&self) -> &PredicateCache<E, M, N> {
         match self {
-            SolverImpl::AllCompute(s) => s.weigh(transition, runtime, trellis, side),
-            SolverImpl::Selective(s) => s.weigh(transition, runtime, trellis, side),
+            SolverImpl::AllCompute(solver) => solver.cache(),
+            SolverImpl::Selective(solver) => solver.cache(),
         }
     }
 
-    fn solve<Emmis, Trans>(
+    fn select(
         &self,
-        transition: Transition<Emmis, Trans, E, M, N>,
-        runtime: &M::Runtime,
-        trellis: &mut Trellis,
-    ) -> Result<CollapsedPath<E>, MatchError>
-    where
-        Emmis: EmissionStrategy + Send + Sync,
-        Trans: TransitionStrategy<E> + Send + Sync,
-    {
+        ctx: &RoutingContext<E, M, N>,
+        source: &Candidate<E>,
+        to_layer: &[CandidateId],
+    ) -> Vec<NodeId> {
         match self {
-            SolverImpl::AllCompute(s) => s.solve(transition, runtime, trellis),
-            SolverImpl::Selective(s) => s.solve(transition, runtime, trellis),
+            SolverImpl::AllCompute(solver) => solver.select(ctx, source, to_layer),
+            SolverImpl::Selective(solver) => solver.select(ctx, source, to_layer),
         }
     }
 }

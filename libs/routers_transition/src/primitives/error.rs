@@ -1,31 +1,17 @@
 use thiserror::Error;
 
+/// Why a map-match could not be produced.
 #[derive(Error, Debug)]
 pub enum MatchError {
-    #[error("no input points were given")]
-    NoPointsProvided,
-
+    /// The transition graph could not be collapsed into a route.
     #[error("could not collapse transition graph: {0}")]
     CollapseFailure(CollapseError),
-
-    #[error("failed to attach ends in transition graph: {0}")]
-    EndAttachFailure(EndAttachError),
 }
 
+/// Why collapsing a weighted transition graph into a route failed.
 #[derive(Error, Debug)]
 pub enum CollapseError {
-    #[error("ends were not attached")]
-    NoEnds,
-
+    /// No path connects the first layer to the last within the graph.
     #[error("could not find a path through the transition graph")]
     NoPathFound,
-}
-
-#[derive(Error, Debug)]
-pub enum EndAttachError {
-    #[error("ends already attached to graph, cannot attach more than once")]
-    EndsAlreadyAttached,
-
-    #[error("layer missing from graph, both starts and ends must be present")]
-    LayerMissing,
 }
