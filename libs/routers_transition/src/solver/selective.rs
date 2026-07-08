@@ -94,7 +94,8 @@ where
 
         let mut nearest = (0..to_layer.len()).collect::<Vec<_>>();
         if nearest.len() > self.fanout {
-            nearest.sort_by(|&a, &b| distance_to(&to_layer[a]).total_cmp(&distance_to(&to_layer[b])));
+            nearest
+                .sort_by(|&a, &b| distance_to(&to_layer[a]).total_cmp(&distance_to(&to_layer[b])));
             nearest.truncate(self.fanout);
         }
 

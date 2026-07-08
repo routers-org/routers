@@ -124,7 +124,10 @@ where
     /// `(from, to)` for the layers on each side of it.
     pub fn boundary(&self, boundary: LayerId) -> (&[CandidateId], &[CandidateId]) {
         let from = boundary.index();
-        (&self.layers.layers[from].nodes, &self.layers.layers[from + 1].nodes)
+        (
+            &self.layers.layers[from].nodes,
+            &self.layers.layers[from + 1].nodes,
+        )
     }
 
     /// Map a solved trellis node-path back to the chosen candidate per layer.
@@ -132,8 +135,14 @@ where
         path.nodes
             .iter()
             .enumerate()
-            .filter_map(|(layer, node)| self.layers.layers.get(layer)?.nodes.get(node.index()).copied())
+            .filter_map(|(layer, node)| {
+                self.layers
+                    .layers
+                    .get(layer)?
+                    .nodes
+                    .get(node.index())
+                    .copied()
+            })
             .collect()
     }
-
 }
