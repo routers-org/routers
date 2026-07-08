@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use alloc::sync::Arc;
 
 use geo::{Destination, Geodesic, Point};
 use rstar::AABB;

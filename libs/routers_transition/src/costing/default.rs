@@ -1,5 +1,5 @@
 pub mod emission {
-    use std::ops::{Div, Neg};
+    use core::ops::{Div, Neg};
 
     use crate::*;
 

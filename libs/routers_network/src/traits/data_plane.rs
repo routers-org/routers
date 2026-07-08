@@ -16,7 +16,7 @@
 //! styles bridge via the blanket impl in `network.rs`.
 
 use core::fmt::Debug;
-use std::sync::Arc;
+use alloc::sync::Arc;
 
 use crate::{DirectionAwareEdgeId, Edge, Entry, Metadata, Node, edge::Weight};
 use geo::Point;

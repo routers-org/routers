@@ -38,7 +38,7 @@ pub enum TrellisError {
     },
 }
 
-type Result<T> = std::result::Result<T, TrellisError>;
+type Result<T> = core::result::Result<T, TrellisError>;
 
 /// Layered graph where each layer is connected only to its adjacent layers.
 ///

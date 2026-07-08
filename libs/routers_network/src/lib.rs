@@ -1,3 +1,5 @@
+extern crate alloc;
+
 pub mod primitive;
 pub mod traits;
 

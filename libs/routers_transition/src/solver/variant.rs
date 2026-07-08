@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use alloc::sync::Arc;
 
 use crate::{
     AllComputeSolver, Candidate, CandidateId, PredicateCache, RoutingContext, SelectiveSolver,

@@ -13,7 +13,8 @@
 //! Proximity pruning is a heuristic: a far-but-optimal target can be missed. For
 //! guaranteed-exact matching use [`AllComputeSolver`](crate::AllComputeSolver).
 
-use std::{marker::PhantomData, sync::Arc};
+use alloc::sync::Arc;
+use core::marker::PhantomData;
 
 use crate::{Candidate, CandidateId, PredicateCache, RoutingContext, Solver};
 use geo::{Distance, Haversine};

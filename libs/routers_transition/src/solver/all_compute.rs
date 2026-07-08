@@ -5,7 +5,8 @@
 //! solve. Exact, and the fastest choice for a from-scratch match. See
 //! [`SelectiveSolver`](crate::SelectiveSolver) for the pruned counterpart.
 
-use std::{marker::PhantomData, sync::Arc};
+use alloc::sync::Arc;
+use core::marker::PhantomData;
 
 use crate::{Candidate, CandidateId, PredicateCache, RoutingContext, Solver};
 use routers_network::{Entry, Metadata, Network};

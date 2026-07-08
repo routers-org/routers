@@ -1,4 +1,4 @@
-use std::fmt;
+use core::fmt;
 
 /// Index of a layer in a [`Trellis`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]

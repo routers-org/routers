@@ -1,4 +1,4 @@
-use std::{
+use core::{
     f64::consts::PI,
     ops::{Div, Mul, Rem},
 };
