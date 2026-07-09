@@ -8,7 +8,7 @@ use rustc_hash::FxHashMap;
 
 use crate::{Candidate, CandidateId, PredicateCache, Reachable, RoutingContext};
 
-/// A parent-pointer map — each node mapped to its parent (and the cost to it) —
+/// A parent-pointer map — each node mapped to the parent it was reached from —
 /// as produced by the predicate cache's bounded Dijkstra.
 trait ParentPath<K> {
     /// The nodes from `root` to `leaf` inclusive, followed via parent pointers,
@@ -16,7 +16,7 @@ trait ParentPath<K> {
     fn path(&self, root: &K, leaf: &K) -> Option<Vec<K>>;
 }
 
-impl<K, C> ParentPath<K> for FxHashMap<K, (K, C)>
+impl<K> ParentPath<K> for FxHashMap<K, K>
 where
     K: Eq + Hash + Copy,
 {
@@ -25,7 +25,7 @@ where
         let mut cursor = leaf;
 
         while cursor != root {
-            let (parent, _) = self.get(cursor)?;
+            let parent = self.get(cursor)?;
             nodes.push(*parent);
             cursor = parent;
         }

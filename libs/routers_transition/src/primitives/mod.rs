@@ -17,7 +17,3 @@ pub use cache::*;
 pub mod weight_and_distance;
 #[doc(inline)]
 pub use weight_and_distance::WeightAndDistance;
-
-pub mod cumulative;
-#[doc(inline)]
-pub use cumulative::Fraction;
