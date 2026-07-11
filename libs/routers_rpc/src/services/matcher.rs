@@ -14,7 +14,7 @@ use schema::proto::routers::model::v1::{
     Edge, EdgeIdentifier, MatchedRoute, NodeIdentifier, RouteEdge, RouteElement,
 };
 
-use routers::{Match, Path, RoutedPath};
+use routers::{Match, RoutedPath, transition::candidate::Path};
 use routers_network::{Entry, Metadata};
 #[cfg(feature = "telemetry")]
 use tracing::Level;
