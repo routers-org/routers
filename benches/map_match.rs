@@ -245,23 +245,24 @@ fn target_benchmark(c: &mut criterion::Criterion) {
             // fresh MatchState per point discards all weighed boundaries and
             // the cached forward pass, redoing the whole trellis every time.
             // The delta against `stream` is exactly the trellis-as-cache win.
-            let stream_naive = |solver: &AllComputeSolver<OsmEntryId, OsmEdgeMetadata, OsmNetwork>| {
-                let mut transition = Transition::empty(&graph, &strategies);
+            let stream_naive =
+                |solver: &AllComputeSolver<OsmEntryId, OsmEdgeMetadata, OsmNetwork>| {
+                    let mut transition = Transition::empty(&graph, &strategies);
 
-                for point in &points {
-                    transition
-                        .push(*point, &generator)
-                        .expect("point must anchor");
+                    for point in &points {
+                        transition
+                            .push(*point, &generator)
+                            .expect("point must anchor");
 
-                    let mut state = MatchState::default();
-                    for width in transition.widths() {
-                        state.extend(width).expect("state must extend");
+                        let mut state = MatchState::default();
+                        for width in transition.widths() {
+                            state.extend(width).expect("state must extend");
+                        }
+                        solver
+                            .solve_path(&transition, &runtime, &mut state)
+                            .expect("naive solve must succeed");
                     }
-                    solver
-                        .solve_path(&transition, &runtime, &mut state)
-                        .expect("naive solve must succeed");
-                }
-            };
+                };
 
             // The windowed naive baseline: per point, rebuild and solve a
             // transition over only the last `window` points — bounded per-step
@@ -424,19 +425,16 @@ fn target_benchmark(c: &mut criterion::Criterion) {
                 )
             });
 
-            group.bench_function(
-                format!("trellis:naive:window20:cold: {}", sc.name),
-                |b| {
-                    b.iter_batched(
-                        fresh_cache,
-                        |cold| {
-                            let solver = AllComputeSolver::default().use_cache(cold);
-                            stream_windowed(20, &solver)
-                        },
-                        BatchSize::SmallInput,
-                    )
-                },
-            );
+            group.bench_function(format!("trellis:naive:window20:cold: {}", sc.name), |b| {
+                b.iter_batched(
+                    fresh_cache,
+                    |cold| {
+                        let solver = AllComputeSolver::default().use_cache(cold);
+                        stream_windowed(20, &solver)
+                    },
+                    BatchSize::SmallInput,
+                )
+            });
         });
     });
 

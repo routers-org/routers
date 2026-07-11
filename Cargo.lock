@@ -6397,6 +6397,7 @@ dependencies = [
  "codspeed-criterion-compat",
  "geo",
  "insta",
+ "rayon",
  "routers_codec",
  "routers_fixtures",
  "routers_network",

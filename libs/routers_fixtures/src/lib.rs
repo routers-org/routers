@@ -10,6 +10,20 @@ pub const ZURICH: &str = "zurich-minified.osm.pbf";
 pub const LOS_ANGELES_SAVED: &str = "los-angeles-minified.rt";
 pub const SYDNEY_SAVED: &str = "sydney-minified.rt";
 
+/// A single continuous real-world GPS trace (4,550 points at ~6s intervals,
+/// max inter-point gap ~108m) extracted from the Sydney realtime replay
+/// dataset (`routers_realtime/data`, trip `29f471bd`). WKT `LINESTRING`,
+/// intended for sustained-throughput benchmarking against [`SYDNEY`].
+pub const SYDNEY_THROUGHPUT_TRIP: &str = "sydney-throughput-trip.wkt";
+
+/// A fleet of 64 real-world GPS traces (one WKT `LINESTRING` per line), each
+/// the last 100 points of a distinct continuous trip (max inter-point gap
+/// ≤500m) from the Sydney realtime replay dataset, stratified across the
+/// distance-travelled distribution (urban crawls through to highway runs).
+/// Intended for saturated (multi-vehicle) throughput benchmarking against
+/// [`SYDNEY`].
+pub const SYDNEY_THROUGHPUT_FLEET: &str = "sydney-throughput-fleet.wkt";
+
 pub mod macros {
     #[macro_export]
     macro_rules! fixture {

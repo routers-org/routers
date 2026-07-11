@@ -178,6 +178,7 @@ serde = { workspace = true }
 [dev-dependencies]
 wkt = { workspace = true }
 insta = { workspace = true }
+rayon = { workspace = true }
 
 criterion = { workspace = true }
 routers_fixtures = { workspace = true }
@@ -186,6 +187,10 @@ geo = { workspace = true }
 
 [[bench]]
 name = "map_match"
+harness = false
+
+[[bench]]
+name = "throughput"
 harness = false
 
 [[bench]]
