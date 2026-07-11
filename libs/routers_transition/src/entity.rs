@@ -116,8 +116,30 @@ where
     /// solver only has to fill weights (phase 1) and the graph solve (phase 2) is
     /// left to [`routers_trellis`]. Callers may equally build/inject their own.
     pub fn trellis(&self) -> Result<Trellis, MatchError> {
-        Trellis::new(self.widths())
-            .map_err(|_| MatchError::CollapseFailure(CollapseError::NoPathFound))
+        // Any point with no candidate road within the search radius yields an
+        // empty layer and cannot be anchored. Report every such point so the
+        // caller can locate all off-network positions at once, not just the
+        // first.
+        let points = self
+            .layers
+            .layers
+            .iter()
+            .enumerate()
+            .filter(|(_, layer)| layer.nodes.is_empty())
+            .map(|(layer, l)| Unanchored {
+                layer,
+                origin: l.origin,
+            })
+            .collect::<Vec<_>>();
+
+        if !points.is_empty() {
+            return Err(UnanchoredError { points }.into());
+        }
+
+        // Widths are all non-zero here; an empty trajectory (no layers) falls
+        // through to `TrellisError::Empty`, and any other failure is likewise a
+        // trellis-level rejection rather than an unanchored/disconnected input.
+        Ok(Trellis::new(self.widths())?)
     }
 
     /// The candidate ids of the two layers a [`boundary`](LayerId) joins:

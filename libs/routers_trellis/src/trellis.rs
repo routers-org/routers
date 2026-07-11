@@ -138,6 +138,18 @@ impl Trellis {
         self.transitions.get(layer.index())?.weights()
     }
 
+    /// Every boundary left `Pending` — unresolved because nothing bridged it —
+    /// in layer order. These are the trajectory's gaps: stretches the weigher
+    /// could not cross at all. Empty when every boundary resolved.
+    pub fn disconnections(&self) -> Vec<LayerId> {
+        self.transitions
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| !t.is_resolved())
+            .map(|(i, _)| LayerId(i as u32))
+            .collect()
+    }
+
     /// Weight of a single edge across the `layer → layer+1` boundary.
     /// Returns `INF_W` if the transition is pending or the edge is absent.
     pub fn edge_weight(&self, layer: LayerId, from: NodeId, to: NodeId) -> u32 {

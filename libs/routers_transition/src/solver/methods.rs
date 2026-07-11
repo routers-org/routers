@@ -1,6 +1,6 @@
 use crate::{
-    Candidate, CandidateId, CollapseError, CollapsedPath, Costing, MatchError, PredicateCache,
-    Reachable, RoutingContext, SideTable, Transition, TransitionContext,
+    Candidate, CandidateId, CollapsedPath, Costing, Disconnected, DisconnectedError, MatchError,
+    PredicateCache, Reachable, RoutingContext, SideTable, Transition, TransitionContext,
     costing::{EmissionStrategy, TransitionStrategy},
     solver::expansion::Expansion,
 };
@@ -165,9 +165,14 @@ where
             .collect::<Vec<_>>();
 
         for (boundary, (matrix, hops)) in weighed {
-            trellis
-                .fill_transition(boundary, &matrix)
-                .map_err(|_| MatchError::CollapseFailure(CollapseError::NoPathFound))?;
+            // A boundary nothing could bridge is left Pending rather than
+            // resolved-but-empty: an unresolved boundary is exactly how the
+            // trellis records a gap (see `Trellis::disconnections`).
+            if matrix.iter().all(|&w| w == NO_EDGE) {
+                continue;
+            }
+
+            trellis.fill_transition(boundary, &matrix)?;
             side.extend(hops);
         }
 
@@ -193,11 +198,35 @@ where
         let mut side = SideTable::default();
         self.weigh(&transition, runtime, trellis, &mut side)?;
 
-        let path = ViterbiSolver::new()
-            .solve(trellis)
-            .map_err(|_| MatchError::CollapseFailure(CollapseError::NoPathFound))?;
+        let layers = &transition.layers.layers;
+        let disconnected = |breaks: Vec<LayerId>| -> MatchError {
+            let breaks = breaks
+                .into_iter()
+                .map(|boundary| {
+                    let (from, to) = (boundary.index(), boundary.index() + 1);
+                    Disconnected {
+                        from_layer: from,
+                        to_layer: to,
+                        from_origin: layers[from].origin,
+                        to_origin: layers[to].origin,
+                    }
+                })
+                .collect::<Vec<_>>();
+            DisconnectedError { breaks }.into()
+        };
+
+        // Gaps: boundaries the weigher left Pending because nothing bridged them.
+        let gaps = trellis.disconnections();
+        if !gaps.is_empty() {
+            return Err(disconnected(gaps));
+        }
+
+        let path = ViterbiSolver::new().solve(trellis)?;
         if !path.reachable {
-            return Err(MatchError::CollapseFailure(CollapseError::NoPathFound));
+            // Every boundary resolved, yet the reachable frontier dies mid-way:
+            // some boundary has edges but none continue a live path. `Pending`
+            // can't express this, so walk the resolved weights to find where.
+            return Err(disconnected(frontier_collapse(trellis)));
         }
 
         let route = transition.route_of(&path);
@@ -208,4 +237,45 @@ where
             transition.candidates,
         ))
     }
+}
+
+/// Boundaries where a fully-resolved trellis still cannot carry a route: the
+/// reachable frontier (all of layer 0, then propagated forward) dies because a
+/// boundary's edges lead nowhere live. Reachability restarts past each break so
+/// independent collapses downstream also surface.
+///
+/// This is the frontier-collapse residual that `Trellis::disconnections`
+/// (Pending gaps) cannot see; every boundary here is resolved and has edges.
+fn frontier_collapse(trellis: &Trellis) -> Vec<LayerId> {
+    let widths = trellis.widths();
+    let mut reachable = (0..widths[0] as usize).collect::<Vec<_>>();
+    let mut breaks = Vec::new();
+
+    for boundary in trellis.boundaries() {
+        let to_width = widths[boundary.index() + 1] as usize;
+
+        // A target is reachable when a reachable source has a present edge to it;
+        // absent edges sit above the weight ceiling.
+        let next = trellis
+            .layer(boundary)
+            .map(|matrix| {
+                (0..to_width)
+                    .filter(|&t| {
+                        reachable
+                            .iter()
+                            .any(|&s| matrix[s * to_width + t] <= MAX_WEIGHT)
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+
+        if next.is_empty() {
+            breaks.push(boundary);
+            reachable = (0..to_width).collect();
+        } else {
+            reachable = next;
+        }
+    }
+
+    breaks
 }
