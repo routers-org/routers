@@ -200,6 +200,243 @@ fn target_benchmark(c: &mut criterion::Criterion) {
                     )
                 },
             );
+
+            // == Trellis solve: full forward pass vs one layer at a time ==
+            //
+            // Three drivers over the same warm shared cache:
+            //  - `forward`      — batch: layers pre-generated (in setup), every
+            //                     boundary weighed at once, one solve.
+            //  - `progressive`  — layers pre-generated (in setup), then the
+            //                     state grows one layer per step, re-solving
+            //                     after each extension (resumed forward pass).
+            //  - `streaming`    — the true realtime loop: each point is pushed
+            //                     as it "arrives" (per-point layer generation
+            //                     included), the state extends, and the solve
+            //                     resumes. Nothing is known up-front.
+            let strategies = CostingStrategies::default();
+            let generator =
+                StandardGenerator::new(&graph, &strategies.emission, DEFAULT_SEARCH_DISTANCE);
+            let build_transition = || {
+                let generator =
+                    StandardGenerator::new(&graph, &strategies.emission, DEFAULT_SEARCH_DISTANCE);
+                Transition::new(&graph, coordinates.clone(), &strategies, generator)
+            };
+            let points = coordinates.clone().into_points();
+
+            let stream = |solver: &AllComputeSolver<OsmEntryId, OsmEdgeMetadata, OsmNetwork>| {
+                let mut transition = Transition::empty(&graph, &strategies);
+                let mut state = MatchState::default();
+
+                for point in &points {
+                    let width = transition
+                        .push(*point, &generator)
+                        .expect("point must anchor");
+                    state.extend(width).expect("state must extend");
+                    solver
+                        .solve_path(&transition, &runtime, &mut state)
+                        .expect("streaming solve must succeed");
+                }
+
+                (transition, state)
+            };
+
+            // The naive realtime baseline: layers still arrive incrementally
+            // (same generation as `stream`), but nothing solved is kept — a
+            // fresh MatchState per point discards all weighed boundaries and
+            // the cached forward pass, redoing the whole trellis every time.
+            // The delta against `stream` is exactly the trellis-as-cache win.
+            let stream_naive = |solver: &AllComputeSolver<OsmEntryId, OsmEdgeMetadata, OsmNetwork>| {
+                let mut transition = Transition::empty(&graph, &strategies);
+
+                for point in &points {
+                    transition
+                        .push(*point, &generator)
+                        .expect("point must anchor");
+
+                    let mut state = MatchState::default();
+                    for width in transition.widths() {
+                        state.extend(width).expect("state must extend");
+                    }
+                    solver
+                        .solve_path(&transition, &runtime, &mut state)
+                        .expect("naive solve must succeed");
+                }
+            };
+
+            // The windowed naive baseline: per point, rebuild and solve a
+            // transition over only the last `window` points — bounded per-step
+            // cost, but approximate (no memory past the window) and it redoes
+            // the window's layer generation, as a real windowed matcher would.
+            let stream_windowed = |window: usize,
+                                   solver: &AllComputeSolver<
+                OsmEntryId,
+                OsmEdgeMetadata,
+                OsmNetwork,
+            >| {
+                let mut seen: Vec<Point> = Vec::new();
+
+                for point in &points {
+                    seen.push(*point);
+                    let tail = seen.len().saturating_sub(window);
+
+                    let generator = StandardGenerator::new(
+                        &graph,
+                        &strategies.emission,
+                        DEFAULT_SEARCH_DISTANCE,
+                    );
+                    let transition = Transition::new(
+                        &graph,
+                        LineString::from(seen[tail..].to_vec()),
+                        &strategies,
+                        generator,
+                    );
+                    solver
+                        .solve(transition, &runtime, &mut MatchState::default())
+                        .expect("windowed solve must succeed");
+                }
+            };
+
+            // All three drivers must agree exactly — checked once, unmeasured.
+            {
+                let solver = AllComputeSolver::default().use_cache(cache.clone());
+
+                let forward = solver
+                    .solve(build_transition(), &runtime, &mut MatchState::default())
+                    .expect("forward solve must succeed");
+
+                let progressive = solver
+                    .solve_progressive(build_transition(), &runtime, &mut MatchState::default())
+                    .expect("progressive solve must succeed");
+
+                let (transition, mut state) = stream(&solver);
+                let streamed = solver
+                    .solve_path(&transition, &runtime, &mut state)
+                    .expect("streamed solve must succeed");
+
+                assert_eq!(forward.cost, progressive.cost);
+                assert_eq!(forward.route, progressive.route);
+                assert_eq!(forward.cost, streamed.cost);
+                assert_eq!(forward.route, transition.route_of(&streamed));
+            }
+
+            group.bench_function(format!("trellis:forward: {}", sc.name), |b| {
+                b.iter_batched(
+                    build_transition,
+                    |transition| {
+                        let solver = AllComputeSolver::default().use_cache(cache.clone());
+                        solver
+                            .solve(transition, &runtime, &mut MatchState::default())
+                            .expect("solve must succeed")
+                    },
+                    BatchSize::SmallInput,
+                )
+            });
+
+            group.bench_function(format!("trellis:progressive: {}", sc.name), |b| {
+                b.iter_batched(
+                    build_transition,
+                    |transition| {
+                        let solver = AllComputeSolver::default().use_cache(cache.clone());
+                        solver
+                            .solve_progressive(transition, &runtime, &mut MatchState::default())
+                            .expect("solve must succeed")
+                    },
+                    BatchSize::SmallInput,
+                )
+            });
+
+            group.bench_function(format!("trellis:streaming: {}", sc.name), |b| {
+                b.iter(|| {
+                    let solver = AllComputeSolver::default().use_cache(cache.clone());
+                    black_box(stream(&solver))
+                })
+            });
+
+            // The same three drivers on a **cold** cache: each iteration gets a
+            // fresh PredicateCache (allocated in setup, excluded from the
+            // measurement), so every `reach` pays its network Dijkstra. Within
+            // one iteration the cache is still shared across that route's own
+            // appends — the realtime first-match cost.
+            let fresh_cache =
+                || Arc::new(PredicateCache::<OsmEntryId, OsmEdgeMetadata, OsmNetwork>::default());
+
+            group.bench_function(format!("trellis:forward:cold: {}", sc.name), |b| {
+                b.iter_batched(
+                    || (build_transition(), fresh_cache()),
+                    |(transition, cold)| {
+                        let solver = AllComputeSolver::default().use_cache(cold);
+                        solver
+                            .solve(transition, &runtime, &mut MatchState::default())
+                            .expect("solve must succeed")
+                    },
+                    BatchSize::SmallInput,
+                )
+            });
+
+            group.bench_function(format!("trellis:progressive:cold: {}", sc.name), |b| {
+                b.iter_batched(
+                    || (build_transition(), fresh_cache()),
+                    |(transition, cold)| {
+                        let solver = AllComputeSolver::default().use_cache(cold);
+                        solver
+                            .solve_progressive(transition, &runtime, &mut MatchState::default())
+                            .expect("solve must succeed")
+                    },
+                    BatchSize::SmallInput,
+                )
+            });
+
+            group.bench_function(format!("trellis:streaming:cold: {}", sc.name), |b| {
+                b.iter_batched(
+                    fresh_cache,
+                    |cold| {
+                        let solver = AllComputeSolver::default().use_cache(cold);
+                        black_box(stream(&solver))
+                    },
+                    BatchSize::SmallInput,
+                )
+            });
+
+            // Naive baselines, warm and cold.
+
+            group.bench_function(format!("trellis:naive: {}", sc.name), |b| {
+                b.iter(|| {
+                    let solver = AllComputeSolver::default().use_cache(cache.clone());
+                    stream_naive(&solver)
+                })
+            });
+
+            group.bench_function(format!("trellis:naive:window20: {}", sc.name), |b| {
+                b.iter(|| {
+                    let solver = AllComputeSolver::default().use_cache(cache.clone());
+                    stream_windowed(20, &solver)
+                })
+            });
+
+            group.bench_function(format!("trellis:naive:cold: {}", sc.name), |b| {
+                b.iter_batched(
+                    fresh_cache,
+                    |cold| {
+                        let solver = AllComputeSolver::default().use_cache(cold);
+                        stream_naive(&solver)
+                    },
+                    BatchSize::SmallInput,
+                )
+            });
+
+            group.bench_function(
+                format!("trellis:naive:window20:cold: {}", sc.name),
+                |b| {
+                    b.iter_batched(
+                        fresh_cache,
+                        |cold| {
+                            let solver = AllComputeSolver::default().use_cache(cold);
+                            stream_windowed(20, &solver)
+                        },
+                        BatchSize::SmallInput,
+                    )
+                },
+            );
         });
     });
 

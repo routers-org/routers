@@ -18,6 +18,11 @@ pub mod trip;
 pub use r#match::DEFAULT_SEARCH_DISTANCE;
 pub use r#match::Match;
 
+// The trellis types appearing in this crate's public API (the caller owns the
+// trellis a solver fills), re-exported so consumers need not depend on
+// `routers_trellis` directly.
+pub use routers_trellis::{LayerId, NodeId, Path, Trellis};
+
 // Re-Exports
 #[doc(inline)]
 pub use candidate::*;

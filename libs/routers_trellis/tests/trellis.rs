@@ -253,3 +253,67 @@ fn brute_force_errors_on_pending() {
         Err(SolveError::NotResolved(LayerId(0)))
     );
 }
+
+// ---- incremental resume ----
+
+/// Grow a random trellis one layer at a time, resuming the same solver after
+/// each append; every intermediate result must equal a from-scratch solve.
+#[test]
+fn resumed_solve_matches_fresh_solve_while_growing() {
+    let full = random_trellis(10, 8, 0xBEEF);
+
+    let mut grown = Trellis::new(vec![8u32]).unwrap();
+    let mut resumed = ViterbiSolver::new();
+    assert_eq!(
+        resumed.solve_resuming(&grown, LayerId(0)).unwrap(),
+        ViterbiSolver::new().solve(&grown).unwrap()
+    );
+
+    for boundary in full.boundaries() {
+        grown
+            .add_layer(full.widths()[boundary.index() + 1])
+            .unwrap();
+        grown
+            .fill_layer(boundary, full.layer(boundary).unwrap().to_vec())
+            .unwrap();
+
+        // The only changed boundary is the appended one.
+        assert_eq!(
+            resumed.solve_resuming(&grown, boundary).unwrap(),
+            ViterbiSolver::new().solve(&grown).unwrap()
+        );
+    }
+}
+
+/// A resume point past the cached prefix (e.g. a brand-new solver) must fall
+/// back to a correct full solve rather than read uninitialised scratch.
+#[test]
+fn resume_without_cache_falls_back_to_full_solve() {
+    let t = random_trellis(6, 5, 0xF00D);
+    assert_eq!(
+        ViterbiSolver::new().solve_resuming(&t, LayerId(4)).unwrap(),
+        ViterbiSolver::new().solve(&t).unwrap()
+    );
+}
+
+/// Resuming from the last boundary after no changes is a backtrack-only pass
+/// and must reproduce the previous result.
+#[test]
+fn resume_with_no_changes_is_stable() {
+    let t = random_trellis(7, 6, 0xCAFE);
+    let mut solver = ViterbiSolver::new();
+    let fresh = solver.solve(&t).unwrap();
+    let resumed = solver
+        .solve_resuming(&t, LayerId(t.layers() as u32 - 1))
+        .unwrap();
+    assert_eq!(fresh, resumed);
+}
+
+#[test]
+fn add_layer_rejects_zero_width() {
+    let mut t = Trellis::new(vec![2u32]).unwrap();
+    assert_eq!(
+        t.add_layer(0),
+        Err(TrellisError::ZeroWidthLayer(LayerId(1)))
+    );
+}

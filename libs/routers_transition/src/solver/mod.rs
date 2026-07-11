@@ -7,6 +7,8 @@ pub mod methods;
 #[doc(hidden)]
 pub mod selective;
 #[doc(hidden)]
+pub mod state;
+#[doc(hidden)]
 pub mod variant;
 
 #[doc(inline)]
@@ -15,5 +17,7 @@ pub use all_compute::*;
 pub use methods::*;
 #[doc(inline)]
 pub use selective::*;
+#[doc(inline)]
+pub use state::*;
 #[doc(inline)]
 pub use variant::*;

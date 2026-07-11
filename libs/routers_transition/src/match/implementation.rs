@@ -36,11 +36,11 @@ where
             None => opts.solver.without_cache(),
         };
 
-        // This layer owns the trellis; a fresh match starts from an empty one.
-        let mut trellis = transition.trellis()?;
+        // This layer owns the match state; a fresh match starts from an empty one.
+        let mut state = crate::MatchState::default();
 
         solver
-            .solve(transition, &opts.runtime, &mut trellis)
+            .solve(transition, &opts.runtime, &mut state)
             .map(|collapsed| RoutedPath::new(collapsed, self))
     }
 

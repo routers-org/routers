@@ -63,24 +63,7 @@ where
         let per_layer: Vec<Vec<Candidate<E>>> = input
             .into_par_iter()
             .enumerate()
-            .map(|(layer_id, origin)| {
-                self.map
-                    .nearest_nodes_projected(origin, self.search_distance)
-                    .enumerate()
-                    .map(|(node_id, (position, edge))| {
-                        let location = CandidateLocation { layer_id, node_id };
-                        let distance = Haversine.distance(position, *origin);
-                        let emission = self.emission.cost(EmissionContext::new(
-                            &position,
-                            origin,
-                            distance,
-                            edge.weight,
-                        ));
-
-                        Candidate::new(edge.thin(), position, emission, location)
-                    })
-                    .collect()
-            })
+            .map(|(layer_id, origin)| self.candidates(origin, layer_id))
             .collect();
 
         // Assign stable, per-layer-sequential CandidateIds. Each layer keeps its
@@ -105,5 +88,24 @@ where
             .collect();
 
         (Layers { layers }, Candidates::new(lookup))
+    }
+
+    fn candidates(&self, origin: &Point, layer_id: usize) -> Vec<Candidate<E>> {
+        self.map
+            .nearest_nodes_projected(origin, self.search_distance)
+            .enumerate()
+            .map(|(node_id, (position, edge))| {
+                let location = CandidateLocation { layer_id, node_id };
+                let distance = Haversine.distance(position, *origin);
+                let emission = self.emission.cost(EmissionContext::new(
+                    &position,
+                    origin,
+                    distance,
+                    edge.weight,
+                ));
+
+                Candidate::new(edge.thin(), position, emission, location)
+            })
+            .collect()
     }
 }

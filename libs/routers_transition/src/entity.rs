@@ -2,7 +2,7 @@ use core::marker::PhantomData;
 
 use crate::*;
 
-use crate::definition::Layers;
+use crate::definition::{Layer, Layers};
 use crate::generation::LayerGeneration;
 use geo::LineString;
 use routers_network::Network;
@@ -26,12 +26,28 @@ use routers_trellis::{LayerId, Trellis};
 /// let generator = StandardGenerator::new(&map, &costing.emission, DEFAULT_SEARCH_DISTANCE);
 /// let transition = Transition::new(&map, route, &costing, generator);
 ///
-/// // The caller owns the trellis — build one (or reuse an existing one) and hand
-/// // it to the solver; it is never created inside the solve.
-/// let mut trellis = transition.trellis()?;
-/// let solved = AllComputeSolver::default().solve(transition, &runtime, &mut trellis)?;
+/// // The caller owns the match state — the solver grows and fills it, but
+/// // never creates it, so it can be inspected, reused, or resumed.
+/// let mut state = MatchState::default();
+/// let solved = AllComputeSolver::default().solve(transition, &runtime, &mut state)?;
 ///
 /// let interpolated = solved.interpolated(&map);
+/// ```
+///
+/// ### Realtime
+///
+/// When positions arrive one at a time, build the transition [empty](Self::empty)
+/// and [push](Self::push) each point as it lands; every round weighs only the
+/// new boundary and resumes the cached forward pass:
+///
+/// ```ignore
+/// let mut transition = Transition::empty(&map, &costing);
+/// let mut state = MatchState::default();
+///
+/// for point in stream {
+///     state.extend(transition.push(point, &generator)?)?;
+///     let path = solver.solve_path(&transition, &runtime, &mut state)?;
+/// }
 /// ```
 pub struct Transition<'a, Emission, Transition, E, M, N>
 where
@@ -88,6 +104,60 @@ where
         }
     }
 
+    /// A transition with no points yet: the starting state of a realtime
+    /// (streaming) match, grown one position at a time with
+    /// [`push`](Transition::push).
+    pub fn empty(
+        map: &'a N,
+        heuristics: &'a CostingStrategies<Emmis, Trans, E>,
+    ) -> Transition<'a, Emmis, Trans, E, M, N> {
+        Transition {
+            map,
+            candidates: Candidates::default(),
+            layers: Layers::default(),
+            heuristics,
+            _phantom: PhantomData,
+        }
+    }
+
+    /// Append one trajectory position as a new layer, returning the layer's
+    /// candidate count (its trellis width).
+    ///
+    /// This is the streaming counterpart of [`new`](Transition::new): a
+    /// realtime consumer pushes each point as it arrives, extends its
+    /// [`MatchState`](crate::MatchState) by the returned width, and re-solves.
+    /// A point with no road candidate within the generator's search radius is
+    /// rejected ([`UnanchoredError`]) and leaves the transition unchanged, so
+    /// the caller may drop or retry the point.
+    pub fn push(
+        &mut self,
+        origin: geo::Point,
+        generator: &impl LayerGeneration<E>,
+    ) -> Result<u32, MatchError> {
+        let layer = self.layers.layers.len();
+        let candidates = generator.candidates(&origin, layer);
+
+        if candidates.is_empty() {
+            return Err(UnanchoredError {
+                points: vec![Unanchored { layer, origin }],
+            }
+            .into());
+        }
+
+        // Candidate ids are flat insertion order, so appending a layer simply
+        // continues the sequence from the current total.
+        let mut nodes = Vec::with_capacity(candidates.len());
+        for candidate in candidates {
+            let id = CandidateId::new(self.candidates.lookup.len());
+            let _ = self.candidates.lookup.insert(id, candidate);
+            nodes.push(id);
+        }
+
+        let width = nodes.len() as u32;
+        self.layers.layers.push(Layer { nodes, origin });
+        Ok(width)
+    }
+
     /// Converts the transition graph into a [`RoutingContext`].
     pub fn context<'b>(&'a self, runtime: &'b M::Runtime) -> RoutingContext<'b, E, M, N>
     where
@@ -109,13 +179,9 @@ where
             .collect()
     }
 
-    /// Allocate an empty (all-pending) [`Trellis`] sized for this transition's
-    /// layers.
-    ///
-    /// Trellis *construction* is deliberately separated from weight-solving so a
-    /// solver only has to fill weights (phase 1) and the graph solve (phase 2) is
-    /// left to [`routers_trellis`]. Callers may equally build/inject their own.
-    pub fn trellis(&self) -> Result<Trellis, MatchError> {
+    /// The trellis widths for this transition, validated: every input point must
+    /// have anchored to at least one candidate.
+    pub(crate) fn validated_widths(&self) -> Result<Vec<u32>, MatchError> {
         // Any point with no candidate road within the search radius yields an
         // empty layer and cannot be anchored. Report every such point so the
         // caller can locate all off-network positions at once, not just the
@@ -136,10 +202,20 @@ where
             return Err(UnanchoredError { points }.into());
         }
 
+        Ok(self.widths())
+    }
+
+    /// Allocate an empty (all-pending) [`Trellis`] sized for this transition's
+    /// layers.
+    ///
+    /// Trellis *construction* is deliberately separated from weight-solving so a
+    /// solver only has to fill weights (phase 1) and the graph solve (phase 2) is
+    /// left to [`routers_trellis`]. Callers may equally build/inject their own.
+    pub fn trellis(&self) -> Result<Trellis, MatchError> {
         // Widths are all non-zero here; an empty trajectory (no layers) falls
         // through to `TrellisError::Empty`, and any other failure is likewise a
         // trellis-level rejection rather than an unanchored/disconnected input.
-        Ok(Trellis::new(self.widths())?)
+        Ok(Trellis::new(self.validated_widths()?)?)
     }
 
     /// The candidate ids of the two layers a [`boundary`](LayerId) joins:

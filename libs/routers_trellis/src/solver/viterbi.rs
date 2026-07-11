@@ -30,16 +30,21 @@ impl ViterbiSolver {
         }
     }
 
-    /// Fill `self.dist` with the minimum-cost distance to every node.
+    /// Fill `self.dist` with the minimum-cost distance to every node, resuming
+    /// from boundary `from`: distances for layers `0..=from` are taken as
+    /// already valid in `self.dist`, and only layers past `from` are
+    /// recomputed. `from = 0` is a full forward pass.
     #[cfg_attr(feature = "tracing", tracing::instrument(level = "trace", skip_all))]
-    fn forward_pass(&mut self, t: &Trellis) {
-        // Every first-layer node starts at cost zero (virtual source).
-        let first_width = t.widths()[0] as usize;
-        for cost in &mut self.dist[..first_width] {
-            *cost = 0;
+    fn forward_pass(&mut self, t: &Trellis, from: usize) {
+        if from == 0 {
+            // Every first-layer node starts at cost zero (virtual source).
+            let first_width = t.widths()[0] as usize;
+            for cost in &mut self.dist[..first_width] {
+                *cost = 0;
+            }
         }
 
-        for layer in 0..t.layers() - 1 {
+        for layer in from..t.layers() - 1 {
             let cur_width = t.widths()[layer] as usize;
             let next_width = t.widths()[layer + 1] as usize;
             let cur_start = self.offsets[layer];
@@ -134,21 +139,44 @@ impl ViterbiSolver {
     }
 }
 
-impl Solve for ViterbiSolver {
-    /// Minimum-cost path through `t`. Reuses internal buffers across calls.
+impl ViterbiSolver {
+    /// Minimum-cost path through `t`, resuming the forward pass from boundary
+    /// `resume_from` — the first boundary whose weights may have changed since
+    /// this solver's previous solve of the *same, append-only grown* trellis.
+    ///
+    /// The forward pass is a prefix DP, so distances for layers up to
+    /// `resume_from` are reused from the cached scratch and only later layers
+    /// are recomputed; the backtrack always runs in full (the optimal final
+    /// node can change on every append). `resume_from = LayerId(0)` — or a
+    /// solver with no usable cache — degenerates to a full solve, so a fresh
+    /// solver is always correct.
+    ///
+    /// ### Caller contract
+    ///
+    /// Versioning is caller-owned: the trellis carries no version state, so
+    /// the caller must only resume against a trellis whose boundaries below
+    /// `resume_from` are byte-identical to what this solver last solved
+    /// (append layers at the end; never edit the prefix). A debug assertion
+    /// cross-checks the prefix widths against the cached layout; release
+    /// builds trust the caller.
     #[cfg_attr(
         feature = "tracing",
         tracing::instrument(
             level = "debug",
             name = "viterbi",
             skip(self, t),
-            fields(layers = t.layers())
+            fields(layers = t.layers(), resume = resume_from.index())
         )
     )]
-    fn solve(&mut self, t: &Trellis) -> Result<Path, SolveError> {
+    pub fn solve_resuming(
+        &mut self,
+        t: &Trellis,
+        resume_from: LayerId,
+    ) -> Result<Path, SolveError> {
         log::debug!(
-            "ViterbiSolver::solve: {} layers, widths={:?}",
+            "ViterbiSolver::solve: {} layers (resume from boundary {}), widths={:?}",
             t.layers(),
+            resume_from,
             t.widths()
         );
 
@@ -157,8 +185,27 @@ impl Solve for ViterbiSolver {
             return Err(SolveError::NotResolved(layer));
         }
 
+        // Resuming from boundary `b` reuses cached distances for layers `0..=b`:
+        // the cache must cover them (offsets holds layers + 1 entries), and `b`
+        // may not exceed the last boundary. Anything else falls back to a full
+        // solve rather than reading garbage scratch.
+        let mut from = resume_from.index().min(t.layers() - 1);
+        if self.offsets.len() < from + 2 {
+            from = 0;
+        }
+
+        // The kept prefix must describe the same layers it was computed for —
+        // resuming against a different trellis is caller misuse (see contract).
+        debug_assert!(
+            from == 0
+                || (0..=from)
+                    .all(|l| { self.offsets[l + 1] - self.offsets[l] == t.widths()[l] as usize }),
+            "solve_resuming: cached prefix does not match the trellis — was this solver last used on a different trellis?"
+        );
+
         // Build prefix offsets: offsets[l] = index of layer l's first node in `dist`.
-        // offsets[layers] = total nodes across all layers.
+        // offsets[layers] = total nodes across all layers. Widths are append-only,
+        // so rebuilding never moves the kept prefix.
         self.offsets.clear();
         self.offsets.push(0);
         for &width in t.widths() {
@@ -175,7 +222,7 @@ impl Solve for ViterbiSolver {
             self.path.resize(t.layers(), 0);
         }
 
-        self.forward_pass(t);
+        self.forward_pass(t, from);
         let path = self.backtrack(t);
 
         log::debug!(
@@ -184,5 +231,15 @@ impl Solve for ViterbiSolver {
             path.reachable,
         );
         Ok(path)
+    }
+}
+
+impl Solve for ViterbiSolver {
+    /// Minimum-cost path through `t`. Reuses internal buffers across calls.
+    ///
+    /// Always a full solve; see [`solve_resuming`](ViterbiSolver::solve_resuming)
+    /// for the incremental entry used when a grown trellis is re-solved.
+    fn solve(&mut self, t: &Trellis) -> Result<Path, SolveError> {
+        self.solve_resuming(t, LayerId(0))
     }
 }

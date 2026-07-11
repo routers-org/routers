@@ -206,6 +206,12 @@ impl Trellis {
     /// Allocates a new layer with the given width and pending transition.
     #[cfg_attr(feature = "tracing", tracing::instrument(level = "debug", skip(self)))]
     pub fn add_layer(&mut self, width: u32) -> Result<()> {
+        if width == 0 {
+            return Err(TrellisError::ZeroWidthLayer(LayerId(
+                self.widths.len() as u32
+            )));
+        }
+
         self.widths.push(width);
         self.transitions.push(Transition::Pending);
 

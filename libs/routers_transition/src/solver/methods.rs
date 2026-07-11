@@ -1,11 +1,12 @@
 use crate::{
     Candidate, CandidateId, CollapsedPath, Costing, Disconnected, DisconnectedError, MatchError,
-    PredicateCache, Reachable, RoutingContext, SideTable, Transition, TransitionContext,
+    MatchState, PredicateCache, Reachable, RoutingContext, SideTable, Transition,
+    TransitionContext,
     costing::{EmissionStrategy, TransitionStrategy},
     solver::expansion::Expansion,
 };
 use routers_network::{Entry, Metadata, Network};
-use routers_trellis::{LayerId, MAX_WEIGHT, NO_EDGE, NodeId, Solve, Trellis, ViterbiSolver};
+use routers_trellis::{LayerId, MAX_WEIGHT, NO_EDGE, NodeId, Path, Trellis};
 
 use itertools::Itertools;
 use rayon::prelude::*;
@@ -17,14 +18,17 @@ type Hops<E> = Vec<((CandidateId, CandidateId), Reachable<E>)>;
 
 /// A strategy for collapsing a [`Transition`] into a matched [`CollapsedPath`].
 ///
-/// Every solver fills a caller-owned [`Trellis`] with transition weights and lets
-/// `routers_trellis` find the minimum-cost path. A strategy supplies only two
-/// things — its [`cache`](Solver::cache), and [which next-layer candidates to
-/// weigh](Solver::select) for a source — and inherits the whole pipeline
+/// Every solver fills the trellis of a caller-owned [`MatchState`] with
+/// transition weights and lets `routers_trellis` find the minimum-cost path. A
+/// strategy supplies only two things — its [`cache`](Solver::cache), and
+/// [which next-layer candidates to weigh](Solver::select) for a source — and
+/// inherits the whole pipeline
 /// (`hop` → `weigh_source` → `weigh_boundary` → `weigh` → `solve`).
 ///
-/// Weighing touches only **pending** boundaries, so handing in a partially-solved
-/// trellis resumes it rather than redoing the solved parts.
+/// Weighing touches only **pending** boundaries and the DP resumes its cached
+/// forward pass, so handing back a partially-solved state *continues* it
+/// rather than redoing the solved parts — this is what makes the realtime
+/// loop (see [`MatchState`]) an append-cost operation.
 pub trait Solver<E, M, N>
 where
     E: Entry,
@@ -112,6 +116,10 @@ where
 
     /// One boundary's dense row-major weight matrix (source rows stacked in order)
     /// plus all its hops.
+    ///
+    /// Source rows weigh in parallel so that a boundary weighed alone — the
+    /// realtime append — still uses the cores, but chunked (`with_min_len`) so
+    /// narrow boundaries don't drown the row's work in task overhead.
     fn weigh_boundary<Emmis, Trans>(
         &self,
         ctx: &RoutingContext<E, M, N>,
@@ -121,16 +129,21 @@ where
     where
         Emmis: EmissionStrategy + Send + Sync,
         Trans: TransitionStrategy<E> + Send + Sync,
+        Self: Sync,
     {
         let (from_layer, to_layer) = transition.boundary(boundary);
         let first_layer = boundary.index() == 0;
 
+        let weighed = from_layer
+            .par_iter()
+            .with_min_len(8)
+            .map(|&source| self.weigh_source(ctx, transition, source, to_layer, first_layer))
+            .collect::<Vec<_>>();
+
         let mut matrix = Vec::with_capacity(from_layer.len() * to_layer.len());
         let mut hops = Hops::new();
 
-        for &source in from_layer {
-            let (row, source_hops) =
-                self.weigh_source(ctx, transition, source, to_layer, first_layer);
+        for (row, source_hops) in weighed {
             matrix.extend(row);
             hops.extend(source_hops);
         }
@@ -140,13 +153,17 @@ where
 
     /// Weigh every **pending** boundary of `trellis` (resolved boundaries are left
     /// untouched), recording each hop into `side`. Boundaries weigh in parallel.
+    ///
+    /// Returns the lowest boundary this call resolved — the point from which a
+    /// cached forward pass must recompute — or `None` when nothing was pending
+    /// or bridgeable.
     fn weigh<Emmis, Trans>(
         &self,
         transition: &Transition<Emmis, Trans, E, M, N>,
         runtime: &M::Runtime,
         trellis: &mut Trellis,
         side: &mut SideTable<E>,
-    ) -> Result<(), MatchError>
+    ) -> Result<Option<LayerId>, MatchError>
     where
         Emmis: EmissionStrategy + Send + Sync,
         Trans: TransitionStrategy<E> + Send + Sync,
@@ -164,6 +181,7 @@ where
             .map(|&boundary| (boundary, self.weigh_boundary(&ctx, transition, boundary)))
             .collect::<Vec<_>>();
 
+        let mut lowest = None;
         for (boundary, (matrix, hops)) in weighed {
             // A boundary nothing could bridge is left Pending rather than
             // resolved-but-empty: an unresolved boundary is exactly how the
@@ -174,29 +192,38 @@ where
 
             trellis.fill_transition(boundary, &matrix)?;
             side.extend(hops);
+
+            // `pending` ascends, so the first fill is the lowest.
+            lowest = lowest.or(Some(boundary));
         }
 
-        Ok(())
+        Ok(lowest)
     }
 
-    /// Solve `transition` into the caller-owned `trellis`: weigh every pending
-    /// boundary, find the minimum-cost path, and reconstruct the routed match.
+    /// Weigh every pending boundary of the caller-owned `state` and find the
+    /// current minimum-cost path through it.
     ///
-    /// `trellis` is the caller's so it can be pre-sized, inspected, or reused; see
-    /// [`Transition::solve`] for the entry that allocates one.
-    fn solve<Emmis, Trans>(
+    /// This is the repeatable core of [`solve`](Solver::solve): after the state
+    /// [grows](MatchState::extend), calling it again weighs only the new
+    /// boundaries and *resumes* the cached forward pass from the first change —
+    /// the realtime loop's per-append cost is the new layer's, not the whole
+    /// history's. The hop side-data accumulates in the state for the final
+    /// collapse.
+    fn solve_path<Emmis, Trans>(
         &self,
-        transition: Transition<Emmis, Trans, E, M, N>,
+        transition: &Transition<Emmis, Trans, E, M, N>,
         runtime: &M::Runtime,
-        trellis: &mut Trellis,
-    ) -> Result<CollapsedPath<E>, MatchError>
+        state: &mut MatchState<E>,
+    ) -> Result<Path, MatchError>
     where
         Emmis: EmissionStrategy + Send + Sync,
         Trans: TransitionStrategy<E> + Send + Sync,
         Self: Sync,
     {
-        let mut side = SideTable::default();
-        self.weigh(&transition, runtime, trellis, &mut side)?;
+        let changed = {
+            let (trellis, side) = state.weighable()?;
+            self.weigh(transition, runtime, trellis, side)?
+        };
 
         let layers = &transition.layers.layers;
         let disconnected = |breaks: Vec<LayerId>| -> MatchError {
@@ -216,24 +243,102 @@ where
         };
 
         // Gaps: boundaries the weigher left Pending because nothing bridged them.
-        let gaps = trellis.disconnections();
+        // (`weighable` just succeeded, so the trellis is present.)
+        let gaps = state
+            .trellis()
+            .expect("state has a trellis")
+            .disconnections();
         if !gaps.is_empty() {
             return Err(disconnected(gaps));
         }
 
-        let path = ViterbiSolver::new().solve(trellis)?;
+        let path = state.run(changed)?;
         if !path.reachable {
             // Every boundary resolved, yet the reachable frontier dies mid-way:
             // some boundary has edges but none continue a live path. `Pending`
             // can't express this, so walk the resolved weights to find where.
-            return Err(disconnected(frontier_collapse(trellis)));
+            return Err(disconnected(frontier_collapse(
+                state.trellis().expect("state has a trellis"),
+            )));
         }
+
+        Ok(path)
+    }
+
+    /// Solve `transition` into the caller-owned `state`: grow the state to span
+    /// every layer, weigh every pending boundary, find the minimum-cost path,
+    /// and reconstruct the routed match.
+    ///
+    /// `state` is the caller's so it can be inspected, reused, or already
+    /// partially solved (only what's missing is computed); a fresh match simply
+    /// passes [`MatchState::default()`].
+    fn solve<Emmis, Trans>(
+        &self,
+        transition: Transition<Emmis, Trans, E, M, N>,
+        runtime: &M::Runtime,
+        state: &mut MatchState<E>,
+    ) -> Result<CollapsedPath<E>, MatchError>
+    where
+        Emmis: EmissionStrategy + Send + Sync,
+        Trans: TransitionStrategy<E> + Send + Sync,
+        Self: Sync,
+    {
+        let widths = transition.validated_widths()?;
+        for &width in widths.get(state.layers()..).unwrap_or_default() {
+            state.extend(width)?;
+        }
+
+        let path = self.solve_path(&transition, runtime, state)?;
 
         let route = transition.route_of(&path);
         Ok(CollapsedPath::assemble(
             path.cost,
             route,
-            &side,
+            state.side(),
+            transition.candidates,
+        ))
+    }
+
+    /// Solve `transition` one layer at a time, the way a realtime consumer
+    /// receiving one position per tick would: extend the caller's `state` by one
+    /// layer and re-solve after every extension, until it spans every layer of
+    /// the transition.
+    ///
+    /// Each step weighs only the newly-created boundary and resumes the cached
+    /// forward pass, so the whole run does the same weighing work as
+    /// [`solve`](Solver::solve) — this is the batch simulation of the realtime
+    /// loop ([`Transition::push`] → [`MatchState::extend`] →
+    /// [`solve_path`](Solver::solve_path)), useful for benchmarking it.
+    fn solve_progressive<Emmis, Trans>(
+        &self,
+        transition: Transition<Emmis, Trans, E, M, N>,
+        runtime: &M::Runtime,
+        state: &mut MatchState<E>,
+    ) -> Result<CollapsedPath<E>, MatchError>
+    where
+        Emmis: EmissionStrategy + Send + Sync,
+        Trans: TransitionStrategy<E> + Send + Sync,
+        Self: Sync,
+    {
+        let widths = transition.validated_widths()?;
+        let mut path = None;
+
+        for &width in widths.get(state.layers()..).unwrap_or_default() {
+            state.extend(width)?;
+            path = Some(self.solve_path(&transition, runtime, state)?);
+        }
+
+        // Nothing to extend (the state already spanned every layer): plain solve.
+        let path = match path {
+            Some(path) => path,
+            None => self.solve_path(&transition, runtime, state)?,
+        };
+
+        let route = transition.route_of(&path);
+        Ok(CollapsedPath::assemble(
+            path.cost,
+            route,
+            state.side(),
             transition.candidates,
         ))
     }
