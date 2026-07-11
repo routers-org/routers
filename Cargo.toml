@@ -137,6 +137,7 @@ prost-build = "0.14.1"
 # === Profiles ===
 [profile.release]
 opt-level = 3
+debug = 0
 lto = "fat"
 
 [profile.bench]
