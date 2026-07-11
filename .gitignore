@@ -17,6 +17,9 @@ libs/routers_fixtures/resources/*
 !zurich-minified.osm.pbf
 !sydney-minified.osm.pbf
 
+!sydney-throughput-fleet.wkt
+!sydney-throughput-trip.wkt
+
 .work
 conformance/external
 
