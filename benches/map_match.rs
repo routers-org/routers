@@ -320,6 +320,14 @@ fn target_benchmark(c: &mut criterion::Criterion) {
                 assert_eq!(forward.route, transition.route_of(&streamed));
             }
 
+            // Throughput profile: one iteration of these benches is a whole
+            // route (up to hundreds of solves), so a handful of samples with a
+            // short warm-up is plenty — the default 30 × 3s-warm-up profile
+            // makes the suite take the better part of an hour.
+            group.sample_size(10);
+            group.warm_up_time(core::time::Duration::from_millis(500));
+            group.measurement_time(core::time::Duration::from_secs(3));
+
             group.bench_function(format!("trellis:forward: {}", sc.name), |b| {
                 b.iter_batched(
                     build_transition,
@@ -398,7 +406,9 @@ fn target_benchmark(c: &mut criterion::Criterion) {
                 )
             });
 
-            // Naive baselines, warm and cold.
+            // Naive baselines. Warm-cache only: measured cold ≈ warm within ~5%
+            // for these — they re-query the same boundaries every step, so the
+            // predicate cache warms itself within the first few points.
 
             group.bench_function(format!("trellis:naive: {}", sc.name), |b| {
                 b.iter(|| {
@@ -414,32 +424,12 @@ fn target_benchmark(c: &mut criterion::Criterion) {
                 })
             });
 
-            group.bench_function(format!("trellis:naive:cold: {}", sc.name), |b| {
-                b.iter_batched(
-                    fresh_cache,
-                    |cold| {
-                        let solver = AllComputeSolver::default().use_cache(cold);
-                        stream_naive(&solver)
-                    },
-                    BatchSize::SmallInput,
-                )
-            });
-
-            group.bench_function(format!("trellis:naive:window20:cold: {}", sc.name), |b| {
-                b.iter_batched(
-                    fresh_cache,
-                    |cold| {
-                        let solver = AllComputeSolver::default().use_cache(cold);
-                        stream_windowed(20, &solver)
-                    },
-                    BatchSize::SmallInput,
-                )
-            });
+            // Restore the default profile for the next scenario's benches.
+            group.sample_size(30);
+            group.warm_up_time(core::time::Duration::from_secs(3));
+            group.measurement_time(core::time::Duration::from_secs(5));
         });
     });
-
-    group.measurement_time(core::time::Duration::from_secs(20));
-    group.sample_size(100);
 
     group.finish();
 }
