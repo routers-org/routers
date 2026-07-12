@@ -136,17 +136,21 @@ prost-build = "0.14.1"
 
 # === Profiles ===
 [profile.release]
+debug = 0
 opt-level = 3
 lto = "fat"
 
 [profile.bench]
-codegen-units = 1
+debug = 0
 opt-level = 3
 lto = "fat"
 
 [profile.dev]
 opt-level = 0
 lto = "off"
+
+[profile.bench.package."*"]
+codegen-units = 16
 
 [profile.dev.package."*"]
 opt-level = 3

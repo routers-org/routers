@@ -50,7 +50,7 @@ jobs:
           buf generate
 
       - name: 🔨Build (workspace)
-        run: cargo codspeed build --workspace
+        run: cargo codspeed build --workspace --jobs 4
 
       - name: Run the benchmarks
         uses: CodSpeedHQ/action@v3
