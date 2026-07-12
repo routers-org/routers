@@ -3,14 +3,12 @@ mod chosen_path;
 mod draw;
 mod linestring;
 mod shard;
-mod trace;
 
 pub use candidates::CandidatesPlugin;
 pub use chosen_path::ChosenPathPlugin;
 pub use draw::DrawPlugin;
 pub use linestring::LineStringPlugin;
 pub use shard::ShardPlugin;
-pub use trace::TracePlugin;
 
 use walkers::{MapMemory, Plugin, Projector};
 

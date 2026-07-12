@@ -27,13 +27,13 @@ impl Plugin for ShardPlugin {
         let strategy = GeohashStrategy::with_precision(4);
 
         // Inactive shard colours.
-        let fill_inactive   = Color32::from_rgba_unmultiplied(100, 120, 160, 18);
+        let fill_inactive = Color32::from_rgba_unmultiplied(100, 120, 160, 18);
         let border_inactive = Color32::from_rgba_unmultiplied(100, 120, 160, 170);
-        let label_color     = Color32::from_rgba_unmultiplied( 50,  60,  90, 210);
+        let label_color = Color32::from_rgba_unmultiplied(50, 60, 90, 210);
 
         // Active shard (has received traffic) — slightly greener tint.
-        let fill_active     = Color32::from_rgba_unmultiplied( 60, 160,  80, 30);
-        let border_active   = Color32::from_rgba_unmultiplied( 60, 160,  80, 210);
+        let fill_active = Color32::from_rgba_unmultiplied(60, 160, 80, 30);
+        let border_active = Color32::from_rgba_unmultiplied(60, 160, 80, 210);
 
         for shard in &self.shards {
             let bounds = strategy.bounds(shard);
