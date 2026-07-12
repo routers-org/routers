@@ -7242,6 +7242,7 @@ dependencies = [
  "routers_fixtures",
  "routers_network",
  "routers_shard",
+ "routers_trellis",
  "rstar 0.12.2",
  "rustc-hash 2.1.2",
  "scc",
