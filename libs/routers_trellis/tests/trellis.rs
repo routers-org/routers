@@ -253,3 +253,26 @@ fn brute_force_errors_on_pending() {
         Err(SolveError::NotResolved(LayerId(0)))
     );
 }
+
+/// The same solver interleaved across two unrelated trellises stays correct:
+/// the solver holds only scratch, no per-trellis state.
+#[test]
+fn one_solver_interleaved_across_two_trellises() {
+    let a = random_trellis(6, 5, 0xAAAA);
+    let b = random_trellis(9, 3, 0xBBBB);
+
+    let mut solver = ViterbiSolver::new();
+    for _ in 0..3 {
+        assert_eq!(solver.solve(&a), ViterbiSolver::new().solve(&a));
+        assert_eq!(solver.solve(&b), ViterbiSolver::new().solve(&b));
+    }
+}
+
+#[test]
+fn add_layer_rejects_zero_width() {
+    let mut t = Trellis::new(vec![2u32]).unwrap();
+    assert_eq!(
+        t.add_layer(0),
+        Err(TrellisError::ZeroWidthLayer(LayerId(1)))
+    );
+}

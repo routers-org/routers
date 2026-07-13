@@ -1,4 +1,4 @@
-use criterion::{BatchSize, BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
+use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use routers_trellis::*;
 
 fn build(layers: usize, width: u32, seed: u64) -> Trellis {
@@ -73,24 +73,5 @@ fn bench_batch(c: &mut Criterion) {
     group.finish();
 }
 
-/// Cold-start cost: first solve when buffers are un-allocated.
-fn bench_cold_start(c: &mut Criterion) {
-    let mut group = c.benchmark_group("viterbi/cold");
-
-    for &(l, w) in &[(10usize, 30u32), (64, 128)] {
-        let t = build(l, w, 0xABCD);
-
-        group.bench_function(BenchmarkId::new("cold_start", format!("L{l}W{w}")), |b| {
-            b.iter_batched(
-                ViterbiSolver::new,
-                |mut solver| solver.solve(black_box(&t)),
-                BatchSize::SmallInput,
-            )
-        });
-    }
-
-    group.finish();
-}
-
-criterion_group!(benches, bench_single_solve, bench_batch, bench_cold_start);
+criterion_group!(benches, bench_single_solve, bench_batch);
 criterion_main!(benches);

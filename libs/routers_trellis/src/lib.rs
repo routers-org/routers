@@ -6,7 +6,7 @@
 //!
 //! # Solvers
 //!
-//! - [`ViterbiSolver`]: Viterbi with SIMD acceleration. Reusable per thread.
+//! - [`ViterbiSolver`]: Viterbi with SIMD acceleration. Stateless; usable with any trellis.
 //! - [`BruteForceSolver`]: Correctness reference — never use in production.
 
 mod path;

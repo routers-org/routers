@@ -38,7 +38,7 @@ pub enum TrellisError {
     },
 }
 
-type Result<T> = std::result::Result<T, TrellisError>;
+type Result<T> = core::result::Result<T, TrellisError>;
 
 /// Layered graph where each layer is connected only to its adjacent layers.
 ///
@@ -87,10 +87,26 @@ impl Trellis {
         self.widths.len()
     }
 
+    /// The layer-to-layer boundaries, each identified by its lower [`LayerId`]
+    /// (boundary `k` connects layer `k` to layer `k+1`).
+    pub fn boundaries(&self) -> impl DoubleEndedIterator<Item = LayerId> + ExactSizeIterator {
+        (0..self.transitions.len()).map(|k| LayerId(k as u32))
+    }
+
     /// Per-layer node counts.
     #[inline]
     pub fn widths(&self) -> &[u32] {
         &self.widths
+    }
+
+    /// Each layer's node range within a flat, layer-major buffer holding every
+    /// node in the trellis (the layout solvers use for their DP tables).
+    pub fn layer_ranges(&self) -> impl Iterator<Item = core::ops::Range<usize>> + '_ {
+        self.widths.iter().scan(0, |start, &width| {
+            let range = *start..*start + width as usize;
+            *start = range.end;
+            Some(range)
+        })
     }
 
     /// Whether the transition from `layer` to `layer+1` is resolved.
@@ -130,6 +146,18 @@ impl Trellis {
     /// Returns `None` if the transition is still `Pending`.
     pub fn layer(&self, layer: LayerId) -> Option<&[u32]> {
         self.transitions.get(layer.index())?.weights()
+    }
+
+    /// Every boundary left `Pending` — unresolved because nothing bridged it —
+    /// in layer order. These are the trajectory's gaps: stretches the weigher
+    /// could not cross at all. Empty when every boundary resolved.
+    pub fn disconnections(&self) -> Vec<LayerId> {
+        self.transitions
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| !t.is_resolved())
+            .map(|(i, _)| LayerId(i as u32))
+            .collect()
     }
 
     /// Weight of a single edge across the `layer → layer+1` boundary.
@@ -188,6 +216,12 @@ impl Trellis {
     /// Allocates a new layer with the given width and pending transition.
     #[cfg_attr(feature = "tracing", tracing::instrument(level = "debug", skip(self)))]
     pub fn add_layer(&mut self, width: u32) -> Result<()> {
+        if width == 0 {
+            return Err(TrellisError::ZeroWidthLayer(LayerId(
+                self.widths.len() as u32
+            )));
+        }
+
         self.widths.push(width);
         self.transitions.push(Transition::Pending);
 
