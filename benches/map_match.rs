@@ -122,8 +122,8 @@ fn target_benchmark(c: &mut criterion::Criterion) {
                 b.iter(|| {
                     let generator =
                         StandardGenerator::new(&graph, &costing, DEFAULT_SEARCH_DISTANCE);
-                    let (layers, _) = generator.generate(&points);
-                    assert_eq!(layers.layers.len(), points.len())
+                    let layers = generator.generate(&points, 0);
+                    assert_eq!(layers.len(), points.len())
                 })
             });
 

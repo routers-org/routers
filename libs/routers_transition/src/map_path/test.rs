@@ -1,4 +1,4 @@
-use crate::Trip;
+use crate::MapPath;
 use routers_codec::osm::OsmEntryId;
 
 use approx::assert_relative_eq;
@@ -17,7 +17,7 @@ fn test_trip() {
         Node::new(Point::new(1.0, -1.0), OsmEntryId::null()),
     ];
 
-    let trip = Trip::from(nodes);
+    let trip = MapPath::from(nodes);
 
     let angles = trip.headings();
     assert_relative_eq!(angles[0], 0.0);
@@ -40,7 +40,7 @@ fn validate_segment() {
         .map(|p| Node::new(p, OsmEntryId::null()))
         .collect::<Vec<_>>();
 
-    let trip = Trip::from(nodes);
+    let trip = MapPath::from(nodes);
 
     let angle = trip.total_angle();
     assert_relative_eq!(angle, 2.44, max_relative = 0.1);
@@ -63,7 +63,7 @@ fn validate_turning_path() {
         .into_iter()
         .map(|p| Node::new(p, OsmEntryId::null()));
 
-    let trip = Trip::new(nodes);
+    let trip = MapPath::new(nodes);
 
     let angle = trip.total_angle();
     assert_relative_eq!(angle, 195.30, max_relative = 0.1);
@@ -86,7 +86,7 @@ fn validate_uturn_expensive() {
         .into_iter()
         .map(|p| Node::new(p, OsmEntryId::null()));
 
-    let trip = Trip::new(nodes);
+    let trip = MapPath::new(nodes);
 
     let length = trip.length();
     assert_relative_eq!(length, 1698.0, max_relative = 0.1);
@@ -113,13 +113,13 @@ fn validate_through_lower_cost() {
         .into_points()
         .into_iter()
         .map(|p| Node::new(p, OsmEntryId::null()));
-    let through = Trip::new(nodes);
+    let through = MapPath::new(nodes);
 
     let nodes = linestring_around_trip
         .into_points()
         .into_iter()
         .map(|p| Node::new(p, OsmEntryId::null()));
-    let around = Trip::new(nodes);
+    let around = MapPath::new(nodes);
 
     let imm_angle = around.angular_complexity();
     assert_relative_eq!(imm_angle, 0.56, max_relative = 0.1);
@@ -136,7 +136,7 @@ fn validate_through_lower_cost() {
 
 #[test]
 fn validate_slip_road_optimality() {
-    use crate::Trip;
+    use crate::MapPath;
 
     let linestring_sliproad = wkt! {
         LINESTRING (-118.138707 33.917051, -118.13859 33.917027, -118.138402 33.916998, -118.138172 33.916897, -118.138106 33.916837, -118.138078 33.916778, -118.138076 33.916697, -118.138251 33.916449, -118.138268 33.916424)
@@ -150,13 +150,13 @@ fn validate_slip_road_optimality() {
         .into_points()
         .into_iter()
         .map(|p| Node::new(p, OsmEntryId::null()));
-    let sliproad = Trip::new(nodes);
+    let sliproad = MapPath::new(nodes);
 
     let nodes = linestring_around
         .into_points()
         .into_iter()
         .map(|p| Node::new(p, OsmEntryId::null()));
-    let around = Trip::new(nodes);
+    let around = MapPath::new(nodes);
 
     let tot_angle = sliproad.total_angle();
     assert_relative_eq!(tot_angle, 114.1, max_relative = 0.1);
@@ -187,7 +187,7 @@ fn analyse_cost() {
         .into_points()
         .into_iter()
         .map(|p| Node::new(p, OsmEntryId::null()));
-    let trip = Trip::new(nodes);
+    let trip = MapPath::new(nodes);
 
     let complexity = trip.angular_complexity();
     assert_relative_eq!(complexity, 0.68, max_relative = 0.1);
@@ -203,7 +203,7 @@ fn analyse_cost2() {
         .into_points()
         .into_iter()
         .map(|p| Node::new(p, OsmEntryId::null()));
-    let trip = Trip::new(nodes);
+    let trip = MapPath::new(nodes);
 
     let complexity = trip.angular_complexity();
     assert_relative_eq!(complexity, 0., max_relative = 0.1);
@@ -219,7 +219,7 @@ fn analyse_cost3() {
         .into_points()
         .into_iter()
         .map(|p| Node::new(p, OsmEntryId::null()));
-    let trip = Trip::new(nodes);
+    let trip = MapPath::new(nodes);
 
     let complexity = trip.angular_complexity();
     assert_relative_eq!(complexity, 0.80, max_relative = 0.1);

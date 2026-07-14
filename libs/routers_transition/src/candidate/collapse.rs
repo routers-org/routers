@@ -1,74 +1,43 @@
 use crate::Reachable;
 use crate::candidate::*;
 use geo::LineString;
-use routers_network::Edge;
 use routers_network::Network;
 use routers_network::{Entry, Metadata};
 
-/// The collapsed solution to a transition graph.
+/// A solved map-match: the chosen candidate per input point, plus the routed
+/// path between them.
 pub struct CollapsedPath<E>
 where
     E: Entry,
 {
-    /// The solved cost of the collapsed route.
-    /// This value is not actionable by the consumer but rather indicative of how confident
-    /// the system is in the route chosen.
+    /// Total cost of the chosen route — a confidence indicator, not a distance.
     pub cost: u32,
 
-    /// The route as a vector of [`CandidateId`]s.
-    /// To obtain the list of [`Candidate`]s, use [`CollapsedPath::matched`]
-    pub route: Vec<CandidateId>,
+    /// The chosen candidate per layer, in order. Resolve to [`Candidate`]s with
+    /// [`matched`](Self::matched).
+    pub route: Vec<CandidateRef>,
 
-    /// The interpolated nodes of the collapsed route.
-    /// This exists as a vector of [`Reachable`] nodes which represent each layer transition.
-    /// Each node contains the interpolated path between the candidates in those layers.
-    ///
-    /// To obtain the geographic representation of this interpolation,
-    /// use the [`CollapsedPath::interpolated`] method.
+    /// One [`Reachable`] per hop, each holding the routed path between consecutive
+    /// chosen candidates. Render it with [`interpolated`](Self::interpolated).
     pub interpolated: Vec<Reachable<E>>,
 
-    /// All considered routes between candidates, regardless of whether they were
-    /// chosen for the final path. This is useful for visualisation and debugging.
-    #[cfg(debug_assertions)]
-    pub considered: Vec<Reachable<E>>,
-
-    pub candidates: Candidates<E>,
+    /// The candidate store resolving the [`CandidateRef`]s in [`route`](Self::route).
+    pub candidates: CandidateStore<E>,
 }
 
 impl<E> CollapsedPath<E>
 where
     E: Entry,
 {
-    pub(crate) fn new(
-        cost: u32,
-        interpolated: Vec<Reachable<E>>,
-        route: Vec<CandidateId>,
-        candidates: Candidates<E>,
-        #[cfg(debug_assertions)] considered: Vec<Reachable<E>>,
-    ) -> Self {
-        Self {
-            cost,
-            interpolated,
-            route,
-            candidates,
-            #[cfg(debug_assertions)]
-            considered,
-        }
-    }
-
-    /// Returns the vector of [`Candidate`]s involved in a match.
-    /// Each candidate represents the matched position of every input node.
-    ///
-    /// This includes further information such as the edge it matched to,
-    /// costing and the identifier for the candidate.
+    /// The chosen [`Candidate`] for each matched input point.
     pub fn matched(&self) -> Vec<Candidate<E>> {
         self.route
             .iter()
-            .filter_map(|node| self.candidates.lookup.get(node))
-            .map(|can| *can)
+            .filter_map(|r| self.candidates.candidate(r))
             .collect::<Vec<_>>()
     }
 
+    /// The matched candidate positions as a [`LineString`] (one point per input).
     pub fn collapsed(&self) -> LineString {
         self.matched()
             .iter()
@@ -76,8 +45,8 @@ where
             .collect::<LineString>()
     }
 
-    /// Returns the interpolated route from the collapse as a [`LineString`].
-    /// This can therefore be used to show the expected turn decisions made by the provided input.
+    /// The full driven path as a [`LineString`] — the matched positions with the
+    /// routed road geometry between them filled in, showing the turns taken.
     pub fn interpolated<M: Metadata>(&self, map: &impl Network<E, M>) -> LineString {
         self.interpolated
             .iter()
@@ -93,11 +62,5 @@ where
                     .chain(core::iter::once(target.position))
             })
             .collect::<LineString>()
-    }
-
-    pub fn edges(self) -> impl Iterator<Item = Edge<E>> {
-        self.interpolated
-            .into_iter()
-            .flat_map(|reachable| reachable.path)
     }
 }

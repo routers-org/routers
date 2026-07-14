@@ -1,4 +1,9 @@
-//! End-to-end map-matching tests over a `MockNetwork`
+//! End-to-end map-matching tests over the `routers_network` `MockNetwork`
+//! harness (enabled via its `testing` feature).
+//!
+//! Transplanted out of `routers_network`'s mock tests (which must not depend on
+//! `routers_transition`) and extended with edge cases. All matches use the
+//! default all-compute solver via [`MatchSimpleExt::match_simple`].
 
 use geo::{LineString, point, wkt};
 use routers_network::mock::{MockMetadata, MockNetwork, MockNetworkBuilder};
@@ -6,7 +11,9 @@ use routers_network::{DataPlane, Direction, Metadata};
 use routers_transition::SolverVariant;
 use routers_transition::r#match::{Match, MatchOptions, MatchSimpleExt};
 
-/// Tiny straight road: 1 -- 2 -- 3 along lat = 34.15.
+// ── helpers ────────────────────────────────────────────────────────────────
+
+/// Tiny straight road: 1 ── 2 ── 3 along lat = 34.15.
 fn straight_road() -> MockNetwork {
     MockNetworkBuilder::new()
         .node(1, point!(x: -118.15, y: 34.15))
@@ -27,6 +34,8 @@ fn discretized_edges(net: &MockNetwork, ls: LineString) -> Vec<(i64, i64)> {
         .map(|e| (e.edge.source.id.0, e.edge.target.id.0))
         .collect()
 }
+
+// ── transplanted matcher tests ───────────────────────────────────────────────
 
 /// A GPS trajectory drifted slightly north of a straight road should snap back
 /// onto the road and produce one discretized element per input point.
@@ -283,6 +292,8 @@ fn side_road_dip_trip() -> LineString {
     }
 }
 
+// ── all-compute vs selective conformance ────────────────────────────────────
+
 fn discretized_with(net: &MockNetwork, ls: LineString, variant: SolverVariant) -> Vec<(i64, i64)> {
     net.r#match(ls, MatchOptions::new().with_solver(variant))
         .expect("map match must succeed")
@@ -323,6 +334,8 @@ fn selective_avoids_side_road_dip() {
         );
     }
 }
+
+// ── edge cases ───────────────────────────────────────────────────────────────
 
 /// A degenerate single-position trajectory (one layer, no transitions) must not
 /// panic and returns a non-empty match.

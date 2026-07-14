@@ -1,21 +1,9 @@
-use crate::RoutingContext;
+use crate::{CandidateRef, RoutingContext};
 
-use core::cmp::Ordering;
 use core::fmt::Debug;
-use core::ops::Add;
 use geo::{Bearing, Distance, Haversine, LineLocatePoint, LineString, Point};
-use pathfinding::num_traits::Zero;
 use routers_network::{Edge, Entry, Metadata, Network};
-
-/// The location of a candidate within a solution.
-/// This identifies which layer the candidate came from, and which node in the layer it was.
-///
-/// This is useful for debugging purposes to understand a node without requiring further context.
-#[derive(Clone, Copy, Debug)]
-pub struct CandidateLocation {
-    pub layer_id: usize,
-    pub node_id: usize,
-}
+use serde::{Deserialize, Serialize};
 
 /// Represents the candidate selected within a layer.
 ///
@@ -23,8 +11,9 @@ pub struct CandidateLocation {
 /// from, along with the candidate position, [position](#field.position).
 ///
 /// It further contains the emission cost [emission](#field.emission) associated with choosing this
-/// candidate and the candidate's location within the solution, [location](#field.location).
-#[derive(Clone, Copy, Debug)]
+/// candidate and the candidate's positional identity, [location](#field.location).
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[serde(bound(serialize = "E: Serialize", deserialize = "E: Deserialize<'de>"))]
 pub struct Candidate<E>
 where
     E: Entry,
@@ -34,7 +23,7 @@ where
     pub position: Point,
     pub emission: u32,
 
-    pub location: CandidateLocation,
+    pub location: CandidateRef,
 }
 
 /// A virtual tail is a representation of the distance from some intermediary point
@@ -50,10 +39,12 @@ where
 /// distance from this intermediate, to the source of the edge, and vice versa for
 /// the target.
 ///
+/// ```text
 ///                 Candidate
 ///          ToSource   |   ToTarget
 ///        +------------|------------+
 ///      Source                    Target
+/// ```
 pub enum VirtualTail {
     /// The distance from the edge's source to the virtual candidate position.
     ToSource,
@@ -73,11 +64,13 @@ where
     /// an intermediate which is equivalent to the source of the edge, whilst `100%`
     /// represents an intermediate equivalent to the target.
     ///
+    /// ```text
     ///                Edge Percentages
     ///     Source                         Target
     ///       +---------|----------------|---+
     ///                0.4              0.9
     ///               (40%)            (90%)
+    /// ```
     ///
     pub fn percentage<M: Metadata>(&self, graph: &dyn Network<E, M>) -> Option<f64> {
         let edge = graph
@@ -86,6 +79,27 @@ where
             .collect::<LineString>();
 
         edge.line_locate_point(&self.position)
+    }
+
+    /// Whether `other` is reachable from `self` by travelling along their shared
+    /// edge alone — i.e. both sit on the same directed edge with `other` at or
+    /// ahead of `self`. `None` when the shared edge is too degenerate to locate a
+    /// position on. A `Some(false)` covers candidates on different edges (which
+    /// must be routed between) and same-edge back-tracking.
+    pub fn directly_reachable<M: Metadata>(
+        &self,
+        other: &Candidate<E>,
+        graph: &dyn Network<E, M>,
+    ) -> Option<bool> {
+        if self.edge.id.index() != other.edge.id.index() {
+            return Some(false);
+        }
+
+        let same_direction =
+            self.edge.source == other.edge.source && self.edge.target == other.edge.target;
+        let ahead = self.percentage(graph)? <= other.percentage(graph)?;
+
+        Some(same_direction && ahead)
     }
 
     /// Get the bearing of the candidate's edge (source endpoint -> target endpoint).
@@ -126,73 +140,12 @@ where
         }
     }
 
-    pub fn new(edge: Edge<E>, position: Point, emission: u32, location: CandidateLocation) -> Self {
+    pub fn new(edge: Edge<E>, position: Point, emission: u32, location: CandidateRef) -> Self {
         Self {
             edge,
             position,
             emission,
             location,
         }
-    }
-}
-
-/// Represents the edge of this candidate within the candidate graph.
-///
-/// This is distinct from [`Edge`] since it exists within the candidate graph
-/// of the [`Transition`](crate::route::graph::Transition), not of [`Graph`].
-///
-/// This edge stores the weight associated with traversing this edge.
-///
-#[derive(Clone, Copy, Debug, Default)]
-#[repr(transparent)]
-pub struct CandidateEdge {
-    pub weight: u32,
-}
-
-impl Eq for CandidateEdge {}
-
-impl PartialEq<Self> for CandidateEdge {
-    fn eq(&self, other: &Self) -> bool {
-        self.weight.eq(&other.weight)
-    }
-}
-
-impl PartialOrd<Self> for CandidateEdge {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for CandidateEdge {
-    fn cmp(&self, other: &Self) -> Ordering {
-        self.weight.cmp(&other.weight)
-    }
-}
-
-impl Zero for CandidateEdge {
-    fn zero() -> Self {
-        CandidateEdge::default()
-    }
-
-    fn is_zero(&self) -> bool {
-        self.weight.is_zero()
-    }
-}
-
-impl Add<Self> for CandidateEdge {
-    type Output = Self;
-
-    #[inline]
-    fn add(self, rhs: Self) -> Self::Output {
-        CandidateEdge {
-            weight: self.weight.saturating_add(rhs.weight),
-        }
-    }
-}
-
-impl CandidateEdge {
-    #[inline]
-    pub fn new(weight: u32) -> Self {
-        Self { weight }
     }
 }

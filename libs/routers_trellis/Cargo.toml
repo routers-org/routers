@@ -21,6 +21,7 @@ tracing = ["dep:tracing"]
 [dev-dependencies]
 criterion = { workspace = true }
 routers_fixtures = { workspace = true }
+serde_json = { workspace = true }
 
 [[bench]]
 name = "solver"

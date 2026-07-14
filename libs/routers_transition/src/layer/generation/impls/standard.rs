@@ -1,9 +1,8 @@
-use crate::definition::{Layer, Layers};
 use crate::generation::LayerGeneration;
 use crate::*;
 use geo::{Distance, Haversine, Point};
-use rayon::iter::{IndexedParallelIterator, IntoParallelIterator, ParallelIterator};
 use routers_network::{Entry, Metadata, Network};
+use routers_trellis::{LayerId, NodeId};
 
 /// Generates the layers within the transition graph.
 ///
@@ -59,52 +58,22 @@ where
     M: Metadata,
     Emmis: EmissionStrategy + Send + Sync,
 {
-    fn generate(self, input: &[Point]) -> (Layers, Candidates<E>) {
-        let per_layer: Vec<Vec<(Candidate<E>, CandidateRef)>> = input
-            .into_par_iter()
+    fn candidates(&self, origin: &Point, layer: usize) -> Vec<Candidate<E>> {
+        self.map
+            .nearest_nodes_projected(origin, self.search_distance)
             .enumerate()
-            .map(|(layer_id, origin)| {
-                self.map
-                    .nearest_nodes_projected(origin, self.search_distance)
-                    .enumerate()
-                    .map(|(node_id, (position, edge))| {
-                        let location = CandidateLocation { layer_id, node_id };
-                        let distance = Haversine.distance(position, *origin);
-                        let emission = self.emission.cost(EmissionContext::new(
-                            &position,
-                            origin,
-                            distance,
-                            edge.weight,
-                        ));
+            .map(|(node, (position, edge))| {
+                let location = CandidateRef::new(LayerId(layer as u32), NodeId(node as u32));
+                let distance = Haversine.distance(position, *origin);
+                let emission = self.emission.cost(EmissionContext::new(
+                    &position,
+                    origin,
+                    distance,
+                    edge.weight,
+                ));
 
-                        (
-                            Candidate::new(edge.thin(), position, emission, location),
-                            CandidateRef::new(emission),
-                        )
-                    })
-                    .collect()
+                Candidate::new(edge.thin(), position, emission, location)
             })
-            .collect();
-
-        // Petgraph node insertion must be sequential to produce stable CandidateIds.
-        let total: usize = per_layer.iter().map(Vec::len).sum();
-        let mut graph = OpenCandidateGraph::with_capacity(total, 0);
-        let lookup = scc::HashMap::with_capacity(total);
-
-        let layers: Vec<Layer> = per_layer
-            .into_iter()
-            .zip(input.iter())
-            .map(|(candidates, &origin)| {
-                let mut nodes = Vec::with_capacity(candidates.len());
-                for (candidate, candidate_ref) in candidates {
-                    let id = graph.add_node(candidate_ref);
-                    let _ = lookup.insert(id, candidate);
-                    nodes.push(id);
-                }
-                Layer { nodes, origin }
-            })
-            .collect();
-
-        (Layers { layers }, Candidates::new(graph, lookup))
+            .collect()
     }
 }

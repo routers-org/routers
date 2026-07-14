@@ -1,13 +1,21 @@
-use crate::primitives::Fraction;
-
 use core::cmp::Ordering;
 use core::ops::Add;
 use pathfinding::num_traits::Zero;
+use routers_network::edge::Weight;
 
-/// Represents a thin structure storing the weight and distance associated with a candidate
+/// The accumulated routing cost of a candidate path.
+///
+/// It carries a running average road-class weight — held as a separate
+/// `numerator` (sum of weights) and `denominator` (number of edges) so the
+/// average stays exact under addition — alongside the cumulative `distance`
+/// travelled, in centimeters.
 #[allow(clippy::derived_hash_with_manual_eq)]
 #[derive(Copy, Clone, Hash, Debug)]
-pub struct WeightAndDistance(pub Fraction, pub u32);
+pub struct WeightAndDistance {
+    numerator: Weight,
+    denominator: u32,
+    distance: u32,
+}
 
 impl WeightAndDistance {
     /// A representation method which allows distinguishment between structures
@@ -28,19 +36,41 @@ impl WeightAndDistance {
         (self.squared_weight() * self.distance()) as u32
     }
 
+    /// The running average road-class weight (numerator / denominator).
+    #[inline]
+    const fn weight(&self) -> Weight {
+        if self.denominator == 0 {
+            return 0;
+        }
+
+        self.numerator / self.denominator
+    }
+
     #[inline]
     fn squared_weight(&self) -> f64 {
-        return (self.0.value() as f64).powi(2);
+        (self.weight() as f64).powi(2)
     }
 
     #[inline]
     const fn distance(&self) -> f64 {
-        return self.1 as f64;
+        self.distance as f64
     }
 
+    /// The cumulative distance travelled, in centimeters.
     #[inline]
-    pub const fn new(frac: Fraction, weight: u32) -> Self {
-        Self(frac, weight)
+    pub const fn distance_cm(&self) -> u32 {
+        self.distance
+    }
+
+    /// Constructs the cost of a single edge of the given road-class `weight`
+    /// and `distance` (in centimeters).
+    #[inline]
+    pub const fn new(weight: Weight, distance: u32) -> Self {
+        Self {
+            numerator: weight,
+            denominator: 1,
+            distance,
+        }
     }
 }
 
@@ -68,13 +98,21 @@ impl Add<Self> for WeightAndDistance {
     type Output = WeightAndDistance;
 
     fn add(self, rhs: Self) -> Self::Output {
-        WeightAndDistance(self.0 + rhs.0, self.1 + rhs.1)
+        WeightAndDistance {
+            numerator: self.numerator + rhs.numerator,
+            denominator: self.denominator + rhs.denominator,
+            distance: self.distance + rhs.distance,
+        }
     }
 }
 
 impl Zero for WeightAndDistance {
     fn zero() -> Self {
-        WeightAndDistance(Fraction::zero(), 0)
+        WeightAndDistance {
+            numerator: 0,
+            denominator: 0,
+            distance: 0,
+        }
     }
 
     fn is_zero(&self) -> bool {

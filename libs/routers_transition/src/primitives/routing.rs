@@ -1,6 +1,6 @@
 use routers_network::{Edge, Entry, Metadata, Network};
 
-use crate::candidate::{Candidate, CandidateId, Candidates};
+use crate::candidate::{Candidate, CandidateRef, CandidateStore};
 
 /// A base context provided to costing methods.
 ///
@@ -17,7 +17,7 @@ where
     M: Metadata + 'a,
     N: Network<E, M>,
 {
-    pub candidates: &'a Candidates<E>,
+    pub candidates: &'a CandidateStore<E>,
     pub map: &'a N,
     pub runtime: &'a M::Runtime,
 }
@@ -28,8 +28,8 @@ where
     M: Metadata,
     N: Network<E, M>,
 {
-    /// Obtain a [candidate](Candidate), should it exist, by its [identifier](CandidateId).
-    pub fn candidate(&self, candidate: &CandidateId) -> Option<Candidate<E>> {
+    /// Obtain a [candidate](Candidate), should it exist, by its [ref](CandidateRef).
+    pub fn candidate(&self, candidate: &CandidateRef) -> Option<Candidate<E>> {
         self.candidates.candidate(candidate)
     }
 

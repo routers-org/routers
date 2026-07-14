@@ -7237,7 +7237,6 @@ dependencies = [
  "opentelemetry-otlp",
  "opentelemetry_sdk",
  "pathfinding",
- "petgraph",
  "rayon",
  "routers_codec",
  "routers_fixtures",
@@ -7248,6 +7247,7 @@ dependencies = [
  "rustc-hash 2.1.2",
  "scc",
  "serde",
+ "serde_json",
  "thiserror 2.0.18",
  "tracing",
  "tracing-opentelemetry",
@@ -7263,6 +7263,7 @@ dependencies = [
  "log",
  "routers_fixtures",
  "serde",
+ "serde_json",
  "thiserror 2.0.18",
  "tracing",
 ]

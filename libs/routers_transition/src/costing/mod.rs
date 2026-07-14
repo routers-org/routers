@@ -4,18 +4,16 @@
 //!
 //! ## Structure
 //! Strategies are joined onto the aggregate [`CostingStrategies`]
-//! structure, which is then supplied to the relevant transition
-//! graph constructor.
+//! structure, which is then supplied to the [`Matcher`](crate::Matcher).
 //!
-//! ```rust
-//! use routers::route::transition::CostingStrategies;
-//! use routers::route::transition::graph::Transition;
+//! ```ignore
+//! use routers_transition::{CostingStrategies, Matcher};
 //!
 //! // Create default strategies
 //! let costing = CostingStrategies::default();
 //!
-//! // Supply them to the relevant constructor
-//! let transition = Transition::new(todo!(), todo!(), costing);
+//! // Supply them to the matcher
+//! let matcher = Matcher::new(&map, &costing, generator, weigher, &runtime);
 //!```
 //!
 //! To override the default strategies, simply apply your own
@@ -33,7 +31,7 @@
 //!
 //!```rust
 //! use routers_network::Entry;
-//! use routers::route::transition::{Strategy, TransitionContext};
+//! use routers_transition::{Strategy, TransitionContext};
 //!
 //! struct MyTransitionStrategy;
 //!

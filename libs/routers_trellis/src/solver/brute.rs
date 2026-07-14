@@ -22,14 +22,20 @@ impl BruteForceSolver {
     }
 
     fn path_cost(t: &Trellis, nodes: &[usize]) -> u32 {
-        let mut cost = 0u32;
+        let mut cost = t
+            .node_weight(LayerId(0), NodeId(nodes[0] as u32))
+            .unwrap_or(INF_W);
         for layer in 0..nodes.len() - 1 {
+            let next = LayerId(layer as u32 + 1);
             let edge = t.edge_weight(
                 LayerId(layer as u32),
                 NodeId(nodes[layer] as u32),
                 NodeId(nodes[layer + 1] as u32),
             );
-            cost = cost.saturating_add(edge);
+            let node = t
+                .node_weight(next, NodeId(nodes[layer + 1] as u32))
+                .unwrap_or(INF_W);
+            cost = cost.saturating_add(edge).saturating_add(node);
         }
         cost
     }
@@ -45,7 +51,7 @@ impl Solve for BruteForceSolver {
             fields(layers = t.layers())
         )
     )]
-    fn solve(&mut self, t: &Trellis) -> Result<Path, SolveError> {
+    fn solve(&self, t: &Trellis) -> Result<Path, SolveError> {
         log::warn!(
             "BruteForceSolver: O(∏ widths × layers) — never use in production \
              (layers={}, widths={:?})",
@@ -59,11 +65,6 @@ impl Solve for BruteForceSolver {
 
         let layers = t.layers();
         let widths = t.widths();
-
-        // Single-layer trellis: no transitions, trivially cost-zero.
-        if layers == 1 {
-            return Ok(Path::new(vec![NodeId(0)], 0, true));
-        }
 
         let mut best_cost = INF_W;
         let mut best_nodes: Vec<usize> = Vec::new();
@@ -99,11 +100,11 @@ impl Solve for BruteForceSolver {
             best_cost < INF_W,
         );
 
-        Ok(if best_cost < INF_W {
-            let nodes = best_nodes.iter().map(|&n| NodeId(n as u32)).collect();
-            Path::new(nodes, best_cost, true)
-        } else {
-            Path::new(Vec::new(), best_cost, false)
-        })
+        if best_cost >= INF_W {
+            return Err(SolveError::Unreachable);
+        }
+
+        let nodes = best_nodes.iter().map(|&n| NodeId(n as u32)).collect();
+        Ok(Path::new(nodes, best_cost))
     }
 }

@@ -178,9 +178,9 @@ mod successor {
                 })
                 .map(|(next, distance, weight, edge)| {
                     // Stores the weight and distance (in cm) to the candidate
-                    let fraction = WeightAndDistance::new(Fraction::mul(weight), distance);
+                    let cost = WeightAndDistance::new(weight, distance);
 
-                    (next, edge, fraction)
+                    (next, edge, cost)
                 })
                 .collect::<Vec<_>>()
         }
@@ -188,7 +188,7 @@ mod successor {
 }
 
 mod predicate {
-    use crate::{WeightAndDistance, primitives::Dijkstra};
+    use crate::primitives::Dijkstra;
     use routers_network::{Entry, Network};
 
     use super::*;
@@ -225,12 +225,12 @@ mod predicate {
     }
 
     /// Predicates represents a hashmap of the input [`NodeIx`] as the key,
-    /// and the pair of corresponding [`NodeIx`] and [`WeightAndDistance`] values
-    /// which are reachable from the input index after performing an upper-bounded
-    /// dijkstra calculation
+    /// mapped to the parent [`NodeIx`] it was reached from during an
+    /// upper-bounded dijkstra calculation. Following the parent pointers back
+    /// to the root reconstructs the path to any reachable node.
     ///
     /// The output from the [`PredicateCache::calculate`] function.
-    type Predicates<E> = FxHashMap<E, (E, WeightAndDistance)>;
+    type Predicates<E> = FxHashMap<E, E>;
 
     /// The predicate cache through which a backing of [`Predicates`] is
     /// made from a [`NodeIx`] key, cached on first calculation and read thereafter.
@@ -284,12 +284,9 @@ mod predicate {
                 })
                 .take_while(|p| {
                     // Bounded by the threshold distance (centimeters)
-                    (p.total_cost.1 as f64) < threshold
+                    (p.total_cost.distance_cm() as f64) < threshold
                 })
-                .map(|pre| {
-                    let parent = pre.parent.unwrap_or_default();
-                    (pre.node, (parent, pre.total_cost))
-                })
+                .map(|pre| (pre.node, pre.parent.unwrap_or_default()))
                 .collect::<Predicates<E>>()
         }
     }

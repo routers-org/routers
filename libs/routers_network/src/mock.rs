@@ -36,14 +36,14 @@ use geo::Point;
 use petgraph::prelude::DiGraphMap;
 use rstar::{AABB, RTree};
 use rustc_hash::{FxHashMap, FxHasher};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 // ── Entry ────────────────────────────────────────────────────────────────────
 
 /// A minimal node / edge identifier for use inside a [`MockNetwork`].
 ///
 /// Wraps an `i64` and derives all traits required by [`Entry`].
-#[derive(Default, Serialize, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[derive(Default, Serialize, Deserialize, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct MockEntryId(pub i64);
 
 impl Entry for MockEntryId {

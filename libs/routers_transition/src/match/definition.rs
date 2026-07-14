@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use alloc::sync::Arc;
 
 use crate::{MatchError, RoutedPath};
 use crate::{PredicateCache, SolverVariant};

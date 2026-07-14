@@ -1,4 +1,4 @@
-use std::{
+use core::{
     f64::consts::PI,
     ops::{Div, Mul, Rem},
 };
@@ -13,20 +13,20 @@ use routers_network::{Entry, Metadata, Network, Node};
 /// to provide utilities such as conversions into a [`LineString`],
 /// finding the total travelled angle, and finding the trips summative length.
 #[derive(Clone, Debug)]
-pub struct Trip<E>(Vec<Node<E>>)
+pub struct MapPath<E>(Vec<Node<E>>)
 where
     E: Entry;
 
-impl<E> From<Vec<Node<E>>> for Trip<E>
+impl<E> From<Vec<Node<E>>> for MapPath<E>
 where
     E: Entry,
 {
     fn from(nodes: Vec<Node<E>>) -> Self {
-        Trip(nodes)
+        MapPath(nodes)
     }
 }
 
-impl<E> Trip<E>
+impl<E> MapPath<E>
 where
     E: Entry,
 {
@@ -49,12 +49,12 @@ where
             .zip(nodes)
             .map(|(point, id)| Node::new(point, *id));
 
-        Trip::new(nodes)
+        MapPath::new(nodes)
     }
 
     /// Computes the angle between each pair of nodes in the trip.
     /// Allows you to understand the change in heading, aggregatable
-    /// using [`Trip::total_angle`] to determine the total variation
+    /// using [`MapPath::total_angle`] to determine the total variation
     /// exhibited during a trip.
     ///
     /// The returned vector will therefore have a length one less
@@ -67,8 +67,8 @@ where
     /// ### Example
     /// ```rust
     ///  use routers_codec::osm::element::variants::{OsmEntryId};
-    ///  use routers_codec::primitive::Node;
-    ///  use routers::transition::Trip;
+    ///  use routers_network::Node;
+    ///  use routers_transition::MapPath;
     ///  use geo::Point;
     ///
     ///  // Create some nodes
@@ -80,7 +80,7 @@ where
     ///  ];
     ///
     ///  // Form a trip from these nodes
-    ///  let trip = Trip::from(nodes);
+    ///  let trip = MapPath::from(nodes);
     ///
     ///  // Calculate the delta angle exhibited
     ///  println!("{:?}", trip.delta_angle());
@@ -127,8 +127,8 @@ where
     /// ```
     /// use geo::Point;
     /// use routers_codec::osm::OsmEntryId;
-    /// use routers_codec::primitive::Node;
-    /// use routers::transition::Trip;
+    /// use routers_network::Node;
+    /// use routers_transition::MapPath;
     ///
     /// let positions = vec![
     ///     // San Francisco (SF)
@@ -140,7 +140,7 @@ where
     /// ];
     ///
     /// // [heading SF → LA, heading LA → LV]
-    /// Trip::from(positions).headings();
+    /// MapPath::from(positions).headings();
     /// ```
     pub fn headings(&self) -> Vec<f64> {
         Self::headings_from_positions(self.0.iter().map(|n| n.position))
@@ -169,8 +169,8 @@ where
     /// ### Example
     /// ```rust
     ///  use routers_codec::osm::element::variants::{OsmEntryId};
-    ///  use routers_codec::primitive::Node;
-    ///  use routers::transition::Trip;
+    ///  use routers_network::Node;
+    ///  use routers_transition::MapPath;
     ///  use geo::Point;
     ///
     ///  // Create some nodes
@@ -182,7 +182,7 @@ where
     ///  ];
     ///
     ///  // Form a trip from these nodes
-    ///  let trip = Trip::from(nodes);
+    ///  let trip = MapPath::from(nodes);
     ///
     ///  // Calculate the total angle exhibited
     ///  println!("{}", trip.total_angle());
@@ -309,6 +309,6 @@ where
             return Haversine.distance(start.position, end.position);
         }
 
-        return 0.0;
+        0.0
     }
 }

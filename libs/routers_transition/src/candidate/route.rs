@@ -107,10 +107,10 @@ where
             }
 
             // Add the very last candidate position
-            if let Some(last_candidate) = matched.last() {
-                if let Some(pe) = PathElement::new(*last_candidate, network) {
-                    elements.push(pe);
-                }
+            if let Some(last_candidate) = matched.last()
+                && let Some(pe) = PathElement::new(*last_candidate, network)
+            {
+                elements.push(pe);
             }
 
             elements.dedup_by(|a, b| a.point == b.point);
