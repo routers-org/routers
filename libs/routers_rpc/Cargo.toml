@@ -27,6 +27,9 @@ geo = { workspace = true }
 log = { workspace = true }
 tokio = { workspace = true }
 
+# CLI (server binaries)
+clap = { workspace = true, features = ["derive", "env"], optional = true }
+
 # Tracing
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
@@ -53,6 +56,10 @@ routers_fixtures = { workspace = true }
 
 [features]
 default = []
+server = [
+    "dep:clap",
+    "connectrpc/server"
+]
 telemetry = [
     "dep:opentelemetry",
     "dep:opentelemetry_sdk",
@@ -61,6 +68,11 @@ telemetry = [
 
     "dep:tracing-opentelemetry"
 ]
+
+[[bin]]
+name = "timezone"
+path = "bin/timezone.rs"
+required-features = ["server"]
 
 [[example]]
 name = "client"
