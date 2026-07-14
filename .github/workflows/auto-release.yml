@@ -98,6 +98,8 @@ jobs:
             file: infrastructure/matcher/Dockerfile
           - name: historian
             file: infrastructure/historian/Dockerfile
+          - name: timezone
+            file: infrastructure/timezone/Dockerfile
       fail-fast: true
     steps:
       - name: Checkout repository
