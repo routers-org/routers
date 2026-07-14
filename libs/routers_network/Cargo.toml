@@ -13,11 +13,17 @@ tracing = { workspace = true, optional = true }
 
 num-traits = "0.2"
 
+rustc-hash = { workspace = true, optional = true }
+petgraph = { workspace = true, optional = true }
+
 [dev-dependencies]
 
 [features]
 fixtures = []
 tracing = ["dep:tracing"]
+# Exposes `routers_network::mock` (MockNetwork/MockNetworkBuilder) as reusable
+# test-support for downstream crates (e.g. routers_transition integration tests).
+testing = ["dep:rustc-hash", "dep:petgraph"]
 
 [lints]
 workspace = true

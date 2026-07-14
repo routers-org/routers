@@ -8,6 +8,7 @@ repository = "https://github.com/routers-org/routers"
 
 [dependencies]
 routers_network = { workspace = true }
+routers_trellis = { workspace = true }
 routers_shard = { workspace = true, optional = true }
 
 # Algorithm
@@ -48,8 +49,10 @@ thiserror = { workspace = true }
 wkt = { workspace = true }
 insta = { workspace = true }
 criterion = { workspace = true }
+
 routers_fixtures = { workspace = true }
 routers_codec = { workspace = true }
+routers_network = { workspace = true, features = ["testing"] }
 
 [lints]
 workspace = true
