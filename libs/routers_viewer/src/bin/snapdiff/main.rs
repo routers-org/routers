@@ -182,15 +182,24 @@ mod tests {
         assert!(label.starts_with("main @ "), "{label}");
         assert!(!fixtures.is_empty());
         for f in &fixtures {
-            println!("{} {:?} Δ{:.1}m +{}/−{}", f.name, f.status, f.magnitude_m, f.points_added, f.points_removed);
+            println!(
+                "{} {:?} Δ{:.1}m +{}/−{}",
+                f.name, f.status, f.magnitude_m, f.points_added, f.points_removed
+            );
         }
         assert!(fixtures.iter().all(|f| f.error.is_none()));
     }
 
     #[test]
     fn fixture_names_strip_bench_prefix_and_suffix() {
-        assert_eq!(fixture_name("map_match__LAX_LYNWOOD_coords.snap"), "LAX_LYNWOOD");
-        assert_eq!(fixture_name("map_match__VENTURA_HWY_coords.snap"), "VENTURA_HWY");
+        assert_eq!(
+            fixture_name("map_match__LAX_LYNWOOD_coords.snap"),
+            "LAX_LYNWOOD"
+        );
+        assert_eq!(
+            fixture_name("map_match__VENTURA_HWY_coords.snap"),
+            "VENTURA_HWY"
+        );
         assert_eq!(fixture_name("plain_coords.snap"), "plain");
     }
 }

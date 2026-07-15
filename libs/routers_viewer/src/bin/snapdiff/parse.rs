@@ -80,20 +80,28 @@ mod tests {
 
     #[test]
     fn parses_real_snapshots() {
-        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../benches/snapshots");
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../benches/snapshots");
 
         let mut seen = 0;
         for entry in std::fs::read_dir(dir).unwrap() {
             let path = entry.unwrap().path();
-            if !path.file_name().unwrap().to_string_lossy().ends_with("_coords.snap") {
+            if !path
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .ends_with("_coords.snap")
+            {
                 continue;
             }
             let content = std::fs::read_to_string(&path).unwrap();
             let parsed = parse_coords_snap(&content).unwrap_or_else(|e| {
                 panic!("failed to parse {}: {e}", path.display());
             });
-            assert!(!parsed.line_string.0.is_empty(), "{} was empty", path.display());
+            assert!(
+                !parsed.line_string.0.is_empty(),
+                "{} was empty",
+                path.display()
+            );
             seen += 1;
         }
         assert!(seen > 0, "no *_coords.snap fixtures found");

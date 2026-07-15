@@ -4,8 +4,7 @@ use std::rc::Rc;
 use egui::{Color32, RichText, ScrollArea, SidePanel};
 use geo::LineString;
 use routers_viewer::{
-    ColourFactory, Component, Context, Map, Regular, SharedMapMemory,
-    plugins::LineStringPlugin,
+    ColourFactory, Component, Context, Map, Regular, SharedMapMemory, plugins::LineStringPlugin,
 };
 use walkers::{MapMemory, Plugin, lon_lat};
 
@@ -152,11 +151,7 @@ impl SnapDiffApp {
         ui.label(RichText::new(text).small());
     }
 
-    fn pane_header(
-        ui: &mut egui::Ui,
-        title: String,
-        entries: &[(Color32, f32, &str)],
-    ) {
+    fn pane_header(ui: &mut egui::Ui, title: String, entries: &[(Color32, f32, &str)]) {
         ui.horizontal(|ui| {
             ui.label(RichText::new(title).strong());
             ui.add_space(12.0);
@@ -206,9 +201,7 @@ impl eframe::App for SnapDiffApp {
                         ui.selectable_label(selected, Self::fixture_row_text(fixture));
 
                     if let Some(error) = &fixture.error {
-                        response = response.on_hover_text(
-                            RichText::new(error).color(Color32::RED),
-                        );
+                        response = response.on_hover_text(RichText::new(error).color(Color32::RED));
                     }
 
                     if response.clicked() {

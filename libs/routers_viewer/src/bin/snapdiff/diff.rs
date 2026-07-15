@@ -68,8 +68,7 @@ impl FixtureDiff {
         let head_line = head.map(|s| s.line_string);
 
         let magnitude_m = match (&base_line, &head_line) {
-            (Some(b), Some(h)) => magnitude(b, &base_spans, h)
-                .max(magnitude(h, &head_spans, b)),
+            (Some(b), Some(h)) => magnitude(b, &base_spans, h).max(magnitude(h, &head_spans, b)),
             _ => 0.0,
         };
 
@@ -196,7 +195,11 @@ mod tests {
         assert_eq!(d.points_removed, 1);
         assert_eq!(d.points_added, 1);
         // 0.5° of latitude ≈ 55.6 km.
-        assert!((d.magnitude_m - 55_600.0).abs() < 1_000.0, "{}", d.magnitude_m);
+        assert!(
+            (d.magnitude_m - 55_600.0).abs() < 1_000.0,
+            "{}",
+            d.magnitude_m
+        );
     }
 
     #[test]
