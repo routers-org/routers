@@ -1,23 +1,42 @@
 use std::cell::RefCell;
+use std::rc::Rc;
 
 use egui::Response;
 use walkers::{HttpTiles, MapMemory, Plugin, Position, Projector};
 
 use crate::{Component, Context, plugins::PluginBox};
 
+/// Handles shared between multiple `Map` instances. Two maps constructed over
+/// the same memory render with identical pan/zoom (synced panes); sharing
+/// tiles reuses one download pipeline and cache.
+pub type SharedMapMemory = Rc<RefCell<MapMemory>>;
+pub type SharedTiles = Rc<RefCell<HttpTiles>>;
+
 pub struct Map {
     position: Position,
-    tiles: RefCell<HttpTiles>,
-    map_memory: RefCell<MapMemory>,
+    tiles: SharedTiles,
+    map_memory: SharedMapMemory,
     plugins: RefCell<Vec<Box<dyn Plugin + 'static>>>,
 }
 
 impl Map {
     pub fn new(tiles: HttpTiles, map_memory: MapMemory, position: Position) -> Self {
+        Self::with_shared(
+            Rc::new(RefCell::new(tiles)),
+            Rc::new(RefCell::new(map_memory)),
+            position,
+        )
+    }
+
+    pub fn with_shared(
+        tiles: SharedTiles,
+        map_memory: SharedMapMemory,
+        position: Position,
+    ) -> Self {
         Self {
             position,
-            tiles: RefCell::new(tiles),
-            map_memory: RefCell::new(map_memory),
+            tiles,
+            map_memory,
             plugins: RefCell::new(Vec::new()),
         }
     }
