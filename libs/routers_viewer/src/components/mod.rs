@@ -6,7 +6,7 @@ mod shell;
 mod stack;
 
 pub use input::Input;
-pub use map::Map;
+pub use map::{Map, SharedMapMemory, SharedTiles};
 pub use matcher::{MatchCache, MatchOutput, Matcher};
 pub use results::Results;
 pub use shell::Shell;

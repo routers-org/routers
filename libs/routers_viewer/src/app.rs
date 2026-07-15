@@ -6,10 +6,7 @@ use egui::{Color32, CursorIcon, SidePanel};
 use geo::Coord;
 use routers_codec::osm::OsmNetwork;
 use routers_fixtures::{LOS_ANGELES, LOS_ANGELES_SAVED, fixture};
-use walkers::{
-    HttpTiles, MapMemory, Plugin, lon_lat,
-    sources::{Mapbox, MapboxStyle, OpenStreetMap},
-};
+use walkers::{MapMemory, Plugin, lon_lat};
 
 use crate::{
     ColourFactory, Component, Context, Input, Map, MatchCache, Matcher, Regular, Results, Stack,
@@ -19,7 +16,6 @@ use crate::{
 
 const FIXTURE_NETWORK: &'static str = "fixture-network";
 const SAVED_FIXTURE_NETWORK: &'static str = "saved-fixture-network";
-const MAPBOX_API_KEY: &'static str = "mapbox-api-key";
 
 pub struct Application {
     network: OsmNetwork,
@@ -33,11 +29,6 @@ impl Application {
         let storage = ctx
             .storage
             .context("was not compiled with storage feature")?;
-
-        let api_key = storage
-            .get_string(MAPBOX_API_KEY)
-            .context("could not find mapbox API key")
-            .ok();
 
         let default_path = fixture!(LOS_ANGELES).clone();
         let pbf_path = storage
@@ -60,18 +51,7 @@ impl Application {
         let network = OsmNetwork::from_pbf_and_save(&pbf_path, &save_path)
             .map_err(|e| anyhow::anyhow!("{}", e))?;
 
-        let egui_ctx = ctx.egui_ctx.clone();
-        let tiles = match api_key {
-            Some(key) => HttpTiles::new(
-                Mapbox {
-                    style: MapboxStyle::Light,
-                    high_resolution: true,
-                    access_token: key,
-                },
-                egui_ctx,
-            ),
-            None => HttpTiles::new(OpenStreetMap, egui_ctx),
-        };
+        let tiles = crate::tile_source(ctx.storage, ctx.egui_ctx.clone());
 
         Ok(Self {
             map: Map::new(tiles, MapMemory::default(), lon_lat(151.12, -33.52)),

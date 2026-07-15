@@ -3,8 +3,10 @@ mod component;
 mod dimensions;
 mod match_data;
 mod state;
+mod tiles;
 
 pub use colour::{BaseColour, ColourFactory, ColourScheme};
+pub use tiles::{MAPBOX_API_KEY, tile_source};
 pub use component::{Component, Context};
 pub use dimensions::{Layout, Regular, Size};
 pub use match_data::{MatchCandidate, MatchData, MatchLayer};

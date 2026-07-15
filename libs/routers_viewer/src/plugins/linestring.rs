@@ -32,21 +32,29 @@ impl Plugin for LineStringPlugin {
     fn run(
         self: Box<Self>,
         ui: &mut egui::Ui,
-        _response: &egui::Response,
+        response: &egui::Response,
         projector: &Projector,
         _map_memory: &MapMemory,
     ) {
-        if self.coords.len() < 2 {
-            return;
-        }
-
-        let pts: Vec<_> = self
+        let mut pts: Vec<_> = self
             .coords
             .iter()
             .map(|c| projector.project(lon_lat(c.x, c.y)).to_pos2())
             .collect();
 
+        // Zero-length segments (consecutive duplicate coordinates are common
+        // in matched output) give the tessellator degenerate normals, which
+        // render as spike artefacts.
+        pts.dedup_by(|a, b| (*a - *b).length_sq() < 0.01);
+
+        if pts.len() < 2 {
+            return;
+        }
+
+        // Clip to the map widget: the ui's clip rect spans the whole panel,
+        // so an unclipped stroke bleeds over neighbouring panes.
         ui.painter()
+            .with_clip_rect(response.rect.intersect(ui.clip_rect()))
             .line(pts, Stroke::new(self.stroke_width, self.color));
     }
 }
