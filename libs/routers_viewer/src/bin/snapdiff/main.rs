@@ -173,6 +173,16 @@ mod tests {
 
     #[test]
     fn loads_working_tree_against_main() {
+        // CI checkouts are a shallow detached HEAD with no `main` ref (local
+        // or remote-tracking) — this test only makes sense on a dev checkout.
+        let can_resolve = git::repo_root()
+            .and_then(|root| git::resolve_base(&root, "main", true))
+            .is_ok();
+        if !can_resolve {
+            eprintln!("skipping: no resolvable `main`/`origin/main` in this checkout");
+            return;
+        }
+
         let args = Args {
             base: "main".to_owned(),
             merge_base: true,

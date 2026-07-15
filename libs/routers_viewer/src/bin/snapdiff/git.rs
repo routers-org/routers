@@ -33,11 +33,27 @@ pub fn repo_root() -> Result<PathBuf> {
 /// Resolve the base ref to a commit SHA. With `merge_base`, resolves to
 /// `merge-base(<base>, HEAD)` — the fork point, mirroring what a PR diff
 /// shows — rather than the ref's tip.
+///
+/// Falls back to the remote-tracking ref (`origin/<base>`) when the local
+/// branch doesn't exist, as in git worktrees and CI checkouts.
 pub fn resolve_base(root: &Path, base: &str, merge_base: bool) -> Result<String> {
-    let sha = if merge_base {
-        git(Some(root), &["merge-base", base, "HEAD"])?
+    let verify = |name: &str| {
+        git(
+            Some(root),
+            &["rev-parse", "--verify", "--quiet", &format!("{name}^{{commit}}")],
+        )
+    };
+
+    let base = if verify(base).is_ok() {
+        base.to_owned()
     } else {
-        git(Some(root), &["rev-parse", base])?
+        format!("origin/{base}")
+    };
+
+    let sha = if merge_base {
+        git(Some(root), &["merge-base", &base, "HEAD"])?
+    } else {
+        git(Some(root), &["rev-parse", &base])?
     };
     Ok(sha.trim().to_owned())
 }
