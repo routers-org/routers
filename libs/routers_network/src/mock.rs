@@ -43,7 +43,9 @@ use serde::{Deserialize, Serialize};
 /// A minimal node / edge identifier for use inside a [`MockNetwork`].
 ///
 /// Wraps an `i64` and derives all traits required by [`Entry`].
-#[derive(Default, Serialize, Deserialize, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[derive(
+    Default, Serialize, Deserialize, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug,
+)]
 pub struct MockEntryId(pub i64);
 
 impl Entry for MockEntryId {
