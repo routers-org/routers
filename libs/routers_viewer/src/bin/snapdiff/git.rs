@@ -40,7 +40,12 @@ pub fn resolve_base(root: &Path, base: &str, merge_base: bool) -> Result<String>
     let verify = |name: &str| {
         git(
             Some(root),
-            &["rev-parse", "--verify", "--quiet", &format!("{name}^{{commit}}")],
+            &[
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                &format!("{name}^{{commit}}"),
+            ],
         )
     };
 
