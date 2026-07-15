@@ -61,6 +61,15 @@ where
         let interpolated = {
             let mut elements = Vec::new();
 
+            // Include initial edge source
+            if let Some(first) = matched.first() {
+                if let Some(fat) = network.fatten(&first.edge) {
+                    if let Some(pe) = PathElement::from_edge_source(fat, network) {
+                        elements.push(pe);
+                    }
+                }
+            }
+
             for (i, reachable) in collapsed_path.interpolated.iter().enumerate() {
                 let current = &matched[i];
 
@@ -72,7 +81,7 @@ where
                 if let ResolutionMethod::Standard = reachable.resolution_method {
                     // Add target of current candidate edge
                     if let Some(fat) = network.fatten(&current.edge) {
-                        if let Some(pe) = PathElement::from_fat(fat, network) {
+                        if let Some(pe) = PathElement::from_edge_target(fat, network) {
                             elements.push(pe);
                         }
                     }
@@ -80,10 +89,7 @@ where
                     // Add intermediate edges
                     for edge in &reachable.path {
                         if let Some(fat) = network.fatten(edge) {
-                            if let Some(pe) = PathElement::from_fat(fat, network) {
-                                elements.push(pe);
-                            }
-                            if let Some(pe) = PathElement::from_fat(fat, network) {
+                            if let Some(pe) = PathElement::from_edge_source(fat, network) {
                                 elements.push(pe);
                             }
                         }
@@ -92,7 +98,7 @@ where
                     // Add source of next candidate edge
                     if let Some(next) = matched.get(i + 1) {
                         if let Some(fat) = network.fatten(&next.edge) {
-                            if let Some(pe) = PathElement::from_fat(fat, network) {
+                            if let Some(pe) = PathElement::from_edge_source(fat, network) {
                                 elements.push(pe);
                             }
                         }
@@ -184,9 +190,17 @@ where
         })
     }
 
-    pub fn from_fat(edge: Edge<Node<E>>, network: &impl Network<E, M>) -> Option<Self> {
+    pub fn from_edge_source(edge: Edge<Node<E>>, network: &impl Network<E, M>) -> Option<Self> {
         Some(PathElement {
             point: edge.source.position.0,
+            metadata: network.metadata(edge.id())?.clone(),
+            edge,
+        })
+    }
+
+    pub fn from_edge_target(edge: Edge<Node<E>>, network: &impl Network<E, M>) -> Option<Self> {
+        Some(PathElement {
+            point: edge.target.position.0,
             metadata: network.metadata(edge.id())?.clone(),
             edge,
         })
