@@ -1,10 +1,4 @@
-//! Batch map-matching: one full trajectory in, one matched route out.
-//!
-//! Shows the two entry points for the common "I have a complete linestring"
-//! case — the `Match` facade for defaults, and a hand-built [`Matcher`] when
-//! you want to choose the costing, generator, or weighing strategy yourself.
-//!
-//! Run: `cargo run -p routers_transition --example batch`
+//! Full map-matching. One trajectory, one matched route.
 
 use geo::{LineString, point, wkt};
 use routers_network::mock::{MockNetwork, MockNetworkBuilder};
@@ -44,14 +38,16 @@ fn print_line(label: &str, line: &LineString) {
         .coords()
         .map(|c| format!("({:.4}, {:.4})", c.x, c.y))
         .collect::<Vec<_>>()
-        .join(" → ");
+        .join(" -> ");
     println!("{label}: {coords}");
 }
 
 fn main() -> Result<(), MatchError> {
     let network = road();
 
-    // ── The one-liner: the `Match` facade with default options. ────────────
+    // The simplest approach is to use the trait implementation, like so.
+    // This is best on one-off or proof-of-concept use cases, when you don't
+    // need to customize the costing, generator, or weighing strategy.
     let routed = network.match_simple(trace())?;
     println!(
         "facade: {} matched points, {} interpolated elements",
@@ -59,18 +55,15 @@ fn main() -> Result<(), MatchError> {
         routed.interpolated.elements.len(),
     );
 
-    // ── The full pipeline: pick every component yourself. ──────────────────
-    // The Matcher is configuration + operations only; it holds no match state.
+    // However, you can also build the Matcher yourself, to customize the
+    // costing, generator, or weighing strategy. I.e., to cache predicate
+    // results and avoid recomputing them for each match.
     let costing = CostingStrategies::default();
     let generator = StandardGenerator::new(&network, &costing.emission, DEFAULT_SEARCH_DISTANCE);
     let matcher = Matcher::new(&network, &costing, generator, AllCompute::default(), &());
 
+    // Then, just use the "match" method to solve it, easy as!
     let collapsed = matcher.r#match(trace())?;
-
-    println!(
-        "cost: {} (confidence indicator, not metres)",
-        collapsed.cost
-    );
     for (candidate, r) in collapsed.matched().iter().zip(&collapsed.route) {
         println!(
             "  {r}: input point snapped to ({:.4}, {:.4}) on edge {:?}",
@@ -80,9 +73,10 @@ fn main() -> Result<(), MatchError> {
         );
     }
 
-    // The matched positions (one per input point), and the full driven path
-    // with the road geometry between them recovered.
+    // Collapsed is a linestring 1:1 with input positions.
     print_line("collapsed   ", &collapsed.collapsed());
+
+    // Interpolated is the full path, including turn geometries, etc.
     print_line("interpolated", &collapsed.interpolated(&network));
 
     Ok(())

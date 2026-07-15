@@ -1,18 +1,4 @@
-//! Streaming (realtime) map-matching: positions arrive one at a time.
-//!
-//! The caller owns a [`Trip`] — pure, serializable data — and hands it back to
-//! a [`Matcher`] each tick: `push` appends the position's candidate layer,
-//! `solve` weighs whatever is pending and re-certifies the minimum-cost path.
-//! Solving is *defined* as weigh-then-solve, so there is no weighing step to
-//! forget, and already-weighed boundaries are never recomputed — a tick costs
-//! one boundary's weighing plus a µs-scale DP pass.
-//!
-//! Along the way this demonstrates the supporting machinery a realtime service
-//! needs: rejecting off-network points without corrupting the trip, persisting
-//! a trip mid-stream (serde) and resuming it elsewhere, and re-deriving hop
-//! geometry per tick.
-//!
-//! Run: `cargo run -p routers_transition --example streaming`
+//! Streaming (realtime) map-matching, for when positions arrive one at a time.
 
 use geo::{Point, point};
 use routers_network::mock::{MockEntryId, MockNetwork, MockNetworkBuilder};
@@ -42,7 +28,7 @@ fn stream() -> Vec<Point> {
         point!(x: -118.151, y: 34.1503),
         point!(x: -118.155, y: 34.1503),
         point!(x: -118.165, y: 34.1503),
-        point!(x: 0.0, y: 0.0), // glitch: nowhere near the network
+        point!(x: 0.0, y: 0.0), // example unanchored node that's nowhere near the network
         point!(x: -118.170, y: 34.1490),
         point!(x: -118.172, y: 34.1403),
         point!(x: -118.179, y: 34.1403),
@@ -58,9 +44,7 @@ fn main() -> Result<(), MatchError> {
     let mut trip = matcher.begin();
 
     for (tick, position) in stream().into_iter().enumerate() {
-        // `push` is atomic: candidates, trellis layer, and emission node
-        // weights land together, or — for an unanchorable point — not at all,
-        // so the stream just drops the glitch and carries on.
+        // `push` is atomic, it either adds the position, or fails.
         let layer = match matcher.push(&mut trip, position) {
             Ok(layer) => layer,
             Err(MatchError::Unanchored(e)) => {
@@ -70,29 +54,32 @@ fn main() -> Result<(), MatchError> {
             Err(e) => return Err(e),
         };
 
-        // Weigh the new boundary and re-certify the best path. The HMM may
-        // revise earlier choices as new evidence arrives — that is the point.
+        // We can then solve for the next point, which will update our trip.
         let (cost, points) = {
             let path = matcher.solve(&mut trip)?;
             (path.cost, path.nodes.len())
         };
+
         println!(
-            "tick {tick}: layer {layer} ({} candidates) → cost {cost} over {points} points",
+            "tick {tick}: layer {layer} ({} candidates): cost={cost} points={points}",
             trip.layer(layer).map_or(0, <[_]>::len),
         );
 
-        // Persist the trip at an arbitrary tick boundary — it is pure data —
-        // and resume it as a "new process" would (fresh matcher and caches).
+        // As an example, we can persist the trip at any time (arbitrary tick), and
+        // resume it later, without needing to rebuild the matcher or caches.
         if tick == 2 {
             let stored = serde_json::to_string(&trip).expect("trip serializes");
-            println!("        persisted trip: {} bytes of JSON", stored.len());
+            println!(
+                "-> persisted trip at tick={tick} into {} bytes of JSON",
+                stored.len()
+            );
             trip = serde_json::from_str::<Trip<MockEntryId>>(&stored).expect("trip deserializes");
             assert!(trip.is_solved(), "solved state survives persistence");
         }
     }
 
-    // Per-tick interpolated output, if a consumer wants it, is the caller's to
-    // derive (and memoise): re-derive any hop of the current path on demand.
+    // We can also inspect the trip's path, i.e. to determine
+    // the nodes travelled, or derive any hop within the current path.
     if let Some(path) = trip.path() {
         let route = path
             .nodes
@@ -102,6 +89,7 @@ fn main() -> Result<(), MatchError> {
                 routers_transition::CandidateRef::new(routers_transition::LayerId(l as u32), n)
             })
             .collect::<Vec<_>>();
+
         if let [.., from, to] = route.as_slice() {
             let hop = matcher.hop(&trip, *from, *to);
             println!(
@@ -111,8 +99,8 @@ fn main() -> Result<(), MatchError> {
         }
     }
 
-    // Trip complete: collapse into the final match, re-deriving all hop
-    // geometry from the warm predicate cache.
+    // We can also collapse the state into the final match result,
+    // re-deriving all hop geometry from the warm predicate cache.
     let collapsed = matcher.finish(trip)?;
     println!(
         "finished: cost {}, {} matched points, {} hops",
@@ -120,6 +108,9 @@ fn main() -> Result<(), MatchError> {
         collapsed.route.len(),
         collapsed.interpolated.len(),
     );
+
+    println!("interpolated: {:?}", collapsed.interpolated);
+    println!("collapsed: {:?}", collapsed.collapsed());
 
     Ok(())
 }
