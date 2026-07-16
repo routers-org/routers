@@ -85,6 +85,7 @@ fn bench_streaming_match(c: &mut Criterion) {
         let net = straight_net(len + 4);
         let points = trip(len).into_points();
         let costing = CostingStrategies::<_, _, MockEntryId>::default();
+
         group.bench_with_input(BenchmarkId::from_parameter(len), &len, |bench, _| {
             bench.iter(|| {
                 let generator =
@@ -96,7 +97,11 @@ fn bench_streaming_match(c: &mut Criterion) {
                     matcher.push(&mut trip, point).expect("push must anchor");
                     matcher.solve(&mut trip).expect("solve must succeed");
                 }
-                matcher.finish(trip).expect("finish must succeed")
+
+                matcher
+                    .snapshot(&mut trip)
+                    .expect("snapshot must succeed")
+                    .cost
             });
         });
     }

@@ -1,3 +1,5 @@
+use alloc::borrow::Cow;
+
 use crate::Reachable;
 use crate::candidate::*;
 use geo::LineString;
@@ -6,7 +8,7 @@ use routers_network::{Entry, Metadata};
 
 /// A solved map-match: the chosen candidate per input point, plus the routed
 /// path between them.
-pub struct CollapsedPath<E>
+pub struct CollapsedPath<'a, E>
 where
     E: Entry,
 {
@@ -22,13 +24,27 @@ where
     pub interpolated: Vec<Reachable<E>>,
 
     /// The candidate store resolving the [`CandidateRef`]s in [`route`](Self::route).
-    pub candidates: CandidateStore<E>,
+    pub candidates: Cow<'a, CandidateStore<E>>,
 }
 
-impl<E> CollapsedPath<E>
+impl<E> CollapsedPath<'_, E>
 where
     E: Entry,
 {
+    /// Detach from the borrowed trip by cloning the candidate store (a no-op
+    /// when it is already owned).
+    pub fn into_owned<'b>(self) -> CollapsedPath<'b, E>
+    where
+        E: 'b,
+    {
+        CollapsedPath {
+            cost: self.cost,
+            route: self.route,
+            interpolated: self.interpolated,
+            candidates: Cow::Owned(self.candidates.into_owned()),
+        }
+    }
+
     /// The chosen [`Candidate`] for each matched input point.
     pub fn matched(&self) -> Vec<Candidate<E>> {
         self.route

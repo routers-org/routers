@@ -72,7 +72,7 @@ fn streaming_equals_batch() {
         m.push(&mut trip, point).expect("push must anchor");
         m.solve(&mut trip).expect("every prefix must solve");
     }
-    let streamed = m.finish(trip).expect("finish must succeed");
+    let streamed = m.snapshot(&mut trip).expect("snapshot must succeed");
 
     assert_same_match(&streamed, &batch);
 }
@@ -108,7 +108,7 @@ fn trip_serde_round_trip_resumes() {
         m2.push(&mut resumed, point).expect("push must anchor");
         m2.solve(&mut resumed).expect("every prefix must solve");
     }
-    let streamed = m2.finish(resumed).expect("finish must succeed");
+    let streamed = m2.snapshot(&mut resumed).expect("snapshot must succeed");
 
     let batch = m.r#match(trajectory()).expect("batch match must succeed");
     assert_same_match(&streamed, &batch);

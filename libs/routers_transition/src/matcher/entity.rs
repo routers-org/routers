@@ -1,3 +1,4 @@
+use alloc::borrow::Cow;
 use core::marker::PhantomData;
 
 use geo::{LineString, Point};
@@ -32,7 +33,7 @@ use crate::{
 ///
 /// There are two primary methods to use a [`Matcher`]:
 ///
-/// 1. Batch matching
+/// ## Batch matching
 ///
 /// This is where you have the entire linestring available upfront, and the matcher will solve
 /// the transition graph in one call. This is the fastest approach, and has the least overhead.
@@ -42,7 +43,7 @@ use crate::{
 /// let solution = matcher.r#match(linestring)?;
 /// ```
 ///
-/// 2. Stream matching
+/// ## Stream matching
 ///
 /// This is the approach you should take should positions arrive one at a time. This is a more
 /// involved method as it requires owning the state between calls.
@@ -57,12 +58,14 @@ use crate::{
 ///     matcher.push(&mut trip, point)?;
 ///     let path = matcher.solve(&mut trip)?;
 ///
-///     // This is the solved path for the current position.
+///     // This is the solved path for the current position, which only contains
+///     // the cost and route, not the interpolated points. This is cheaper, and preferred
+///     // within a hot-loop.
 /// }
 ///
-/// // Once you have iterated over all positions, call `finish(..)` to
-/// // collapse the trip state, which gives you more information.
-/// let collapsed = matcher.finish(trip)?;
+/// // So, if you do require an interpolated route or some further map-based context,
+/// // given any solved point, you can obtain this information by using `snapshot(..)`.
+/// let collapsed = matcher.snapshot(&mut trip)?;
 /// ```
 pub struct Matcher<'a, Emmis, Trans, G, W, E, M, N>
 where
@@ -81,6 +84,17 @@ where
     runtime: &'a M::Runtime,
 
     _phantom: PhantomData<(E, M)>,
+}
+
+/// The store-independent parts of a [`CollapsedPath`], as derived by
+/// [`Matcher::collapse`].
+struct Collapse<E>
+where
+    E: Entry,
+{
+    cost: u32,
+    route: Vec<CandidateRef>,
+    interpolated: Vec<Reachable<E>>,
 }
 
 impl<'a, Emmis, Trans, G, W, E, M, N> Matcher<'a, Emmis, Trans, G, W, E, M, N>
@@ -229,16 +243,59 @@ where
         }
     }
 
-    /// Solve (if pending) and collapse the trip into its final match,
-    /// re-deriving each chosen hop's routed geometry from the (warm) predicate
-    /// cache — nothing is stored during weighing.
-    pub fn finish(&self, mut trip: Trip<E>) -> Result<CollapsedPath<E>, MatchError> {
-        let path = self.solve(&mut trip)?;
+    /// Solve (if pending) and collapse the trip's current solution into a
+    /// [`CollapsedPath`], re-deriving each chosen hop's routed geometry from
+    /// the (warm) predicate cache — nothing is stored during weighing.
+    ///
+    /// The trip is not consumed: the snapshot borrows its candidates, so the
+    /// caller may keep streaming once the snapshot is dropped (or detached
+    /// with [`CollapsedPath::into_owned`]).
+    pub fn snapshot<'t>(&self, trip: &'t mut Trip<E>) -> Result<CollapsedPath<'t, E>, MatchError> {
+        let Collapse {
+            cost,
+            route,
+            interpolated,
+        } = self.collapse(trip)?;
+
+        Ok(CollapsedPath {
+            cost,
+            route,
+            interpolated,
+            candidates: Cow::Borrowed(trip.candidates()),
+        })
+    }
+
+    /// Match a whole trajectory in one call: batch candidate generation,
+    /// parallel weighing, solve, and collapse. The trip is internal here, so
+    /// the result owns its candidates.
+    pub fn r#match(&self, linestring: LineString) -> Result<CollapsedPath<'a, E>, MatchError> {
+        let mut trip = self.begin();
+        self.extend(&mut trip, &linestring.into_points())?;
+
+        let Collapse {
+            cost,
+            route,
+            interpolated,
+        } = self.collapse(&mut trip)?;
+        let (candidates, _) = trip.into_parts();
+
+        Ok(CollapsedPath {
+            cost,
+            route,
+            interpolated,
+            candidates: Cow::Owned(candidates),
+        })
+    }
+
+    /// Solve (if pending) and derive the collapse: total cost, the chosen
+    /// candidate per layer, and each hop's routed geometry.
+    fn collapse(&self, trip: &mut Trip<E>) -> Result<Collapse<E>, MatchError> {
+        let path = self.solve(trip)?;
         let cost = path.cost;
 
         let route = self.route_of(path);
         let interpolated = {
-            let ctx = self.context(&trip);
+            let ctx = self.context(trip);
             route
                 .windows(2)
                 .filter_map(|hop| match hop {
@@ -248,22 +305,11 @@ where
                 .collect::<Vec<_>>()
         };
 
-        let (candidates, _) = trip.into_parts();
-
-        Ok(CollapsedPath {
+        Ok(Collapse {
             cost,
             route,
             interpolated,
-            candidates,
         })
-    }
-
-    /// Match a whole trajectory in one call: batch candidate generation,
-    /// parallel weighing, solve, and collapse.
-    pub fn r#match(&self, linestring: LineString) -> Result<CollapsedPath<E>, MatchError> {
-        let mut trip = self.begin();
-        self.extend(&mut trip, &linestring.into_points())?;
-        self.finish(trip)
     }
 
     /// Re-derive the routed geometry of a single hop — for realtime consumers

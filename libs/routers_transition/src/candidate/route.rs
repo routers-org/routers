@@ -33,7 +33,7 @@ where
     E: Entry,
     M: Metadata,
 {
-    pub fn new(collapsed_path: CollapsedPath<E>, network: &impl Network<E, M>) -> Self {
+    pub fn new(collapsed_path: CollapsedPath<'_, E>, network: &impl Network<E, M>) -> Self {
         // Collect matched candidates in order.  Virtual start/end nodes have no
         // lookup entry so flat_map quietly skips them.
         let matched: Vec<Candidate<E>> = collapsed_path

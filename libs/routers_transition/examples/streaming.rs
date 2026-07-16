@@ -99,11 +99,12 @@ fn main() -> Result<(), MatchError> {
         }
     }
 
-    // We can also collapse the state into the final match result,
-    // re-deriving all hop geometry from the warm predicate cache.
-    let collapsed = matcher.finish(trip)?;
+    // We can also collapse the current solution into a full match result,
+    // re-deriving all hop geometry from the warm predicate cache. The trip
+    // stays usable afterwards, so this works mid-stream too.
+    let collapsed = matcher.snapshot(&mut trip)?;
     println!(
-        "finished: cost {}, {} matched points, {} hops",
+        "snapshot: cost {}, {} matched points, {} hops",
         collapsed.cost,
         collapsed.route.len(),
         collapsed.interpolated.len(),

@@ -6,8 +6,8 @@
 //! per layer (emission costs become trellis node weights), a [`Weigher`]
 //! fills pending boundary transitions, and `routers_trellis` finds the
 //! minimum-cost path. Batch callers use [`Matcher::r#match`] (or the
-//! [`Match`] facade); realtime callers loop `push` → `solve` and `finish`
-//! when done.
+//! [`Match`] facade); realtime callers loop `push` → `solve`, taking a
+//! `snapshot` whenever the collapsed result is wanted.
 
 extern crate alloc;
 
