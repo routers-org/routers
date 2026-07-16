@@ -1,5 +1,5 @@
 use geo::Point;
-use routers::RoutedPath;
+use routers::candidate::RoutedPath;
 use routers_network::{Entry, Metadata};
 use routers_shard::{Geohash, GeohashStrategy, ShardingStrategy};
 use serde::{Deserialize, Serialize};

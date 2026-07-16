@@ -53,3 +53,6 @@ pub mod weigh;
 
 mod map_path;
 mod r#match;
+
+// Re-exports from routers_trellis
+pub use routers_trellis::{LayerId, NodeId, Path as TrellisPath, Solved, Trellis};
