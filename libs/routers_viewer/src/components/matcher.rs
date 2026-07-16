@@ -74,7 +74,7 @@ fn run_match(
     cache: MatchCache,
 ) -> Result<MatchData, String> {
     let costing = CostingStrategies::default();
-    let generator = StandardGenerator::new(network, &costing.emission, 100.0);
+    let generator = StandardGenerator::new(network, &costing.emission).with_search_distance(100.0);
     let weigher = Selective::default().use_cache(cache);
     let runtime = OsmTripConfiguration::default();
     let matcher = TransitionMatcher::new(network, &costing, generator, weigher, &runtime);

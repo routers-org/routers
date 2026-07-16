@@ -4,8 +4,8 @@
 use geo::{LineString, point, wkt};
 use routers_network::mock::{MockMetadata, MockNetwork, MockNetworkBuilder};
 use routers_network::{DataPlane, Direction, Metadata};
-use routers_transition::SolverVariant;
-use routers_transition::r#match::{Match, MatchOptions, MatchSimpleExt};
+use routers_transition::weigh::SolverVariant;
+use routers_transition::{Match, MatchOptions, MatchSimpleExt};
 
 /// Tiny straight road: 1 -> 2 -> 3 along lat = 34.15.
 fn straight_road() -> MockNetwork {

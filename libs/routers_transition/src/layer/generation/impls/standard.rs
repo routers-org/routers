@@ -1,5 +1,6 @@
 use crate::candidate::CandidateRef;
 use crate::costing::{EmissionContext, EmissionStrategy};
+use crate::r#match::DEFAULT_SEARCH_DISTANCE;
 use crate::{candidate::Candidate, layer::generation::LayerGeneration};
 use geo::{Distance, Haversine, Point};
 use routers_network::{Entry, Metadata, Network};
@@ -43,12 +44,17 @@ where
     Emmis: EmissionStrategy + Send + Sync,
 {
     /// Creates a [`StandardGenerator`] from a map and emission heuristic.
-    pub fn new(map: &'a dyn Network<E, M>, emission: &'a Emmis, search_distance: f64) -> Self {
+    pub fn new(map: &'a dyn Network<E, M>, emission: &'a Emmis) -> Self {
         StandardGenerator {
             map,
             emission,
-            search_distance,
+            search_distance: DEFAULT_SEARCH_DISTANCE,
         }
+    }
+
+    pub fn with_search_distance(mut self, search_distance: f64) -> Self {
+        self.search_distance = search_distance;
+        self
     }
 }
 

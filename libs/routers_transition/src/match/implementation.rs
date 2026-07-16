@@ -26,7 +26,8 @@ where
         info!("Finding matched route for {} positions", linestring.0.len());
 
         let costing = CostingStrategies::default();
-        let generator = StandardGenerator::new(self, &costing.emission, opts.search_distance);
+        let generator = StandardGenerator::new(self, &costing.emission)
+            .with_search_distance(opts.search_distance);
 
         let weigher = match opts.cache {
             Some(cache) => opts.solver.instance(cache),

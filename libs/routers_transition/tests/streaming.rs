@@ -4,16 +4,14 @@
 
 use geo::{LineString, Point, point, wkt};
 use routers_network::mock::{MockEntryId, MockNetwork, MockNetworkBuilder};
-use routers_transition::generation::StandardGenerator;
-use routers_transition::{
-    AllCompute, CostingStrategies, DEFAULT_SEARCH_DISTANCE, MatchError, Matcher, Trip,
-};
+use routers_transition::candidate::CollapsedPath;
+use routers_transition::costing::{CostingStrategies, DefaultEmissionCost, DefaultTransitionCost};
+use routers_transition::layer::generation::StandardGenerator;
+use routers_transition::matcher::Trip;
+use routers_transition::weigh::AllCompute;
+use routers_transition::{MatchError, Matcher};
 
-type Costing = CostingStrategies<
-    routers_transition::DefaultEmissionCost,
-    routers_transition::DefaultTransitionCost,
-    MockEntryId,
->;
+type Costing = CostingStrategies<DefaultEmissionCost, DefaultTransitionCost, MockEntryId>;
 
 /// A staircase road: west, then south, then west again.
 fn bent_road() -> MockNetwork {
@@ -39,10 +37,7 @@ fn trajectory() -> LineString {
     }
 }
 
-fn assert_same_match(
-    a: &routers_transition::CollapsedPath<MockEntryId>,
-    b: &routers_transition::CollapsedPath<MockEntryId>,
-) {
+fn assert_same_match(a: &CollapsedPath<MockEntryId>, b: &CollapsedPath<MockEntryId>) {
     assert_eq!(a.cost, b.cost, "costs must agree");
     assert_eq!(a.route, b.route, "chosen candidates must agree");
     assert_eq!(a.collapsed(), b.collapsed(), "matched positions must agree");
@@ -62,7 +57,7 @@ fn assert_same_match(
 fn streaming_equals_batch() {
     let net = bent_road();
     let costing = Costing::default();
-    let generator = StandardGenerator::new(&net, &costing.emission, DEFAULT_SEARCH_DISTANCE);
+    let generator = StandardGenerator::new(&net, &costing.emission);
     let m = Matcher::new(&net, &costing, generator, AllCompute::default(), &());
 
     let batch = m.r#match(trajectory()).expect("batch match must succeed");
@@ -83,7 +78,7 @@ fn streaming_equals_batch() {
 fn trip_serde_round_trip_resumes() {
     let net = bent_road();
     let costing = Costing::default();
-    let generator = || StandardGenerator::new(&net, &costing.emission, DEFAULT_SEARCH_DISTANCE);
+    let generator = || StandardGenerator::new(&net, &costing.emission);
     let m = Matcher::new(&net, &costing, generator(), AllCompute::default(), &());
 
     let points = trajectory().into_points();
@@ -120,7 +115,7 @@ fn trip_serde_round_trip_resumes() {
 fn unanchored_push_leaves_trip_unchanged() {
     let net = bent_road();
     let costing = Costing::default();
-    let generator = StandardGenerator::new(&net, &costing.emission, DEFAULT_SEARCH_DISTANCE);
+    let generator = StandardGenerator::new(&net, &costing.emission);
     let m = Matcher::new(&net, &costing, generator, AllCompute::default(), &());
 
     let mut trip = m.begin();
@@ -144,7 +139,7 @@ fn unanchored_push_leaves_trip_unchanged() {
 fn repeated_matches_reproduce_geometry() {
     let net = bent_road();
     let costing = Costing::default();
-    let generator = || StandardGenerator::new(&net, &costing.emission, DEFAULT_SEARCH_DISTANCE);
+    let generator = || StandardGenerator::new(&net, &costing.emission);
 
     let a = Matcher::new(&net, &costing, generator(), AllCompute::default(), &())
         .r#match(trajectory())
@@ -161,7 +156,7 @@ fn repeated_matches_reproduce_geometry() {
 fn trip_accessors_are_layer_indexed() {
     let net = bent_road();
     let costing = Costing::default();
-    let generator = StandardGenerator::new(&net, &costing.emission, DEFAULT_SEARCH_DISTANCE);
+    let generator = StandardGenerator::new(&net, &costing.emission);
     let m = Matcher::new(&net, &costing, generator, AllCompute::default(), &());
 
     let mut trip = m.begin();

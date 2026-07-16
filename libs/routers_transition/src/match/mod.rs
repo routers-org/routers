@@ -10,4 +10,5 @@
 mod definition;
 mod implementation;
 
+pub(crate) use definition::DEFAULT_SEARCH_DISTANCE;
 pub use definition::{Match, MatchOptions, MatchSimpleExt};
