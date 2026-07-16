@@ -10,11 +10,13 @@
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use geo::{Coord, LineString, point};
+
 use routers_network::mock::{MockEntryId, MockNetwork, MockNetworkBuilder};
-use routers_transition::generation::{LayerGeneration, StandardGenerator};
-use routers_transition::r#match::MatchSimpleExt;
 use routers_transition::{
-    AllCompute, CostingStrategies, DEFAULT_SEARCH_DISTANCE, LayerId, Matcher,
+    MatchSimpleExt, Matcher,
+    costing::CostingStrategies,
+    layer::generation::{LayerGeneration, StandardGenerator},
+    weigh::AllCompute,
 };
 
 /// A straight west-bound road of `n` nodes (`n-1` unit edges), ~92 m spacing.
@@ -49,6 +51,7 @@ fn bench_full_match(c: &mut Criterion) {
     for &len in &[8usize, 32, 128] {
         let net = straight_net(len + 4);
         let ls = trip(len);
+
         group.bench_with_input(BenchmarkId::from_parameter(len), &len, |bench, _| {
             bench.iter(|| net.match_simple(ls.clone()).expect("match must succeed"));
         });
@@ -65,11 +68,11 @@ fn bench_layer_generation(c: &mut Criterion) {
         let net = straight_net(len + 4);
         let points = trip(len).into_points();
         let costing = CostingStrategies::<_, _, MockEntryId>::default();
+
         group.bench_with_input(BenchmarkId::from_parameter(len), &len, |bench, _| {
             bench.iter(|| {
-                let generator =
-                    StandardGenerator::new(&net, &costing.emission, DEFAULT_SEARCH_DISTANCE);
-                generator.generate(&points, LayerId(0))
+                let generator = StandardGenerator::new(&net, &costing.emission);
+                generator.generate_all(&points)
             });
         });
     }
@@ -88,8 +91,7 @@ fn bench_streaming_match(c: &mut Criterion) {
 
         group.bench_with_input(BenchmarkId::from_parameter(len), &len, |bench, _| {
             bench.iter(|| {
-                let generator =
-                    StandardGenerator::new(&net, &costing.emission, DEFAULT_SEARCH_DISTANCE);
+                let generator = StandardGenerator::new(&net, &costing.emission);
                 let matcher = Matcher::new(&net, &costing, generator, AllCompute::default(), &());
 
                 let mut trip = matcher.begin();
