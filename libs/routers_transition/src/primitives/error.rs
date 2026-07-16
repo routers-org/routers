@@ -6,15 +6,7 @@ use thiserror::Error;
 ///
 /// Variants are split by the *stage* at which matching gave up, so a caller can
 /// tell an unroutable trajectory apart from a lower-level failure — and, where
-/// relevant, learn *which* part of the trajectory was at fault:
-///
-/// - [`Unanchored`](MatchError::Unanchored) — one or more input points had no
-///   road candidate nearby, so no layer could be formed for them.
-/// - [`Disconnected`](MatchError::Disconnected) — every point was anchored, but
-///   no continuous route links them; the trajectory breaks at a boundary.
-/// - [`TrellisError`](MatchError::TrellisError) /
-///   [`SolveError`](MatchError::SolveError) — the trellis rejected the graph or
-///   the solver could not run over it.
+/// relevant, learn *which* part of the trajectory was at fault.
 #[derive(Error, Debug)]
 pub enum MatchError {
     /// One or more trajectory points could not be anchored to the road network:

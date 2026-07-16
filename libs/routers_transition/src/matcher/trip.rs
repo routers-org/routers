@@ -136,15 +136,15 @@ where
         };
 
         // Identity is placement: stamp each candidate with where it landed.
+        for (node, candidate) in candidates.iter_mut().enumerate() {
+            candidate.location = CandidateRef::new(id, routers_trellis::NodeId(node as u32));
+        }
+
         // Emission costs enter the trellis as node weights, clamped to its
         // weight ceiling.
         let emissions = candidates
-            .iter_mut()
-            .enumerate()
-            .map(|(node, candidate)| {
-                candidate.location = CandidateRef::new(id, routers_trellis::NodeId(node as u32));
-                candidate.emission.min(routers_trellis::MAX_WEIGHT)
-            })
+            .iter()
+            .map(|candidate| candidate.emission.min(routers_trellis::MAX_WEIGHT))
             .collect::<Vec<_>>();
         trellis.fill_nodes(id, &emissions)?;
 

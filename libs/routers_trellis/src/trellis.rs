@@ -242,7 +242,8 @@ impl Trellis {
         Ok(id)
     }
 
-    /// The id of the most recent layer.
+    /// The id of the most recent layer. Always valid: [`new`](Self::new)
+    /// rejects zero layers and nothing removes them.
     pub fn last_id(&self) -> LayerId {
         LayerId(self.widths.len() as u32 - 1)
     }
@@ -328,6 +329,27 @@ impl Trellis {
     /// Every node weight, layer-major — positioned by [`layer_ranges`](Self::layer_ranges).
     pub(crate) fn node_table(&self) -> &[u32] {
         &self.nodes
+    }
+
+    /// Total cost of a full node-path: the first node's weight, then each
+    /// boundary's edge weight plus the entered node's weight, saturating at
+    /// the DP tables' infinity.
+    ///
+    /// Panics if `nodes` does not name one valid node per layer.
+    pub fn path_cost(&self, nodes: &[NodeId]) -> u32 {
+        let node_cost = |layer: usize, node: NodeId| {
+            self.node_weight(LayerId(layer as u32), node)
+                .expect("path names one valid node per layer")
+        };
+
+        let mut cost = node_cost(0, nodes[0]);
+        for (layer, hop) in nodes.windows(2).enumerate() {
+            let edge = self.edge_weight(LayerId(layer as u32), hop[0], hop[1]);
+            cost = cost
+                .saturating_add(edge)
+                .saturating_add(node_cost(layer + 1, hop[1]));
+        }
+        cost
     }
 
     /// An owned copy of the layers in `range`, keeping their node weights and

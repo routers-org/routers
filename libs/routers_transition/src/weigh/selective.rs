@@ -87,7 +87,11 @@ where
         if nearest.len() > self.fanout {
             let distance_to =
                 |i: &usize| Haversine.distance(source.position, to_layer[*i].position);
-            nearest.sort_by(|a, b| distance_to(a).total_cmp(&distance_to(b)));
+            // Partial selection: only membership of the nearest `fanout`
+            // matters, never their order.
+            nearest.select_nth_unstable_by(self.fanout.saturating_sub(1), |a, b| {
+                distance_to(a).total_cmp(&distance_to(b))
+            });
             nearest.truncate(self.fanout);
         }
 

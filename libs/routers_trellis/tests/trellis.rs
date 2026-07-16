@@ -11,8 +11,17 @@ fn line(weights: &[u32]) -> Trellis {
 }
 
 /// Dense random trellis with uniform-width layers, seeded deterministically.
-/// Node weights are randomised too when `noded` is set.
-fn random_trellis(layers: usize, width: u32, seed: u64, noded: bool) -> Trellis {
+/// Node weights stay zero — see [`random_noded_trellis`].
+fn random_trellis(layers: usize, width: u32, seed: u64) -> Trellis {
+    random_trellis_with(layers, width, seed, false)
+}
+
+/// [`random_trellis`], with the node weights randomised too.
+fn random_noded_trellis(layers: usize, width: u32, seed: u64) -> Trellis {
+    random_trellis_with(layers, width, seed, true)
+}
+
+fn random_trellis_with(layers: usize, width: u32, seed: u64, noded: bool) -> Trellis {
     let mut t = Trellis::new(vec![width; layers]).unwrap();
     let mut s = seed | 1;
     let mut rng = || {
@@ -136,7 +145,7 @@ fn reused_solver_matches_fresh_solver() {
 
 #[test]
 fn wide_dense_solve_is_consistent_across_runs() {
-    let t = random_trellis(12, 40, 0xDEAD, true);
+    let t = random_noded_trellis(12, 40, 0xDEAD);
     let p1 = ViterbiSolver::new().solve(&t).unwrap();
     assert_eq!(p1, ViterbiSolver::new().solve(&t).unwrap());
     assert_eq!(p1.nodes.len(), 12);
@@ -241,7 +250,7 @@ fn add_layer_rejects_zero_width() {
 
 #[test]
 fn partition_keeps_interior_weights_and_nodes() {
-    let t = random_trellis(6, 3, 0xF00D, true);
+    let t = random_noded_trellis(6, 3, 0xF00D);
     let w = t.partition(LayerId(2)..LayerId(5)).unwrap();
 
     assert_eq!(w.layers(), 3);
@@ -260,7 +269,7 @@ fn partition_keeps_interior_weights_and_nodes() {
 
 #[test]
 fn last_windows_the_tail() {
-    let t = random_trellis(6, 3, 0xBEEF, true);
+    let t = random_noded_trellis(6, 3, 0xBEEF);
     let w = t.last(2).unwrap();
     assert_eq!(w.layers(), 2);
     assert_eq!(w.node_weights(LayerId(1)), t.node_weights(LayerId(5)));
@@ -272,7 +281,7 @@ fn last_windows_the_tail() {
 
 #[test]
 fn partition_rejects_bad_ranges() {
-    let t = random_trellis(4, 2, 1, false);
+    let t = random_trellis(4, 2, 1);
     assert_eq!(
         t.partition(LayerId(2)..LayerId(2)),
         Err(TrellisError::Empty)
@@ -285,7 +294,7 @@ fn partition_rejects_bad_ranges() {
 
 #[test]
 fn windowed_solve_matches_direct_construction() {
-    let t = random_trellis(8, 4, 0x5EED, true);
+    let t = random_noded_trellis(8, 4, 0x5EED);
     let w = t.last(3).unwrap();
     let direct = ViterbiSolver::new().solve(&w).unwrap();
     let brute = BruteForceSolver::new().solve(&w).unwrap();
@@ -296,7 +305,7 @@ fn windowed_solve_matches_direct_construction() {
 
 #[test]
 fn solve_certifies_and_append_reopens() {
-    let t = random_trellis(4, 3, 0xACE, true);
+    let t = random_noded_trellis(4, 3, 0xACE);
     let solved = t.solve(&ViterbiSolver::new()).unwrap();
     assert_eq!(solved.path().nodes.len(), 4);
     assert_eq!(solved.cost(), solved.path().cost);
@@ -344,7 +353,7 @@ fn reopen_permits_surgery_then_resolve() {
 #[cfg(feature = "serde")]
 #[test]
 fn solved_round_trips_through_serde() {
-    let solved = random_trellis(4, 3, 0xD1CE, true)
+    let solved = random_noded_trellis(4, 3, 0xD1CE)
         .solve(&ViterbiSolver::new())
         .unwrap();
     let json = serde_json::to_string(&solved).unwrap();
@@ -362,28 +371,12 @@ fn conformance(t: &Trellis) {
     match (&viterbi, &brute) {
         (Ok(v), Ok(b)) => {
             assert_eq!(v.cost, b.cost, "cost mismatch: viterbi={v:?} brute={b:?}");
-            assert_eq!(
-                path_cost(t, &v.nodes),
-                v.cost,
-                "viterbi path cost incorrect"
-            );
-            assert_eq!(path_cost(t, &b.nodes), b.cost, "brute path cost incorrect");
+            assert_eq!(t.path_cost(&v.nodes), v.cost, "viterbi path cost incorrect");
+            assert_eq!(t.path_cost(&b.nodes), b.cost, "brute path cost incorrect");
         }
         (Err(v), Err(b)) => assert_eq!(v, b, "error mismatch"),
         _ => panic!("solver disagreement: viterbi={viterbi:?} brute={brute:?}"),
     }
-}
-
-fn path_cost(t: &Trellis, nodes: &[NodeId]) -> u32 {
-    let mut cost = t.node_weight(LayerId(0), nodes[0]).unwrap();
-    for layer in 0..nodes.len() - 1 {
-        let next = LayerId(layer as u32 + 1);
-        let w = t.edge_weight(LayerId(layer as u32), nodes[layer], nodes[layer + 1]);
-        cost = cost
-            .saturating_add(w)
-            .saturating_add(t.node_weight(next, nodes[layer + 1]).unwrap());
-    }
-    cost
 }
 
 #[test]
@@ -425,14 +418,14 @@ fn conformance_partial_edges() {
 #[test]
 fn conformance_random_small() {
     for seed in 0u64..20 {
-        conformance(&random_trellis(5, 6, seed, false));
+        conformance(&random_trellis(5, 6, seed));
     }
 }
 
 #[test]
 fn conformance_random_small_with_node_weights() {
     for seed in 0u64..20 {
-        conformance(&random_trellis(5, 6, seed, true));
+        conformance(&random_noded_trellis(5, 6, seed));
     }
 }
 
@@ -470,8 +463,8 @@ fn brute_force_errors_on_pending() {
 /// the solver holds only scratch, no per-trellis state.
 #[test]
 fn one_solver_interleaved_across_two_trellises() {
-    let a = random_trellis(6, 5, 0xAAAA, true);
-    let b = random_trellis(9, 3, 0xBBBB, true);
+    let a = random_noded_trellis(6, 5, 0xAAAA);
+    let b = random_noded_trellis(9, 3, 0xBBBB);
 
     let solver = ViterbiSolver::new();
     for _ in 0..3 {

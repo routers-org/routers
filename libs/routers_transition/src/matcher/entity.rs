@@ -150,8 +150,7 @@ where
     }
 
     /// Weigh every pending boundary and find the minimum-cost path through the
-    /// trip. Weigh-on-solve is the definition of solving: there is no separate
-    /// weighing step to remember.
+    /// trip.
     ///
     /// Already-resolved boundaries are never recomputed, so re-solving after an
     /// append weighs only the new boundaries (plus a µs-scale full DP pass).
@@ -207,9 +206,10 @@ where
     /// re-deriving each chosen hop's routed geometry from the (warm) predicate
     /// cache — nothing is stored during weighing.
     pub fn finish(&self, mut trip: Trip<E>) -> Result<CollapsedPath<E>, MatchError> {
-        self.solve(&mut trip)?;
+        let path = self.solve(&mut trip)?;
+        let cost = path.cost;
 
-        let route = self.route_of(trip.path().expect("solved trip has a path"));
+        let route = self.route_of(path);
         let interpolated = {
             let ctx = self.context(&trip);
             route
@@ -221,13 +221,10 @@ where
                 .collect::<Vec<_>>()
         };
 
-        let (candidates, state) = trip.into_parts();
-        let TripState::Solved(solved) = state else {
-            unreachable!("solve() left the trip solved");
-        };
+        let (candidates, _) = trip.into_parts();
 
         Ok(CollapsedPath {
-            cost: solved.cost(),
+            cost,
             route,
             interpolated,
             candidates,

@@ -38,11 +38,10 @@ impl Solved {
     /// A rejected width hands the certificate back untouched.
     // Handing the caller's state back on failure is the point; its size is theirs.
     #[allow(clippy::result_large_err)]
-    pub fn append(self, width: u32) -> Result<(Trellis, LayerId), (Solved, TrellisError)> {
-        let Solved { mut trellis, path } = self;
-        match trellis.add_layer(width) {
-            Ok(id) => Ok((trellis, id)),
-            Err(e) => Err((Solved { trellis, path }, e)),
+    pub fn append(mut self, width: u32) -> Result<(Trellis, LayerId), (Solved, TrellisError)> {
+        match self.trellis.add_layer(width) {
+            Ok(id) => Ok((self.trellis, id)),
+            Err(e) => Err((self, e)),
         }
     }
 
