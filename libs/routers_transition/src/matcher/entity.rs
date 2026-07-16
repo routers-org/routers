@@ -13,31 +13,55 @@ use crate::{
     Reachable, RoutingContext, Trip, Unanchored, UnanchoredError, Weigher,
 };
 
-/// The map-matching orchestrator: configuration and borrowed context only.
+/// For orchestrating a map match, use the [`Matcher`] struct.
 ///
-/// All mutable state lives in the caller-owned [`Trip`]; a `Matcher` is the
-/// set of operations over it. Two shapes of use:
-///
-/// **Batch** — one call:
+/// A matcher requires a set of costing strategies, which define how to determine the emission
+/// and transition costs of a solve, alongside a solver strategy. By default, the [`Matcher`]
+/// uses the [`StandardGenerator`] to generate candidates, and the [`AllCompute`] strategy to
+/// solve the transition graph.
 ///
 /// ```ignore
 /// let costing = CostingStrategies::default();
 /// let generator = StandardGenerator::new(&map, &costing.emission, DEFAULT_SEARCH_DISTANCE);
 /// let matcher = Matcher::new(&map, &costing, generator, AllCompute::default(), &runtime);
-///
-/// let collapsed = matcher.r#match(linestring)?;
 /// ```
 ///
-/// **Streaming** — positions arrive one at a time; the caller owns the trip
-/// and hands it back each tick. Solving is defined as weigh-then-solve, so
-/// there is no weighing step to forget:
+/// A runtime and map are also required to solve a map matching problem. The runtime will come
+/// from your map implementation, and the map will be provided by the caller. These are your
+/// network abstractions build in `routers_network`.
+///
+/// There are two primary methods to use a [`Matcher`]:
+///
+/// 1. Batch matching
+///
+/// This is where you have the entire linestring available upfront, and the matcher will solve
+/// the transition graph in one call. This is the fastest approach, and has the least overhead.
 ///
 /// ```ignore
+/// // Simply solve using the `r#match(..)` method.
+/// let solution = matcher.r#match(linestring)?;
+/// ```
+///
+/// 2. Stream matching
+///
+/// This is the approach you should take should positions arrive one at a time. This is a more
+/// involved method as it requires owning the state between calls.
+///
+/// ```ignore
+/// // Initialize the trip state using `begin(..)`, this gives you a [`Trip`] state.
 /// let mut trip = matcher.begin();
+///
+/// // In your iteration over inbound streams, i.e. an iterator, push positions onto
+/// // the trip state using `push(..)`, and then solve using `solve(..)`.
 /// for point in stream {
 ///     matcher.push(&mut trip, point)?;
 ///     let path = matcher.solve(&mut trip)?;
+///
+///     // This is the solved path for the current position.
 /// }
+///
+/// // Once you have iterated over all positions, call `finish(..)` to
+/// // collapse the trip state, which gives you more information.
 /// let collapsed = matcher.finish(trip)?;
 /// ```
 pub struct Matcher<'a, Emmis, Trans, G, W, E, M, N>
