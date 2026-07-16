@@ -1,11 +1,23 @@
-pub mod impls;
+//! Candidate generation: how a trajectory point becomes a layer of road
+//! candidates.
+//!
+//! A generator decides which candidates exist for a point, in what (stable)
+//! order, and what their emission costs are — nothing more. Candidate
+//! *identity* is positional and stamped by the [`Matcher`](crate::Matcher)
+//! when the layer is pushed. [`StandardGenerator`] is the default: a radius
+//! search projected onto the nearby edges. Implement [`LayerGeneration`] to
+//! bring your own.
 
-use crate::Candidate;
+mod impls;
+
+pub use impls::StandardGenerator;
+
 use geo::Point;
-pub use impls::*;
 use rayon::prelude::*;
 use routers_network::Entry;
 use routers_trellis::LayerId;
+
+use crate::candidate::Candidate;
 
 /// Produces the candidates anchoring each trajectory point.
 ///

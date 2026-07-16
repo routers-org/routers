@@ -1,12 +1,22 @@
-use crate::{ResolutionMethod, candidate::*};
+use crate::{candidate::*, primitives::ResolutionMethod};
 use core::ops::Deref;
 use routers_network::{Edge, Entry, Metadata, Network, Node};
 use serde::{Deserialize, Serialize};
 
 use geo::Coord;
 
-/// A route representing the parsed output from a function
-/// passed through the transition graph.
+/// The result of a facade-level match: the trajectory resolved onto the
+/// network, ready to render or persist.
+///
+/// Two views of the same match are provided, and you will usually want one or
+/// the other. [`discretized`](Self::discretized) answers *where was each
+/// input point, really?* — one element per input point, in order.
+/// [`interpolated`](Self::interpolated) answers *which roads were driven?* —
+/// the full path including every turn and roadway between the matched points,
+/// recovering what the trajectory's sample rate lost.
+///
+/// Every element carries its network edge and metadata, so nothing further
+/// needs to be looked up against the map downstream.
 #[derive(Serialize, Deserialize, Debug)]
 pub struct RoutedPath<E, M>
 where
@@ -125,8 +135,9 @@ where
     }
 }
 
-/// A representation of a path taken.
-/// Consists of an array of [PathElement]s, containing relevant information for positioning.
+/// An ordered series of [`PathElement`]s describing a path over the network.
+///
+/// Dereferences to its `elements`, so it can be iterated directly.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Path<E, M>
 where
@@ -161,10 +172,8 @@ where
     }
 }
 
-/// An element within a path, consisting of the [Point] the
-/// element represents within the path, as well as metadata (Meta)
-/// for the path element, and the edge within the source network at
-/// which the element exists.
+/// One position along a [`Path`]: the point itself, the network edge it lies
+/// on, and that edge's metadata.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PathElement<E, M>
 where

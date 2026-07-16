@@ -3,7 +3,7 @@ use routers_network::Entry;
 use routers_trellis::{LayerId, Path, Solved, Trellis, TrellisError};
 use serde::{Deserialize, Serialize};
 
-use crate::{Candidate, CandidateRef, CandidateStore};
+use crate::candidate::{Candidate, CandidateRef, CandidateStore};
 
 /// The state of one logical match, owned by the caller and handed to a
 /// [`Matcher`](crate::Matcher) as data arrives.

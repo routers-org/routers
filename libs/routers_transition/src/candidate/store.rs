@@ -1,7 +1,8 @@
-use crate::{Candidate, CandidateRef};
 use routers_network::Entry;
 use routers_trellis::LayerId;
 use serde::{Deserialize, Serialize};
+
+use crate::candidate::{Candidate, CandidateRef};
 
 /// Every candidate considered for a match, layer by layer.
 ///

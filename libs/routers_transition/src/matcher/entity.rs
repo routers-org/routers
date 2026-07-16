@@ -5,20 +5,22 @@ use geo::{LineString, Point};
 use routers_network::{Entry, Metadata, Network};
 use routers_trellis::{LayerId, Path, SolveError, TrellisError, ViterbiSolver};
 
-use crate::costing::{EmissionStrategy, TransitionStrategy};
-use crate::generation::LayerGeneration;
+use crate::candidate::{CandidateRef, CollapsedPath};
+use crate::costing::{CostingStrategies, EmissionStrategy, TransitionStrategy};
+use crate::layer::generation::LayerGeneration;
+use crate::matcher::Trip;
 use crate::matcher::trip::TripState;
-use crate::weigh::frontier_collapse;
-use crate::{
-    CandidateRef, CollapsedPath, CostingStrategies, Disconnected, DisconnectedError, MatchError,
-    Reachable, RoutingContext, Trip, Unanchored, UnanchoredError, Weigher,
+use crate::primitives::{
+    Disconnected, MatchError, Reachable, RoutingContext, Unanchored, UnanchoredError,
 };
+use crate::weigh::{Weigher, frontier_collapse};
 
 /// For orchestrating a map match, use the [`Matcher`] struct.
 ///
 /// A matcher requires a set of costing strategies, which define how to determine the emission
 /// and transition costs of a solve, alongside a solver strategy. By default, the [`Matcher`]
-/// uses the [`StandardGenerator`] to generate candidates, and the [`AllCompute`] strategy to
+/// uses the [`StandardGenerator`](crate::generation::StandardGenerator) to
+/// generate candidates, and the [`AllCompute`](crate::AllCompute) strategy to
 /// solve the transition graph.
 ///
 /// ```ignore

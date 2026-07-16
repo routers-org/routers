@@ -6,7 +6,10 @@ use core::hash::Hash;
 use routers_network::{Edge, Entry, Metadata, Network};
 use rustc_hash::FxHashMap;
 
-use crate::{Candidate, CandidateRef, PredicateCache, Reachable, RoutingContext};
+use crate::{
+    candidate::{Candidate, CandidateRef},
+    primitives::{PredicateCache, Reachable, RoutingContext},
+};
 
 /// A parent-pointer map — each node mapped to the parent it was reached from —
 /// as produced by the predicate cache's bounded Dijkstra.

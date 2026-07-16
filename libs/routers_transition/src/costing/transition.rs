@@ -1,6 +1,8 @@
-use crate::ResolutionMethod;
+use crate::candidate::VirtualTail;
 use crate::candidate::{Candidate, CandidateRef, CandidateStore};
-use crate::{MapPath, RoutingContext, Strategy, VirtualTail};
+use crate::costing::Strategy;
+use crate::map_path::MapPath;
+use crate::primitives::{ResolutionMethod, RoutingContext};
 use geo::{Distance, Haversine, Point};
 use routers_network::{Entry, Metadata, Network};
 
@@ -130,7 +132,7 @@ where
     /// Builds the context, precomputing all network-derived values so the
     /// resulting struct is generic only over the entry type.
     ///
-    /// Candidate positions and the [`Trip`] representation of the optimal
+    /// Candidate positions and the [`MapPath`] representation of the optimal
     /// path are derived internally — the caller supplies the candidate IDs
     /// and the map-node sequence between them.
     pub fn new<M, N>(

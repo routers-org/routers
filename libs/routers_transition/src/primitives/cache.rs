@@ -151,7 +151,7 @@ mod successor {
 
     /// The cache map definition for the successors.
     ///
-    /// It accepts a [`NodeIx`] as input, from which it will obtain all outgoing
+    /// It accepts a node id as input, from which it will obtain all outgoing
     /// edges and obtain the distances to each one as a [`WeightAndDistance`].
     pub type SuccessorsCache<E, M, N> = LockedMap<E, SuccessorWeights<E>, M, N, ()>;
 
@@ -232,8 +232,18 @@ mod predicate {
     /// The output from the [`PredicateCache::calculate`] function.
     type Predicates<E> = FxHashMap<E, E>;
 
-    /// The predicate cache through which a backing of [`Predicates`] is
-    /// made from a [`NodeIx`] key, cached on first calculation and read thereafter.
+    /// The reachability cache a weigher answers routing queries from.
+    ///
+    /// Keyed by a root node, it holds the parent-pointer map of an
+    /// upper-bounded Dijkstra rooted there: every node reachable within the
+    /// threshold, mapped to the node it was reached from. Computed once on
+    /// first query and read thereafter — and deterministic, which is what
+    /// lets collapse re-derive hop geometry rather than store it.
+    ///
+    /// Matching many trajectories over the same map? Share one cache across
+    /// matches (see
+    /// [`MatchOptions::with_cache`](crate::MatchOptions::with_cache)) so
+    /// later matches run warm.
     pub type PredicateCache<E, M, N> =
         LockedMap<E, Predicates<E>, M, N, PredicateMetadata<E, M, N>>;
 

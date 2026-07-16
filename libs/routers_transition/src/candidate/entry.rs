@@ -1,17 +1,20 @@
-use crate::{CandidateRef, RoutingContext};
+use crate::{candidate::CandidateRef, primitives::RoutingContext};
 
 use core::fmt::Debug;
 use geo::{Bearing, Distance, Haversine, LineLocatePoint, LineString, Point};
 use routers_network::{Edge, Entry, Metadata, Network};
 use serde::{Deserialize, Serialize};
 
-/// Represents the candidate selected within a layer.
+/// One possible anchoring of a trajectory point: an edge of the network, the
+/// projected [`position`](Self::position) along it, and the
+/// [`emission`](Self::emission) cost of choosing it.
 ///
-/// This value holds the [edge](#field.edge) on the underlying routing structure it is sourced
-/// from, along with the candidate position, [position](#field.position).
-///
-/// It further contains the emission cost [emission](#field.emission) associated with choosing this
-/// candidate and the candidate's positional identity, [location](#field.location).
+/// Candidates are produced per point by a
+/// [`LayerGeneration`](crate::generation::LayerGeneration) and stored in a
+/// [`CandidateStore`](crate::CandidateStore); [`location`](Self::location)
+/// is the candidate's
+/// positional identity within that store (and the trellis), stamped when its
+/// layer is pushed.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 #[serde(bound(serialize = "E: Serialize", deserialize = "E: Deserialize<'de>"))]
 pub struct Candidate<E>
@@ -32,7 +35,7 @@ where
 /// our intermediary projected position and some end of the edge.
 ///
 /// If the candidates were on the same edge, we would instead utilise the
-/// [ResolutionMethod] option.
+/// [`ResolutionMethod`](crate::ResolutionMethod) option.
 ///
 /// The below diagram images the virtual tail for intermediate candidate position.
 /// For example, the [`VirtualTail::ToSource`] variant can be seen to measure the

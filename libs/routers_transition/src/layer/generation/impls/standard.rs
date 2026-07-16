@@ -1,16 +1,16 @@
-use crate::generation::LayerGeneration;
-use crate::*;
+use crate::candidate::CandidateRef;
+use crate::costing::{EmissionContext, EmissionStrategy};
+use crate::{candidate::Candidate, layer::generation::LayerGeneration};
 use geo::{Distance, Haversine, Point};
 use routers_network::{Entry, Metadata, Network};
 use routers_trellis::{LayerId, NodeId};
 
-/// Generates the layers within the transition graph.
+/// The default candidate generator: a radius search projected onto nearby
+/// edges.
 ///
-/// Generates the layers of the transition graph, where each layer
-/// represents a point in the linestring, and each node in the layer
-/// represents a candidate transition point, within the `distance`
-/// search radius of the linestring point, which was found by the
-/// projection of the linestring point upon the closest edges within this radius.
+/// Every edge within [`search_distance`](Self::search_distance) of a
+/// trajectory point contributes one candidate — the point's projection onto
+/// that edge — priced by the supplied emission strategy.
 #[derive(Copy, Clone)]
 pub struct StandardGenerator<'a, E, M, Emmis>
 where

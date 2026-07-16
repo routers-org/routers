@@ -1,11 +1,10 @@
-use crate::Match;
-use crate::Matcher;
 use crate::candidate::RoutedPath;
 use crate::costing::CostingStrategies;
-use crate::r#match::MatchOptions;
+use crate::layer::generation::StandardGenerator;
+use crate::r#match::{Match, MatchOptions};
+use crate::matcher::Matcher;
 use crate::primitives::MatchError;
 
-use crate::generation::StandardGenerator;
 use geo::LineString;
 use log::info;
 use routers_network::Network;

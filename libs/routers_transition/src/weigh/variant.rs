@@ -1,8 +1,13 @@
 use alloc::sync::Arc;
 
-use crate::{AllCompute, Candidate, PredicateCache, RoutingContext, Selective, Weigher};
 use routers_network::{Entry, Metadata, Network};
 use routers_trellis::NodeId;
+
+use crate::{
+    candidate::Candidate,
+    primitives::{PredicateCache, RoutingContext},
+    weigh::{AllCompute, Selective, Weigher},
+};
 
 /// A [`Weigher`] chosen at runtime by [`SolverVariant`]. Used purely through the
 /// [`Weigher`] trait, so callers stay decoupled from any concrete strategy struct.

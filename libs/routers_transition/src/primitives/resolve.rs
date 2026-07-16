@@ -2,7 +2,7 @@ use itertools::Either;
 use routers_network::{Edge, Entry};
 use serde::{Deserialize, Serialize};
 
-use crate::CandidateRef;
+use crate::candidate::CandidateRef;
 
 #[derive(Debug, Default, Copy, Clone, Serialize, Deserialize)]
 pub enum ResolutionMethod {

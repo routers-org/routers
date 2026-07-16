@@ -5,26 +5,21 @@
 //! and the minimum-cost path is found by `routers_trellis`. Strategies differ
 //! solely in [which next-layer candidates they weigh](Weigher::select).
 
+mod all_compute;
 mod expansion;
+mod selective;
+mod variant;
 
-#[doc(hidden)]
-pub mod all_compute;
-#[doc(hidden)]
-pub mod selective;
-#[doc(hidden)]
-pub mod variant;
-
-#[doc(inline)]
-pub use all_compute::*;
-#[doc(inline)]
-pub use selective::*;
-#[doc(inline)]
-pub use variant::*;
+pub use all_compute::AllCompute;
+pub use selective::{DEFAULT_FANOUT, Selective};
+pub use variant::SolverVariant;
 
 use crate::{
-    Candidate, CandidateRef, Costing, CostingStrategies, MatchError, PredicateCache, Reachable,
-    RoutingContext, TransitionContext,
-    costing::{EmissionStrategy, TransitionStrategy},
+    candidate::{Candidate, CandidateRef},
+    costing::{
+        Costing, CostingStrategies, EmissionStrategy, TransitionContext, TransitionStrategy,
+    },
+    primitives::{MatchError, PredicateCache, Reachable, RoutingContext},
     weigh::expansion::Expansion,
 };
 use itertools::Itertools;

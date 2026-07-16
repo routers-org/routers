@@ -1,5 +1,6 @@
-use crate::Strategy;
 use routers_network::edge::Weight;
+
+use crate::costing::Strategy;
 
 pub trait EmissionStrategy: for<'a> Strategy<EmissionContext<'a>> {}
 impl<T> EmissionStrategy for T where T: for<'a> Strategy<EmissionContext<'a>> {}
@@ -25,7 +26,7 @@ pub struct EmissionContext<'a> {
     /// calculate it twice.
     pub distance: f64,
 
-    /// The road-class weight of the candidate edge (from [`RoadClass::weighting`]).
+    /// The road-class weight of the candidate edge (from `RoadClass::weighting`).
     ///
     /// Lower values indicate higher-priority roads (e.g. `Motorway = 1`).
     /// Passed through so that emission strategies can discount candidates on

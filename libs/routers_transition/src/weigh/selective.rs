@@ -12,10 +12,15 @@
 use alloc::sync::Arc;
 use core::marker::PhantomData;
 
-use crate::{Candidate, PredicateCache, RoutingContext, Weigher};
 use geo::{Distance, Haversine};
 use routers_network::{Entry, Metadata, Network};
 use routers_trellis::NodeId;
+
+use crate::{
+    candidate::Candidate,
+    primitives::{PredicateCache, RoutingContext},
+    weigh::Weigher,
+};
 
 /// Default per-source fan-out: how many nearest next-layer candidates to weigh.
 pub const DEFAULT_FANOUT: usize = 16;

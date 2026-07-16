@@ -8,9 +8,14 @@
 use alloc::sync::Arc;
 use core::marker::PhantomData;
 
-use crate::{Candidate, PredicateCache, RoutingContext, Weigher};
 use routers_network::{Entry, Metadata, Network};
 use routers_trellis::NodeId;
+
+use crate::{
+    candidate::Candidate,
+    primitives::{PredicateCache, RoutingContext},
+    weigh::Weigher,
+};
 
 /// Weighs every reachable transition. Inherits the full [`Weigher`] pipeline.
 pub struct AllCompute<E, M, N>

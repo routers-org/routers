@@ -1,35 +1,34 @@
-//! You may override individual costing strategies
-//! in order to apply custom functionality to the
-//! transition solver. See the [`Strategy`] trait.
+//! Costing: the heuristics a match is priced by.
 //!
-//! ## Structure
-//! Strategies are joined onto the aggregate [`CostingStrategies`]
-//! structure, which is then supplied to the [`Matcher`](crate::Matcher).
+//! Two costs shape every match. The **emission** cost prices anchoring an
+//! input point to a candidate (how far-fetched is this road position for this
+//! point?), and the **transition** cost prices travelling between two
+//! candidates in adjacent layers (how plausible is the road route between
+//! them?). Both are supplied together as a [`CostingStrategies`] pair and
+//! handed to the [`Matcher`](crate::Matcher):
 //!
 //! ```ignore
 //! use routers_transition::{CostingStrategies, Matcher};
 //!
-//! // Create default strategies
+//! // The default heuristics; see below to bring your own.
 //! let costing = CostingStrategies::default();
 //!
-//! // Supply them to the matcher
 //! let matcher = Matcher::new(&map, &costing, generator, weigher, &runtime);
-//!```
+//! ```
 //!
-//! To override the default strategies, simply apply your own
-//! using [`CostingStrategies::new`]. You must create an [`EmissionStrategy`]
-//! and  [`TransitionStrategy`].
+//! The defaults — [`DefaultEmissionCost`] and [`DefaultTransitionCost`] —
+//! suit road-vehicle GPS traces; their documentation details the exact
+//! calculations and tunable hyperparameters.
 //!
-//! ### Creating your own strategy / heuristic
+//! ## Bringing your own heuristic
 //!
-//! In order to make your own transition and emission strategies, you must
-//! implement [`Strategy`] for your structure, with the context of the heuristic
-//! you need to override.
+//! To replace either cost, implement [`Strategy`] for your type over the
+//! matching context, and supply it through [`CostingStrategies::new`]. A
+//! strategy returns a value in `[0, 1]` — `1` a perfect (free) choice, `0`
+//! the most expensive — which the [`Strategy::cost`] decay function converts
+//! into an integer weight.
 //!
-//! The higher-order traits, like [`TransitionStrategy`] are auto-derived for all
-//! which implement [`Strategy<TransitionContext>`].
-//!
-//!```rust
+//! ```rust
 //! use routers_network::Entry;
 //! use routers_transition::{Strategy, TransitionContext};
 //!
@@ -48,46 +47,26 @@
 //! }
 //! ```
 //!
-//! Note that each require consuming their own context. See below.
+//! The context tells you which cost you are implementing, and carries
+//! everything there is to know at that point:
 //!
-//! ### Using Context
-//! Each strategy accepts a context, defined in the
-//! generic `Ctx` parameter of the [`Strategy`] trait.
-//! Each context is defined statically:
+//! - [`EmissionContext`] — the input point, the candidate position, and the
+//!   distance between them.
+//! - [`TransitionContext`] — the two candidates, the optimal road path
+//!   between them, and its geometry.
 //!
-//! - [`TransitionContext`]
-//!   Used for the transition costing strategy,
-//!   supplies relevant information for the candidates
-//!   being routed between, and the optimal trip between them.
-//!
-//! - [`EmissionContext`]
-//!   Used to understand the cost associated with
-//!   the selection of a candidate, relative to an optimal
-//!   selection on the underlying routing data.
-//!
-//! There are two static heuristics which must have
-//! a strategy defined for them in order to evaluate
-//! the costing behind them. A default strategy for each
-//! one is defined below.
-//!
-//! ### Default Strategies:
-//! - [`DefaultTransitionCost`]: Transition Cost
-//! - [`DefaultEmissionCost`]: Emission Cost
-//!
-#[doc(hidden)]
-pub mod default;
-#[doc(hidden)]
-pub mod emission;
-#[doc(hidden)]
-pub mod transition;
-#[doc(hidden)]
-pub mod util;
+//! The higher-order traits ([`EmissionStrategy`], [`TransitionStrategy`]) are
+//! blanket-implemented for anything implementing [`Strategy`] over the right
+//! context — there is nothing further to derive.
 
-#[doc(inline)]
-pub use default::*;
-#[doc(inline)]
-pub use emission::*;
-#[doc(inline)]
-pub use transition::*;
-#[doc(inline)]
-pub use util::*;
+mod default;
+mod emission;
+mod transition;
+mod util;
+
+pub use default::{CostingStrategies, DefaultEmissionCost, DefaultTransitionCost};
+pub use emission::{EmissionContext, EmissionStrategy};
+pub use transition::{
+    Headings, TransitionContext, TransitionLengths, TransitionStrategy, VirtualTails,
+};
+pub use util::{Costing, Strategy};

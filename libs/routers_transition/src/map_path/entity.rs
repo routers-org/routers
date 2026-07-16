@@ -6,12 +6,16 @@ use core::{
 use geo::{Bearing, Distance, Haversine, LineString, Point};
 use routers_network::{Entry, Metadata, Network, Node};
 
-/// Utilities to calculate metadata of a trip.
-/// A trip is composed of a collection of [`Node`] entries.
+/// For asking geometric questions of a path over the network, use a
+/// [`MapPath`].
 ///
-/// These entries contain positioning data which are used
-/// to provide utilities such as conversions into a [`LineString`],
-/// finding the total travelled angle, and finding the trips summative length.
+/// It wraps an ordered list of [`Node`]s and derives the geometry of the path
+/// they trace: its [`length`](Self::length), its
+/// [`headings`](Self::headings), and how much turning it exhibits
+/// ([`total_angle`](Self::total_angle),
+/// [`angular_complexity`](Self::angular_complexity)). The default transition
+/// costing uses these to judge how plausible a candidate-to-candidate route
+/// is.
 #[derive(Clone, Debug)]
 pub struct MapPath<E>(Vec<Node<E>>)
 where
@@ -40,7 +44,7 @@ where
     }
 
     // TODO: This should be done lazily, since we may not need the points but possibly OK as is.
-    /// Creates a new trip from a slice of [`NodeIx`]s, and a map to lookup their location.
+    /// Creates a new path from a slice of node ids, and a map to look up their locations.
     pub fn new_with_map<M: Metadata>(map: &dyn Network<E, M>, nodes: &[E]) -> Self {
         let resolved = map.line(nodes);
 
@@ -214,7 +218,8 @@ where
     ///
     /// ### Example
     ///
-    /// As an example [`DefaultTransitionCost`], uses this heuristic to grade the trip
+    /// As an example, [`DefaultTransitionCost`](crate::DefaultTransitionCost)
+    /// uses this heuristic to grade the trip
     /// between two candidates against the distance between the candidates, `d`.
     ///
     /// The trips themselves have distances `d1`, `d2`, `d3`, and so on. These values are not `d`,

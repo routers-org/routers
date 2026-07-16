@@ -6,7 +6,7 @@ use routers::PredicateCache;
 use routers_codec::osm::{OsmEdgeMetadata, OsmEntryId, OsmNetwork, OsmTripConfiguration};
 use routers_transition::{
     LayerId, Matcher as TransitionMatcher, Selective, costing::CostingStrategies,
-    layer::generation::StandardGenerator,
+    generation::StandardGenerator,
 };
 
 use crate::utils::{Component, MatchCandidate, MatchData, MatchLayer};
