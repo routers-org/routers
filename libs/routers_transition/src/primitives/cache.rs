@@ -141,7 +141,7 @@ pub trait Calculable<E: CacheKey, M: Metadata, N: Network<E, M>, V> {
 
 mod successor {
     use super::*;
-    use crate::{primitives::WeightAndDistance, *};
+    use crate::primitives::WeightAndDistance;
 
     use geo::Haversine;
     use routers_network::DirectionAwareEdgeId;
@@ -188,7 +188,7 @@ mod successor {
 }
 
 mod predicate {
-    use crate::primitives::Dijkstra;
+    use crate::primitives::{Dijkstra, algorithms::DijkstraReachableItem};
     use routers_network::{Entry, Network};
 
     use super::*;
@@ -296,7 +296,9 @@ mod predicate {
                     // Bounded by the threshold distance (centimeters)
                     (p.total_cost.distance_cm() as f64) < threshold
                 })
-                .map(|pre| (pre.node, pre.parent.unwrap_or_default()))
+                .map(|DijkstraReachableItem { node, parent, .. }| {
+                    (node, parent.unwrap_or_default())
+                })
                 .collect::<Predicates<E>>()
         }
     }

@@ -1,6 +1,6 @@
 //! Weighing: filling a trellis's pending boundaries with transition costs.
 //!
-//! A [`Weigher`] computes edge weights only — emission costs enter the trellis
+//! A [`Weigher`] computes edge weights only. Emission costs enter the trellis
 //! as node weights when a layer is pushed (see [`Matcher`](crate::Matcher)),
 //! and the minimum-cost path is found by `routers_trellis`. Strategies differ
 //! solely in [which next-layer candidates they weigh](Weigher::select).
@@ -28,11 +28,6 @@ use routers_network::{Entry, Metadata, Network};
 use routers_trellis::{LayerId, MAX_WEIGHT, NO_EDGE, NodeId, Trellis};
 
 /// A strategy for weighing the pending boundaries of a [`Trellis`].
-///
-/// A strategy supplies only two things — its [`cache`](Weigher::cache), and
-/// [which next-layer candidates to weigh](Weigher::select) for a source — and
-/// inherits the whole pipeline (`hop` → `weigh_source` → `weigh_boundary` →
-/// [`weigh`](Weigher::weigh)).
 ///
 /// Weighing touches only **pending** boundaries: resolved weights are
 /// append-stable and never recomputed, so weighing a grown trellis costs only
@@ -186,13 +181,6 @@ where
     }
 }
 
-/// Boundaries where a fully-resolved trellis still cannot carry a route: the
-/// reachable frontier (all of layer 0, then propagated forward) dies because a
-/// boundary's edges lead nowhere live. Reachability restarts past each break so
-/// independent collapses downstream also surface.
-///
-/// This is the frontier-collapse residual that `Trellis::disconnections`
-/// (Pending gaps) cannot see; every boundary here is resolved and has edges.
 pub(crate) fn frontier_collapse(trellis: &Trellis) -> Vec<LayerId> {
     let widths = trellis.widths();
     let mut reachable = (0..widths[0] as usize).collect::<Vec<_>>();

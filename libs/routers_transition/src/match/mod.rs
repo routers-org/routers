@@ -10,4 +10,4 @@
 mod definition;
 mod implementation;
 
-pub use definition::{DEFAULT_SEARCH_DISTANCE, Match, MatchOptions, MatchSimpleExt};
+pub use definition::{Match, MatchOptions, MatchSimpleExt};

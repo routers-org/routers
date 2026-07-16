@@ -5,19 +5,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::candidate::{Candidate, CandidateRef, CandidateStore};
 
-/// The state of one logical match, owned by the caller and handed to a
-/// [`Matcher`](crate::Matcher) as data arrives.
+/// The state of a match, ownership and responsibility lies with the caller.
 ///
-/// A `Trip` is pure data — origins, candidates, and the trellis (building or
-/// [`Solved`]) — with no borrows, so it can be stored, inspected, and
-/// serialized between ticks. Its invariants (candidates aligned one-to-one
-/// with trellis layers, positional identity true by placement) hold by
-/// construction: every field is private and only [`Matcher`](crate::Matcher)
-/// operations mutate it.
-///
-/// [`LayerId`] indexes everything: `point(id)` is the input position that
-/// created the layer, `layer(id)` its candidates, and the same id addresses
-/// the trellis.
+/// The trick is this structure can be stored, inspected, and serialized
+/// in and between loops, making it easy to build up a match state incrementally,
+/// or in real-time.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(bound(serialize = "E: Serialize", deserialize = "E: Deserialize<'de>"))]
 pub struct Trip<E>
@@ -115,8 +107,6 @@ where
     pub fn is_solved(&self) -> bool {
         matches!(self.state, TripState::Solved(_))
     }
-
-    // ---- crate-internal seams used by the `Matcher` lifecycle ----
 
     /// Append one layer: its origin, its candidates (identity is overwritten to
     /// be positionally true), and a trellis layer carrying the emission costs

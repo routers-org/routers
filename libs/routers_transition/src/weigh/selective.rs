@@ -1,10 +1,5 @@
 //! Selective weigher — weighs only a pruned subset of transitions.
 //!
-//! [`select`](Weigher::select) keeps, per source, the `fanout` next-layer
-//! candidates nearest by straight-line distance, cutting the O(N²) reachability
-//! computation per boundary to O(N·fanout). Everything else is inherited from the
-//! [`Weigher`] pipeline.
-//!
 //! # Exactness
 //! Proximity pruning is a heuristic: a far-but-optimal target can be missed. For
 //! guaranteed-exact matching use [`AllCompute`](crate::AllCompute).

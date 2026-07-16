@@ -44,12 +44,12 @@ pub use primitives::MatchError;
 #[doc(inline)]
 pub use r#match::Match;
 
+pub mod candidate;
 pub mod costing;
+pub mod layer;
 pub mod matcher;
+pub mod primitives;
 pub mod weigh;
 
-mod candidate;
-mod layer;
 mod map_path;
 mod r#match;
-mod primitives;

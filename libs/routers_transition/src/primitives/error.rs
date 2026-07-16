@@ -2,11 +2,7 @@ use geo::Point;
 use routers_trellis::{SolveError, TrellisError};
 use thiserror::Error;
 
-/// Why a map-match could not be produced.
-///
-/// Variants are split by the *stage* at which matching gave up, so a caller can
-/// tell an unroutable trajectory apart from a lower-level failure — and, where
-/// relevant, learn *which* part of the trajectory was at fault.
+/// The library error for the transition crate.
 #[derive(Error, Debug)]
 pub enum MatchError {
     /// One or more trajectory points could not be anchored to the road network:

@@ -1,9 +1,6 @@
-//! All-compute weigher — weighs *every* reachable transition.
+//! All-compute weigher weighs *every* reachable transition, hence the name.
 //!
-//! The exhaustive end of the compute axis: [`select`](Weigher::select) returns the
-//! whole next layer, so every boundary is filled densely before the trellis graph
-//! solve. Exact, and the fastest choice for a from-scratch match. See
-//! [`Selective`](crate::Selective) for the pruned counterpart.
+//! See [`Selective`](crate::Selective) for the pruned counterpart.
 
 use alloc::sync::Arc;
 use core::marker::PhantomData;

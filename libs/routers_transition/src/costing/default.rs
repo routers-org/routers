@@ -1,10 +1,7 @@
 pub mod emission {
     use core::ops::{Div, Neg};
 
-    use crate::{
-        costing::{EmissionContext, Strategy},
-        *,
-    };
+    use crate::costing::{EmissionContext, Strategy};
 
     /// 5 meters (85th% GPS error)
     const DEFAULT_EMISSION_ERROR: f64 = 25.0;
@@ -70,8 +67,8 @@ pub mod emission {
 
 pub mod transition {
     use crate::{
+        candidate::Candidate,
         costing::{Strategy, TransitionContext},
-        *,
     };
     use routers_network::{Edge, Entry};
 

@@ -18,8 +18,11 @@ mod ident;
 mod route;
 mod store;
 
+#[doc(inline)]
 pub use collapse::CollapsedPath;
+#[doc(inline)]
+pub use route::{Path, PathElement, RoutedPath};
+
 pub use entry::{Candidate, VirtualTail};
 pub use ident::CandidateRef;
-pub use route::{Path, PathElement, RoutedPath};
 pub use store::CandidateStore;

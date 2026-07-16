@@ -11,7 +11,8 @@ use crate::layer::generation::LayerGeneration;
 use crate::matcher::Trip;
 use crate::matcher::trip::TripState;
 use crate::primitives::{
-    Disconnected, MatchError, Reachable, RoutingContext, Unanchored, UnanchoredError,
+    Disconnected, DisconnectedError, MatchError, Reachable, RoutingContext, Unanchored,
+    UnanchoredError,
 };
 use crate::weigh::{Weigher, frontier_collapse};
 
@@ -351,6 +352,7 @@ where
                 }
             })
             .collect::<Vec<_>>();
+
         DisconnectedError { breaks }.into()
     }
 }

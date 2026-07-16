@@ -38,9 +38,6 @@ where
     }
 }
 
-/// Answers "how is candidate `to` reached from candidate `from`?" against the
-/// road network, pairing the [`RoutingContext`] with the [`PredicateCache`] that
-/// serves bounded reachability queries.
 pub(crate) struct Expansion<'a, E, M, N>
 where
     E: Entry,
