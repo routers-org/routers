@@ -19,6 +19,12 @@ impl LayerId {
     pub fn index(self) -> usize {
         self.0 as usize
     }
+
+    /// The first layer id, literal 0.
+    #[inline]
+    pub fn first() -> Self {
+        LayerId(0)
+    }
 }
 
 impl NodeId {

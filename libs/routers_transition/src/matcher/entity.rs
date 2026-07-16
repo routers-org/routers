@@ -108,12 +108,15 @@ where
     /// rejected ([`UnanchoredError`]) and leaves the trip unchanged, so the
     /// caller may drop or retry the point.
     pub fn push(&self, trip: &mut Trip<E>, origin: Point) -> Result<LayerId, MatchError> {
-        let layer = trip.layers();
+        let layer = trip.next_id();
         let candidates = self.generator.candidates(&origin, layer);
 
         if candidates.is_empty() {
             return Err(UnanchoredError {
-                points: vec![Unanchored { layer, origin }],
+                points: vec![Unanchored {
+                    layer: layer.index(),
+                    origin,
+                }],
             }
             .into());
         }
@@ -126,7 +129,7 @@ where
     /// Any point with no candidate rejects the whole batch ([`UnanchoredError`]
     /// reporting *every* such point) and leaves the trip unchanged.
     pub fn extend(&self, trip: &mut Trip<E>, points: &[Point]) -> Result<(), MatchError> {
-        let first_layer = trip.layers();
+        let first_layer = trip.next_id();
         let per_layer = self.generator.generate(points, first_layer);
 
         let unanchored = per_layer
@@ -135,7 +138,7 @@ where
             .enumerate()
             .filter(|(_, (candidates, _))| candidates.is_empty())
             .map(|(offset, (_, &origin))| Unanchored {
-                layer: first_layer + offset,
+                layer: first_layer.index() + offset,
                 origin,
             })
             .collect::<Vec<_>>();

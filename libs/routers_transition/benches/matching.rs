@@ -13,7 +13,9 @@ use geo::{Coord, LineString, point};
 use routers_network::mock::{MockEntryId, MockNetwork, MockNetworkBuilder};
 use routers_transition::generation::{LayerGeneration, StandardGenerator};
 use routers_transition::r#match::MatchSimpleExt;
-use routers_transition::{AllCompute, CostingStrategies, DEFAULT_SEARCH_DISTANCE, Matcher};
+use routers_transition::{
+    AllCompute, CostingStrategies, DEFAULT_SEARCH_DISTANCE, LayerId, Matcher,
+};
 
 /// A straight west-bound road of `n` nodes (`n-1` unit edges), ~92 m spacing.
 fn straight_net(n: usize) -> MockNetwork {
@@ -67,7 +69,7 @@ fn bench_layer_generation(c: &mut Criterion) {
             bench.iter(|| {
                 let generator =
                     StandardGenerator::new(&net, &costing.emission, DEFAULT_SEARCH_DISTANCE);
-                generator.generate(&points, 0)
+                generator.generate(&points, LayerId(0))
             });
         });
     }

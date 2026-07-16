@@ -58,12 +58,12 @@ where
     M: Metadata,
     Emmis: EmissionStrategy + Send + Sync,
 {
-    fn candidates(&self, origin: &Point, layer: usize) -> Vec<Candidate<E>> {
+    fn candidates(&self, origin: &Point, layer: LayerId) -> Vec<Candidate<E>> {
         self.map
             .nearest_nodes_projected(origin, self.search_distance)
             .enumerate()
             .map(|(node, (position, edge))| {
-                let location = CandidateRef::new(LayerId(layer as u32), NodeId(node as u32));
+                let location = CandidateRef::new(layer, NodeId(node as u32));
                 let distance = Haversine.distance(position, *origin);
                 let emission = self.emission.cost(EmissionContext::new(
                     &position,

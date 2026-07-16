@@ -64,6 +64,11 @@ where
         (!self.is_empty()).then(|| LayerId(self.origins.len() as u32 - 1))
     }
 
+    /// The id the next pushed layer will take.
+    pub fn next_id(&self) -> LayerId {
+        LayerId(self.origins.len() as u32)
+    }
+
     /// The input position that created `layer`.
     pub fn point(&self, layer: LayerId) -> Option<Point> {
         self.origins.get(layer.index()).copied()
