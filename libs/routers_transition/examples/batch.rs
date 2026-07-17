@@ -2,10 +2,9 @@
 
 use geo::{LineString, point, wkt};
 use routers_network::mock::{MockNetwork, MockNetworkBuilder};
-use routers_transition::generation::StandardGenerator;
-use routers_transition::r#match::MatchSimpleExt;
 use routers_transition::{
-    AllCompute, CostingStrategies, DEFAULT_SEARCH_DISTANCE, MatchError, Matcher,
+    MatchError, MatchSimpleExt, Matcher, costing::CostingStrategies,
+    layer::generation::StandardGenerator, weigh::AllCompute,
 };
 
 /// A staircase road: west along lat 34.15, south, then west again.
@@ -59,7 +58,7 @@ fn main() -> Result<(), MatchError> {
     // costing, generator, or weighing strategy. I.e., to cache predicate
     // results and avoid recomputing them for each match.
     let costing = CostingStrategies::default();
-    let generator = StandardGenerator::new(&network, &costing.emission, DEFAULT_SEARCH_DISTANCE);
+    let generator = StandardGenerator::new(&network, &costing.emission);
     let matcher = Matcher::new(&network, &costing, generator, AllCompute::default(), &());
 
     // Then, just use the "match" method to solve it, easy as!

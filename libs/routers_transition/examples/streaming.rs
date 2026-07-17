@@ -2,10 +2,13 @@
 
 use geo::{Point, point};
 use routers_network::mock::{MockEntryId, MockNetwork, MockNetworkBuilder};
-use routers_transition::generation::StandardGenerator;
-use routers_transition::{
-    AllCompute, CostingStrategies, DEFAULT_SEARCH_DISTANCE, MatchError, Matcher, Trip,
-};
+use routers_transition::candidate::CandidateRef;
+use routers_transition::costing::CostingStrategies;
+use routers_transition::layer::generation::StandardGenerator;
+use routers_transition::matcher::Trip;
+use routers_transition::weigh::AllCompute;
+use routers_transition::{MatchError, Matcher};
+use routers_trellis::LayerId;
 
 /// A staircase road: west along lat 34.15, south, then west again.
 fn road() -> MockNetwork {
@@ -38,7 +41,7 @@ fn stream() -> Vec<Point> {
 fn main() -> Result<(), MatchError> {
     let network = road();
     let costing = CostingStrategies::default();
-    let generator = StandardGenerator::new(&network, &costing.emission, DEFAULT_SEARCH_DISTANCE);
+    let generator = StandardGenerator::new(&network, &costing.emission);
     let matcher = Matcher::new(&network, &costing, generator, AllCompute::default(), &());
 
     let mut trip = matcher.begin();
@@ -85,9 +88,7 @@ fn main() -> Result<(), MatchError> {
             .nodes
             .iter()
             .enumerate()
-            .map(|(l, &n)| {
-                routers_transition::CandidateRef::new(routers_transition::LayerId(l as u32), n)
-            })
+            .map(|(l, &n)| CandidateRef::new(LayerId(l as u32), n))
             .collect::<Vec<_>>();
 
         if let [.., from, to] = route.as_slice() {
