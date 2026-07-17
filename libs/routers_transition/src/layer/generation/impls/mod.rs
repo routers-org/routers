@@ -1,2 +1,3 @@
-pub mod standard;
-pub use standard::*;
+mod standard;
+
+pub use standard::StandardGenerator;

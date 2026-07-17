@@ -1,7 +1,7 @@
 use std::time::Instant;
 
 use geo::{LineString, Point};
-use routers::{codec::osm::OsmNetwork, r#match::MatchSimpleExt};
+use routers::{MatchSimpleExt, codec::osm::OsmNetwork};
 use wkt::TryFromWkt;
 
 use routers_fixtures::{SYDNEY, SYDNEY_SAVED, SYNDEY_TRIP, fixture};
@@ -19,7 +19,7 @@ fn main() {
     println!("Starting, ingest took: {:?}", now.elapsed());
 
     let route = graph
-        .r#match_simple(coordinates)
+        .match_simple(coordinates)
         .expect("Match must complete successfully");
 
     let linestring = route

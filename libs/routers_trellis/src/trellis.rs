@@ -36,6 +36,12 @@ pub enum TrellisError {
         expected: usize,
         got: usize,
     },
+    #[error("node weight length mismatch: layer={layer} expected={expected} got={got}")]
+    NodeLenMismatch {
+        layer: LayerId,
+        expected: usize,
+        got: usize,
+    },
 }
 
 type Result<T> = core::result::Result<T, TrellisError>;
@@ -46,15 +52,20 @@ type Result<T> = core::result::Result<T, TrellisError>;
 /// (no edges yet) and becomes `Resolved` once edges are written via
 /// [`set_edge`] or [`fill_transition`]. Solvers refuse to run until every
 /// transition is resolved.
-#[derive(Clone, Debug)]
+///
+/// Every node additionally carries a weight (default 0), paid on entering it —
+/// including in the first layer. Set them with [`fill_nodes`](Self::fill_nodes).
+#[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct Trellis {
     widths: Vec<u32>,
+    nodes: Vec<u32>,
     transitions: Vec<Transition>,
 }
 
 impl Trellis {
-    /// New trellis with the given per-layer node counts. All transitions start `Pending`.
+    /// New trellis with the given per-layer node counts. All transitions start
+    /// `Pending`; all node weights start 0.
     #[cfg_attr(
         feature = "tracing",
         tracing::instrument(level = "debug", skip(widths), fields(layers = widths.len()))
@@ -68,8 +79,10 @@ impl Trellis {
         }
 
         let transitions = widths.windows(2).map(|_| Transition::Pending).collect();
+        let nodes = vec![0; widths.iter().sum::<u32>() as usize];
         let t = Trellis {
             widths,
+            nodes,
             transitions,
         };
 
@@ -213,32 +226,26 @@ impl Trellis {
         Ok(())
     }
 
-    /// Allocates a new layer with the given width and pending transition.
+    /// Allocates a new layer with the given width, a pending transition into it,
+    /// and zero node weights. Returns the new layer's id.
     #[cfg_attr(feature = "tracing", tracing::instrument(level = "debug", skip(self)))]
-    pub fn add_layer(&mut self, width: u32) -> Result<()> {
+    pub fn add_layer(&mut self, width: u32) -> Result<LayerId> {
+        let id = LayerId(self.widths.len() as u32);
         if width == 0 {
-            return Err(TrellisError::ZeroWidthLayer(LayerId(
-                self.widths.len() as u32
-            )));
+            return Err(TrellisError::ZeroWidthLayer(id));
         }
 
         self.widths.push(width);
+        self.nodes.extend(core::iter::repeat_n(0, width as usize));
         self.transitions.push(Transition::Pending);
 
-        Ok(())
+        Ok(id)
     }
 
-    /// Resolves the transition for the given layer with the given rows of weights.
-    /// Fixed weights, row-major [from * next_width + to]; absent edges = INF_W.
-    #[cfg_attr(feature = "tracing", tracing::instrument(level = "debug", skip(self)))]
-    pub fn fill_layer(&mut self, layer: LayerId, rows: Vec<u32>) -> Result<()> {
-        if let Some(transition) = self.transitions.get_mut(layer.index()) {
-            *transition = Transition::Resolved(rows);
-        } else {
-            return Err(TrellisError::LayerOutOfRange(layer));
-        }
-
-        Ok(())
+    /// The id of the most recent layer. Always valid: [`new`](Self::new)
+    /// rejects zero layers and nothing removes them.
+    pub fn last_id(&self) -> LayerId {
+        LayerId(self.widths.len() as u32 - 1)
     }
 
     /// Bulk-fill a transition, row-major `[from * next_width + to]`.
@@ -278,5 +285,99 @@ impl Trellis {
 
         log::debug!("fill_transition: L{layer} ({} edges)", rows.len());
         Ok(())
+    }
+
+    /// The flat range of `layer` within the layer-major node buffer.
+    fn node_range(&self, layer: LayerId) -> Result<core::ops::Range<usize>> {
+        self.layer_ranges()
+            .nth(layer.index())
+            .ok_or(TrellisError::LayerOutOfRange(layer))
+    }
+
+    /// Fill a layer's node weights (one per node, each `<= MAX_WEIGHT`).
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(level = "debug", skip(self, weights), fields(nodes = weights.len()))
+    )]
+    pub fn fill_nodes(&mut self, layer: LayerId, weights: &[u32]) -> Result<()> {
+        let range = self.node_range(layer)?;
+        if weights.len() != range.len() {
+            return Err(TrellisError::NodeLenMismatch {
+                layer,
+                expected: range.len(),
+                got: weights.len(),
+            });
+        }
+        if let Some(&w) = weights.iter().find(|&&w| w > MAX_WEIGHT) {
+            return Err(TrellisError::WeightTooLarge(w));
+        }
+
+        self.nodes[range].copy_from_slice(weights);
+        Ok(())
+    }
+
+    /// A layer's node weights, one per node.
+    pub fn node_weights(&self, layer: LayerId) -> Option<&[u32]> {
+        self.node_range(layer).ok().map(|range| &self.nodes[range])
+    }
+
+    /// One node's weight, or `None` when out of range.
+    pub fn node_weight(&self, layer: LayerId, node: NodeId) -> Option<u32> {
+        self.node_weights(layer)?.get(node.index()).copied()
+    }
+
+    /// Every node weight, layer-major — positioned by [`layer_ranges`](Self::layer_ranges).
+    pub(crate) fn node_table(&self) -> &[u32] {
+        &self.nodes
+    }
+
+    /// Total cost of a full node-path: the first node's weight, then each
+    /// boundary's edge weight plus the entered node's weight, saturating at
+    /// the DP tables' infinity.
+    ///
+    /// Panics if `nodes` does not name one valid node per layer.
+    pub fn path_cost(&self, nodes: &[NodeId]) -> u32 {
+        let node_cost = |layer: usize, node: NodeId| {
+            self.node_weight(LayerId(layer as u32), node)
+                .expect("path names one valid node per layer")
+        };
+
+        let mut cost = node_cost(0, nodes[0]);
+        for (layer, hop) in nodes.windows(2).enumerate() {
+            let edge = self.edge_weight(LayerId(layer as u32), hop[0], hop[1]);
+            cost = cost
+                .saturating_add(edge)
+                .saturating_add(node_cost(layer + 1, hop[1]));
+        }
+        cost
+    }
+
+    /// An owned copy of the layers in `range`, keeping their node weights and
+    /// interior transitions. Boundary states carry over; the transitions that
+    /// crossed the cut are dropped.
+    pub fn partition(&self, range: core::ops::Range<LayerId>) -> Result<Trellis> {
+        let (start, end) = (range.start.index(), range.end.index());
+        if start >= end {
+            return Err(TrellisError::Empty);
+        }
+        if end > self.layers() {
+            return Err(TrellisError::LayerOutOfRange(range.end));
+        }
+
+        let node_start = self.node_range(range.start)?.start;
+        let node_end = self.node_range(LayerId(end as u32 - 1))?.end;
+
+        Ok(Trellis {
+            widths: self.widths[start..end].to_vec(),
+            nodes: self.nodes[node_start..node_end].to_vec(),
+            transitions: self.transitions[start..end - 1].to_vec(),
+        })
+    }
+
+    /// An owned copy of the last `n` layers — the windowing primitive for
+    /// bounding a growing trellis. `n` is clamped to the layer count.
+    pub fn last(&self, n: usize) -> Result<Trellis> {
+        let start = self.layers().saturating_sub(n);
+        self.partition(LayerId(start as u32)..LayerId(self.layers() as u32))
     }
 }

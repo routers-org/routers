@@ -1,8 +1,4 @@
-use crate::{
-    Path, Solve, SolveError, Trellis,
-    trellis::INF_W,
-    types::{LayerId, NodeId},
-};
+use crate::{Path, Solve, SolveError, Trellis, trellis::INF_W, types::NodeId};
 
 /// Correctness reference: enumerates every possible path and picks the cheapest.
 ///
@@ -20,19 +16,6 @@ impl BruteForceSolver {
     pub fn new() -> Self {
         BruteForceSolver
     }
-
-    fn path_cost(t: &Trellis, nodes: &[usize]) -> u32 {
-        let mut cost = 0u32;
-        for layer in 0..nodes.len() - 1 {
-            let edge = t.edge_weight(
-                LayerId(layer as u32),
-                NodeId(nodes[layer] as u32),
-                NodeId(nodes[layer + 1] as u32),
-            );
-            cost = cost.saturating_add(edge);
-        }
-        cost
-    }
 }
 
 impl Solve for BruteForceSolver {
@@ -45,7 +28,7 @@ impl Solve for BruteForceSolver {
             fields(layers = t.layers())
         )
     )]
-    fn solve(&mut self, t: &Trellis) -> Result<Path, SolveError> {
+    fn solve(&self, t: &Trellis) -> Result<Path, SolveError> {
         log::warn!(
             "BruteForceSolver: O(∏ widths × layers) — never use in production \
              (layers={}, widths={:?})",
@@ -60,18 +43,13 @@ impl Solve for BruteForceSolver {
         let layers = t.layers();
         let widths = t.widths();
 
-        // Single-layer trellis: no transitions, trivially cost-zero.
-        if layers == 1 {
-            return Ok(Path::new(vec![NodeId(0)], 0, true));
-        }
-
         let mut best_cost = INF_W;
-        let mut best_nodes: Vec<usize> = Vec::new();
+        let mut best_nodes: Vec<NodeId> = Vec::new();
 
         // Enumerate all paths as a multi-digit counter over node indices.
-        let mut path = vec![0usize; layers];
+        let mut path = vec![NodeId(0); layers];
         loop {
-            let cost = Self::path_cost(t, &path);
+            let cost = t.path_cost(&path);
             if cost < best_cost {
                 best_cost = cost;
                 best_nodes = path.clone();
@@ -81,11 +59,11 @@ impl Solve for BruteForceSolver {
             let mut carry = true;
             for layer in (0..layers).rev() {
                 if carry {
-                    path[layer] += 1;
-                    if path[layer] < widths[layer] as usize {
+                    path[layer].0 += 1;
+                    if path[layer].0 < widths[layer] {
                         carry = false;
                     } else {
-                        path[layer] = 0;
+                        path[layer] = NodeId(0);
                     }
                 }
             }
@@ -99,11 +77,10 @@ impl Solve for BruteForceSolver {
             best_cost < INF_W,
         );
 
-        Ok(if best_cost < INF_W {
-            let nodes = best_nodes.iter().map(|&n| NodeId(n as u32)).collect();
-            Path::new(nodes, best_cost, true)
-        } else {
-            Path::new(Vec::new(), best_cost, false)
-        })
+        if best_cost >= INF_W {
+            return Err(SolveError::Unreachable);
+        }
+
+        Ok(Path::new(best_nodes, best_cost))
     }
 }

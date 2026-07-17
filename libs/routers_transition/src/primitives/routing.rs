@@ -1,15 +1,13 @@
 use routers_network::{Edge, Entry, Metadata, Network};
 
-use crate::candidate::{Candidate, CandidateId, Candidates};
+use crate::candidate::{Candidate, CandidateRef, CandidateStore};
 
-/// A base context provided to costing methods.
+/// The read-only world a match is computed against: the map, its runtime,
+/// and every candidate considered so far.
 ///
-/// Allows costing methods to access to further information
-/// within the current routing progress at the discretion
-/// of the call site.
-///
-/// Provides access to the base map [`map`](#field.map).
-/// It also provides a reference to the [`candidates`](#field.candidates) chosen in prior stages.
+/// Weighers and costing strategies receive one of these rather than bare map
+/// references, so an extension point sees exactly what the built-in pipeline
+/// sees.
 #[derive(Clone, Copy, Debug)]
 pub struct RoutingContext<'a, E, M, N>
 where
@@ -17,7 +15,7 @@ where
     M: Metadata + 'a,
     N: Network<E, M>,
 {
-    pub candidates: &'a Candidates<E>,
+    pub candidates: &'a CandidateStore<E>,
     pub map: &'a N,
     pub runtime: &'a M::Runtime,
 }
@@ -28,12 +26,12 @@ where
     M: Metadata,
     N: Network<E, M>,
 {
-    /// Obtain a [candidate](Candidate), should it exist, by its [identifier](CandidateId).
-    pub fn candidate(&self, candidate: &CandidateId) -> Option<Candidate<E>> {
+    /// Obtain a [candidate](Candidate), should it exist, by its [ref](CandidateRef).
+    pub fn candidate(&self, candidate: &CandidateRef) -> Option<Candidate<E>> {
         self.candidates.candidate(candidate)
     }
 
-    /// Obtain the [edge](Edge), should it exist, between two [nodes](NodeIx) (specified as ids)
+    /// Obtain the [edge](Edge), should it exist, between two nodes (specified as ids).
     pub fn edge(&self, a: &E, b: &E) -> Option<Edge<E>> {
         self.map.edge(a, b)
     }

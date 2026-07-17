@@ -1,12 +1,13 @@
-//! End-to-end map-matching tests over a `MockNetwork`
+//! End-to-end map-matching tests over the `routers_network` `MockNetwork`
+//! harness (enabled via its `testing` feature).
 
 use geo::{LineString, point, wkt};
 use routers_network::mock::{MockMetadata, MockNetwork, MockNetworkBuilder};
 use routers_network::{DataPlane, Direction, Metadata};
-use routers_transition::SolverVariant;
-use routers_transition::r#match::{Match, MatchOptions, MatchSimpleExt};
+use routers_transition::weigh::SolverVariant;
+use routers_transition::{Match, MatchOptions, MatchSimpleExt};
 
-/// Tiny straight road: 1 -- 2 -- 3 along lat = 34.15.
+/// Tiny straight road: 1 -> 2 -> 3 along lat = 34.15.
 fn straight_road() -> MockNetwork {
     MockNetworkBuilder::new()
         .node(1, point!(x: -118.15, y: 34.15))

@@ -1,4 +1,4 @@
-use std::{
+use core::{
     f64::consts::PI,
     ops::{Div, Mul, Rem},
 };
@@ -6,27 +6,31 @@ use std::{
 use geo::{Bearing, Distance, Haversine, LineString, Point};
 use routers_network::{Entry, Metadata, Network, Node};
 
-/// Utilities to calculate metadata of a trip.
-/// A trip is composed of a collection of [`Node`] entries.
+/// For asking geometric questions of a path over the network, use a
+/// [`MapPath`].
 ///
-/// These entries contain positioning data which are used
-/// to provide utilities such as conversions into a [`LineString`],
-/// finding the total travelled angle, and finding the trips summative length.
+/// It wraps an ordered list of [`Node`]s and derives the geometry of the path
+/// they trace: its [`length`](Self::length), its
+/// [`headings`](Self::headings), and how much turning it exhibits
+/// ([`total_angle`](Self::total_angle),
+/// [`angular_complexity`](Self::angular_complexity)). The default transition
+/// costing uses these to judge how plausible a candidate-to-candidate route
+/// is.
 #[derive(Clone, Debug)]
-pub struct Trip<E>(Vec<Node<E>>)
+pub struct MapPath<E>(Vec<Node<E>>)
 where
     E: Entry;
 
-impl<E> From<Vec<Node<E>>> for Trip<E>
+impl<E> From<Vec<Node<E>>> for MapPath<E>
 where
     E: Entry,
 {
     fn from(nodes: Vec<Node<E>>) -> Self {
-        Trip(nodes)
+        MapPath(nodes)
     }
 }
 
-impl<E> Trip<E>
+impl<E> MapPath<E>
 where
     E: Entry,
 {
@@ -40,7 +44,7 @@ where
     }
 
     // TODO: This should be done lazily, since we may not need the points but possibly OK as is.
-    /// Creates a new trip from a slice of [`NodeIx`]s, and a map to lookup their location.
+    /// Creates a new path from a slice of node ids, and a map to look up their locations.
     pub fn new_with_map<M: Metadata>(map: &dyn Network<E, M>, nodes: &[E]) -> Self {
         let resolved = map.line(nodes);
 
@@ -49,12 +53,12 @@ where
             .zip(nodes)
             .map(|(point, id)| Node::new(point, *id));
 
-        Trip::new(nodes)
+        MapPath::new(nodes)
     }
 
     /// Computes the angle between each pair of nodes in the trip.
     /// Allows you to understand the change in heading, aggregatable
-    /// using [`Trip::total_angle`] to determine the total variation
+    /// using [`MapPath::total_angle`] to determine the total variation
     /// exhibited during a trip.
     ///
     /// The returned vector will therefore have a length one less
@@ -67,8 +71,8 @@ where
     /// ### Example
     /// ```rust
     ///  use routers_codec::osm::element::variants::{OsmEntryId};
-    ///  use routers_codec::primitive::Node;
-    ///  use routers::transition::Trip;
+    ///  use routers_network::Node;
+    ///  use routers_transition::MapPath;
     ///  use geo::Point;
     ///
     ///  // Create some nodes
@@ -80,7 +84,7 @@ where
     ///  ];
     ///
     ///  // Form a trip from these nodes
-    ///  let trip = Trip::from(nodes);
+    ///  let trip = MapPath::from(nodes);
     ///
     ///  // Calculate the delta angle exhibited
     ///  println!("{:?}", trip.delta_angle());
@@ -127,8 +131,8 @@ where
     /// ```
     /// use geo::Point;
     /// use routers_codec::osm::OsmEntryId;
-    /// use routers_codec::primitive::Node;
-    /// use routers::transition::Trip;
+    /// use routers_network::Node;
+    /// use routers_transition::MapPath;
     ///
     /// let positions = vec![
     ///     // San Francisco (SF)
@@ -140,7 +144,7 @@ where
     /// ];
     ///
     /// // [heading SF → LA, heading LA → LV]
-    /// Trip::from(positions).headings();
+    /// MapPath::from(positions).headings();
     /// ```
     pub fn headings(&self) -> Vec<f64> {
         Self::headings_from_positions(self.0.iter().map(|n| n.position))
@@ -169,8 +173,8 @@ where
     /// ### Example
     /// ```rust
     ///  use routers_codec::osm::element::variants::{OsmEntryId};
-    ///  use routers_codec::primitive::Node;
-    ///  use routers::transition::Trip;
+    ///  use routers_network::Node;
+    ///  use routers_transition::MapPath;
     ///  use geo::Point;
     ///
     ///  // Create some nodes
@@ -182,7 +186,7 @@ where
     ///  ];
     ///
     ///  // Form a trip from these nodes
-    ///  let trip = Trip::from(nodes);
+    ///  let trip = MapPath::from(nodes);
     ///
     ///  // Calculate the total angle exhibited
     ///  println!("{}", trip.total_angle());
@@ -214,7 +218,8 @@ where
     ///
     /// ### Example
     ///
-    /// As an example [`DefaultTransitionCost`], uses this heuristic to grade the trip
+    /// As an example, [`DefaultTransitionCost`](crate::DefaultTransitionCost)
+    /// uses this heuristic to grade the trip
     /// between two candidates against the distance between the candidates, `d`.
     ///
     /// The trips themselves have distances `d1`, `d2`, `d3`, and so on. These values are not `d`,
@@ -309,6 +314,6 @@ where
             return Haversine.distance(start.position, end.position);
         }
 
-        return 0.0;
+        0.0
     }
 }

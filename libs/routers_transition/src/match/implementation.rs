@@ -1,11 +1,10 @@
-use crate::Match;
 use crate::candidate::RoutedPath;
 use crate::costing::CostingStrategies;
-use crate::entity::Transition;
-use crate::r#match::MatchOptions;
+use crate::layer::generation::StandardGenerator;
+use crate::r#match::{Match, MatchOptions};
+use crate::matcher::Matcher;
 use crate::primitives::MatchError;
 
-use crate::generation::StandardGenerator;
 use geo::LineString;
 use log::info;
 use routers_network::Network;
@@ -27,17 +26,16 @@ where
         info!("Finding matched route for {} positions", linestring.0.len());
 
         let costing = CostingStrategies::default();
-        let generator = StandardGenerator::new(self, &costing.emission, opts.search_distance);
+        let generator = StandardGenerator::new(self, &costing.emission)
+            .with_search_distance(opts.search_distance);
 
-        // Create our hidden markov model solver
-        let transition = Transition::new(self, linestring, &costing, generator);
-        let solver = match opts.cache {
+        let weigher = match opts.cache {
             Some(cache) => opts.solver.instance(cache),
             None => opts.solver.without_cache(),
         };
 
-        transition
-            .solve(solver, &opts.runtime)
+        Matcher::new(self, &costing, generator, weigher, &opts.runtime)
+            .r#match(linestring)
             .map(|collapsed| RoutedPath::new(collapsed, self))
     }
 

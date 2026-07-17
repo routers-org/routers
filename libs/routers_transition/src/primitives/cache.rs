@@ -141,7 +141,7 @@ pub trait Calculable<E: CacheKey, M: Metadata, N: Network<E, M>, V> {
 
 mod successor {
     use super::*;
-    use crate::{primitives::WeightAndDistance, *};
+    use crate::primitives::WeightAndDistance;
 
     use geo::Haversine;
     use routers_network::DirectionAwareEdgeId;
@@ -151,7 +151,7 @@ mod successor {
 
     /// The cache map definition for the successors.
     ///
-    /// It accepts a [`NodeIx`] as input, from which it will obtain all outgoing
+    /// It accepts a node id as input, from which it will obtain all outgoing
     /// edges and obtain the distances to each one as a [`WeightAndDistance`].
     pub type SuccessorsCache<E, M, N> = LockedMap<E, SuccessorWeights<E>, M, N, ()>;
 
@@ -178,9 +178,9 @@ mod successor {
                 })
                 .map(|(next, distance, weight, edge)| {
                     // Stores the weight and distance (in cm) to the candidate
-                    let fraction = WeightAndDistance::new(Fraction::mul(weight), distance);
+                    let cost = WeightAndDistance::new(weight, distance);
 
-                    (next, edge, fraction)
+                    (next, edge, cost)
                 })
                 .collect::<Vec<_>>()
         }
@@ -188,7 +188,7 @@ mod successor {
 }
 
 mod predicate {
-    use crate::{WeightAndDistance, primitives::Dijkstra};
+    use crate::primitives::{Dijkstra, algorithms::DijkstraReachableItem};
     use routers_network::{Entry, Network};
 
     use super::*;
@@ -225,15 +225,25 @@ mod predicate {
     }
 
     /// Predicates represents a hashmap of the input [`NodeIx`] as the key,
-    /// and the pair of corresponding [`NodeIx`] and [`WeightAndDistance`] values
-    /// which are reachable from the input index after performing an upper-bounded
-    /// dijkstra calculation
+    /// mapped to the parent [`NodeIx`] it was reached from during an
+    /// upper-bounded dijkstra calculation. Following the parent pointers back
+    /// to the root reconstructs the path to any reachable node.
     ///
     /// The output from the [`PredicateCache::calculate`] function.
-    type Predicates<E> = FxHashMap<E, (E, WeightAndDistance)>;
+    type Predicates<E> = FxHashMap<E, E>;
 
-    /// The predicate cache through which a backing of [`Predicates`] is
-    /// made from a [`NodeIx`] key, cached on first calculation and read thereafter.
+    /// The reachability cache a weigher answers routing queries from.
+    ///
+    /// Keyed by a root node, it holds the parent-pointer map of an
+    /// upper-bounded Dijkstra rooted there: every node reachable within the
+    /// threshold, mapped to the node it was reached from. Computed once on
+    /// first query and read thereafter — and deterministic, which is what
+    /// lets collapse re-derive hop geometry rather than store it.
+    ///
+    /// Matching many trajectories over the same map? Share one cache across
+    /// matches (see
+    /// [`MatchOptions::with_cache`](crate::MatchOptions::with_cache)) so
+    /// later matches run warm.
     pub type PredicateCache<E, M, N> =
         LockedMap<E, Predicates<E>, M, N, PredicateMetadata<E, M, N>>;
 
@@ -284,11 +294,10 @@ mod predicate {
                 })
                 .take_while(|p| {
                     // Bounded by the threshold distance (centimeters)
-                    (p.total_cost.1 as f64) < threshold
+                    (p.total_cost.distance_cm() as f64) < threshold
                 })
-                .map(|pre| {
-                    let parent = pre.parent.unwrap_or_default();
-                    (pre.node, (parent, pre.total_cost))
+                .map(|DijkstraReachableItem { node, parent, .. }| {
+                    (node, parent.unwrap_or_default())
                 })
                 .collect::<Predicates<E>>()
         }

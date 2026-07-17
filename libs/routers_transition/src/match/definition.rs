@@ -1,13 +1,29 @@
-use std::sync::Arc;
-
-use crate::{MatchError, RoutedPath};
-use crate::{PredicateCache, SolverVariant};
+use alloc::sync::Arc;
 
 use geo::LineString;
 use routers_network::{Entry, Metadata, Network};
 
+use crate::{
+    candidate::RoutedPath,
+    primitives::{MatchError, PredicateCache},
+    weigh::SolverVariant,
+};
+
 pub const DEFAULT_SEARCH_DISTANCE: f64 = 50.0; // 50m
 
+/// Configuration for a facade [`Match`] call.
+///
+/// Every option has a default suitable for road-vehicle GPS traces, so
+/// [`MatchOptions::default`] is already a complete configuration; the builder
+/// methods override just the parts you need:
+///
+/// ```ignore
+/// let opts = MatchOptions::new()
+///     .with_search_distance(Some(75.0))
+///     .with_cache(cache.clone());
+///
+/// let routed = network.r#match(linestring, opts)?;
+/// ```
 #[derive(Clone, Debug)]
 pub struct MatchOptions<E: Entry, M: Metadata, N: Network<E, M>> {
     /// The distance the solver will use to search for candidates
@@ -90,27 +106,33 @@ impl<E: Entry, M: Metadata, N: Network<E, M>> MatchOptions<E, M, N> {
     }
 }
 
+/// For matching a trajectory without assembling a
+/// [`Matcher`](crate::Matcher) yourself, use this facade — it is implemented
+/// for every [`Network`](routers_network::Network).
+///
+/// One call builds a matcher from your [`MatchOptions`], runs the batch
+/// pipeline, and resolves the result against the network into a
+/// [`RoutedPath`]. When the default options suffice, [`MatchSimpleExt`] drops
+/// the options argument too.
 pub trait Match<E, M, N>
 where
     E: Entry,
     M: Metadata,
     N: Network<E, M>,
 {
-    /// Matches a given [linestring](LineString) against the map.
-    ///
-    /// Matching involves the use of a hidden markov model
-    /// using the [`Transition`](crate::Transition) module
-    /// to collapse the given input onto the map, finding
-    /// appropriate matching for each input value.
+    /// Matches a given [linestring](LineString) against the map, collapsing
+    /// the input onto the network to find the most plausible match for every
+    /// input position.
     fn r#match(
         &self,
         linestring: LineString,
         opts: MatchOptions<E, M, N>,
     ) -> Result<RoutedPath<E, M>, MatchError>;
 
-    /// Snaps a given linestring against the map.
+    /// Snaps a given linestring against the map: each position moved to its
+    /// most plausible road position, without routing between them.
     ///
-    /// TODO: Docs
+    /// Not yet implemented.
     fn snap(
         &self,
         linestring: LineString,

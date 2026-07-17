@@ -1,7 +1,7 @@
 pub mod emission {
-    use std::ops::{Div, Neg};
+    use core::ops::{Div, Neg};
 
-    use crate::*;
+    use crate::costing::{EmissionContext, Strategy};
 
     /// 5 meters (85th% GPS error)
     const DEFAULT_EMISSION_ERROR: f64 = 25.0;
@@ -40,7 +40,7 @@ pub mod emission {
         /// The free radius around which emissions cost the same, to provide
         /// equal opportunity to nodes within the expected GPS error.
         ///
-        /// Default: [`DEFAULT_EMISSION_ERROR`]
+        /// Default: 25 meters.
         pub emission_error: f64,
     }
 
@@ -66,7 +66,10 @@ pub mod emission {
 }
 
 pub mod transition {
-    use crate::*;
+    use crate::{
+        candidate::Candidate,
+        costing::{Strategy, TransitionContext},
+    };
     use routers_network::{Edge, Entry};
 
     /// Calculates the transition cost between two candidates.
@@ -80,7 +83,7 @@ pub mod transition {
     /// angular rotation, and with deviance we determine a travel likelihood.
     ///
     /// ## Turn Cost
-    /// We describe the summative angle, seen in the [`Trip::total_angle`]
+    /// We describe the summative angle, seen in the [`MapPath::total_angle`](crate::MapPath::total_angle)
     /// function, as the total angular rotation exhibited by a trip.
     /// We assume a high degree of rotation is not preferable, and trips
     /// are assumed to take the most optimal path with the most reasonable
@@ -179,6 +182,12 @@ pub mod costing {
     use core::marker::PhantomData;
     use routers_network::Entry;
 
+    /// The costing pair a [`Matcher`](crate::Matcher) prices a match by: an
+    /// emission strategy and a transition strategy, supplied together.
+    ///
+    /// [`CostingStrategies::default`] gives the built-in heuristics
+    /// ([`DefaultEmissionCost`], [`DefaultTransitionCost`]); to bring your
+    /// own, see the [`costing`](crate::costing) module documentation.
     pub struct CostingStrategies<Emmis, Trans, E>
     where
         E: Entry,

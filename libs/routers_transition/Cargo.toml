@@ -14,7 +14,6 @@ routers_shard = { workspace = true, optional = true }
 # Algorithm
 rstar = { workspace = true }
 
-petgraph = { workspace = true }
 serde = { workspace = true }
 
 # Root-Specific Crates
@@ -48,11 +47,16 @@ thiserror = { workspace = true }
 [dev-dependencies]
 wkt = { workspace = true }
 insta = { workspace = true }
+serde_json = { workspace = true }
 criterion = { workspace = true }
-
 routers_fixtures = { workspace = true }
 routers_codec = { workspace = true }
+# Pull in the MockNetwork test-support harness for integration tests + benches.
 routers_network = { workspace = true, features = ["testing"] }
+
+[[bench]]
+name = "matching"
+harness = false
 
 [lints]
 workspace = true

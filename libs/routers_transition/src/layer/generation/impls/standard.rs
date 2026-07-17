@@ -1,17 +1,17 @@
-use crate::definition::{Layer, Layers};
-use crate::generation::LayerGeneration;
-use crate::*;
+use crate::candidate::CandidateRef;
+use crate::costing::{EmissionContext, EmissionStrategy};
+use crate::r#match::DEFAULT_SEARCH_DISTANCE;
+use crate::{candidate::Candidate, layer::generation::LayerGeneration};
 use geo::{Distance, Haversine, Point};
-use rayon::iter::{IndexedParallelIterator, IntoParallelIterator, ParallelIterator};
 use routers_network::{Entry, Metadata, Network};
+use routers_trellis::{LayerId, NodeId};
 
-/// Generates the layers within the transition graph.
+/// The default candidate generator: a radius search projected onto nearby
+/// edges.
 ///
-/// Generates the layers of the transition graph, where each layer
-/// represents a point in the linestring, and each node in the layer
-/// represents a candidate transition point, within the `distance`
-/// search radius of the linestring point, which was found by the
-/// projection of the linestring point upon the closest edges within this radius.
+/// Every edge within [`search_distance`](Self::search_distance) of a
+/// trajectory point contributes one candidate — the point's projection onto
+/// that edge — priced by the supplied emission strategy.
 #[derive(Copy, Clone)]
 pub struct StandardGenerator<'a, E, M, Emmis>
 where
@@ -44,12 +44,17 @@ where
     Emmis: EmissionStrategy + Send + Sync,
 {
     /// Creates a [`StandardGenerator`] from a map and emission heuristic.
-    pub fn new(map: &'a dyn Network<E, M>, emission: &'a Emmis, search_distance: f64) -> Self {
+    pub fn new(map: &'a dyn Network<E, M>, emission: &'a Emmis) -> Self {
         StandardGenerator {
             map,
             emission,
-            search_distance,
+            search_distance: DEFAULT_SEARCH_DISTANCE,
         }
+    }
+
+    pub fn with_search_distance(mut self, search_distance: f64) -> Self {
+        self.search_distance = search_distance;
+        self
     }
 }
 
@@ -59,52 +64,22 @@ where
     M: Metadata,
     Emmis: EmissionStrategy + Send + Sync,
 {
-    fn generate(self, input: &[Point]) -> (Layers, Candidates<E>) {
-        let per_layer: Vec<Vec<(Candidate<E>, CandidateRef)>> = input
-            .into_par_iter()
+    fn candidates(&self, origin: &Point, layer: LayerId) -> Vec<Candidate<E>> {
+        self.map
+            .nearest_nodes_projected(origin, self.search_distance)
             .enumerate()
-            .map(|(layer_id, origin)| {
-                self.map
-                    .nearest_nodes_projected(origin, self.search_distance)
-                    .enumerate()
-                    .map(|(node_id, (position, edge))| {
-                        let location = CandidateLocation { layer_id, node_id };
-                        let distance = Haversine.distance(position, *origin);
-                        let emission = self.emission.cost(EmissionContext::new(
-                            &position,
-                            origin,
-                            distance,
-                            edge.weight,
-                        ));
+            .map(|(node, (position, edge))| {
+                let location = CandidateRef::new(layer, NodeId(node as u32));
+                let distance = Haversine.distance(position, *origin);
+                let emission = self.emission.cost(EmissionContext::new(
+                    &position,
+                    origin,
+                    distance,
+                    edge.weight,
+                ));
 
-                        (
-                            Candidate::new(edge.thin(), position, emission, location),
-                            CandidateRef::new(emission),
-                        )
-                    })
-                    .collect()
+                Candidate::new(edge.thin(), position, emission, location)
             })
-            .collect();
-
-        // Petgraph node insertion must be sequential to produce stable CandidateIds.
-        let total: usize = per_layer.iter().map(Vec::len).sum();
-        let mut graph = OpenCandidateGraph::with_capacity(total, 0);
-        let lookup = scc::HashMap::with_capacity(total);
-
-        let layers: Vec<Layer> = per_layer
-            .into_iter()
-            .zip(input.iter())
-            .map(|(candidates, &origin)| {
-                let mut nodes = Vec::with_capacity(candidates.len());
-                for (candidate, candidate_ref) in candidates {
-                    let id = graph.add_node(candidate_ref);
-                    let _ = lookup.insert(id, candidate);
-                    nodes.push(id);
-                }
-                Layer { nodes, origin }
-            })
-            .collect();
-
-        (Layers { layers }, Candidates::new(graph, lookup))
+            .collect()
     }
 }

@@ -1,9 +1,10 @@
 use itertools::Either;
 use routers_network::{Edge, Entry};
+use serde::{Deserialize, Serialize};
 
-use crate::CandidateId;
+use crate::candidate::CandidateRef;
 
-#[derive(Debug, Default, Copy, Clone)]
+#[derive(Debug, Default, Copy, Clone, Serialize, Deserialize)]
 pub enum ResolutionMethod {
     #[default]
     Standard,
@@ -15,41 +16,42 @@ pub enum ResolutionMethod {
 ///
 /// It requests itself to be resolved in the heuristic-layer by a given
 /// [resolution_method](#field.resolution_method).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(bound(serialize = "E: Serialize", deserialize = "E: Deserialize<'de>"))]
 pub struct Reachable<E>
 where
     E: Entry,
 {
-    pub source: CandidateId,
-    pub target: CandidateId,
-    pub path: Vec<Edge<E>>, // TODO: => Helper method to remove the duplicate node id's to crt8 a vec<e>
+    pub source: CandidateRef,
+    pub target: CandidateRef,
+    pub path: Vec<Edge<E>>,
 
     pub(crate) resolution_method: ResolutionMethod,
-
-    #[cfg(debug_assertions)]
-    pub cost: u32,
 }
 
 impl<E> Reachable<E>
 where
     E: Entry,
 {
-    /// Creates a new reachable element, supplied a source, target and path.
-    ///
-    /// This assumes the default resolution method.
-    pub fn new(source: CandidateId, target: CandidateId, path: Vec<Edge<E>>) -> Self {
+    /// A reachable with an explicit routed `path` and the default (routed)
+    /// resolution method.
+    pub fn new(source: CandidateRef, target: CandidateRef, path: Vec<Edge<E>>) -> Self {
         Self {
             source,
             target,
             path,
             resolution_method: Default::default(),
-            #[cfg(debug_assertions)]
-            cost: 0,
         }
     }
 
-    pub fn candidates<'a>(&'a self) -> (&'a CandidateId, &'a CandidateId) {
-        (&self.source, &self.target)
+    /// A same-edge reachable: no routed path, resolved by
+    /// [`DistanceOnly`](ResolutionMethod::DistanceOnly).
+    pub fn direct(source: CandidateRef, target: CandidateRef) -> Self {
+        Self::new(source, target, Vec::new()).distance_only()
+    }
+
+    pub fn candidates(&self) -> (CandidateRef, CandidateRef) {
+        (self.source, self.target)
     }
 
     /// Consumes and modifies a reachable element to request the
@@ -61,9 +63,7 @@ where
         }
     }
 
-    /// A collection of all nodes within the reachable's path.
-    /// This represents the path as a collection of nodes, as opposed
-    /// to the default representation being a collection of edges.
+    /// The path as its sequence of nodes rather than edges.
     pub fn path_nodes(&self) -> impl Iterator<Item = E> {
         match self.path.last() {
             Some(last) => Either::Left(
@@ -74,12 +74,5 @@ where
             ),
             None => Either::Right(core::iter::empty()),
         }
-    }
-
-    /// Converts a reachable element into a (source, target) index pair
-    /// used for hashing the structure as a path lookup between the
-    /// source and target.
-    pub fn hash(&self) -> (usize, usize) {
-        (self.source.index(), self.target.index())
     }
 }

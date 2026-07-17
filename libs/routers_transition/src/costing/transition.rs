@@ -1,6 +1,8 @@
-use crate::ResolutionMethod;
-use crate::candidate::{Candidate, CandidateId, Candidates};
-use crate::{RoutingContext, Strategy, Trip, VirtualTail};
+use crate::candidate::VirtualTail;
+use crate::candidate::{Candidate, CandidateRef, CandidateStore};
+use crate::costing::Strategy;
+use crate::map_path::MapPath;
+use crate::primitives::{ResolutionMethod, RoutingContext};
 use geo::{Distance, Haversine, Point};
 use routers_network::{Entry, Metadata, Network};
 
@@ -44,7 +46,7 @@ where
     /// and [`target_position`](Self::target_position) so that callers which
     /// only care about the routed geometry are not forced to special-case
     /// synthetic endpoints.
-    pub optimal_path: Trip<E>,
+    pub optimal_path: MapPath<E>,
 
     /// The source candidate's position on its edge. Used together with
     /// [`optimal_path`](Self::optimal_path) when evaluating intra-transition
@@ -59,14 +61,14 @@ where
 
     /// The source candidate indicating the edge and
     /// position for which the path begins at.
-    pub source_candidate: &'a CandidateId,
+    pub source_candidate: CandidateRef,
 
     /// The target candidate indicating the edge and
     /// position for which the path ends at.
-    pub target_candidate: &'a CandidateId,
+    pub target_candidate: CandidateRef,
 
     /// Candidate registry used to resolve candidates into full [`Candidate`] values.
-    pub candidates: &'a Candidates<E>,
+    pub candidates: &'a CandidateStore<E>,
 
     /// The requested [resolution method](ResolutionMethod) by which the transition costing function
     /// should attempt to cost (resolve) the two candidates. Defaults to
@@ -123,20 +125,6 @@ impl TransitionLengths {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_deviance_zero_length() {
-        let lengths = TransitionLengths {
-            straightline_distance: 0.0,
-            route_length: 0.0,
-        };
-        assert_eq!(lengths.deviance(), 1.0);
-    }
-}
-
 impl<'a, E> TransitionContext<'a, E>
 where
     E: Entry,
@@ -144,20 +132,20 @@ where
     /// Builds the context, precomputing all network-derived values so the
     /// resulting struct is generic only over the entry type.
     ///
-    /// Candidate positions and the [`Trip`] representation of the optimal
+    /// Candidate positions and the [`MapPath`] representation of the optimal
     /// path are derived internally — the caller supplies the candidate IDs
     /// and the map-node sequence between them.
     pub fn new<M, N>(
         ctx: &'a RoutingContext<'a, E, M, N>,
-        (src, trg): (&'a CandidateId, &'a CandidateId),
+        (src, trg): (CandidateRef, CandidateRef),
         map_path: &'a [E],
     ) -> Option<Self>
     where
         M: Metadata,
         N: Network<E, M>,
     {
-        let source = ctx.candidate(src)?;
-        let target = ctx.candidate(trg)?;
+        let source = ctx.candidate(&src)?;
+        let target = ctx.candidate(&trg)?;
 
         let headings = Headings {
             source: source.edge_heading(ctx),
@@ -170,7 +158,7 @@ where
         };
 
         Some(Self {
-            optimal_path: Trip::new_with_map(ctx.map, map_path),
+            optimal_path: MapPath::new_with_map(ctx.map, map_path),
             candidates: ctx.candidates,
             requested_resolution_method: ResolutionMethod::default(),
 
@@ -196,14 +184,14 @@ where
     /// Obtains the source [candidate](Candidate) from the context.
     pub fn source_candidate(&self) -> Candidate<E> {
         self.candidates
-            .candidate(self.source_candidate)
+            .candidate(&self.source_candidate)
             .expect("source candidate not found")
     }
 
     /// Obtains the target [candidate](Candidate) from the context.
     pub fn target_candidate(&self) -> Candidate<E> {
         self.candidates
-            .candidate(self.target_candidate)
+            .candidate(&self.target_candidate)
             .expect("target candidate not found")
     }
 
@@ -248,5 +236,19 @@ where
             straightline_distance,
             route_length,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_deviance_zero_length() {
+        let lengths = TransitionLengths {
+            straightline_distance: 0.0,
+            route_length: 0.0,
+        };
+        assert_eq!(lengths.deviance(), 1.0);
     }
 }

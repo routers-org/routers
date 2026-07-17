@@ -1,20 +1,23 @@
 use core::fmt::Debug;
-use routers::r#match::MatchOptions;
+use routers::costing::DefaultEmissionCost;
+use routers::layer::generation::LayerGeneration;
+use routers::layer::generation::StandardGenerator;
+use routers::primitives::PredicateCache;
+use routers::weigh::SolverVariant;
 use routers_fixtures::{
     LAX_LYNWOOD_MATCHED, LAX_LYNWOOD_TRIP, LOS_ANGELES, VENTURA_MATCHED, VENTURA_TRIP, ZURICH,
     fixture,
 };
 use std::sync::Arc;
 
+use routers::Match;
 use routers::transition::*;
-use routers::{DEFAULT_SEARCH_DISTANCE, Match};
 
 use routers_codec::osm::{OsmEdgeMetadata, OsmEntryId, OsmNetwork};
 use routers_network::{Entry, Metadata, Network};
 
 use criterion::{BatchSize, black_box, criterion_main};
 use geo::{LineString, Point};
-use routers::generation::{LayerGeneration, StandardGenerator};
 use wkt::TryFromWkt;
 
 struct MapMatchScenario {
@@ -120,10 +123,9 @@ fn target_benchmark(c: &mut criterion::Criterion) {
                 let points = coordinates.clone().into_points();
 
                 b.iter(|| {
-                    let generator =
-                        StandardGenerator::new(&graph, &costing, DEFAULT_SEARCH_DISTANCE);
-                    let (layers, _) = generator.generate(&points);
-                    assert_eq!(layers.layers.len(), points.len())
+                    let generator = StandardGenerator::new(&graph, &costing);
+                    let layers = generator.generate_all(&points);
+                    assert_eq!(layers.len(), points.len())
                 })
             });
 

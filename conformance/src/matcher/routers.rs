@@ -3,8 +3,8 @@ use std::time::Instant;
 
 use anyhow::{Context, Result};
 use geo::{Coord, LineString};
-use routers::r#match::MatchOptions;
-use routers::{Match, PredicateCache};
+use routers::primitives::PredicateCache;
+use routers::{Match, MatchOptions};
 use routers_codec::osm::{OsmEdgeMetadata, OsmEntryId, OsmNetwork};
 
 use crate::config::RoutersConfig;

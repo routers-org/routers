@@ -17,9 +17,8 @@ fn build(layers: usize, width: u32, seed: u64) -> Trellis {
 
 fn solve_batch(trellises: &[Trellis], slots: usize) -> Vec<Result<Path, SolveError>> {
     let n = trellises.len();
-    let mut out: Vec<Result<Path, SolveError>> = (0..n)
-        .map(|_| Ok(Path::new(Vec::new(), 0, false)))
-        .collect();
+    let mut out: Vec<Result<Path, SolveError>> =
+        (0..n).map(|_| Ok(Path::new(Vec::new(), 0))).collect();
 
     if n == 0 {
         return out;
@@ -31,7 +30,7 @@ fn solve_batch(trellises: &[Trellis], slots: usize) -> Vec<Result<Path, SolveErr
     std::thread::scope(|s| {
         for (tin, tout) in trellises.chunks(chunk).zip(out.chunks_mut(chunk)) {
             s.spawn(move || {
-                let mut solver = ViterbiSolver::new();
+                let solver = ViterbiSolver::new();
                 for (k, t) in tin.iter().enumerate() {
                     tout[k] = solver.solve(t);
                 }
@@ -48,7 +47,7 @@ fn bench_single_solve(c: &mut Criterion) {
 
     for &(l, w) in &[(10usize, 30u32), (16, 64), (64, 128), (256, 256)] {
         let t = build(l, w, 0xABCD);
-        let mut solver = ViterbiSolver::new();
+        let solver = ViterbiSolver::new();
 
         group.bench_function(BenchmarkId::new("solve", format!("L{l}W{w}")), |b| {
             b.iter(|| solver.solve(black_box(&t)))

@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use geo::LineString;
-use routers::{Match, PredicateCache, r#match::MatchOptions};
+use routers::{Match, MatchOptions, primitives::PredicateCache};
 use routers_codec::osm::{OsmEdgeMetadata, OsmEntryId, OsmNetwork};
 use routers_network::Metadata;
 

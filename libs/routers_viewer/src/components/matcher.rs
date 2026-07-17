@@ -2,12 +2,11 @@ use std::sync::Arc;
 
 use egui::Response;
 use geo::{Coord, LineString};
-use routers::PredicateCache;
-use routers_codec::osm::{OsmEdgeMetadata, OsmEntryId, OsmNetwork, OsmTripConfiguration};
-use routers_transition::{
-    costing::CostingStrategies, entity::Transition, layer::generation::StandardGenerator,
-    solver::selective_forward::SelectiveForwardSolver,
+use routers::{
+    LayerId, layer::generation::StandardGenerator, primitives::PredicateCache, weigh::Selective,
 };
+use routers_codec::osm::{OsmEdgeMetadata, OsmEntryId, OsmNetwork, OsmTripConfiguration};
+use routers_transition::{Matcher as TransitionMatcher, costing::CostingStrategies};
 
 use crate::utils::{Component, MatchCandidate, MatchData, MatchLayer};
 
@@ -75,55 +74,40 @@ fn run_match(
     cache: MatchCache,
 ) -> Result<MatchData, String> {
     let costing = CostingStrategies::default();
-    let generator = StandardGenerator::new(network, &costing.emission, 100.0);
-    let transition = Transition::new(network, linestring.clone(), &costing, generator);
-    let solver = SelectiveForwardSolver::default().use_cache(cache);
+    let generator = StandardGenerator::new(network, &costing.emission).with_search_distance(100.0);
+    let weigher = Selective::default().use_cache(cache);
     let runtime = OsmTripConfiguration::default();
+    let matcher = TransitionMatcher::new(network, &costing, generator, weigher, &runtime);
 
     let start = std::time::Instant::now();
-    let collapsed = transition
-        .solve(solver, &runtime)
+    let collapsed = matcher
+        .r#match(linestring.clone())
         .map_err(|e| format!("{e:?}"))?;
     let time = start.elapsed();
 
     let interpolated_line = collapsed.interpolated(network);
+    let route = &collapsed.route;
 
-    // candidates.lookup is scc::HashMap — exposes .scan(), not std Iterator.
-    let route = collapsed.route.clone();
+    let mut layers: Vec<MatchLayer> = (0..collapsed.candidates.layers())
+        .map(|l| {
+            let candidates = collapsed
+                .candidates
+                .layer(LayerId(l as u32))
+                .unwrap_or_default();
 
-    let mut max_layer: Option<usize> = None;
-    collapsed.candidates.lookup.scan(|_, cand| {
-        let l = cand.location.layer_id;
-        max_layer = Some(max_layer.map_or(l, |m| m.max(l)));
-    });
-
-    let num_layers = max_layer.map(|m| m + 1).unwrap_or(0);
-    let mut layers: Vec<MatchLayer> = (0..num_layers)
-        .map(|_| MatchLayer {
-            original: geo::Coord::default(),
-            candidates: Vec::new(),
-            chosen_idx: None,
+            MatchLayer {
+                original: linestring.0.get(l).copied().unwrap_or_default(),
+                candidates: candidates
+                    .iter()
+                    .map(|cand| MatchCandidate {
+                        position: cand.position.0,
+                        emission: cand.emission,
+                    })
+                    .collect(),
+                chosen_idx: route.get(l).map(|chosen| chosen.node.index()),
+            }
         })
         .collect();
-
-    collapsed.candidates.lookup.scan(|id, cand| {
-        let layer_idx = cand.location.layer_id;
-        let layer = &mut layers[layer_idx];
-        let is_chosen = route.get(layer_idx) == Some(id);
-        layer.candidates.push(MatchCandidate {
-            position: cand.position.0,
-            emission: cand.emission,
-        });
-        if is_chosen {
-            layer.chosen_idx = Some(layer.candidates.len() - 1);
-        }
-    });
-
-    for (i, pt) in linestring.0.iter().enumerate() {
-        if let Some(layer) = layers.get_mut(i) {
-            layer.original = *pt;
-        }
-    }
 
     for layer in &mut layers {
         let chosen_pos = layer.chosen_idx.map(|i| layer.candidates[i].position);

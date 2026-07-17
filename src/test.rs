@@ -3,7 +3,7 @@ use routers_codec::osm::OsmNetwork;
 use routers_fixtures::fixture;
 use wkt::TryFromWkt;
 
-use crate::r#match::MatchSimpleExt;
+use crate::MatchSimpleExt;
 
 fn setup(source: &str, linestring: &str) -> (OsmNetwork, LineString<f64>) {
     let graph = OsmNetwork::from_pbf(fixture!(source)).expect("Graph must be created");
