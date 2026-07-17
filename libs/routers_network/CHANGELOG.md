@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.5] - 2026-07-17
+
+### 🚀 Features
+
+- *(network)* Simplify and extract mock network testing abstraction
+- *(transition)* Complete overhaul-refactor, written to support the trellis data structure
+- *(transition)* Include examples of batch and streaming matches
+
+### 🐛 Bug Fixes
+
+- *(root)* Update imports of tests and examples
+
+
+
 ## [0.1.4] - 2026-06-13
 
 ### 🚀 Features
