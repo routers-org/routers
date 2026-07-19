@@ -1,6 +1,11 @@
-# Local-dev only: Grafana with no login. Anyone hitting the port-forward is
+# Local-dev only: Grafana with no login. Anyone who can reach the service is
 # logged in as Admin. Do not use these values outside a developer's machine.
 grafana:
+  # A short, stable service name. OrbStack resolves in-cluster DNS from the
+  # host, so this makes the dashboard reachable from the browser directly —
+  # no port-forward: http://grafana.routers-dev.svc.cluster.local
+  fullnameOverride: grafana
+
   # Discover dashboard ConfigMaps in every namespace so the routers chart
   # (installed elsewhere) can ship its dashboard alongside its templates.
   sidecar:
@@ -14,6 +19,10 @@ grafana:
       disable_login_form: true
     users:
       allow_sign_up: false
+    dashboards:
+      # Land on the routers dashboard. The sidecar writes discovered
+      # ConfigMap dashboards into /tmp/dashboards, keyed by their data key.
+      default_home_dashboard_path: /tmp/dashboards/routers-realtime.json
 
 # Discover ServiceMonitors and PodMonitors from any namespace and any labels
 # so the routers chart (installed into a different namespace) can register
