@@ -115,13 +115,34 @@ async fn main() -> anyhow::Result<()> {
     // the matcher rebuilds from the committed history.
     let mut trips: HashMap<String, Trip<E>> = HashMap::new();
 
+    // When each vehicle's newest raw event was published (its wire stamp),
+    // so the matching result can be measured against it: the `event_to_match`
+    // span below is the pipeline's end-to-end walltime, replay's publish →
+    // the matcher's publish, taken entirely from message stamps.
+    let mut origins: HashMap<String, web_time::SystemTime> = HashMap::new();
+
     while let Some(inbound) = source.next().await {
         let payload = match inbound {
-            Inbound::Event(payload) => payload,
+            Inbound::Event(payload) => {
+                if let Some(sent_at) = routers_realtime::bus::last_sent_at() {
+                    origins.insert(payload.vehicle_id.clone(), sent_at);
+                }
+                payload
+            }
             // Commit-action for a completed solve: the returned trip becomes
             // the state the vehicle's next context resumes from.
             Inbound::Result(result) => {
                 let _span = info_span!("commit_result", layers = result.trip.layers()).entered();
+
+                // The result's own stamp is when the matcher published it; the
+                // origin is when replay published the event it answers.
+                if let (Some(origin), Some(matched_at)) = (
+                    origins.remove(&result.vehicle_id),
+                    routers_realtime::bus::last_sent_at(),
+                ) {
+                    routers_realtime::bus::span_between("event_to_match", origin, matched_at);
+                }
+
                 trips.insert(result.vehicle_id, result.trip);
                 continue;
             }

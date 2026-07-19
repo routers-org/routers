@@ -10,6 +10,13 @@
 mode: deployment
 replicaCount: 1
 
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    memory: 512Mi
+
 # spanmetrics lives in the contrib distribution.
 image:
   repository: otel/opentelemetry-collector-contrib

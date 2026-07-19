@@ -20,7 +20,7 @@ shardCache:
   hostPath: ./target/shard_cache
 
 matcher:
-  rustLog: debug
+  rustLog: info
 
 orchestrator:
-  rustLog: debug
+  rustLog: info

@@ -9,9 +9,18 @@
 //! collector's spanmetrics aggregates it. No hand-kept metric registry, and
 //! no timestamps in the event structs.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use web_time::{SystemTime, UNIX_EPOCH};
+
+/// The stamp must be a real wall clock — it crosses process boundaries.
+/// `web_time` re-exports std on native targets, so the wasm lint still
+/// resolves to the disallowed method; these binaries are native-only.
+#[allow(clippy::disallowed_methods)]
+fn now() -> SystemTime {
+    SystemTime::now()
+}
 
 use async_nats::HeaderMap;
 use opentelemetry::propagation::{Extractor, Injector};
@@ -22,6 +31,42 @@ use tracing_opentelemetry::OpenTelemetrySpanExt;
 /// Millisecond wall-clock send time; `traceparent` alone carries no times,
 /// so queue wait needs this one extra header.
 const SENT_AT: &str = "x-routers-sent-at-ms";
+
+/// The send stamp of the most recently yielded message (ms since epoch;
+/// 0 = none seen). An ambient slot rather than part of the stream's item
+/// type, so consumers that don't care never see it. Sound because every
+/// service consumes messages one at a time: between a stream yielding an
+/// item and the loop body reading this, nothing else can have been yielded.
+static LAST_SENT_AT: AtomicU64 = AtomicU64::new(0);
+
+/// When the message most recently yielded by any [`NATSStream`] in this
+/// process was published, per its wire stamp. Lets a consumer correlate
+/// walltimes across services — e.g. the orchestrator measuring raw-event →
+/// matched-result — without the event structs carrying timestamps.
+pub fn last_sent_at() -> Option<SystemTime> {
+    match LAST_SENT_AT.load(Ordering::Relaxed) {
+        0 => None,
+        millis => Some(UNIX_EPOCH + Duration::from_millis(millis)),
+    }
+}
+
+/// Emit a span covering an arbitrary wall-clock interval — the primitive
+/// behind cross-service walltime metrics: hand it two wire stamps and the
+/// collector's spanmetrics does the rest. A no-op without an OTLP provider,
+/// and inverted intervals (skewed clocks, out-of-order arrival) are ignored
+/// rather than recorded as nonsense.
+pub fn span_between(name: &'static str, start: SystemTime, end: SystemTime) {
+    if end < start {
+        return;
+    }
+
+    let tracer = global::tracer_provider().tracer("routers_realtime");
+    tracer
+        .span_builder(name)
+        .with_start_time(start)
+        .start(&tracer)
+        .end_with_timestamp(end);
+}
 
 struct Headers<'a>(&'a mut HeaderMap);
 
@@ -54,8 +99,8 @@ pub(super) fn outbound() -> HeaderMap {
         propagator.inject_context(&context, &mut Headers(&mut headers))
     });
 
-    if let Ok(now) = SystemTime::now().duration_since(UNIX_EPOCH) {
-        headers.insert(SENT_AT, now.as_millis().to_string().as_str());
+    if let Ok(since_epoch) = now().duration_since(UNIX_EPOCH) {
+        headers.insert(SENT_AT, since_epoch.as_millis().to_string().as_str());
     }
 
     headers
@@ -72,6 +117,8 @@ pub(super) fn inbound(subject: &str, headers: Option<&HeaderMap>) {
     else {
         return;
     };
+
+    LAST_SENT_AT.store(sent_at, Ordering::Relaxed);
 
     let parent = global::get_text_map_propagator(|propagator| {
         propagator.extract_with_context(&Context::current(), &HeadersRef(headers))

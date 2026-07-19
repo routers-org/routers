@@ -91,8 +91,19 @@ tracing-opentelemetry = { version = "0.30.0" }
 opentelemetry = { version = "0.29.1" }
 opentelemetry_sdk = { version = "0.29.0", features = [
     "rt-tokio",
+    # Batch exports as spawned tokio tasks (fire & forget) instead of a
+    # dedicated thread that blocks on each send.
+    "experimental_trace_batch_span_processor_with_async_runtime",
 ] }
-opentelemetry-otlp = { version = "0.29.0", features = ["tls", "trace"] }
+opentelemetry-otlp = { version = "0.29.0", default-features = false, features = [
+    "http-proto",
+    # Async reqwest — the default `reqwest-blocking-client` serialises
+    # exports behind blocking sends.
+    "reqwest-client",
+    "trace",
+    "tls",
+    "internal-logs",
+] }
 opentelemetry-stdout = { version = "0.29.0", features = ["trace", "logs", "metrics"] }
 
 # Benchmarking

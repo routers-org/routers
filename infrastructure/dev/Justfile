@@ -69,7 +69,7 @@ patch: repos
     helm upgrade kube-prometheus-stack prometheus-community/kube-prometheus-stack \
         -n {{ namespace }} \
         -f kube-prometheus-stack-values.yaml
-    helm upgrade otel-collector open-telemetry/opentelemetry-collector \
+    helm upgrade --install otel-collector open-telemetry/opentelemetry-collector \
         -n {{ namespace }} \
         -f otel-collector-values.yaml
     kubectl rollout restart deployment,statefulset -n {{ namespace }}
