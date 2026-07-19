@@ -21,7 +21,7 @@ anyhow = { workspace = true }
 thiserror = { workspace = true }
 
 # Time
-chrono = "0.4.44"
+chrono = { version = "0.4.44", features = ["serde"] }
 humantime = "2.1"
 
 # Utilities

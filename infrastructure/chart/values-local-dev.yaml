@@ -22,4 +22,4 @@ matcher:
   rustLog: debug
 
 orchestrator:
-  rustLog: info
+  rustLog: debug

@@ -6757,11 +6757,16 @@ name = "routers_viewer"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-nats",
+ "chrono",
+ "clap",
  "dotenvy",
  "eframe",
  "egui",
  "env_logger",
+ "futures",
  "geo",
+ "humantime",
  "log",
  "pathfinding",
  "petgraph",
@@ -6779,6 +6784,7 @@ dependencies = [
  "similar",
  "tokio",
  "walkers",
+ "web-time",
  "wkt",
 ]
 
