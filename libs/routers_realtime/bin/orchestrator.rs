@@ -5,7 +5,7 @@ use async_nats::{ConnectOptions, ServerAddr};
 use clap::Parser;
 use futures::{SinkExt, StreamExt};
 use geo::{Distance, Haversine};
-use log::info;
+use log::{debug, info};
 use routers_realtime::bus::{NATSSink, NATSStream};
 use routers_realtime::event::{MatchContext, Payload, RawEvent};
 use routers_realtime::store::{CachedRedisStore, RedisStore};
@@ -77,25 +77,32 @@ async fn main() -> anyhow::Result<()> {
 
     let mut kv = CachedRedisStore::new(kv);
 
+    let gap = chrono::Duration::from_std(args.gap).context("gap out of range")?;
+
     while let Some(payload) = source.next().await {
-        let context = kv
+        let mut entries = kv
             .get_many(&payload.vehicle_id, args.context_window)
             .await
-            .context("could not get entries from redis store")?
-            .into_iter()
-            .scan(
-                (payload.point, payload.event_ms),
-                |(prev_p, prev_ms),
-                 RawEvent {
-                     point, event_ms, ..
-                 }| {
-                    let duration = Duration::from_millis(prev_ms.abs_diff(event_ms));
-                    let distance = Haversine.distance(*prev_p, point);
+            .context("could not get entries from redis store")?;
 
-                    if duration <= args.gap && distance <= args.jump {
-                        *prev_p = point;
-                        *prev_ms = event_ms;
-                        Some(point)
+        // Normalise to newest-first regardless of the datasource's return
+        // order: the cutoff below walks back in time from the current event,
+        // discarding everything beyond the first gap or teleport.
+        entries.sort_by_key(|event| std::cmp::Reverse(event.timestamp));
+
+        let context = entries
+            .into_iter()
+            .inspect(|v| debug!("event: {:?}", v))
+            .scan(
+                (payload.point, payload.timestamp),
+                |(prev_p, prev_ts), event: RawEvent| {
+                    let duration = (*prev_ts - event.timestamp).abs();
+                    let distance = Haversine.distance(*prev_p, event.point);
+
+                    if duration <= gap && distance <= args.jump {
+                        *prev_p = event.point;
+                        *prev_ts = event.timestamp;
+                        Some(event)
                     } else {
                         None
                     }
@@ -103,7 +110,19 @@ async fn main() -> anyhow::Result<()> {
             )
             .collect::<Vec<_>>();
 
-        let history = std::iter::once(payload.point).chain(context).collect();
+        // Roll the current event into the cached window so the next event's
+        // context includes it; Redis only seeds the window on first sight.
+        kv.push(&payload.vehicle_id, payload.as_event(), args.context_window);
+
+        // The matcher solves a directed trajectory, so it must receive the
+        // points in chronological order or every transition faces backwards.
+        // Sort by timestamp rather than assuming the store's return order.
+        let mut events: Vec<RawEvent> = std::iter::once(payload.as_event())
+            .chain(context)
+            .collect();
+        events.sort_by_key(|event| event.timestamp);
+
+        let history = events.into_iter().map(|event| event.point).collect();
 
         sink.send(MatchContext {
             history,

@@ -113,6 +113,17 @@ impl<T: Storable> CachedRedisStore<T> {
         Ok(entries)
     }
 
+    /// Roll an observed item into the cached window (newest-first), so
+    /// subsequent reads see it without re-querying the backing store. Without
+    /// this the cache is a frozen snapshot of the first read — which, for a
+    /// consumer racing the writer on a vehicle's first event, is empty
+    /// forever.
+    pub fn push(&mut self, key: &str, item: T, len: usize) {
+        let entries = self.cache.entry(key.to_string()).or_default();
+        entries.insert(0, item);
+        entries.truncate(len);
+    }
+
     pub async fn write_many(&mut self, batch: &[T], limit: usize) -> Result<()> {
         self.store.write_many(batch, limit).await
     }

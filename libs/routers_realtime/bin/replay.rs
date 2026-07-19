@@ -198,7 +198,9 @@ fn rows_of(df: &DataFrame) -> PolarsResult<impl Iterator<Item = (u64, Payload)> 
             trip_id: trip.unwrap_or_default().to_owned(),
             vehicle_id: vehicle.unwrap_or_default().to_owned(),
             provider: provider.unwrap_or_default().to_owned(),
-            event_ms: etime.unwrap_or_default().to_owned() as u64,
+            // The column is parsed as microseconds since the Unix epoch.
+            timestamp: chrono::DateTime::from_timestamp_micros(etime.unwrap_or_default())
+                .unwrap_or_default(),
             point: Point::new(lon.unwrap(), lat.unwrap()),
         };
 
