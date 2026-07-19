@@ -31,6 +31,7 @@ routers_tz_types = { path = "libs/routers_tz_types" }
 routers_schema = { path = "schema" }
 routers_trellis = { path = "libs/routers_trellis" }
 routers_transition = { path = "libs/routers_transition" }
+routers_realtime = { path = "libs/routers_realtime" }
 
 # === Workspace Deps ===
 [workspace.dependencies]

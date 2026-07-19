@@ -31,6 +31,11 @@ walkers = { version = "0.47", features = ["serde"] } # Version compatible with e
 # Async runtime for any background tile fetching
 tokio = { workspace = true }
 
+# Realtime event ingestion (realtime bin)
+async-nats = "0.38.0"
+futures = "0.3.32"
+web-time = "1"
+
 # Mock Network Dependencies
 petgraph = { workspace = true }
 rstar = { workspace = true }
@@ -42,6 +47,9 @@ serde_json = { workspace = true }
 
 # Snapshot diffing (snapdiff bin)
 similar = "2"
+
+humantime = "2.1"
+chrono = "0.4.44"
 
 [dev-dependencies]
 routers_fixtures = { workspace = true }
