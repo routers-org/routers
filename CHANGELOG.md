@@ -2,6 +2,39 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.0] - 2026-07-17
+
+### 🚀 Features
+
+- *(trellis)* Initial revision of a trellis graphs structure
+- *(trellis)* Use `criteron` for benchmarking to integrate with CI
+- *(realtime)* Add partial historian implementation
+- *(network)* Simplify and extract mock network testing abstraction
+- *(transition)* Port testing suite into transition crate
+- *(tz)* Create release workflow for a timezone binary
+- *(viewer)* Snapshot diff binary
+- *(transition)* Complete overhaul-refactor, written to support the trellis data structure
+
+### 🐛 Bug Fixes
+
+- *(trellis)* Include tracing on methods and in statements
+- *(trellis)* Allow data structure to be serialized
+- *(*)* Add both to manifest
+- *(transition)* Migrate all transition content into sub-crate
+- *(root)* Re-export sub-crates under modules
+- *(root)* Update imports of tests and examples
+- *(realtime)* Re-write replay script to use polars as a dataframe layer
+- *(realtime)* Abstract NATS into a futures-impl send/sync, use in replay
+- *(realtime)* Cleanup directory, move replay into binaries
+- *(realtime)* Reorganise cargo toml
+- *(realtime)* Include a well-formatted progress bar
+- *(realtime)* Operational historian against a cluster
+- *(shard)* Include a binary to generate files into the shard cache from a given sourcefile
+- *(trellis)* Don't limit codegen units, parallel build jobs
+- *(routers)* Update imports for the transition crate
+
+
+
 ## [0.2.7] - 2026-06-14
 
 ### 🚀 Features
