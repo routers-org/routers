@@ -110,10 +110,7 @@ where
                     // A message that isn't a `T` (e.g. a foreign publisher on
                     // the same subject) must not end the stream: skip it.
                     Err(err) => {
-                        log::warn!(
-                            "skipping undecodable message on {}: {err}",
-                            message.subject
-                        );
+                        log::warn!("skipping undecodable message on {}: {err}", message.subject);
                     }
                 },
                 None => return Poll::Ready(None),

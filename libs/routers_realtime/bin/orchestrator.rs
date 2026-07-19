@@ -117,9 +117,8 @@ async fn main() -> anyhow::Result<()> {
         // The matcher solves a directed trajectory, so it must receive the
         // points in chronological order or every transition faces backwards.
         // Sort by timestamp rather than assuming the store's return order.
-        let mut events: Vec<RawEvent> = std::iter::once(payload.as_event())
-            .chain(context)
-            .collect();
+        let mut events: Vec<RawEvent> =
+            std::iter::once(payload.as_event()).chain(context).collect();
         events.sort_by_key(|event| event.timestamp);
 
         let history = events.into_iter().map(|event| event.point).collect();
