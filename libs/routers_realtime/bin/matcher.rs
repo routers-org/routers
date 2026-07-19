@@ -1,21 +1,25 @@
-use anyhow::Context;
-use async_nats::{ConnectOptions, ServerAddr};
-use clap::Parser;
-use futures::{SinkExt, StreamExt};
-use geo::LineString;
-use log::{error, info};
-use routers::primitives::PredicateCache;
-use routers::weigh::SolverVariant;
-use routers::{Match, MatchOptions};
-use routers_codec::osm::{OsmEdgeMetadata, OsmEntryId};
-use routers_network::Metadata;
-use routers_realtime::bus::{NATSSink, NATSStream};
-use routers_realtime::event::{MatchContext, MatchResult};
-use routers_shard::{FileFetcher, Geohash, ShardLoader};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::thread::sleep;
 use std::time::Duration;
+
+use routers_codec::osm::{OsmEdgeMetadata, OsmEntryId};
+use routers_network::Metadata;
+use routers_realtime::{
+    bus::{NATSSink, NATSStream},
+    event::{MatchContext, MatchResult},
+};
+use routers_shard::{FileFetcher, Geohash, ShardLoader};
+use routers_transition::{
+    Continuation, MatchError, Matcher, candidate::RoutedPath, costing::CostingStrategies,
+    layer::generation::StandardGenerator, primitives::PredicateCache, weigh::AllCompute,
+};
+
+use anyhow::Context;
+use async_nats::{ConnectOptions, ServerAddr};
+use clap::Parser;
+use futures::{SinkExt, StreamExt};
+use log::{debug, error, info, warn};
 use url::Url;
 
 #[derive(Parser, Debug)]
@@ -46,7 +50,7 @@ struct Args {
     outbound_subject: String,
 
     /// The search distance to use for matching
-    #[arg(short, env, long)]
+    #[arg(long, env)]
     search_distance: Option<f64>,
 }
 
@@ -73,7 +77,7 @@ async fn main() -> anyhow::Result<()> {
     let nats_url = ServerAddr::from_url(args.nats).context("could not create NATS url")?;
 
     let client = ConnectOptions::new()
-        .name("OrchestratorService")
+        .name("MatcherService")
         .connect(nats_url)
         .await
         .context("could not connect to NATS")?;
@@ -85,31 +89,87 @@ async fn main() -> anyhow::Result<()> {
         .subscribe(args.inbound_subject)
         .await
         .context("could not subscribe to NATS subject")?;
-    let mut source = NATSStream::<MatchContext>::new(subscriber);
+    let mut source = NATSStream::<MatchContext<E>>::new(subscriber);
 
-    let cache = Arc::new(PredicateCache::<E, M, _>::default());
+    // One long-lived matcher: the predicate cache and generator index stay
+    // warm across every vehicle and event.
+    let cache = Arc::new(PredicateCache::default());
     let runtime = OsmEdgeMetadata::runtime(None);
+    let costing = CostingStrategies::default();
 
-    let opts = MatchOptions::new()
-        .with_runtime(runtime.clone())
-        .with_cache(cache.clone())
-        .with_solver(SolverVariant::Fastest)
-        .with_search_distance(args.search_distance);
+    let mut generator = StandardGenerator::new(network.as_ref(), &costing.emission);
+    if let Some(distance) = args.search_distance {
+        generator = generator.with_search_distance(distance);
+    }
+
+    let weigher = AllCompute::default().use_cache(cache);
+    let matcher = Matcher::new(network.as_ref(), &costing, generator, weigher, &runtime);
 
     while let Some(MatchContext {
-        history,
         vehicle_id,
+        continuation,
     }) = source.next().await
     {
-        let linestring = LineString::from(history);
-        match network.r#match(linestring.clone(), opts.clone()) {
-            Ok(path) => {
-                sink.send(MatchResult { path, vehicle_id })
-                    .await
-                    .context("could not emit result to sink")?;
+        // The orchestrator reconciled but cannot generate a layer, so both
+        // cases land here with points still to push: `Resume` hands back the
+        // trellis from the prior solve, `Restart` means no prior solve
+        // stands (first point, or the history diverged) and we begin anew.
+        let (mut trip, fresh) = match continuation {
+            Continuation::Resume { trip, fresh } => {
+                debug!(
+                    "{vehicle_id}: resuming {} committed layer(s), {} fresh point(s)",
+                    trip.layers(),
+                    fresh.len()
+                );
+                (trip, fresh)
+            }
+            Continuation::Restart { fresh } => {
+                debug!("{vehicle_id}: restarting over {} point(s)", fresh.len());
+                (matcher.begin(), fresh)
+            }
+        };
+
+        for point in fresh {
+            match matcher.push(&mut trip, point) {
+                Ok(_) => {}
+                Err(MatchError::Unanchored(err)) => {
+                    debug!("{vehicle_id}: dropped off-network point ({err})");
+                }
+                Err(err) => {
+                    error!("{vehicle_id}: could not push point: {err}");
+                }
+            }
+        }
+
+        // Only a trip with at least one anchored layer is solvable; every
+        // fresh point rejecting (all off-network) leaves nothing to do.
+        if trip.is_empty() {
+            warn!("{vehicle_id}: no anchored layers to solve");
+            continue;
+        }
+
+        // A snapshot is only defined over a solved trip: solve first, and
+        // let a failure (e.g. a disconnected boundary) surface here, before
+        // any collapse is attempted.
+        if let Err(err) = matcher.solve(&mut trip) {
+            error!("{vehicle_id}: unable to solve trip: {err}");
+            continue;
+        }
+
+        match matcher.snapshot(&mut trip) {
+            Ok(solution) => {
+                let path = RoutedPath::new(solution, network.as_ref());
+
+                sink.send(MatchResult {
+                    path,
+                    vehicle_id,
+                    trip,
+                })
+                .await
+                .context("could not emit result to sink")?;
             }
             Err(err) => {
-                error!("unable to match payload: {err} (linestring={linestring:?})");
+                error!("{vehicle_id}: unable to match payload: {err}");
             }
         }
     }

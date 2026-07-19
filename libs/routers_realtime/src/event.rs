@@ -1,6 +1,7 @@
 use chrono::{DateTime, Utc};
 use geo::Point;
 use routers::candidate::RoutedPath;
+use routers::matcher::{Continuation, Trip};
 use routers_network::{Entry, Metadata};
 use routers_shard::{Geohash, GeohashStrategy, ShardingStrategy};
 use serde::{Deserialize, Serialize};
@@ -8,15 +9,25 @@ use serde::{Deserialize, Serialize};
 use crate::store::Storable;
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct MatchContext {
-    pub history: Vec<Point>,
+#[serde(bound(serialize = "E: Serialize", deserialize = "E: Deserialize<'de>"))]
+pub struct MatchContext<E: Entry> {
     pub vehicle_id: String,
+
+    /// How the matcher should proceed, as reconciled by the orchestrator:
+    /// [`Resume`](Continuation::Resume) carries the trellis from the prior
+    /// solve plus the points it has not seen; [`Restart`](Continuation::Restart)
+    /// means no prior solve stands (first point, or a diverged history) and
+    /// the window is matched from scratch. The orchestrator can trim and
+    /// compare but never generate a layer — pushing points stays with the
+    /// matcher.
+    pub continuation: Continuation<E>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct MatchResult<E: Entry, M: Metadata> {
     pub path: RoutedPath<E, M>,
     pub vehicle_id: String,
+    pub trip: Trip<E>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

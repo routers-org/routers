@@ -1,15 +1,32 @@
+use std::collections::HashMap;
 use std::time::Duration;
+
+use routers_codec::osm::{OsmEdgeMetadata, OsmEntryId};
+use routers_realtime::{
+    bus::{NATSSink, NATSStream},
+    event::{MatchContext, MatchResult, Payload, RawEvent},
+    store::RedisStore,
+};
+use routers_transition::Continuation;
+use routers_transition::matcher::Trip;
 
 use anyhow::Context;
 use async_nats::{ConnectOptions, ServerAddr};
 use clap::Parser;
 use futures::{SinkExt, StreamExt};
-use geo::{Distance, Haversine};
+use geo::{Distance, Haversine, Point};
 use log::{debug, info};
-use routers_realtime::bus::{NATSSink, NATSStream};
-use routers_realtime::event::{MatchContext, Payload, RawEvent};
-use routers_realtime::store::{CachedRedisStore, RedisStore};
 use url::Url;
+
+type E = OsmEntryId;
+type M = OsmEdgeMetadata;
+
+/// Everything the orchestrator reacts to: raw positions to assemble context
+/// for, and match results whose trip markers it commits to the store.
+enum Inbound {
+    Event(Payload),
+    Result(MatchResult<E, M>),
+}
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -31,6 +48,12 @@ struct Args {
     /// For example, `events.match.{shard}` where shard is the geohash shard identifier.
     #[arg(short, long = "out", env)]
     outbound_subject: String,
+
+    /// The NATS subject the matcher publishes results into. The orchestrator
+    /// commits each result's trip as the vehicle's resume state — the
+    /// matcher itself never touches a store.
+    #[arg(long = "results", env)]
+    results_subject: String,
 
     /// The number of context entries to retrieve from Redis for each vehicle.
     #[arg(short, long = "context-window", env, default_value = "10")]
@@ -63,23 +86,45 @@ async fn main() -> anyhow::Result<()> {
         .context("could not connect to NATS")?;
 
     let mut sink =
-        NATSSink::<MatchContext>::new(client.clone(), move |_| args.outbound_subject.clone());
+        NATSSink::<MatchContext<E>>::new(client.clone(), move |_| args.outbound_subject.clone());
 
     let subscriber = client
         .subscribe(args.inbound_subject)
         .await
         .context("could not subscribe to NATS subject")?;
-    let mut source = NATSStream::<Payload>::new(subscriber);
+    let events = NATSStream::<Payload>::new(subscriber).map(Inbound::Event);
 
-    let kv = RedisStore::<RawEvent>::new(args.redis)
+    let subscriber = client
+        .subscribe(args.results_subject)
+        .await
+        .context("could not subscribe to results subject")?;
+    let results = NATSStream::<MatchResult<E, M>>::new(subscriber).map(Inbound::Result);
+
+    let mut source = futures::stream::select(events, results);
+
+    let mut kv = RedisStore::<RawEvent>::new(args.redis)
         .await
         .context("could not connect to redis store")?;
 
-    let mut kv = CachedRedisStore::new(kv);
-
     let gap = chrono::Duration::from_std(args.gap).context("gap out of range")?;
 
-    while let Some(payload) = source.next().await {
+    // Each vehicle's trellis from its prior solve, as committed back by the
+    // matcher's results. Derived state, not a source of truth: losing it
+    // (restart, first sight) just means the next context says `Restart` and
+    // the matcher rebuilds from the committed history.
+    let mut trips: HashMap<String, Trip<E>> = HashMap::new();
+
+    while let Some(inbound) = source.next().await {
+        let payload = match inbound {
+            Inbound::Event(payload) => payload,
+            // Commit-action for a completed solve: the returned trip becomes
+            // the state the vehicle's next context resumes from.
+            Inbound::Result(result) => {
+                trips.insert(result.vehicle_id, result.trip);
+                continue;
+            }
+        };
+
         let mut entries = kv
             .get_many(&payload.vehicle_id, args.context_window)
             .await
@@ -110,23 +155,30 @@ async fn main() -> anyhow::Result<()> {
             )
             .collect::<Vec<_>>();
 
-        // Roll the current event into the cached window so the next event's
-        // context includes it; Redis only seeds the window on first sight.
-        kv.push(&payload.vehicle_id, payload.as_event(), args.context_window);
-
         // The matcher solves a directed trajectory, so it must receive the
-        // points in chronological order or every transition faces backwards.
-        // Sort by timestamp rather than assuming the store's return order.
-        let mut events: Vec<RawEvent> = std::iter::once(payload.as_event())
-            .chain(context)
-            .collect();
-        events.sort_by_key(|event| event.timestamp);
+        // points in chronological order. The current payload may already be
+        // archived, so dedup by timestamp after sorting.
+        let mut history: Vec<RawEvent> =
+            std::iter::once(payload.as_event()).chain(context).collect();
+        history.sort_by_key(|event| event.timestamp);
+        history.dedup_by_key(|event| event.timestamp);
 
-        let history = events.into_iter().map(|event| event.point).collect();
+        let points = history
+            .into_iter()
+            .map(|event| event.point)
+            .collect::<Vec<Point>>();
+
+        // Reconcile the prior solve against the committed window: pure data
+        // work (trim and compare — never generating a layer), so it belongs
+        // here rather than on the matcher's hot path. The trip is cloned,
+        // not taken: a second event racing the first result still resumes
+        // from the same state, just with one more fresh point.
+        let continuation =
+            Continuation::reconcile(trips.get(&payload.vehicle_id).cloned(), &points);
 
         sink.send(MatchContext {
-            history,
             vehicle_id: payload.vehicle_id,
+            continuation,
         })
         .await
         .context("could not send match context")?;

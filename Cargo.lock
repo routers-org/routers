@@ -6508,6 +6508,7 @@ dependencies = [
  "routers_codec",
  "routers_network",
  "routers_shard",
+ "routers_transition",
  "serde",
  "thiserror 2.0.18",
  "tokio",

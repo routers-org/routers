@@ -18,12 +18,12 @@ where
 {
     origins: Vec<Point>,
     candidates: CandidateStore<E>,
-    state: TripState,
+    pub state: TripState,
 }
 
 /// Where the trip's trellis currently sits in the `Unsolved ⇄ Solved` cycle.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub(crate) enum TripState {
+pub enum TripState {
     /// No layer has arrived yet.
     #[default]
     Empty,
@@ -106,6 +106,44 @@ where
     /// Whether the trip is currently solved (no pending data).
     pub fn is_solved(&self) -> bool {
         matches!(self.state, TripState::Solved(_))
+    }
+
+    /// Keep only the last `n` layers, discarding everything older.
+    ///
+    /// This is the windowing primitive for a long-running stream: the trellis
+    /// is cut with [`Trellis::partition`] semantics, so the surviving interior
+    /// boundaries stay *resolved* — the next [`solve`](crate::Matcher::solve)
+    /// re-weighs nothing and only re-runs the µs-scale DP pass. A solved
+    /// certificate cannot describe a shorter trellis, so a `Solved` trip
+    /// reopens to `Building`.
+    ///
+    /// `n >= layers` is a no-op; `n == 0` empties the trip.
+    pub fn tail(&mut self, n: usize) {
+        let len = self.layers();
+        if n >= len {
+            return;
+        }
+        if n == 0 {
+            *self = Self::new();
+            return;
+        }
+
+        self.origins.drain(..len - n);
+        self.candidates.tail(n);
+        self.state = match core::mem::take(&mut self.state) {
+            TripState::Empty => TripState::Empty,
+            TripState::Building(trellis) => TripState::Building(
+                trellis
+                    .last(n)
+                    .expect("trellis mirrors origins, so 0 < n < layers"),
+            ),
+            TripState::Solved(solved) => TripState::Building(
+                solved
+                    .trellis()
+                    .last(n)
+                    .expect("trellis mirrors origins, so 0 < n < layers"),
+            ),
+        };
     }
 
     /// Append one layer: its origin, its candidates (identity is overwritten to
