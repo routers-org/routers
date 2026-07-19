@@ -4,6 +4,7 @@ use connectrpc::{ConnectError, RequestContext, ServiceResult};
 use core::marker::PhantomData;
 use geo::{Distance, Geodesic};
 use routers_network::Network;
+use routers_transition::candidate::{Path, RoutedPath};
 use schema::connect::routers::api::r#match::v1::MatchService;
 use schema::proto::routers::api::r#match::v1::{
     __buffa::view::{MatchRequestView, SnapRequestView},
@@ -14,7 +15,7 @@ use schema::proto::routers::model::v1::{
 };
 
 use routers_network::{Entry, Metadata};
-use routers_transition::{Match, Path, RoutedPath, r#match::MatchOptions};
+use routers_transition::{Match, MatchOptions};
 #[cfg(feature = "telemetry")]
 use tracing::Level;
 

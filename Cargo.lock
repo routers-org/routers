@@ -6677,7 +6677,7 @@ dependencies = [
 
 [[package]]
 name = "routers_transition"
-version = "0.2.0"
+version = "0.1.1"
 dependencies = [
  "approx 0.5.1",
  "codspeed-criterion-compat",

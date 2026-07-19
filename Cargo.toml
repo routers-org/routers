@@ -24,8 +24,6 @@ routers_fixtures = { path = "libs/routers_fixtures" }
 routers_viewer = { path = "libs/routers_viewer" }
 
 # Members
-# Path deps are always used for local builds; the version is what consumers
-# get on crates.io. release-plz bumps these requirements alongside releases.
 schema = { path = "schema", package = "routers_schema", version = "0.1.1" }
 routers_codec = { path = "libs/routers_codec", version = "0.1.7" }
 routers_geo = { path = "libs/routers_geo", version = "0.1.4" }
@@ -37,7 +35,7 @@ routers_realtime = { path = "libs/routers_realtime", version = "0.2.0" }
 routers_tz = { path = "libs/routers_tz", version = "0.1.2" }
 routers_tz_types = { path = "libs/routers_tz_types", version = "0.1.0" }
 routers_trellis = { path = "libs/routers_trellis", version = "0.2.0" }
-routers_transition = { path = "libs/routers_transition", version = "0.2.0" }
+routers_transition = { path = "libs/routers_transition", version = "0.1.1" }
 routers = { path = ".", version = "0.3.0" }
 
 # Optimisation Crates

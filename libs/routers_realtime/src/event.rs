@@ -1,7 +1,7 @@
 use geo::Point;
 use routers_network::{Entry, Metadata};
 use routers_shard::{Geohash, GeohashStrategy, ShardingStrategy};
-use routers_transition::RoutedPath;
+use routers_transition::candidate::RoutedPath;
 use serde::{Deserialize, Serialize};
 
 use crate::store::Storable;
