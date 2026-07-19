@@ -3,7 +3,6 @@ use buffa::view::OwnedView;
 use connectrpc::{ConnectError, RequestContext, ServiceResult};
 use core::marker::PhantomData;
 use geo::{Distance, Geodesic};
-use routers::MatchOptions;
 use routers_network::Network;
 use schema::connect::routers::api::r#match::v1::MatchService;
 use schema::proto::routers::api::r#match::v1::{
@@ -14,8 +13,8 @@ use schema::proto::routers::model::v1::{
     Edge, EdgeIdentifier, MatchedRoute, NodeIdentifier, RouteEdge, RouteElement,
 };
 
-use routers::{Match, candidate::Path, candidate::RoutedPath};
 use routers_network::{Entry, Metadata};
+use routers_transition::{Match, Path, RoutedPath, r#match::MatchOptions};
 #[cfg(feature = "telemetry")]
 use tracing::Level;
 

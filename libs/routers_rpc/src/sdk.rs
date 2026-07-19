@@ -3,7 +3,7 @@
 
 pub mod optimise {
     use buffa::EnumValue;
-    use routers::weigh::SolverVariant;
+    use routers_transition::SolverVariant;
     use schema::proto::routers::model::v1::OptimiseFor;
 
     pub fn optimise_for(value: EnumValue<OptimiseFor>) -> SolverVariant {
