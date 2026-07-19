@@ -16,6 +16,7 @@ routers_realtime = { workspace = true }
 log = { workspace = true }
 anyhow = { workspace = true }
 quick-error = { workspace = true }
+clap = { workspace = true, features = ["derive", "env"] }
 
 geo = { workspace = true }
 wkt = { workspace = true }
