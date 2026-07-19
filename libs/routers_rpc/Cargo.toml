@@ -11,7 +11,7 @@ path = "src/lib.rs"
 bench = false
 
 [dependencies]
-routers = { workspace = true }
+routers_transition = { workspace = true }
 routers_codec = { workspace = true }
 routers_network = { workspace = true }
 routers_tz = { workspace = true }
