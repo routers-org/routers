@@ -1,11 +1,16 @@
 [package]
 name = "routers_realtime"
-version = "0.1.2"
+version = "0.2.0"
 edition = "2024"
 description = "A Demonstration for Real-Time Map Matching"
 license = "GPL-3.0-or-later"
 
 [dependencies]
+# Internal Crates
+routers_codec = { workspace = true }
+routers_network = { workspace = true }
+routers_shard = { workspace = true }
+routers_transition = { workspace = true }
 
 # Logging & Telemetry
 # env_logger remains for the bins outside the traced pipeline (replay, historian).

@@ -4,6 +4,7 @@ use routers::candidate::RoutedPath;
 use routers::matcher::{Continuation, Trip};
 use routers_network::{Entry, Metadata};
 use routers_shard::{Geohash, GeohashStrategy, ShardingStrategy};
+use routers_transition::candidate::RoutedPath;
 use serde::{Deserialize, Serialize};
 
 use crate::store::Storable;

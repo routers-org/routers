@@ -5,7 +5,6 @@ edition = "2024"
 publish = false
 
 [dependencies]
-routers = { workspace = true }
 routers_network = { workspace = true }
 routers_codec = { workspace = true }
 routers_fixtures = { workspace = true }
