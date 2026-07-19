@@ -1,10 +1,9 @@
 use chrono::{DateTime, Utc};
 use geo::Point;
-use routers::candidate::RoutedPath;
-use routers::matcher::{Continuation, Trip};
 use routers_network::{Entry, Metadata};
 use routers_shard::{Geohash, GeohashStrategy, ShardingStrategy};
 use routers_transition::candidate::RoutedPath;
+use routers_transition::matcher::{Continuation, Trip};
 use serde::{Deserialize, Serialize};
 
 use crate::store::Storable;
