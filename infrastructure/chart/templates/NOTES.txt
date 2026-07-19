@@ -7,9 +7,6 @@ What was deployed:
 {{- if .Values.historian.enabled }}
   - Historian (With x{{ .Values.historian.replicas }} replicas)
 {{- end }}
-{{- if .Values.prometheusScrape.enabled }}
-  - Prometheus Scraping Service
-{{- end }}
 {{- if .Values.grafanaDashboard.enabled }}
   - Grafana Dashboard
 {{- end }}
@@ -17,4 +14,7 @@ What was deployed:
 Pre-existing dependencies that this chart does NOT install:
   - NATS at {{ .Values.infra.nats.url }}
   - Valkey at {{ .Values.infra.valkey.url }}
-  - kube-prometheus-stack (consumes the dashboard ConfigMap and scrape secret)
+{{- if .Values.infra.otlp.url }}
+  - OTLP collector at {{ .Values.infra.otlp.url }} (spanmetrics -> Prometheus)
+{{- end }}
+  - kube-prometheus-stack (consumes the dashboard ConfigMap)

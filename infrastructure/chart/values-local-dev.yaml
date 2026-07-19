@@ -7,9 +7,10 @@
 infra:
   nats:
     url: nats://nats.routers-dev.svc.cluster.local:4222
-    metricsTarget: nats.routers-dev.svc.cluster.local:7777
   valkey:
     url: redis://valkey-primary.routers-dev.svc.cluster.local:6379
+  otlp:
+    url: http://otel-collector-opentelemetry-collector.routers-dev.svc.cluster.local:4318
 
 shardCache:
   mode: hostPath

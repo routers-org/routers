@@ -62,9 +62,16 @@ impl<T: Serialize + Unpin> Sink<T> for NATSSink<T> {
         let subject = this.subject_for(&item);
         let client = this.client.clone();
 
+        // Stamp the message with the sending span's trace context and the
+        // send time, so the consumer can measure queue wait and continue
+        // the trace (see `bus::trace`).
+        let headers = super::trace::outbound();
+
         this.in_flight = Some(
             async move {
-                client.publish(subject, payload.into()).await?;
+                client
+                    .publish_with_headers(subject, headers, payload.into())
+                    .await?;
                 Ok::<(), anyhow::Error>(())
             }
             .boxed(),
@@ -106,10 +113,16 @@ where
         loop {
             match ready!(subscriber.poll_next_unpin(cx)) {
                 Some(message) => match postcard::from_bytes(&message.payload) {
-                    Ok(item) => return Poll::Ready(Some(item)),
+                    Ok(item) => {
+                        // Close the publisher's timing loop: the gap between
+                        // its send stamp and now is the queue-wait span.
+                        super::trace::inbound(message.subject.as_str(), message.headers.as_ref());
+                        return Poll::Ready(Some(item));
+                    }
                     // A message that isn't a `T` (e.g. a foreign publisher on
                     // the same subject) must not end the stream: skip it.
                     Err(err) => {
+                        super::trace::dropped(message.subject.as_str(), "undecodable");
                         log::warn!("skipping undecodable message on {}: {err}", message.subject);
                     }
                 },

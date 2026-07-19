@@ -20,6 +20,7 @@ use async_nats::{ConnectOptions, ServerAddr};
 use clap::Parser;
 use futures::{SinkExt, StreamExt};
 use log::{debug, error, info, warn};
+use tracing::{Instrument, field, info_span};
 use url::Url;
 
 #[derive(Parser, Debug)]
@@ -57,9 +58,21 @@ struct Args {
 type E = OsmEntryId;
 type M = OsmEdgeMetadata;
 
+/// How a match attempt ended, as the `outcome`/`severity` labels the
+/// collector turns into the success-ratio series. Nominal failures are the
+/// data's fault (a point off every road, a trace the network cannot bridge)
+/// and are expected in healthy operation; fatal ones are ours.
+fn classify(err: &MatchError) -> (&'static str, &'static str) {
+    match err {
+        MatchError::Unanchored(_) => ("unanchored", "nominal"),
+        MatchError::Disconnected(_) => ("disconnected", "nominal"),
+        MatchError::TrellisError(_) | MatchError::SolveError(_) => ("internal", "fatal"),
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    env_logger::init();
+    let _telemetry = routers_realtime::telemetry::init("routers-matcher");
 
     let args = Args::parse();
     info!("matcher started: {:?}", args);
@@ -110,68 +123,103 @@ async fn main() -> anyhow::Result<()> {
         continuation,
     }) = source.next().await
     {
-        // The orchestrator reconciled but cannot generate a layer, so both
-        // cases land here with points still to push: `Resume` hands back the
-        // trellis from the prior solve, `Restart` means no prior solve
-        // stands (first point, or the history diverged) and we begin anew.
-        let (mut trip, fresh) = match continuation {
-            Continuation::Resume { trip, fresh } => {
-                debug!(
-                    "{vehicle_id}: resuming {} committed layer(s), {} fresh point(s)",
-                    trip.layers(),
-                    fresh.len()
-                );
-                (trip, fresh)
-            }
-            Continuation::Restart { fresh } => {
-                debug!("{vehicle_id}: restarting over {} point(s)", fresh.len());
-                (matcher.begin(), fresh)
-            }
-        };
+        // One span per event: `outcome`/`severity` become the success-ratio
+        // labels, `continuation` splits every series by resume vs restart.
+        let span = info_span!(
+            "match_event",
+            outcome = field::Empty,
+            severity = field::Empty,
+            continuation = field::Empty,
+        );
 
-        for point in fresh {
-            match matcher.push(&mut trip, point) {
-                Ok(_) => {}
-                Err(MatchError::Unanchored(err)) => {
-                    debug!("{vehicle_id}: dropped off-network point ({err})");
+        async {
+            let span = tracing::Span::current();
+
+            // The orchestrator reconciled but cannot generate a layer, so both
+            // cases land here with points still to push: `Resume` hands back the
+            // trellis from the prior solve, `Restart` means no prior solve
+            // stands (first point, or the history diverged) and we begin anew.
+            let (mut trip, fresh) = match continuation {
+                Continuation::Resume { trip, fresh } => {
+                    span.record("continuation", "resume");
+                    debug!(
+                        "{vehicle_id}: resuming {} committed layer(s), {} fresh point(s)",
+                        trip.layers(),
+                        fresh.len()
+                    );
+                    (trip, fresh)
+                }
+                Continuation::Restart { fresh } => {
+                    span.record("continuation", "restart");
+                    debug!("{vehicle_id}: restarting over {} point(s)", fresh.len());
+                    (matcher.begin(), fresh)
+                }
+            };
+
+            info_span!("push", points = fresh.len()).in_scope(|| {
+                for point in fresh {
+                    match matcher.push(&mut trip, point) {
+                        Ok(_) => {}
+                        Err(MatchError::Unanchored(err)) => {
+                            // Zero-duration marker: the collector counts it.
+                            info_span!("point_drop", reason = "unanchored").in_scope(|| {});
+                            debug!("{vehicle_id}: dropped off-network point ({err})");
+                        }
+                        Err(err) => {
+                            info_span!("point_drop", reason = "push_error").in_scope(|| {});
+                            error!("{vehicle_id}: could not push point: {err}");
+                        }
+                    }
+                }
+            });
+
+            // Only a trip with at least one anchored layer is solvable; every
+            // fresh point rejecting (all off-network) leaves nothing to do.
+            if trip.is_empty() {
+                span.record("outcome", "no_anchor");
+                span.record("severity", "nominal");
+                warn!("{vehicle_id}: no anchored layers to solve");
+                return Ok(());
+            }
+
+            // A snapshot is only defined over a solved trip: solve first, and
+            // let a failure (e.g. a disconnected boundary) surface here, before
+            // any collapse is attempted.
+            if let Err(err) = info_span!("solve").in_scope(|| matcher.solve(&mut trip).map(|_| ()))
+            {
+                let (outcome, severity) = classify(&err);
+                span.record("outcome", outcome);
+                span.record("severity", severity);
+                error!("{vehicle_id}: unable to solve trip: {err}");
+                return Ok(());
+            }
+
+            match info_span!("snapshot").in_scope(|| matcher.snapshot(&mut trip)) {
+                Ok(solution) => {
+                    let path = RoutedPath::new(solution, network.as_ref());
+                    span.record("outcome", "success");
+                    span.record("severity", "ok");
+
+                    sink.send(MatchResult {
+                        path,
+                        vehicle_id,
+                        trip,
+                    })
+                    .instrument(info_span!("publish_result"))
+                    .await
+                    .context("could not emit result to sink")
                 }
                 Err(err) => {
-                    error!("{vehicle_id}: could not push point: {err}");
+                    let (outcome, severity) = classify(&err);
+                    span.record("outcome", outcome);
+                    span.record("severity", severity);
+                    error!("{vehicle_id}: unable to match payload: {err}");
+                    Ok(())
                 }
             }
         }
-
-        // Only a trip with at least one anchored layer is solvable; every
-        // fresh point rejecting (all off-network) leaves nothing to do.
-        if trip.is_empty() {
-            warn!("{vehicle_id}: no anchored layers to solve");
-            continue;
-        }
-
-        // A snapshot is only defined over a solved trip: solve first, and
-        // let a failure (e.g. a disconnected boundary) surface here, before
-        // any collapse is attempted.
-        if let Err(err) = matcher.solve(&mut trip) {
-            error!("{vehicle_id}: unable to solve trip: {err}");
-            continue;
-        }
-
-        match matcher.snapshot(&mut trip) {
-            Ok(solution) => {
-                let path = RoutedPath::new(solution, network.as_ref());
-
-                sink.send(MatchResult {
-                    path,
-                    vehicle_id,
-                    trip,
-                })
-                .await
-                .context("could not emit result to sink")?;
-            }
-            Err(err) => {
-                error!("{vehicle_id}: unable to match payload: {err}");
-            }
-        }
+        .instrument(span)
+        .await?;
     }
 
     loop {

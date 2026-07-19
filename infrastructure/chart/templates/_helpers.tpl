@@ -15,10 +15,3 @@ helm.sh/chart: {{ printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" }}
 {{- fail "infra.valkey.url is required; supply a values overlay (e.g. -f values-local-dev.yaml)" -}}
 {{- end -}}
 {{- end }}
-
-{{/* Prometheus scrape annotations parameterised by port. */}}
-{{- define "routers.scrapeAnnotations" -}}
-prometheus.io/scrape: "true"
-prometheus.io/port: {{ .port | quote }}
-prometheus.io/path: /metrics
-{{- end }}

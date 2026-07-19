@@ -20,16 +20,11 @@ spec:
         {{- include "routers.labels" $ | nindent 8 }}
         app: orchestrator-shard
         shard: "{{ $shard }}"
-      annotations:
-        {{- include "routers.scrapeAnnotations" (dict "port" $.Values.orchestrator.metricsPort) | nindent 8 }}
     spec:
       containers:
         - name: orchestrator
           image: "{{ $.Values.orchestrator.image.repository }}:{{ $.Values.orchestrator.image.tag }}"
           imagePullPolicy: {{ $.Values.orchestrator.image.pullPolicy }}
-          ports:
-            - name: metrics
-              containerPort: {{ $.Values.orchestrator.metricsPort }}
           env:
             - name: NATS
               value: {{ $.Values.infra.nats.url | quote }}
@@ -39,23 +34,17 @@ spec:
               value: "events.raw.{{ $shard }}"
             - name: OUTBOUND_SUBJECT
               value: "events.match.{{ $shard }}"
+            - name: RESULTS_SUBJECT
+              value: "events.matched.{{ $shard }}"
             - name: RUST_LOG
               value: {{ $.Values.orchestrator.rustLog | quote }}
+            {{- if $.Values.infra.otlp.url }}
+            # Spans exported here become Prometheus series via the
+            # collector's spanmetrics pipeline; unset, telemetry degrades
+            # to plain structured logs.
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ $.Values.infra.otlp.url | quote }}
+            {{- end }}
           resources:
             {{- toYaml $.Values.orchestrator.resources | nindent 12 }}
 {{- end }}
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: orchestrator-metrics
-  labels:
-    {{- include "routers.labels" . | nindent 4 }}
-    app: orchestrator-shard
-spec:
-  selector:
-    app: orchestrator-shard
-  ports:
-    - name: metrics
-      port: {{ .Values.orchestrator.metricsPort }}
-      targetPort: {{ .Values.orchestrator.metricsPort }}

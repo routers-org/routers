@@ -16,6 +16,7 @@ use clap::Parser;
 use futures::{SinkExt, StreamExt};
 use geo::{Distance, Haversine, Point};
 use log::{debug, info};
+use tracing::{Instrument, field, info_span};
 use url::Url;
 
 type E = OsmEntryId;
@@ -72,7 +73,7 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    env_logger::init();
+    let _telemetry = routers_realtime::telemetry::init("routers-orchestrator");
 
     let args = Args::parse();
     info!("orchestrator started: {:?}", args);
@@ -120,68 +121,107 @@ async fn main() -> anyhow::Result<()> {
             // Commit-action for a completed solve: the returned trip becomes
             // the state the vehicle's next context resumes from.
             Inbound::Result(result) => {
+                let _span = info_span!("commit_result", layers = result.trip.layers()).entered();
                 trips.insert(result.vehicle_id, result.trip);
                 continue;
             }
         };
 
-        let mut entries = kv
-            .get_many(&payload.vehicle_id, args.context_window)
+        // One span per event; the collector aggregates these into the
+        // orchestrator's throughput and latency series. `continuation` is
+        // recorded once reconciliation decides, and becomes a metric label.
+        let span = info_span!(
+            "orchestrate",
+            continuation = field::Empty,
+            fresh = field::Empty,
+            cut = field::Empty,
+        );
+
+        async {
+            let mut entries = kv
+                .get_many(&payload.vehicle_id, args.context_window)
+                .instrument(info_span!("context_fetch"))
+                .await
+                .context("could not get entries from redis store")?;
+
+            // Normalise to newest-first regardless of the datasource's return
+            // order: the cutoff below walks back in time from the current event,
+            // discarding everything beyond the first gap or teleport.
+            entries.sort_by_key(|event| std::cmp::Reverse(event.timestamp));
+            let fetched = entries.len();
+
+            let context = entries
+                .into_iter()
+                .inspect(|v| debug!("event: {:?}", v))
+                .scan(
+                    (payload.point, payload.timestamp),
+                    |(prev_p, prev_ts), event: RawEvent| {
+                        let duration = (*prev_ts - event.timestamp).abs();
+                        let distance = Haversine.distance(*prev_p, event.point);
+
+                        if duration <= gap && distance <= args.jump {
+                            *prev_p = event.point;
+                            *prev_ts = event.timestamp;
+                            Some(event)
+                        } else {
+                            None
+                        }
+                    },
+                )
+                .collect::<Vec<_>>();
+
+            // A cutoff means a gap or teleport discarded committed history —
+            // a marker span makes the occurrences countable.
+            let cut = fetched - context.len();
+            if cut > 0 {
+                info_span!("history_cut", reason = "gap_or_teleport").in_scope(|| {});
+            }
+
+            // The matcher solves a directed trajectory, so it must receive the
+            // points in chronological order. The current payload may already be
+            // archived, so dedup by timestamp after sorting.
+            let mut history: Vec<RawEvent> =
+                std::iter::once(payload.as_event()).chain(context).collect();
+            history.sort_by_key(|event| event.timestamp);
+            history.dedup_by_key(|event| event.timestamp);
+
+            let points = history
+                .into_iter()
+                .map(|event| event.point)
+                .collect::<Vec<Point>>();
+
+            // Reconcile the prior solve against the committed window: pure data
+            // work (trim and compare — never generating a layer), so it belongs
+            // here rather than on the matcher's hot path. The trip is cloned,
+            // not taken: a second event racing the first result still resumes
+            // from the same state, just with one more fresh point.
+            let continuation = info_span!("reconcile").in_scope(|| {
+                Continuation::reconcile(trips.get(&payload.vehicle_id).cloned(), &points)
+            });
+
+            let span = tracing::Span::current();
+            span.record("cut", cut);
+            match &continuation {
+                Continuation::Resume { fresh, .. } => {
+                    span.record("continuation", "resume");
+                    span.record("fresh", fresh.len());
+                }
+                Continuation::Restart { fresh } => {
+                    span.record("continuation", "restart");
+                    span.record("fresh", fresh.len());
+                }
+            }
+
+            sink.send(MatchContext {
+                vehicle_id: payload.vehicle_id,
+                continuation,
+            })
+            .instrument(info_span!("publish_context"))
             .await
-            .context("could not get entries from redis store")?;
-
-        // Normalise to newest-first regardless of the datasource's return
-        // order: the cutoff below walks back in time from the current event,
-        // discarding everything beyond the first gap or teleport.
-        entries.sort_by_key(|event| std::cmp::Reverse(event.timestamp));
-
-        let context = entries
-            .into_iter()
-            .inspect(|v| debug!("event: {:?}", v))
-            .scan(
-                (payload.point, payload.timestamp),
-                |(prev_p, prev_ts), event: RawEvent| {
-                    let duration = (*prev_ts - event.timestamp).abs();
-                    let distance = Haversine.distance(*prev_p, event.point);
-
-                    if duration <= gap && distance <= args.jump {
-                        *prev_p = event.point;
-                        *prev_ts = event.timestamp;
-                        Some(event)
-                    } else {
-                        None
-                    }
-                },
-            )
-            .collect::<Vec<_>>();
-
-        // The matcher solves a directed trajectory, so it must receive the
-        // points in chronological order. The current payload may already be
-        // archived, so dedup by timestamp after sorting.
-        let mut history: Vec<RawEvent> =
-            std::iter::once(payload.as_event()).chain(context).collect();
-        history.sort_by_key(|event| event.timestamp);
-        history.dedup_by_key(|event| event.timestamp);
-
-        let points = history
-            .into_iter()
-            .map(|event| event.point)
-            .collect::<Vec<Point>>();
-
-        // Reconcile the prior solve against the committed window: pure data
-        // work (trim and compare — never generating a layer), so it belongs
-        // here rather than on the matcher's hot path. The trip is cloned,
-        // not taken: a second event racing the first result still resumes
-        // from the same state, just with one more fresh point.
-        let continuation =
-            Continuation::reconcile(trips.get(&payload.vehicle_id).cloned(), &points);
-
-        sink.send(MatchContext {
-            vehicle_id: payload.vehicle_id,
-            continuation,
-        })
-        .await
-        .context("could not send match context")?;
+            .context("could not send match context")
+        }
+        .instrument(span)
+        .await?;
     }
 
     sink.close().await?;

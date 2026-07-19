@@ -6501,6 +6501,9 @@ dependencies = [
  "indicatif-log-bridge",
  "itertools 0.12.1",
  "log",
+ "opentelemetry",
+ "opentelemetry-otlp",
+ "opentelemetry_sdk",
  "polars",
  "postcard",
  "redis",
@@ -6512,7 +6515,11 @@ dependencies = [
  "serde",
  "thiserror 2.0.18",
  "tokio",
+ "tracing",
+ "tracing-opentelemetry",
+ "tracing-subscriber",
  "url",
+ "web-time",
 ]
 
 [[package]]
