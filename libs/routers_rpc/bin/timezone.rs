@@ -36,7 +36,7 @@ async fn main() -> Result<(), Box<dyn core::error::Error>> {
     info!("loaded timezone storage");
     let router = TimezoneServiceExt::register(adapter, Router::new());
 
-    info!("starting server, addr={}", args.addr);
+    info!("starting server: {}", args.addr);
     Server::new(router)
         .serve(args.addr)
         .await

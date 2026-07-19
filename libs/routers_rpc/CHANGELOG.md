@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.4] - 2026-07-17
+
+### 🚀 Features
+
+- *(tz)* Create release workflow for a timezone binary
+
+### 🐛 Bug Fixes
+
+- Round three - winner!
+- *(transition)* Imports, compilation issues, ..
+
+
+
 ## [0.1.3] - 2026-06-13
 
 ### ⚙️ Miscellaneous Tasks
