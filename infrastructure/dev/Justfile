@@ -9,7 +9,7 @@ bringup: repos
         --set-json 'promExporter.podMonitor.merge={"spec":{"podMetricsEndpoints":[{"port":"prom-metrics","interval":"1s"}]}}'
     helm upgrade --install valkey oci://registry-1.docker.io/bitnamicharts/valkey \
         -n {{ namespace }} --create-namespace \
-        --set auth.enabled=false
+        -f valkey-values.yaml
     helm upgrade --install kube-prometheus-stack prometheus-community/kube-prometheus-stack \
         -n {{ namespace }} --create-namespace \
         -f kube-prometheus-stack-values.yaml
@@ -65,7 +65,7 @@ patch: repos
         --set-json 'promExporter.podMonitor.merge={"spec":{"podMetricsEndpoints":[{"port":"prom-metrics","interval":"1s"}]}}'
     helm upgrade valkey oci://registry-1.docker.io/bitnamicharts/valkey \
         -n {{ namespace }} \
-        --set auth.enabled=false
+        -f valkey-values.yaml
     helm upgrade kube-prometheus-stack prometheus-community/kube-prometheus-stack \
         -n {{ namespace }} \
         -f kube-prometheus-stack-values.yaml

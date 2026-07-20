@@ -24,3 +24,6 @@ matcher:
 
 orchestrator:
   rustLog: info
+
+historian:
+  rustLog: info

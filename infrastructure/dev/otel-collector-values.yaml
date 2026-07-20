@@ -70,8 +70,15 @@ config:
       histogram:
         unit: ms
         explicit:
+          # The sub-second buckets resolve compute spans; the tail out to
+          # 120s exists for the wait spans (`queue_wait`, `worker_wait`,
+          # `event_to_match`) — a backlogged run parks messages for tens of
+          # seconds, and a 5s cap censors exactly the quantiles that prove it.
           buckets:
-            [1ms, 2ms, 5ms, 10ms, 25ms, 50ms, 100ms, 250ms, 500ms, 1s, 5s]
+            [
+              1ms, 2ms, 5ms, 10ms, 25ms, 50ms, 100ms, 250ms, 500ms,
+              1s, 2500ms, 5s, 10s, 30s, 60s, 120s,
+            ]
       # Span attributes promoted to metric labels. Everything else on a span
       # stays out of Prometheus, so attribute freely in the services.
       dimensions:

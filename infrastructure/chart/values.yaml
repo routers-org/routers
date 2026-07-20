@@ -45,6 +45,9 @@ shardCache:
   pvc:
     claimName: routers-shards
 
+# Each service's `env` map is rendered verbatim into the container: keys are
+# the binaries' clap-derived env names (see `--help` of each bin), so a knob
+# added to a binary needs no template change to become deployable.
 matcher:
   image:
     repository: routers-matcher
@@ -52,17 +55,29 @@ matcher:
     pullPolicy: Never
   rustLog: debug
   env:
-    stateful: "1"
-    profileSampleN: "50"
-    concurrency: "4"
-    frontierK: "4"
-    costCeiling: "2000000"
+    # Worker tasks per matcher; vehicles are hash-pinned so per-vehicle
+    # ordering holds regardless of the count. Solves are CPU-bound, so this
+    # is sized to actually cover the node's cores under load.
+    WORKERS: "10"
+    # Deadline shedding: contexts older than this are dropped unmatched.
+    # Bounds commit staleness so a transient backlog cannot break the
+    # orchestrator's resume overlap and snowball into a restart storm.
+    SHED_AFTER: "1s"
+    # Full 50m reach for anchoring (35m dropped ~22% of points unanchored),
+    # but each layer keeps only the k best candidates by emission: boundary
+    # weighing is O(k²), so solve cost stays flat through dense grids
+    # instead of scaling with road density.
+    MAX_CANDIDATES: "16"
   resources:
     requests:
-      cpu: 500m
+      cpu: 1000m
       memory: 256Mi
+    # No CPU limit: matching is CPU-bound (per-boundary weighing fans across
+    # rayon), and a CFS cap freezes every worker and the rayon pool together
+    # in 100ms throttle windows — the same stall spiral the valkey nano
+    # preset caused. The request still guarantees scheduling; memory still
+    # bounds the pod.
     limits:
-      cpu: 4000m
       memory: 3072Mi
 
 orchestrator:
@@ -72,16 +87,35 @@ orchestrator:
     pullPolicy: Never
   rustLog: info
   env:
-    parallelism: "1"
-    historyMaxPoints: "5"
-    historyMaxAgeSecs: "300"
-    store: memory
+    # Concurrent workers per orchestrator. Each vehicle is pinned to one, so
+    # events and result-commits stay ordered per vehicle while the per-event
+    # Redis context fetch — the throughput bound — overlaps across vehicles.
+    # Sized against the fetch's stall tail (~5% of calls stall 50–100ms under
+    # load, lifting the mean to ~5ms): ceiling ≈ workers / mean-fetch, so 32
+    # holds ~6k evt/s per shard even with the tail unfixed. Workers are
+    # cheap — one Redis connection and a map shard each.
+    WORKERS: "32"
+    # Redis history entries fetched per event — also the resume overlap
+    # horizon: a vehicle may go this many events without a committed result
+    # before reconcile loses the overlap and restarts it. Sized to the
+    # historian's full retention so shed bursts and matcher turbulence stay
+    # recoverable; reconcile trims the trip to the true overlap either way,
+    # so resumes stay cheap.
+    CONTEXT_WINDOW: "25"
+    # Per-event matcher work budget: contexts carrying more fresh points
+    # than this are restarted over the newest points only. Keeps both the
+    # resume AND restart paths ~O(cap) boundaries, so there is no expensive
+    # mode for the system to collapse into under turbulence.
+    FRESH_CAP: "8"
   resources:
     requests:
       cpu: 500m
       memory: 256Mi
     limits:
-      memory: 512Mi
+      # Headroom for the per-vehicle trip map and the worker channels —
+      # trips accumulate over a run, and memory-limit reclaim stalls would
+      # masquerade as latency.
+      memory: 1024Mi
 
 historian:
   enabled: true
@@ -92,9 +126,16 @@ historian:
   replicas: 3
   rustLog: debug
   env:
-    eventsConsumer: historian
-    valkeyBatch: "64"
-    valkeyBatchTimeoutMs: "2"
+    # Events retained per vehicle stream (XADD MAXLEN).
+    HISTORY: "25"
+    # Redis batch size and flush deadline for archiving. Kept small on
+    # purpose: valkey is single-threaded, and a 1024-command pipeline
+    # monopolises its event loop for tens of ms — every orchestrator
+    # context fetch that arrives meanwhile queues behind it (measured as a
+    # 50–100ms tail on reads during flush windows). Smaller, more frequent
+    # batches trade a little XADD efficiency for smooth read latency.
+    BATCH_SIZE: "128"
+    BATCH_TIMEOUT: "20ms"
   resources:
     requests:
       cpu: 500m

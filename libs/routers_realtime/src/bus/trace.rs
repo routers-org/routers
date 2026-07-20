@@ -50,6 +50,13 @@ pub fn last_sent_at() -> Option<SystemTime> {
     }
 }
 
+/// The wall clock, for stamping the start of an interval later handed to
+/// [`span_between`] — e.g. when a message enters an in-process queue. Kept
+/// here so callers need not re-litigate the wasm clock lint themselves.
+pub fn wallclock() -> SystemTime {
+    now()
+}
+
 /// Emit a span covering an arbitrary wall-clock interval — the primitive
 /// behind cross-service walltime metrics: hand it two wire stamps and the
 /// collector's spanmetrics does the rest. A no-op without an OTLP provider,

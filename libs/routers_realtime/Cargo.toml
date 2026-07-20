@@ -50,6 +50,7 @@ postcard = { workspace = true }
 async-nats = "0.38.0"
 redis = { version = "0.29", features = ["tokio-comp", "streams"] }
 polars = { version = "0.46", default-features = false, features = ["lazy", "csv", "strings", "dtype-full"] }
+stream-partition = "0.1.0"
 
 [lints]
 workspace = true

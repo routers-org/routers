@@ -5,6 +5,7 @@ use futures::StreamExt;
 use log::{error, info};
 use std::time::Duration;
 use tokio::time::{Instant, timeout_at};
+use tracing::{Instrument, info_span};
 use url::Url;
 
 use routers_realtime::{
@@ -44,7 +45,11 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    env_logger::init();
+    // Spans, not just logs: the historian is the third consumer of the raw
+    // stream, so its `queue_wait` series doubles as a measure of the offered
+    // event rate, and `archive` covers the Redis write path the
+    // orchestrator's `context_fetch` later reads from.
+    let _telemetry = routers_realtime::telemetry::init("routers-historian");
     let args = Args::parse();
 
     info!("historian starting: {:?}", args);
@@ -83,7 +88,11 @@ async fn main() -> anyhow::Result<()> {
             continue;
         }
 
-        if let Err(e) = kv.write_many(&batch, args.history).await {
+        if let Err(e) = kv
+            .write_many(&batch, args.history)
+            .instrument(info_span!("archive", events = batch.len()))
+            .await
+        {
             error!("write error: {e}");
         } else {
             info!("archived {} event(s)", batch.len());

@@ -27,6 +27,14 @@ where
     /// radial-boundary.
     pub search_distance: f64,
 
+    /// The most candidates a layer may hold; `None` admits every edge in
+    /// range. Boundary weighing is O(candidates²), so an unbounded layer in
+    /// a dense grid dominates solve cost — the cap keeps the k best
+    /// candidates by emission cost, bounding the boundary at k² pairs while
+    /// preserving the full search reach (a wider radius no longer costs
+    /// quadratically, only the selection).
+    pub max_candidates: Option<usize>,
+
     /// The emission heuristics required to generate the layers.
     ///
     /// This is required as a caching technique since the costs for a candidate
@@ -49,11 +57,17 @@ where
             map,
             emission,
             search_distance: DEFAULT_SEARCH_DISTANCE,
+            max_candidates: None,
         }
     }
 
     pub fn with_search_distance(mut self, search_distance: f64) -> Self {
         self.search_distance = search_distance;
+        self
+    }
+
+    pub fn with_max_candidates(mut self, max_candidates: usize) -> Self {
+        self.max_candidates = Some(max_candidates);
         self
     }
 }
@@ -65,7 +79,8 @@ where
     Emmis: EmissionStrategy + Send + Sync,
 {
     fn candidates(&self, origin: &Point, layer: LayerId) -> Vec<Candidate<E>> {
-        self.map
+        let mut candidates: Vec<Candidate<E>> = self
+            .map
             .nearest_nodes_projected(origin, self.search_distance)
             .enumerate()
             .map(|(node, (position, edge))| {
@@ -80,6 +95,17 @@ where
 
                 Candidate::new(edge.thin(), position, emission, location)
             })
-            .collect()
+            .collect();
+
+        // Keep the k cheapest by emission. Positional identity is restamped
+        // by `Trip::push_layer`, so dropping interior candidates is sound.
+        if let Some(k) = self.max_candidates
+            && candidates.len() > k
+        {
+            candidates.select_nth_unstable_by_key(k - 1, |candidate| candidate.emission);
+            candidates.truncate(k);
+        }
+
+        candidates
     }
 }
