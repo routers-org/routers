@@ -13,7 +13,6 @@ routers_shard = { workspace = true }
 routers_transition = { workspace = true }
 
 # Logging & Telemetry
-# env_logger remains for the bins outside the traced pipeline (replay, historian).
 env_logger = { workspace = true }
 log = { workspace = true }
 tracing = { workspace = true }
