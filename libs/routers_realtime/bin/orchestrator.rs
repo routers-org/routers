@@ -146,7 +146,11 @@ async fn main() -> anyhow::Result<()> {
                     kv: &mut kv,
                 };
 
-                match app.try_create_context(payload).instrument(span.clone()).await {
+                match app
+                    .try_create_context(payload)
+                    .instrument(span.clone())
+                    .await
+                {
                     Ok(ctx) => {
                         sink.send(ctx)
                             .instrument(info_span!(parent: &span, "publish_context"))
