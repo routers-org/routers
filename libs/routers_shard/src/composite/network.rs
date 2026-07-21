@@ -2,6 +2,7 @@ use core::fmt::Debug;
 
 use geo::Point;
 use rstar::AABB;
+use rustc_hash::FxHashSet;
 
 use routers_network::{
     DataPlane, DirectionAwareEdgeId, Discovery, Edge, Entry, Metadata, Node, Route, Scan,
@@ -46,7 +47,7 @@ where
     }
 
     fn point(&self, id: &E) -> Option<Point> {
-        self.hash.get(id).map(|n| n.position)
+        self.node(id).map(|n| n.position)
     }
 
     fn edges_outof<'a>(&'a self, id: E) -> Box<dyn Iterator<Item = GraphEdge<E>> + 'a> {
@@ -67,8 +68,8 @@ where
 
     fn fatten(&self, edge: &Edge<E>) -> Option<Edge<Node<E>>> {
         Some(Edge {
-            source: *self.hash.get(&edge.source)?,
-            target: *self.hash.get(&edge.target)?,
+            source: *self.node(&edge.source)?,
+            target: *self.node(&edge.target)?,
             id: DirectionAwareEdgeId::new(Node::new(Point::new(0., 0.), edge.id.index())),
             weight: edge.weight,
         })
@@ -88,12 +89,19 @@ where
     where
         E: 'a,
     {
+        let mut seen: FxHashSet<(E, E)> = FxHashSet::default();
+
         Box::new(
-            self.index_edge
-                .locate_in_envelope_intersecting(&aabb)
+            self.shards
+                .iter()
+                .flat_map(move |shard| shard.index_edge.locate_in_envelope_intersecting(&aabb))
                 .filter_map(move |&EdgeRef { source, target, .. }| {
-                    let source = *self.hash.get(&source)?;
-                    let target = *self.hash.get(&target)?;
+                    if !seen.insert((source, target)) {
+                        return None;
+                    }
+
+                    let source = *self.node(&source)?;
+                    let target = *self.node(&target)?;
 
                     let &(weight, id) = self.graph.edge_weight(*source, *target)?;
 
@@ -117,11 +125,18 @@ where
     where
         E: 'a,
     {
-        Box::new(self.index.locate_in_envelope(&aabb))
+        let mut seen: FxHashSet<E> = FxHashSet::default();
+
+        Box::new(
+            self.shards
+                .iter()
+                .flat_map(move |shard| shard.index.locate_in_envelope(&aabb))
+                .filter(move |node| seen.insert(node.id)),
+        )
     }
 
     fn node(&self, id: &E) -> Option<&Node<E>> {
-        self.hash.get(id)
+        self.shards.iter().find_map(|s| s.hash.get(id))
     }
 
     fn edge(&self, source: &E, target: &E) -> Option<Edge<E>> {
@@ -146,7 +161,15 @@ where
     where
         E: 'a,
     {
-        self.index.nearest_neighbor(point)
+        self.shards
+            .iter()
+            .filter_map(|s| s.index.nearest_neighbor(point))
+            .min_by(|a, b| {
+                let d2 = |n: &Node<E>| {
+                    (n.position.x() - point.x()).powi(2) + (n.position.y() - point.y()).powi(2)
+                };
+                d2(a).total_cmp(&d2(b))
+            })
     }
 }
 
@@ -164,10 +187,7 @@ where
             |(_, _, w)| w.0,
             |_| 0 as Weight,
         )?;
-        let route = path
-            .iter()
-            .filter_map(|v| self.hash.get(v).copied())
-            .collect();
+        let route = path.iter().filter_map(|v| self.node(v).copied()).collect();
         Some((cost, route))
     }
 }
