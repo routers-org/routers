@@ -1,8 +1,10 @@
 version: v2
 
 modules:
+  # Unnamed (local-only) module: vendored OSM PBF / Mapbox MVT formats used for
+  # code generation. It is kept in the workspace so `buf generate` still emits
+  # these types, but has no `name` so `buf push` does not publish it to the BSR.
   - path: schema/proto
-    name: buf.build/osm/model
     includes:
       - schema/proto/osm
       - schema/proto/mvt
