@@ -10,13 +10,13 @@ use routers_realtime::{
 use routers_transition::Continuation;
 use routers_transition::matcher::Trip;
 
-use anyhow::Context;
+use anyhow::{Context, Result};
 use async_nats::{ConnectOptions, ServerAddr};
 use clap::Parser;
 use futures::{SinkExt, StreamExt};
 use geo::{Distance, Haversine, Point};
 use log::{debug, info};
-use tracing::{Instrument, field, info_span};
+use tracing::{Instrument, field, info_span, warn};
 use url::Url;
 
 type E = OsmEntryId;
@@ -68,7 +68,18 @@ struct Args {
     /// Consecutive points further away than this will be treated as a "teleport",
     /// and dropped along with everything older.
     #[arg(long, env, default_value = "2000")]
-    jump: f64,
+    jump_distance: f64,
+}
+
+struct App<'a> {
+    gap: chrono::TimeDelta,
+
+    jump_distance: f64,
+    context_window: usize,
+
+    trips: &'a HashMap<String, Trip<E>>,
+
+    kv: &'a mut RedisStore<RawEvent>,
 }
 
 #[tokio::main]
@@ -89,17 +100,18 @@ async fn main() -> anyhow::Result<()> {
     let mut sink =
         NATSSink::<MatchContext<E>>::new(client.clone(), move |_| args.outbound_subject.clone());
 
-    let subscriber = client
+    let events_subscriber = client
         .subscribe(args.inbound_subject)
         .await
-        .context("could not subscribe to NATS subject")?;
-    let events = NATSStream::<Payload>::new(subscriber).map(Inbound::Event);
+        .context("could not subscribe to NATS event subject")?;
 
-    let subscriber = client
+    let results_subscriber = client
         .subscribe(args.results_subject)
         .await
-        .context("could not subscribe to results subject")?;
-    let results = NATSStream::<MatchResult<E, M>>::new(subscriber).map(Inbound::Result);
+        .context("could not subscribe to NATS results subject")?;
+
+    let events = NATSStream::<Payload>::new(events_subscriber).map(Inbound::Event);
+    let results = NATSStream::<MatchResult<E, M>>::new(results_subscriber).map(Inbound::Result);
 
     let mut source = futures::stream::select(events, results);
 
@@ -113,13 +125,38 @@ async fn main() -> anyhow::Result<()> {
     let mut origins: HashMap<String, web_time::SystemTime> = HashMap::new();
 
     while let Some(inbound) = source.next().await {
-        let payload = match inbound {
+        match inbound {
             Inbound::Event(payload) => {
                 if let Some(sent_at) = routers_realtime::bus::last_sent_at() {
                     origins.insert(payload.vehicle_id.clone(), sent_at);
                 }
 
-                payload
+                let span = info_span!(
+                    "orchestrate",
+                    continuation = field::Empty,
+                    fresh = field::Empty,
+                    cut = field::Empty,
+                );
+
+                let mut app = App {
+                    gap,
+                    context_window: args.context_window,
+                    jump_distance: args.jump_distance,
+                    trips: &trips,
+                    kv: &mut kv,
+                };
+
+                match app.try_create_context(payload).instrument(span.clone()).await {
+                    Ok(ctx) => {
+                        sink.send(ctx)
+                            .instrument(info_span!(parent: &span, "publish_context"))
+                            .await
+                            .context("could not send match context")?;
+                    }
+                    Err(err) => {
+                        warn!("could not create match context: {err}");
+                    }
+                }
             }
             Inbound::Result(result) => {
                 let _span = info_span!("commit_result", layers = result.trip.layers()).entered();
@@ -135,89 +172,90 @@ async fn main() -> anyhow::Result<()> {
                 continue;
             }
         };
-
-        let span = info_span!(
-            "orchestrate",
-            continuation = field::Empty,
-            fresh = field::Empty,
-            cut = field::Empty,
-        );
-
-        async {
-            let mut entries = kv
-                .get_many(&payload.vehicle_id, args.context_window)
-                .instrument(info_span!("context_fetch"))
-                .await
-                .context("could not get entries from redis store")?;
-
-            entries.sort_by_key(|event| std::cmp::Reverse(event.timestamp));
-            let fetched = entries.len();
-
-            let context = entries
-                .into_iter()
-                .inspect(|v| debug!("event: {:?}", v))
-                .scan(
-                    (payload.point, payload.timestamp),
-                    |(prev_p, prev_ts), event: RawEvent| {
-                        let duration = (*prev_ts - event.timestamp).abs();
-                        let distance = Haversine.distance(*prev_p, event.point);
-
-                        if duration <= gap && distance <= args.jump {
-                            *prev_p = event.point;
-                            *prev_ts = event.timestamp;
-                            Some(event)
-                        } else {
-                            None
-                        }
-                    },
-                )
-                .collect::<Vec<_>>();
-
-            let cut = fetched - context.len();
-            if cut > 0 {
-                info_span!("history_cut", reason = "gap_or_teleport").in_scope(|| {});
-            }
-
-            let mut history: Vec<RawEvent> =
-                std::iter::once(payload.as_event()).chain(context).collect();
-            history.sort_by_key(|event| event.timestamp);
-            history.dedup_by_key(|event| event.timestamp);
-
-            let points = history
-                .into_iter()
-                .map(|event| event.point)
-                .collect::<Vec<Point>>();
-
-            let continuation = info_span!("reconcile").in_scope(|| {
-                Continuation::reconcile(trips.get(&payload.vehicle_id).cloned(), &points)
-            });
-
-            let span = tracing::Span::current();
-            span.record("cut", cut);
-            match &continuation {
-                Continuation::Resume { fresh, .. } => {
-                    span.record("continuation", "resume");
-                    span.record("fresh", fresh.len());
-                }
-                Continuation::Restart { fresh } => {
-                    span.record("continuation", "restart");
-                    span.record("fresh", fresh.len());
-                }
-            }
-
-            sink.send(MatchContext {
-                vehicle_id: payload.vehicle_id,
-                continuation,
-            })
-            .instrument(info_span!("publish_context"))
-            .await
-            .context("could not send match context")
-        }
-        .instrument(span)
-        .await?;
     }
 
     sink.close().await?;
 
     Ok(())
+}
+
+impl<'a> App<'a> {
+    async fn try_create_context(
+        &mut self,
+        Payload {
+            vehicle_id,
+            timestamp,
+            point,
+            ..
+        }: Payload,
+    ) -> Result<MatchContext<E>> {
+        let mut entries = self
+            .kv
+            .get_many(&vehicle_id, self.context_window)
+            .instrument(info_span!("context_fetch"))
+            .await
+            .context("could not get entries from redis store")?;
+
+        entries.sort_by_key(|event| std::cmp::Reverse(event.timestamp));
+        let fetched = entries.len();
+
+        let context = entries
+            .into_iter()
+            .inspect(|v| debug!("event: {:?}", v))
+            .scan((point, timestamp), |(prev_p, prev_ts), event: RawEvent| {
+                let duration = (*prev_ts - event.timestamp).abs();
+                let distance = Haversine.distance(*prev_p, event.point);
+
+                if duration <= self.gap && distance <= self.jump_distance {
+                    *prev_p = event.point;
+                    *prev_ts = event.timestamp;
+                    Some(event)
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+
+        let cut = fetched - context.len();
+        if cut > 0 {
+            info_span!("history_cut", reason = "gap_or_teleport").in_scope(|| {});
+        }
+
+        let mut history: Vec<RawEvent> = std::iter::once(RawEvent {
+            vehicle_id: vehicle_id.clone(),
+            point: point,
+            timestamp: timestamp,
+        })
+        .chain(context)
+        .collect();
+
+        history.sort_by_key(|event| event.timestamp);
+        history.dedup_by_key(|event| event.timestamp);
+
+        let points = history
+            .into_iter()
+            .map(|event| event.point)
+            .collect::<Vec<Point>>();
+
+        let continuation = info_span!("reconcile")
+            .in_scope(|| Continuation::reconcile(self.trips.get(&vehicle_id).cloned(), &points));
+
+        let span = tracing::Span::current();
+        span.record("cut", cut);
+        match &continuation {
+            Continuation::Resume { fresh, .. } => {
+                span.record("continuation", "resume");
+                span.record("fresh", fresh.len());
+            }
+            Continuation::Restart { fresh } => {
+                span.record("continuation", "restart");
+                span.record("fresh", fresh.len());
+            }
+        }
+
+        Ok(MatchContext {
+            vehicle_id: vehicle_id,
+            continuation,
+        })
+    }
 }

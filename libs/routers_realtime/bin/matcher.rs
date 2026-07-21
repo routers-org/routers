@@ -117,6 +117,90 @@ async fn main() -> anyhow::Result<()> {
     let weigher = AllCompute::default().use_cache(cache);
     let matcher = Matcher::new(network.as_ref(), &costing, generator, weigher, &runtime);
 
+    // Run one context to completion, recording its outcome onto the current
+    // `match_event` span. Returns the result to publish, or `None` when there
+    // is nothing to emit (no anchor, or a nominal/fatal solve failure).
+    let attempt = |vehicle_id: String, continuation: Continuation<E>| -> Option<MatchResult<E, M>> {
+        let span = tracing::Span::current();
+
+        let (mut trip, fresh) = match continuation {
+            Continuation::Resume { trip, fresh } => {
+                span.record("continuation", "resume");
+                debug!(
+                    "{vehicle_id}: resuming {} committed layer(s), {} fresh point(s)",
+                    trip.layers(),
+                    fresh.len()
+                );
+                (trip, fresh)
+            }
+            Continuation::Restart { fresh } => {
+                span.record("continuation", "restart");
+                debug!("{vehicle_id}: restarting over {} point(s)", fresh.len());
+                (matcher.begin(), fresh)
+            }
+        };
+
+        info_span!("push", points = fresh.len()).in_scope(|| {
+            for point in fresh {
+                match matcher.push(&mut trip, point) {
+                    Ok(_) => { /* OK! */ }
+                    Err(MatchError::Unanchored(err)) => {
+                        info_span!("point_drop", reason = "unanchored").in_scope(|| {
+                            debug!("{vehicle_id}: dropped off-network point ({err})");
+                        });
+                    }
+                    Err(err) => {
+                        info_span!("point_drop", reason = "push_error").in_scope(|| {
+                            error!("{vehicle_id}: could not push point: {err}");
+                        });
+                    }
+                }
+            }
+        });
+
+        if trip.is_empty() {
+            span.record("outcome", "no_anchor");
+            span.record("severity", "nominal");
+            warn!("{vehicle_id}: no anchored layers to solve");
+            return None;
+        }
+
+        match info_span!("solve")
+            .in_scope(|| matcher.solve(&mut trip))
+            .map_err(classify)
+        {
+            Ok(path) => debug!("solved path: {path:?}"),
+            Err((outcome, severity)) => {
+                span.record("outcome", outcome);
+                span.record("severity", severity);
+                error!("{vehicle_id}: unable to solve trip: {outcome}");
+                return None;
+            }
+        }
+
+        let solution = match info_span!("snapshot")
+            .in_scope(|| matcher.snapshot(&mut trip))
+            .map_err(classify)
+        {
+            Ok(solution) => solution,
+            Err((outcome, severity)) => {
+                span.record("outcome", outcome);
+                span.record("severity", severity);
+                return None;
+            }
+        };
+
+        span.record("outcome", "success");
+        span.record("severity", "ok");
+
+        let path = RoutedPath::new(solution, network.as_ref());
+        Some(MatchResult {
+            path,
+            vehicle_id,
+            trip,
+        })
+    };
+
     while let Some(MatchContext {
         vehicle_id,
         continuation,
@@ -129,98 +213,12 @@ async fn main() -> anyhow::Result<()> {
             continuation = field::Empty,
         );
 
-        async {
-            let span = tracing::Span::current();
-
-            let (mut trip, fresh) = match continuation {
-                Continuation::Resume { trip, fresh } => {
-                    span.record("continuation", "resume");
-                    debug!(
-                        "{vehicle_id}: resuming {} committed layer(s), {} fresh point(s)",
-                        trip.layers(),
-                        fresh.len()
-                    );
-                    (trip, fresh)
-                }
-                Continuation::Restart { fresh } => {
-                    span.record("continuation", "restart");
-                    debug!("{vehicle_id}: restarting over {} point(s)", fresh.len());
-                    (matcher.begin(), fresh)
-                }
-            };
-
-            info_span!("push", points = fresh.len()).in_scope(|| {
-                for point in fresh {
-                    match matcher.push(&mut trip, point) {
-                        Ok(_) => { /* OK! */ }
-                        Err(MatchError::Unanchored(err)) => {
-                            info_span!("point_drop", reason = "unanchored").in_scope(|| {
-                                debug!("{vehicle_id}: dropped off-network point ({err})");
-                            });
-                        }
-                        Err(err) => {
-                            info_span!("point_drop", reason = "push_error").in_scope(|| {
-                                error!("{vehicle_id}: could not push point: {err}");
-                            });
-                        }
-                    }
-                }
-            });
-
-            if trip.is_empty() {
-                span.record("outcome", "no_anchor");
-                span.record("severity", "nominal");
-
-                warn!("{vehicle_id}: no anchored layers to solve");
-                return Ok(());
-            }
-
-            match info_span!("solve")
-                .in_scope(|| matcher.solve(&mut trip))
-                .map_err(classify)
-            {
-                Err((outcome, severity)) => {
-                    span.record("outcome", outcome);
-                    span.record("severity", severity);
-
-                    error!("{vehicle_id}: unable to solve trip: {outcome}");
-                    return Ok(());
-                }
-                Ok(path) => {
-                    debug!("solved path: {:?}", path);
-                }
-            }
-
-            match info_span!("snapshot")
-                .in_scope(|| matcher.snapshot(&mut trip))
-                .map_err(classify)
-            {
-                Ok(solution) => {
-                    let path = RoutedPath::new(solution, network.as_ref());
-                    let result = MatchResult {
-                        path,
-                        vehicle_id,
-                        trip,
-                    };
-
-                    span.record("outcome", "success");
-                    span.record("severity", "ok");
-
-                    sink.send(result)
-                        .instrument(info_span!("publish_result"))
-                        .await
-                        .context("could not emit result to sink")
-                }
-                Err((outcome, severity)) => {
-                    span.record("outcome", outcome);
-                    span.record("severity", severity);
-
-                    Ok(())
-                }
-            }
+        if let Some(result) = span.in_scope(|| attempt(vehicle_id, continuation)) {
+            sink.send(result)
+                .instrument(info_span!(parent: &span, "publish_result"))
+                .await
+                .context("could not emit result to sink")?;
         }
-        .instrument(span)
-        .await?;
     }
 
     loop {
