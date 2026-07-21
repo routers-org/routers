@@ -89,10 +89,6 @@ where
     where
         E: 'a,
     {
-        // Query every shard's slim edge index and dedupe boundary edges
-        // (present in up to two shards) as they stream past — no composite
-        // edge index exists to duplicate them into. The merged graph stays
-        // the authority for weights and direction.
         let mut seen: FxHashSet<(E, E)> = FxHashSet::default();
 
         Box::new(
@@ -129,8 +125,6 @@ where
     where
         E: 'a,
     {
-        // As with edges: shard indices queried in turn, boundary nodes
-        // deduplicated in flight.
         let mut seen: FxHashSet<E> = FxHashSet::default();
 
         Box::new(
@@ -167,9 +161,6 @@ where
     where
         E: 'a,
     {
-        // Nearest within each shard, then nearest of those: correct
-        // because every candidate set is a superset partition of the
-        // composite's nodes.
         self.shards
             .iter()
             .filter_map(|s| s.index.nearest_neighbor(point))

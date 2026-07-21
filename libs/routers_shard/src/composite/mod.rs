@@ -3,13 +3,6 @@
 //! Represents a unified network composed of multiple shards, based on
 //! a particular sharding strategy and cell window.
 //!
-//! The composite is a *view*, not a copy: nodes, metadata, and both
-//! spatial indices are served straight from the member shards (each
-//! [`ShardedNetwork`] already carries them), deduplicated on the fly at
-//! query time. Only the routing graph is merged eagerly — routes and
-//! adjacency must cross shard boundaries, and the path solver needs one
-//! graph to walk. Everything else follows the slim-index rule: don't
-//! store what can be looked up.
 
 mod network;
 
@@ -34,10 +27,6 @@ where
     S: ShardId,
 {
     shards: Vec<Arc<ShardedNetwork<E, M, S>>>,
-
-    /// The merged routing graph — the one eager duplication this type
-    /// keeps (see the module docs). Shared boundary edges collapse here,
-    /// so it is also the authority for edge weights and counts.
     graph: GraphStructure<E>,
 }
 
