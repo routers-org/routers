@@ -380,4 +380,38 @@ impl Trellis {
         let start = self.layers().saturating_sub(n);
         self.partition(LayerId(start as u32)..LayerId(self.layers() as u32))
     }
+
+    /// Reduce the first layer to the single node `keep`, dropping its siblings
+    /// and the edges leaving them; the layer becomes width 1, so `keep` becomes
+    /// `NodeId(0)`.
+    ///
+    /// Pairs with [`last`](Self::last) to pin a committed anchor: after
+    /// windowing to a trellis whose first layer is a coalescence point, this
+    /// makes the anchor the sole path start, so re-solving the window follows
+    /// the committed history instead of re-seeding every sibling from scratch
+    /// (see `COALESCENCE.md`).
+    pub fn pin_first(&mut self, keep: NodeId) -> Result<()> {
+        let width = self.widths[0] as usize;
+        if keep.index() >= width {
+            return Err(TrellisError::NodeOutOfRange {
+                layer: LayerId(0),
+                node: keep,
+            });
+        }
+
+        // Collapse the first layer to the anchor's node weight alone.
+        let kept = self.nodes[keep.index()];
+        self.nodes.splice(0..width, core::iter::once(kept));
+        self.widths[0] = 1;
+
+        // Keep only the anchor's outgoing row from the boundary it leaves.
+        if let Some(&next_width) = self.widths.get(1)
+            && let Some(weights) = self.transitions[0].weights_mut()
+        {
+            let start = keep.index() * next_width as usize;
+            *weights = weights[start..start + next_width as usize].to_vec();
+        }
+
+        Ok(())
+    }
 }

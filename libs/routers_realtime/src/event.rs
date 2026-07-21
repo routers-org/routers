@@ -2,7 +2,10 @@ use chrono::{DateTime, Utc};
 use geo::Point;
 use routers_network::{Entry, Metadata};
 use routers_shard::{Geohash, GeohashStrategy, ShardingStrategy};
-use routers_transition::candidate::RoutedPath;
+use geo::LineString;
+use routers_network::Network;
+use routers_transition::LayerId;
+use routers_transition::candidate::{CollapsedPath, RoutedPath};
 use routers_transition::matcher::{Continuation, Trip};
 use serde::{Deserialize, Serialize};
 
@@ -28,6 +31,52 @@ pub struct MatchResult<E: Entry, M: Metadata> {
     pub path: RoutedPath<E, M>,
     pub vehicle_id: String,
     pub trip: Trip<E>,
+}
+
+/// A vehicle's matched trace as per-observation interpolated segments, split at
+/// the coalescence boundary into the part that can never change and the part
+/// still subject to revision (see `COALESCENCE.md` in `routers_trellis`).
+///
+/// Each segment is the road geometry arriving at one matched observation;
+/// concatenating `stable` then `tentative` in order rebuilds the full
+/// interpolated trace, and a consumer stitches its bounded view from them.
+///
+/// `stable` segments are final: no later position can change them, so a
+/// consumer already holding them may drop the repeat. The matcher re-sends
+/// them because it keeps no per-consumer state — collapsing that to a
+/// once-only emission is the register tier's job (dedupe by the committed
+/// watermark). `tentative` is the volatile tail from the coalescence anchor to
+/// the current position, and supersedes any earlier tentative tail wholesale.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TraceUpdate {
+    pub vehicle_id: String,
+    pub stable: Vec<LineString>,
+    pub tentative: Vec<LineString>,
+}
+
+impl TraceUpdate {
+    /// Build the split from a solved match: the per-observation interpolated
+    /// segments up to and including the [`stable_upto`](Trip::stable_upto)
+    /// layer become `stable`, the rest `tentative`. `stable_upto` is `None`
+    /// when nothing has converged, leaving the whole trace tentative.
+    pub fn from_match<E: Entry, M: Metadata>(
+        vehicle_id: String,
+        solution: &CollapsedPath<E>,
+        map: &impl Network<E, M>,
+        stable_upto: Option<LayerId>,
+    ) -> Self {
+        let mut stable = solution.interpolated_segments(map);
+        let committed = stable_upto
+            .map_or(0, |layer| layer.index() + 1)
+            .min(stable.len());
+        let tentative = stable.split_off(committed);
+
+        Self {
+            vehicle_id,
+            stable,
+            tentative,
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]

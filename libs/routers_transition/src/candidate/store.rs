@@ -1,5 +1,5 @@
 use routers_network::Entry;
-use routers_trellis::LayerId;
+use routers_trellis::{LayerId, NodeId};
 use serde::{Deserialize, Serialize};
 
 use crate::candidate::{Candidate, CandidateRef};
@@ -39,6 +39,16 @@ where
             for candidate in candidates {
                 candidate.location.layer = LayerId(layer as u32);
             }
+        }
+    }
+
+    /// Keep only `node` in the first layer, re-stamped to `NodeId(0)` — the
+    /// candidate counterpart to [`Trellis::pin_first`](routers_trellis::Trellis::pin_first).
+    pub(crate) fn pin_first(&mut self, node: NodeId) {
+        if let Some(first) = self.layers.first_mut() {
+            let mut kept = first[node.index()];
+            kept.location = CandidateRef::new(LayerId(0), NodeId(0));
+            *first = vec![kept];
         }
     }
 

@@ -68,6 +68,16 @@ matcher:
     # weighing is O(k²), so solve cost stays flat through dense grids
     # instead of scaling with road density.
     MAX_CANDIDATES: "16"
+    # Byte ceilings for the two long-lived reachability caches (see
+    # routers_transition::primitives::cache). These are the dominant memory
+    # consumer: the predicate cache holds a bounded-Dijkstra parent map per
+    # root node and, left unbounded, saturated a whole shard's node set to
+    # ~2.8GB and OOMKilled the pod. moka now evicts least-recently-used
+    # entries by weight once these are exceeded. Sum + graph (~150Mi) +
+    # runtime, with moka's lazy-eviction overshoot, must stay under the
+    # limit below.
+    MATCHER_PREDICATE_CACHE_MB: "512"
+    MATCHER_SUCCESSOR_CACHE_MB: "128"
   resources:
     requests:
       cpu: 1000m
@@ -77,8 +87,14 @@ matcher:
     # in 100ms throttle windows — the same stall spiral the valkey nano
     # preset caused. The request still guarantees scheduling; memory still
     # bounds the pod.
+    #
+    # 2Gi headroom over an observed ~1.1Gi working set (~640Mi nominal cache
+    # budget runs higher in practice — moka bookkeeping, Arc overhead, and
+    # power-of-two HashMap capacity all exceed the byte estimate — plus
+    # ~150Mi graph and runtime). Was 3Gi (only because caches grew without
+    # bound); 1Gi OOMKilled almost immediately.
     limits:
-      memory: 3072Mi
+      memory: 2048Mi
 
 orchestrator:
   image:

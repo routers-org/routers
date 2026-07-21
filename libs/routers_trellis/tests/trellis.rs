@@ -362,6 +362,126 @@ fn solved_round_trips_through_serde() {
     assert_eq!(back.trellis().widths(), solved.trellis().widths());
 }
 
+// ---- coalescence ----
+//
+// Two candidates per layer, L = NodeId(0) and R = NodeId(1) — the left and
+// right road of a divided highway. See COALESCENCE.md for the worked examples
+// these mirror.
+
+/// A four-layer trellis where routing into the last layer is cheap only from
+/// the L side, so both frontier candidates share predecessor L2: the funnel
+/// closes at layer 2. (COALESCENCE.md §4.1 / §5a-B.)
+fn coalescing_trellis() -> Trellis {
+    let mut t = Trellis::new(vec![2u32; 4]).unwrap();
+    // same-side = 1, cross = 2, row-major [from * next_width + to].
+    t.fill_transition(LayerId(0), &[1, 2, 2, 1]).unwrap();
+    t.fill_transition(LayerId(1), &[1, 2, 2, 1]).unwrap();
+    // Into layer 3: cheap from L (1), expensive from R (10).
+    t.fill_transition(LayerId(2), &[1, 1, 10, 10]).unwrap();
+    t
+}
+
+#[test]
+fn coalescence_finds_the_shared_ancestor() {
+    let t = coalescing_trellis();
+    let k = ViterbiSolver::new().coalescence(&t);
+    assert_eq!(k, Some(LayerId(2)));
+
+    // The head is a genuine tie (both frontier candidates cost the same) yet
+    // the prefix is pinned; the anchor is the solved path's node at layer k.
+    let path = t.clone().solve(&ViterbiSolver::new()).unwrap().path().clone();
+    assert_eq!(path.nodes[2], NodeId(0)); // anchor v* = L2
+}
+
+#[test]
+fn committed_prefix_survives_any_append() {
+    // Solve, note the coalescence layer and the prefix up to it.
+    let solver = ViterbiSolver::new();
+    let t = coalescing_trellis();
+    let k = solver.coalescence(&t).unwrap().index();
+    let before = solver.solve(&t).unwrap().nodes;
+
+    // Append a layer whose evidence overwhelmingly favours the R side.
+    let (mut t, _) = t.solve(&solver).unwrap().append(2).unwrap();
+    t.fill_transition(LayerId(3), &[0, 100, 100, 0]).unwrap();
+    t.fill_nodes(LayerId(3), &[100, 0]).unwrap();
+    let after = solver.solve(&t).unwrap().nodes;
+
+    // The prefix up to k is untouched; only the tail past it may move.
+    assert_eq!(after[..=k], before[..=k]);
+    // ...and here it genuinely moves — the head flips L→R, which is exactly
+    // why the tail was left uncommitted.
+    assert_ne!(after[k + 1], before[k + 1]);
+}
+
+#[test]
+fn no_coalescence_while_two_hypotheses_stay_alive() {
+    // Divided highway with expensive crossings; observations mildly favour L.
+    // Both whole-route hypotheses (LLL, RRR) stay alive, so nothing commits.
+    let mut t = Trellis::new(vec![2u32; 3]).unwrap();
+    for boundary in 0..2 {
+        t.fill_transition(LayerId(boundary), &[0, 100, 100, 0]).unwrap();
+    }
+    for layer in 0..3 {
+        t.fill_nodes(LayerId(layer), &[0, 1]).unwrap();
+    }
+    assert_eq!(ViterbiSolver::new().coalescence(&t), None);
+}
+
+#[test]
+fn width_one_chain_coalesces_at_the_frontier() {
+    // A single hypothesis throughout: the funnel is closed at every layer, so
+    // coalescence sits at the most recent one.
+    let t = line(&[2, 3, 5]);
+    assert_eq!(ViterbiSolver::new().coalescence(&t), Some(LayerId(3)));
+}
+
+#[test]
+fn unreachable_trellis_has_no_coalescence() {
+    let mut t = Trellis::new(vec![1u32, 1, 1]).unwrap();
+    t.fill_transition(LayerId(0), &[NO_EDGE]).unwrap();
+    t.fill_transition(LayerId(1), &[NO_EDGE]).unwrap();
+    assert_eq!(ViterbiSolver::new().coalescence(&t), None);
+}
+
+#[test]
+fn appends_never_disturb_the_committed_prefix() {
+    // The core invariant, stressed over many shapes: wherever coalescence
+    // exists, appending arbitrary layers leaves the prefix up to it fixed.
+    let solver = ViterbiSolver::new();
+    let width = 4;
+
+    // Append one random layer (transition + node weights) to a solved trellis.
+    let grow = |t: Trellis, rng: &mut dyn FnMut() -> u32| {
+        let (mut t, layer) = t.solve(&solver).unwrap().append(width).unwrap();
+        let row: Vec<u32> = (0..width * width).map(|_| rng()).collect();
+        t.fill_transition(LayerId(layer.0 - 1), &row).unwrap();
+        let weights: Vec<u32> = (0..width).map(|_| rng()).collect();
+        t.fill_nodes(layer, &weights).unwrap();
+        t
+    };
+
+    for seed in 0u64..40 {
+        let mut t = random_noded_trellis(6, width, seed);
+        let mut s = seed | 1;
+        let mut rng = || {
+            s = s.wrapping_mul(6364136223846793005).wrapping_add(1);
+            ((s >> 40) as u32) % 100
+        };
+
+        for _ in 0..4 {
+            let before = solver.solve(&t).unwrap().nodes;
+            let committed = solver.coalescence(&t).map(|k| k.index());
+            t = grow(t, &mut rng);
+            let after = solver.solve(&t).unwrap().nodes;
+
+            if let Some(k) = committed {
+                assert_eq!(after[..=k], before[..=k], "seed {seed}: prefix moved at k={k}");
+            }
+        }
+    }
+}
+
 // ---- A/B conformance: Viterbi vs BruteForce ----
 
 fn conformance(t: &Trellis) {

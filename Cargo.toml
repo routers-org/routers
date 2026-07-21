@@ -41,6 +41,7 @@ routers = { path = ".", version = "0.3.0" }
 # Optimisation Crates
 rayon = "1.10.0"
 scc = "2.3.4"
+moka = { version = "0.12", features = ["sync"] }
 itertools = "0.14.0"
 indexmap = "2.9.0"
 petgraph = { version = "0.8.2", features = ["serde-1", "graphmap", "rayon"] }

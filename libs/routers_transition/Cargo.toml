@@ -39,7 +39,7 @@ opentelemetry-otlp = { workspace = true, optional = true }
 
 # Optimisations and Compression
 rayon = { workspace = true }
-scc = { workspace = true }
+moka = { workspace = true }
 itertools = { workspace = true }
 indexmap = { workspace = true }
 thiserror = { workspace = true }

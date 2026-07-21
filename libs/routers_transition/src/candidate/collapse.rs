@@ -64,19 +64,42 @@ where
     /// The full driven path as a [`LineString`] — the matched positions with the
     /// routed road geometry between them filled in, showing the turns taken.
     pub fn interpolated<M: Metadata>(&self, map: &impl Network<E, M>) -> LineString {
-        self.interpolated
-            .iter()
-            .enumerate()
-            .flat_map(|(index, reachable)| {
-                let source = self.candidates.candidate(&reachable.source).unwrap();
-                let target = self.candidates.candidate(&reachable.target).unwrap();
+        self.interpolated_segments(map)
+            .into_iter()
+            .flat_map(|segment| segment.0)
+            .collect()
+    }
 
-                let path = reachable.path_nodes().filter_map(|node| map.point(&node));
+    /// The driven path split per matched observation: `segments[i]` is the road
+    /// geometry arriving at observation `i` (the roads driven since observation
+    /// `i - 1`), ending at its matched position. Observation 0 carries only its
+    /// matched position, having no incoming hop.
+    ///
+    /// Concatenating the segments in order reproduces [`interpolated`](Self::interpolated);
+    /// crucially, *any prefix* of them is a self-contained partial trace. A
+    /// streaming consumer that has committed observations up to a coalescence
+    /// boundary can therefore hold those segments as final and only revise the
+    /// tail — the geometry for a committed observation never moves, because it
+    /// is the arrival at that observation, not the departure toward the next.
+    pub fn interpolated_segments<M: Metadata>(
+        &self,
+        map: &impl Network<E, M>,
+    ) -> Vec<LineString> {
+        let mut segments = Vec::with_capacity(self.interpolated.len() + 1);
 
-                core::iter::repeat_n(source.position, if index == 0 { 1 } else { 0 })
-                    .chain(path)
-                    .chain(core::iter::once(target.position))
-            })
-            .collect::<LineString>()
+        // Observation 0: its matched position alone (no hop arrives at it).
+        if let Some(first) = self.interpolated.first() {
+            let source = self.candidates.candidate(&first.source).unwrap();
+            segments.push(LineString::from(vec![source.position.0]));
+        }
+
+        // Each hop's routed geometry, ending at the observation it arrives at.
+        for reachable in &self.interpolated {
+            let target = self.candidates.candidate(&reachable.target).unwrap();
+            let path = reachable.path_nodes().filter_map(|node| map.point(&node));
+            segments.push(path.chain(core::iter::once(target.position)).collect());
+        }
+
+        segments
     }
 }

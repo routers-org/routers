@@ -1,15 +1,93 @@
 use alloc::sync::Arc;
 use core::fmt::Debug;
+use core::hash::Hash;
 use geo::Distance;
-use routers_network::{Entry, Metadata, Network};
+use moka::sync::Cache;
+use routers_network::{DirectionAwareEdgeId, Entry, Metadata, Network};
 use rustc_hash::{FxBuildHasher, FxHashMap};
-use scc::HashMap;
+
+use crate::primitives::WeightAndDistance;
 
 pub trait CacheKey: Entry {}
 impl<T> CacheKey for T where T: Entry {}
 
+/// Byte weight and default budget for a cache value type.
+///
+/// The byte-bounded [`CacheMap`] uses this both to size itself and to choose
+/// eviction victims by real memory footprint rather than entry count — so the
+/// fat predicate reachability maps are evicted ahead of the small successor
+/// vectors under one shared bound.
+pub trait CacheWeight {
+    /// Estimated heap bytes this value occupies.
+    fn weight_bytes(&self) -> u32;
+
+    /// Environment variable overriding this cache's byte budget, in MiB.
+    const BUDGET_ENV: &'static str;
+
+    /// Budget in MiB used when [`BUDGET_ENV`](Self::BUDGET_ENV) is unset.
+    const DEFAULT_BUDGET_MB: u64;
+}
+
+impl<E: Entry> CacheWeight for FxHashMap<E, E> {
+    #[inline]
+    fn weight_bytes(&self) -> u32 {
+        // hashbrown holds `capacity` (K, V) slots plus ~1 control byte each,
+        // atop a small fixed table header.
+        const HEADER: usize = 48;
+        let per_slot = core::mem::size_of::<(E, E)>() + 1;
+        self.capacity()
+            .saturating_mul(per_slot)
+            .saturating_add(HEADER)
+            .min(u32::MAX as usize) as u32
+    }
+
+    const BUDGET_ENV: &'static str = "MATCHER_PREDICATE_CACHE_MB";
+    const DEFAULT_BUDGET_MB: u64 = 512;
+}
+
+impl<E: Entry> CacheWeight for Vec<(E, DirectionAwareEdgeId<E>, WeightAndDistance)> {
+    #[inline]
+    fn weight_bytes(&self) -> u32 {
+        // Vec header (ptr/len/cap) atop `capacity` inline elements.
+        const HEADER: usize = 24;
+        let per_elem = core::mem::size_of::<(E, DirectionAwareEdgeId<E>, WeightAndDistance)>();
+        self.capacity()
+            .saturating_mul(per_elem)
+            .saturating_add(HEADER)
+            .min(u32::MAX as usize) as u32
+    }
+
+    const BUDGET_ENV: &'static str = "MATCHER_SUCCESSOR_CACHE_MB";
+    const DEFAULT_BUDGET_MB: u64 = 128;
+}
+
+/// Builds a byte-bounded, recency-aware cache: `moka` evicts by
+/// [`CacheWeight::weight_bytes`] once the total weight exceeds `max_bytes`, so
+/// the footprint is capped in memory rather than in entry count. Values live
+/// behind an `Arc`, so an eviction only drops the cache's own reference — any
+/// in-flight query keeps its result alive until it is done with it.
+fn build_cache<K, V>(max_bytes: u64) -> Cache<K, Arc<V>, FxBuildHasher>
+where
+    K: Hash + Eq + Send + Sync + Clone + 'static,
+    V: CacheWeight + Send + Sync + 'static,
+{
+    Cache::builder()
+        .max_capacity(max_bytes)
+        .weigher(|_key, value: &Arc<V>| value.weight_bytes())
+        .build_with_hasher(FxBuildHasher)
+}
+
+/// Resolves a cache's byte budget from its [`CacheWeight::BUDGET_ENV`] override
+/// (interpreted as MiB), falling back to [`CacheWeight::DEFAULT_BUDGET_MB`].
+fn budget_bytes<V: CacheWeight>() -> u64 {
+    std::env::var(V::BUDGET_ENV)
+        .ok()
+        .and_then(|raw| raw.parse::<u64>().ok())
+        .unwrap_or(V::DEFAULT_BUDGET_MB)
+        .saturating_mul(1024 * 1024)
+}
+
 /// A generic read-through cache for a hashmap-backed data structure
-#[derive(Debug)]
 pub struct CacheMap<K, V, M, N, Meta>
 where
     K: CacheKey,
@@ -18,11 +96,29 @@ where
     Meta: Debug,
     N: Network<K, M>,
 {
-    pub(crate) map: HashMap<K, Arc<V>, FxBuildHasher>,
+    pub(crate) map: Cache<K, Arc<V>, FxBuildHasher>,
     pub(crate) metadata: Meta,
 
     _marker: core::marker::PhantomData<M>,
     _marker2: core::marker::PhantomData<N>,
+}
+
+// Hand-rolled so the `Debug` bound stays off the moka cache (whose own `Debug`,
+// and its stats accessors, would drag `V: Send + Sync + 'static` onto every use
+// of `CacheMap`). The entries themselves are elided.
+impl<K, V, M, N, Meta> Debug for CacheMap<K, V, M, N, Meta>
+where
+    K: CacheKey,
+    V: Debug,
+    M: Metadata,
+    Meta: Debug,
+    N: Network<K, M>,
+{
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("CacheMap")
+            .field("metadata", &self.metadata)
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Debug)]
@@ -71,7 +167,7 @@ where
     M: Metadata,
     K: CacheKey,
     N: Network<K, M>,
-    V: Debug,
+    V: Debug + Send + Sync + 'static,
     Meta: Debug,
 {
     /// Exposes a query call for the cache map, allowing the caller
@@ -87,28 +183,26 @@ where
     /// consumes an owned value of the key, [`K`], which is required for the
     /// call to the [`Calculable::calculate`] function.
     pub fn query(&self, ctx: &RoutingContext<K, M, N>, key: K) -> Arc<V> {
-        if let Some(value) = self.0.map.get(&key) {
-            return Arc::clone(value.get());
-        }
-
-        let calculated = Arc::new(self.calculate(ctx, key));
-        let _ = self.0.map.insert(key, calculated.clone());
-
-        Arc::clone(&calculated)
+        // Read-through: `get_with` returns the cached value or runs the
+        // closure once (deduping concurrent misses on the same key), and
+        // eviction is handled by the byte bound configured at build time.
+        self.0
+            .map
+            .get_with(key, || Arc::new(self.calculate(ctx, key)))
     }
 }
 
 impl<K, V, M, N, Meta> Default for CacheMap<K, V, M, N, Meta>
 where
     K: CacheKey,
-    V: Debug,
+    V: CacheWeight + Debug + Send + Sync + 'static,
     M: Metadata,
     N: Network<K, M>,
     Meta: Default + Debug,
 {
     fn default() -> Self {
         Self {
-            map: HashMap::default(),
+            map: build_cache::<K, V>(budget_bytes::<V>()),
             metadata: Meta::default(),
 
             _marker: core::marker::PhantomData,
@@ -250,7 +344,7 @@ mod predicate {
     impl<E: CacheKey, M: Metadata, N: Network<E, M>> PredicateCache<E, M, N> {
         pub fn with_threshold(threshold_cm: f64) -> Self {
             LockedMap(Arc::new(CacheMap {
-                map: HashMap::default(),
+                map: build_cache::<E, Predicates<E>>(budget_bytes::<Predicates<E>>()),
                 metadata: PredicateMetadata {
                     successors: SuccessorsCache::default(),
                     threshold_distance: threshold_cm,

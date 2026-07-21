@@ -1,4 +1,4 @@
-use core::{iter::once, ops::Range};
+use core::ops::Range;
 
 use log::{debug, trace, warn};
 
@@ -34,6 +34,52 @@ impl ViterbiSolver {
         ViterbiSolver
     }
 
+    /// The coalescence layer: the most recent layer whose single node every
+    /// finite frontier node descends from. The optimal path's prefix up to
+    /// this layer is immutable under any appended layers, so a streaming
+    /// consumer may commit it (see `COALESCENCE.md` for the proof). The anchor
+    /// node itself is the solved path's node at this layer.
+    ///
+    /// `None` when the surviving paths never merge — sustained ambiguity, where
+    /// nothing is safe to commit — or when the trellis does not solve.
+    pub fn coalescence(&self, t: &Trellis) -> Option<LayerId> {
+        let boundaries = Self::boundaries(t).ok()?;
+        let ranges: Vec<Range<usize>> = t.layer_ranges().collect();
+
+        let mut dist = t.node_table().to_vec();
+        let mut back = vec![NodeId(0); dist.len()];
+        self.forward_pass(&boundaries, &mut dist, &mut back);
+
+        // Start from every finite node of the last layer and walk `back`. The
+        // set can only shrink, so the first layer at which it holds one node is
+        // the deepest (most recent) shared ancestor — the coalescence layer.
+        let last = ranges.last()?;
+        let mut ancestors: Vec<NodeId> = dist[last.clone()]
+            .iter()
+            .enumerate()
+            .filter(|&(_, &cost)| cost < INF_W)
+            .map(|(node, _)| NodeId::from_index(node))
+            .collect();
+        if ancestors.is_empty() {
+            return None; // unreachable: no path to anchor
+        }
+
+        for (layer, range) in ranges.iter().enumerate().rev() {
+            if ancestors.len() == 1 {
+                return Some(LayerId(layer as u32));
+            }
+            if layer == 0 {
+                break;
+            }
+            for node in &mut ancestors {
+                *node = back[range.start + node.index()];
+            }
+            ancestors.sort_unstable();
+            ancestors.dedup();
+        }
+        None
+    }
+
     /// Every boundary of `t`, or the first unresolved one as the error —
     /// succeeding doubles as the proof that the trellis is solvable.
     fn boundaries(t: &Trellis) -> Result<Vec<Boundary<'_>>, SolveError> {
@@ -54,11 +100,20 @@ impl ViterbiSolver {
             .collect()
     }
 
-    /// Fill `dist` — the flat DP table positioned by [`Trellis::layer_ranges`]
-    /// — with the minimum cost to reach and enter every node from the virtual
-    /// source (every first-layer node starts at its own node weight).
+    /// Fill `dist` and `back` — flat tables positioned by
+    /// [`Trellis::layer_ranges`]. `dist[v]` becomes the minimum cost to reach
+    /// and enter node `v` from the virtual source (every first-layer node
+    /// starts at its own node weight); `back[v]` becomes the predecessor on
+    /// that cheapest path, i.e. the argmin the forward pass already computes.
+    /// First-layer `back` entries are left untouched — those nodes have no
+    /// predecessor.
+    ///
+    /// Ties resolve to the lowest [`NodeId`]: predecessors are scanned in node
+    /// order and only a strict improvement overwrites, so the first (lowest)
+    /// one to reach a node's minimum wins. A chosen node's own weight is added
+    /// after the argmin, so it never perturbs it.
     #[cfg_attr(feature = "tracing", tracing::instrument(level = "trace", skip_all))]
-    fn forward_pass(&self, boundaries: &[Boundary], dist: &mut [u32]) {
+    fn forward_pass(&self, boundaries: &[Boundary], dist: &mut [u32], back: &mut [NodeId]) {
         for boundary in boundaries {
             trace!(
                 "boundary {}: cur_width={} next_width={}",
@@ -72,16 +127,22 @@ impl ViterbiSolver {
             let (head, tail) = dist.split_at_mut(boundary.next.start);
             let cur_costs = &head[boundary.cur.clone()];
             let next_costs = &mut tail[..boundary.next.len()];
+            let next_back = &mut back[boundary.next.clone()];
             next_costs.fill(INF_W);
 
             let reachable = cur_costs
                 .iter()
                 .zip(boundary.weights.chunks_exact(boundary.next.len()))
-                .filter(|&(&cost, _)| cost < INF_W);
+                .enumerate()
+                .filter(|&(_, (&cost, _))| cost < INF_W);
 
-            for (&cost, row) in reachable {
-                for (next, &edge) in next_costs.iter_mut().zip(row) {
-                    *next = (*next).min(cost + edge);
+            for (from, (&cost, row)) in reachable {
+                for ((next, into), &edge) in next_costs.iter_mut().zip(&mut *next_back).zip(row) {
+                    let candidate = cost + edge;
+                    if candidate < *next {
+                        *next = candidate;
+                        *into = NodeId::from_index(from);
+                    }
                 }
             }
 
@@ -94,15 +155,16 @@ impl ViterbiSolver {
         }
     }
 
-    /// Trace the optimal path backwards through `dist`.
+    /// Trace the optimal path backwards by following `back` from the cheapest
+    /// final node (ties to the lowest node).
     #[cfg_attr(feature = "tracing", tracing::instrument(level = "trace", skip_all))]
     fn backtrack(
         &self,
-        last: Range<usize>,
-        boundaries: &[Boundary],
+        ranges: &[Range<usize>],
         dist: &[u32],
+        back: &[NodeId],
     ) -> Result<Path, SolveError> {
-        // Pick the best node in the final layer; ties go to the lowest node.
+        let last = ranges.last().cloned().unwrap_or(0..0);
         let Some((best_cost, final_node)) = dist[last]
             .iter()
             .enumerate()
@@ -118,38 +180,16 @@ impl ViterbiSolver {
             return Err(SolveError::Unreachable);
         }
 
-        // Walk the boundaries in reverse, at each picking the predecessor that
-        // reaches the chosen node cheapest; ties go to the lowest node. The
-        // chosen node's own weight is a shared constant per candidate set, so
-        // ignoring it preserves the argmin.
-        let tail_to_head: Vec<NodeId> = boundaries
-            .iter()
-            .rev()
-            .scan(final_node, |chosen, boundary| {
-                let into_chosen = boundary
-                    .weights
-                    .iter()
-                    .skip(chosen.index())
-                    .step_by(boundary.next.len());
-
-                let (_, predecessor) = dist[boundary.cur.clone()]
-                    .iter()
-                    .zip(into_chosen)
-                    .map(|(&cost, &edge)| cost.saturating_add(edge))
-                    .enumerate()
-                    .map(|(node, cost)| (cost, NodeId::from_index(node)))
-                    .min()?;
-
-                *chosen = predecessor;
-                Some(predecessor)
-            })
-            .collect();
-
-        let nodes = tail_to_head
-            .into_iter()
-            .rev()
-            .chain(once(final_node))
-            .collect();
+        // Walk parent pointers from the final node; `back` is layer-local, so
+        // index it through each layer's range.
+        let mut nodes = vec![NodeId(0); ranges.len()];
+        let mut node = final_node;
+        for (layer, range) in ranges.iter().enumerate().rev() {
+            nodes[layer] = node;
+            if layer > 0 {
+                node = back[range.start + node.index()];
+            }
+        }
         Ok(Path::new(nodes, best_cost))
     }
 }
@@ -164,14 +204,15 @@ impl Solve for ViterbiSolver {
         debug!("{} layers, widths={:?}", t.layers(), t.widths());
 
         let boundaries = Self::boundaries(t).inspect_err(|e| warn!("{e}"))?;
-        let last = t.layer_ranges().last().unwrap_or(0..0);
+        let ranges: Vec<Range<usize>> = t.layer_ranges().collect();
 
         // The first layer's starting cost is its node weights; every later
         // layer is overwritten by the forward pass before use.
         let mut dist = t.node_table().to_vec();
+        let mut back = vec![NodeId(0); dist.len()];
 
-        self.forward_pass(&boundaries, &mut dist);
-        let path = self.backtrack(last, &boundaries, &dist)?;
+        self.forward_pass(&boundaries, &mut dist, &mut back);
+        let path = self.backtrack(&ranges, &dist, &back)?;
 
         debug!("cost={}", path.cost);
         Ok(path)

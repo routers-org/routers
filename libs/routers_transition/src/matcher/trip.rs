@@ -1,6 +1,6 @@
 use geo::Point;
 use routers_network::Entry;
-use routers_trellis::{LayerId, Path, Solved, Trellis, TrellisError};
+use routers_trellis::{LayerId, Path, Solved, Trellis, TrellisError, ViterbiSolver};
 use serde::{Deserialize, Serialize};
 
 use crate::candidate::{Candidate, CandidateRef, CandidateStore};
@@ -106,6 +106,43 @@ where
     /// Whether the trip is currently solved (no pending data).
     pub fn is_solved(&self) -> bool {
         matches!(self.state, TripState::Solved(_))
+    }
+
+    /// The most recent layer the solution has committed to: the matched path's
+    /// prefix up to here cannot change no matter what positions follow, so a
+    /// streaming consumer may emit it once and never revise it. `None` while
+    /// the live hypotheses have not yet converged (or the trip is unsolved).
+    ///
+    /// The committed input positions are `points()[..=layer]`; the anchor
+    /// candidate is `path()`'s node at `layer`. See `COALESCENCE.md` in
+    /// `routers_trellis` for why the prefix is immutable.
+    pub fn stable_upto(&self) -> Option<LayerId> {
+        self.trellis().and_then(|t| ViterbiSolver::new().coalescence(t))
+    }
+
+    /// Drop the committed prefix, keeping only the volatile tail seeded by its
+    /// anchor: window to the [`stable_upto`](Self::stable_upto) layer and pin
+    /// that layer to its single anchor node, so continuing the stream re-solves
+    /// only the still-changing suffix — and can never contradict the prefix
+    /// already committed (see `COALESCENCE.md` §4.2). Returns the committed
+    /// layer in the pre-trim numbering, or `None` if nothing has converged.
+    ///
+    /// A commit at layer 0 is a no-op: the start anchors the window already.
+    pub fn commit(&mut self) -> Option<LayerId> {
+        let layer = self.stable_upto()?;
+        if layer.index() == 0 {
+            return Some(layer);
+        }
+        let anchor = self.path()?.nodes.get(layer.index()).copied()?;
+
+        self.tail(self.layers() - layer.index());
+        self.candidates.pin_first(anchor);
+        if let TripState::Building(trellis) = &mut self.state {
+            trellis
+                .pin_first(anchor)
+                .expect("anchor indexes the retained first layer");
+        }
+        Some(layer)
     }
 
     /// Keep only the last `n` layers, discarding everything older.

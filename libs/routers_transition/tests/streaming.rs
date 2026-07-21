@@ -9,6 +9,7 @@ use routers_transition::costing::{CostingStrategies, DefaultEmissionCost, Defaul
 use routers_transition::layer::generation::StandardGenerator;
 use routers_transition::matcher::Trip;
 use routers_transition::weigh::AllCompute;
+use routers_trellis::NodeId;
 use routers_transition::{Continuation, MatchError, Matcher};
 
 type Costing = CostingStrategies<DefaultEmissionCost, DefaultTransitionCost, MockEntryId>;
@@ -179,6 +180,108 @@ fn tail_matches_batch_over_suffix() {
         .r#match(LineString::from(points[3..].to_vec()))
         .expect("batch match must succeed");
     assert_same_match(&streamed, &batch);
+}
+
+/// A solved trip reports how far its match has committed, and that prefix
+/// stays put as later positions arrive — the streaming face of the trellis
+/// coalescence guarantee.
+#[test]
+fn stable_prefix_is_committed_and_survives_more_points() {
+    let net = bent_road();
+    let costing = Costing::default();
+    let generator = StandardGenerator::new(&net, &costing.emission);
+    let m = Matcher::new(&net, &costing, generator, AllCompute::default(), &());
+
+    let mut trip = m.begin();
+    assert_eq!(trip.stable_upto(), None, "an empty trip commits nothing");
+
+    let points = trajectory().into_points();
+    let (head, tail) = points.split_at(4);
+
+    for &point in head {
+        m.push(&mut trip, point).expect("push must anchor");
+    }
+    m.solve(&mut trip).expect("prefix must solve");
+    let committed = trip.stable_upto().map(|k| k.index());
+    let before = trip.path().expect("solved").nodes.clone();
+
+    for &point in tail {
+        m.push(&mut trip, point).expect("push must anchor");
+        m.solve(&mut trip).expect("every prefix must solve");
+    }
+    let after = trip.path().expect("solved").nodes.clone();
+
+    if let Some(k) = committed {
+        assert_eq!(after[..=k], before[..=k], "committed prefix must not move");
+    }
+    assert!(
+        trip.stable_upto().is_some(),
+        "the settled clean-road match must commit a prefix"
+    );
+}
+
+/// The per-observation segments concatenate back into the full interpolated
+/// path, and any prefix is a self-contained partial trace — the property a
+/// streaming consumer relies on to stitch a committed prefix and revise only
+/// the tail.
+#[test]
+fn interpolated_segments_concatenate_to_the_whole() {
+    let net = bent_road();
+    let costing = Costing::default();
+    let generator = StandardGenerator::new(&net, &costing.emission);
+    let m = Matcher::new(&net, &costing, generator, AllCompute::default(), &());
+
+    let solution = m.r#match(trajectory()).expect("match must succeed");
+    let whole = solution.interpolated(&net);
+    let segments = solution.interpolated_segments(&net);
+
+    assert_eq!(
+        segments.len(),
+        solution.matched().len(),
+        "one segment per matched observation"
+    );
+
+    let stitched: LineString = segments.iter().flat_map(|s| s.0.iter().copied()).collect();
+    assert_eq!(stitched, whole, "segments must reproduce the full path");
+
+    let prefix: LineString = segments[..2].iter().flat_map(|s| s.0.iter().copied()).collect();
+    assert!(
+        !prefix.0.is_empty() && prefix.0.len() < whole.0.len(),
+        "a prefix is a strict, non-empty partial trace"
+    );
+}
+
+/// `commit` trims the trip to its volatile tail, pinning the coalescence
+/// anchor as the sole start; re-solving the remainder reproduces the tail of
+/// the full-history match exactly — following the committed history, not a
+/// fresh match of the suffix.
+#[test]
+fn commit_trims_to_the_pinned_anchor() {
+    let net = bent_road();
+    let costing = Costing::default();
+    let generator = StandardGenerator::new(&net, &costing.emission);
+    let m = Matcher::new(&net, &costing, generator, AllCompute::default(), &());
+
+    let mut full = m.begin();
+    for point in trajectory().into_points() {
+        m.push(&mut full, point).expect("push must anchor");
+        m.solve(&mut full).expect("every prefix must solve");
+    }
+    let full_nodes = full.path().expect("solved").nodes.clone();
+    let layers = full.layers();
+
+    let mut trip = full.clone();
+    let k = trip.commit().expect("clean match must commit").index();
+    assert!(k >= 1, "clean trajectory must commit past the start");
+    assert_eq!(trip.layers(), layers - k, "window holds the tail from k");
+
+    let tail = m.solve(&mut trip).expect("pinned window re-solves").nodes.clone();
+    assert_eq!(tail[0], NodeId(0), "the anchor is the sole start");
+    assert_eq!(
+        tail[1..],
+        full_nodes[k + 1..],
+        "the pinned suffix follows the committed history"
+    );
 }
 
 /// `tail` is windowing, not surgery: asking for at least the current size
