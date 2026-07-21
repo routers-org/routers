@@ -34,10 +34,6 @@ where
     S: ShardId,
 {
     shards: Vec<Arc<ShardedNetwork<E, M, S>>>,
-
-    /// The merged routing graph — the one eager duplication this type
-    /// keeps (see the module docs). Shared boundary edges collapse here,
-    /// so it is also the authority for edge weights and counts.
     graph: GraphStructure<E>,
 }
 
