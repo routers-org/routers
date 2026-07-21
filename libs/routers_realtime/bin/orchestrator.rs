@@ -31,6 +31,15 @@ enum Inbound {
     Result(MatchResult<E, M>),
 }
 
+/// An [`Inbound`] handed to a worker, tagged with the wall-clock stamps the
+/// dispatch loop captured: when it was queued (for channel-residency timing)
+/// and its wire send time (for end-to-end timing, and as the vehicle's origin).
+struct Dispatch {
+    queued_at: web_time::SystemTime,
+    sent_at: Option<web_time::SystemTime>,
+    inbound: Inbound,
+}
+
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 struct Args {
@@ -53,8 +62,7 @@ struct Args {
     outbound_subject: String,
 
     /// The NATS subject the matcher publishes results into. The orchestrator
-    /// commits each result's trip as the vehicle's resume state — the
-    /// matcher itself never touches a store.
+    /// commits each result's trip as the vehicle's resume state.
     #[arg(long = "results", env)]
     results_subject: String,
 
@@ -72,24 +80,21 @@ struct Args {
     #[arg(long, env, default_value = "2000")]
     jump_distance: f64,
 
-    /// The number of concurrent workers. Each vehicle is pinned to one by
-    /// hash, so its events and results stay strictly ordered while the
-    /// per-event Redis fetches overlap across vehicles — the fetch round
-    /// trip, not compute, is what bounds a single orchestrator's throughput.
-    /// The trip and origin maps shard along with the vehicles, so a worker
-    /// owns every vehicle it will ever see and the maps need no locks.
+    /// How many workers to fan vehicles across. Each vehicle is pinned to one
+    /// by hash, so its events and results stay ordered on a worker that owns
+    /// their trip state outright — the maps need no locks, and the per-event
+    /// Redis fetch (the throughput bound) overlaps across vehicles.
     #[arg(short, env, long, default_value = "8")]
     workers: usize,
 }
 
+/// A worker's view of the shared configuration and its own trip state, borrowed
+/// per event for [`try_create_context`](App::try_create_context).
 struct App<'a> {
     gap: chrono::TimeDelta,
-
     jump_distance: f64,
     context_window: usize,
-
     trips: &'a HashMap<String, Trip<E>>,
-
     kv: &'a mut RedisStore<RawEvent>,
 }
 
@@ -108,39 +113,31 @@ async fn main() -> anyhow::Result<()> {
         .await
         .context("could not connect to NATS")?;
 
-    let events_subscriber = client
-        .subscribe(args.inbound_subject)
-        .await
-        .context("could not subscribe to NATS event subject")?;
+    let events = NATSStream::<Payload>::new(
+        client
+            .subscribe(args.inbound_subject)
+            .await
+            .context("could not subscribe to NATS event subject")?,
+    )
+    .map(Inbound::Event);
 
-    let results_subscriber = client
-        .subscribe(args.results_subject)
-        .await
-        .context("could not subscribe to NATS results subject")?;
-
-    let events = NATSStream::<Payload>::new(events_subscriber).map(Inbound::Event);
-    let results = NATSStream::<MatchResult<E, M>>::new(results_subscriber).map(Inbound::Result);
+    let results = NATSStream::<MatchResult<E, M>>::new(
+        client
+            .subscribe(args.results_subject)
+            .await
+            .context("could not subscribe to NATS results subject")?,
+    )
+    .map(Inbound::Result);
 
     let mut source = futures::stream::select(events, results);
 
     let gap = chrono::Duration::from_std(args.gap).context("gap out of range")?;
 
-    // Vehicles are pinned to workers by hash: the per-event Redis fetches
-    // overlap across vehicles while each vehicle's events — and the results
-    // that commit its trips — stay strictly ordered on one worker. The trip
-    // and origin maps shard along with the vehicles, so a worker owns every
-    // vehicle it will ever see and the maps need no locks. Keeping a result
-    // on its vehicle's worker is also what protects the resume ratio: the
-    // commit lands before that vehicle's next event is reconciled.
     let mut handles = Vec::with_capacity(args.workers);
     let mut txs = Vec::with_capacity(args.workers);
 
     for _ in 0..args.workers {
-        let (tx, mut rx) = mpsc::channel::<(
-            web_time::SystemTime,
-            Option<web_time::SystemTime>,
-            Inbound,
-        )>(1024);
+        let (tx, mut rx) = mpsc::channel::<Dispatch>(1024);
         txs.push(tx);
 
         let mut kv = RedisStore::<RawEvent>::new(args.redis.clone())
@@ -154,18 +151,20 @@ async fn main() -> anyhow::Result<()> {
         let jump_distance = args.jump_distance;
 
         handles.push(tokio::spawn(async move {
-            // Each vehicle's trellis from its prior solve, as committed back by
-            // the matcher's results. Derived state, not a source of truth:
-            // losing it (restart, first sight) just means the next context says
-            // `Restart` and the matcher rebuilds from committed history.
+            // This worker's vehicles, and their state. `trips` is the trellis
+            // from each vehicle's last solve, committed back by the matcher and
+            // resumed from on its next event; `origins` is when each vehicle's
+            // newest event was published, for the end-to-end `event_to_match`
+            // span. Both are derived — losing them just forces a restart.
             let mut trips: HashMap<String, Trip<E>> = HashMap::new();
-
-            // When each vehicle's newest raw event was published (its wire
-            // stamp), so the matching result can be measured against it — the
-            // `event_to_match` span is the pipeline's end-to-end walltime.
             let mut origins: HashMap<String, web_time::SystemTime> = HashMap::new();
 
-            while let Some((queued_at, sent_at, inbound)) = rx.recv().await {
+            while let Some(Dispatch {
+                queued_at,
+                sent_at,
+                inbound,
+            }) = rx.recv().await
+            {
                 routers_realtime::bus::span_between(
                     "worker_wait",
                     queued_at,
@@ -193,11 +192,7 @@ async fn main() -> anyhow::Result<()> {
                             kv: &mut kv,
                         };
 
-                        match app
-                            .try_create_context(payload)
-                            .instrument(span.clone())
-                            .await
-                        {
+                        match app.try_create_context(payload).instrument(span.clone()).await {
                             Ok(ctx) => {
                                 if let Err(err) = sink
                                     .send(ctx)
@@ -207,13 +202,9 @@ async fn main() -> anyhow::Result<()> {
                                     error!("could not send match context: {err:#}");
                                 }
                             }
-                            Err(err) => {
-                                warn!("could not create match context: {err}");
-                            }
+                            Err(err) => warn!("could not create match context: {err}"),
                         }
                     }
-                    // Commit-action for a completed solve: the returned trip
-                    // becomes the state the vehicle's next context resumes from.
                     Inbound::Result(result) => {
                         let _span =
                             info_span!("commit_result", layers = result.trip.layers()).entered();
@@ -221,11 +212,7 @@ async fn main() -> anyhow::Result<()> {
                         if let (Some(origin), Some(matched_at)) =
                             (origins.remove(&result.vehicle_id), sent_at)
                         {
-                            routers_realtime::bus::span_between(
-                                "event_to_match",
-                                origin,
-                                matched_at,
-                            );
+                            routers_realtime::bus::span_between("event_to_match", origin, matched_at);
                         }
 
                         trips.insert(result.vehicle_id, result.trip);
@@ -236,11 +223,8 @@ async fn main() -> anyhow::Result<()> {
     }
 
     while let Some(inbound) = source.next().await {
-        // The wire stamp is an ambient slot valid only while this message is
-        // the stream's most recent yield, so it must be captured here — by the
-        // time a worker sees the message, later yields have overwritten it. For
-        // an event it becomes the vehicle's origin; for a result it is when the
-        // matcher published it.
+        // The wire stamp is only valid while this message is the stream's newest
+        // yield, so capture it here rather than in the worker.
         let sent_at = routers_realtime::bus::last_sent_at();
 
         let vehicle_id = match &inbound {
@@ -248,18 +232,21 @@ async fn main() -> anyhow::Result<()> {
             Inbound::Result(result) => &result.vehicle_id,
         };
 
-        let mut h = DefaultHasher::new();
-        vehicle_id.hash(&mut h);
-        let worker = h.finish() as usize % args.workers;
+        let mut hasher = DefaultHasher::new();
+        vehicle_id.hash(&mut hasher);
+        let worker = hasher.finish() as usize % args.workers;
 
         txs[worker]
-            .send((routers_realtime::bus::wallclock(), sent_at, inbound))
+            .send(Dispatch {
+                queued_at: routers_realtime::bus::wallclock(),
+                sent_at,
+                inbound,
+            })
             .await
             .map_err(|_| anyhow::anyhow!("worker {worker} channel closed"))?;
     }
 
-    // The stream has ended: dropping the senders lets each worker drain its
-    // queue and flush its sink before the process exits.
+    // Dropping the senders drains each worker before the process exits.
     drop(txs);
     for handle in handles {
         handle.await.ok();
@@ -268,7 +255,7 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-impl<'a> App<'a> {
+impl App<'_> {
     async fn try_create_context(
         &mut self,
         Payload {
@@ -278,9 +265,13 @@ impl<'a> App<'a> {
             ..
         }: Payload,
     ) -> Result<MatchContext<E>> {
-        // Fetched deeper than the window on purpose: the store may hold points
-        // *newer* than this event (see below), which are dropped before the
-        // window is taken.
+        // Fetch deeper than the window: the store may hold points newer than
+        // this event (the historian archives straight off the raw stream, so
+        // under backlog it runs ahead of us), and those are the vehicle's future
+        // relative to the event being matched. Dropping them keeps the
+        // gap/teleport cutoff below firing on data quality, not pipeline latency
+        // — otherwise a backlog discards committed history and forces the
+        // matcher's expensive restart path exactly when it is already behind.
         let mut entries = self
             .kv
             .get_many(&vehicle_id, self.context_window * 3)
@@ -288,19 +279,8 @@ impl<'a> App<'a> {
             .await
             .context("could not get entries from redis store")?;
 
-        // Context is strictly the event's past. The historian archives straight
-        // off the raw stream, so under any pipeline backlog the store runs
-        // *ahead* of this worker and the newest entries are the vehicle's future
-        // relative to the event being matched. Left in, the gap/teleport cutoffs
-        // below fire on pipeline latency rather than data quality, which
-        // discards committed history and forces the matcher onto its expensive
-        // restart path: a feedback loop that collapses throughput under exactly
-        // the load that caused the backlog.
         entries.retain(|event| event.timestamp <= timestamp);
-
-        // Normalise to newest-first regardless of the datasource's return order:
-        // the cutoff below walks back in time from the current event, discarding
-        // everything beyond the first gap or teleport.
+        // Newest-first, so the cutoff below walks back in time from this event.
         entries.sort_by_key(|event| std::cmp::Reverse(event.timestamp));
         entries.truncate(self.context_window);
         let fetched = entries.len();
@@ -322,16 +302,14 @@ impl<'a> App<'a> {
             })
             .collect::<Vec<_>>();
 
-        // A cutoff means a gap or teleport discarded committed history — a
-        // marker span makes the occurrences countable.
         let cut = fetched - context.len();
         if cut > 0 {
             info_span!("history_cut", reason = "gap_or_teleport").in_scope(|| {});
         }
 
-        // The matcher solves a directed trajectory, so it must receive the
-        // points in chronological order. The current payload may already be
-        // archived, so dedup by timestamp after sorting.
+        // The matcher solves a directed trajectory, so points must arrive
+        // chronologically; the current payload may already be archived, so
+        // dedup by timestamp after sorting.
         let mut history: Vec<RawEvent> = std::iter::once(RawEvent {
             vehicle_id: vehicle_id.clone(),
             point,
@@ -343,14 +321,11 @@ impl<'a> App<'a> {
         history.sort_by_key(|event| event.timestamp);
         history.dedup_by_key(|event| event.timestamp);
 
-        let points = history
-            .into_iter()
-            .map(|event| event.point)
-            .collect::<Vec<Point>>();
+        let points = history.into_iter().map(|event| event.point).collect::<Vec<Point>>();
 
-        // Reconcile the prior solve against the committed window: pure data work
-        // (trim and compare — never generating a layer), so it belongs here
-        // rather than on the matcher's hot path.
+        // Reconcile the prior solve against the window: pure data work (trim and
+        // compare, never generating a layer), so it belongs here and not on the
+        // matcher's hot path.
         let continuation = info_span!("reconcile")
             .in_scope(|| Continuation::reconcile(self.trips.get(&vehicle_id).cloned(), &points));
 
