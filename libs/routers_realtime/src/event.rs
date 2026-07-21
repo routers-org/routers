@@ -3,13 +3,15 @@ use geo::Point;
 use routers_network::{Entry, Metadata};
 use routers_shard::{Geohash, GeohashStrategy, ShardingStrategy};
 use routers_transition::candidate::RoutedPath;
+use routers_transition::matcher::{Continuation, Trip};
 use serde::{Deserialize, Serialize};
 
 use crate::store::Storable;
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct MatchContext {
-    pub history: Vec<Point>,
+#[serde(bound(serialize = "E: Serialize", deserialize = "E: Deserialize<'de>"))]
+pub struct MatchContext<E: Entry> {
+    pub continuation: Continuation<E>,
     pub vehicle_id: String,
 }
 
@@ -17,6 +19,7 @@ pub struct MatchContext {
 pub struct MatchResult<E: Entry, M: Metadata> {
     pub path: RoutedPath<E, M>,
     pub vehicle_id: String,
+    pub trip: Trip<E>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

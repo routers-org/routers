@@ -26,6 +26,22 @@ where
         self.layers.push(candidates);
     }
 
+    /// Keep only the last `n` layers, re-stamping each surviving candidate's
+    /// [`CandidateRef`] so identity stays positional after the shift.
+    pub(crate) fn tail(&mut self, n: usize) {
+        let cut = self.layers.len().saturating_sub(n);
+        if cut == 0 {
+            return;
+        }
+
+        self.layers.drain(..cut);
+        for (layer, candidates) in self.layers.iter_mut().enumerate() {
+            for candidate in candidates {
+                candidate.location.layer = LayerId(layer as u32);
+            }
+        }
+    }
+
     /// The candidates of one layer, in node order.
     pub fn layer(&self, layer: LayerId) -> Option<&[Candidate<E>]> {
         self.layers.get(layer.index()).map(Vec::as_slice)

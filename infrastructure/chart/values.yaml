@@ -19,11 +19,14 @@ infra:
   nats:
     # Client connection URL used by matcher, orchestrator, historian.
     url: ""
-    # `host:port` for the NATS Prometheus /varz endpoint. Consumed by the
-    # additional-scrape secret; leave empty to disable NATS scraping.
-    metricsTarget: ""
   valkey:
     # Client connection URL used by orchestrator and historian.
+    url: ""
+  otlp:
+    # OTLP endpoint (http/protobuf) the matcher and orchestrator export
+    # spans to — an opentelemetry-collector whose spanmetrics pipeline is
+    # what Prometheus scrapes (see infrastructure/dev). Leave empty to
+    # disable span export; the services fall back to plain logging.
     url: ""
 
 # Shard precision passed to the matcher. Ensure shards are generated for this precision level.
@@ -47,7 +50,6 @@ matcher:
     repository: routers-matcher
     tag: latest
     pullPolicy: Never
-  metricsPort: 9092
   rustLog: debug
   env:
     stateful: "1"
@@ -61,14 +63,13 @@ matcher:
       memory: 256Mi
     limits:
       cpu: 4000m
-      memory: 1536Mi
+      memory: 3072Mi
 
 orchestrator:
   image:
     repository: routers-orchestrator
     tag: latest
     pullPolicy: Never
-  metricsPort: 9091
   rustLog: info
   env:
     parallelism: "1"
@@ -100,9 +101,6 @@ historian:
       memory: 64Mi
     limits:
       memory: 256Mi
-
-prometheusScrape:
-  enabled: true
 
 grafanaDashboard:
   enabled: true

@@ -2,7 +2,6 @@
 //!
 //! Represents a unified network composed of multiple shards, based on
 //! a particular sharding strategy and cell window.
-//!
 
 mod network;
 

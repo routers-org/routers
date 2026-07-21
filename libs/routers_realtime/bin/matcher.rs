@@ -1,21 +1,26 @@
-use anyhow::Context;
-use async_nats::{ConnectOptions, ServerAddr};
-use clap::Parser;
-use futures::{SinkExt, StreamExt};
-use geo::LineString;
-use log::{error, info};
-use routers_codec::osm::{OsmEdgeMetadata, OsmEntryId};
-use routers_network::Metadata;
-use routers_realtime::bus::{NATSSink, NATSStream};
-use routers_realtime::event::{MatchContext, MatchResult};
-use routers_shard::{FileFetcher, Geohash, ShardLoader};
-use routers_transition::primitives::PredicateCache;
-use routers_transition::weigh::SolverVariant;
-use routers_transition::{Match, MatchOptions};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::thread::sleep;
 use std::time::Duration;
+
+use routers_codec::osm::{OsmEdgeMetadata, OsmEntryId};
+use routers_network::Metadata;
+use routers_realtime::{
+    bus::{NATSSink, NATSStream},
+    event::{MatchContext, MatchResult},
+};
+use routers_shard::{FileFetcher, Geohash, ShardLoader};
+use routers_transition::{
+    Continuation, MatchError, Matcher, candidate::RoutedPath, costing::CostingStrategies,
+    layer::generation::StandardGenerator, primitives::PredicateCache, weigh::AllCompute,
+};
+
+use anyhow::Context;
+use async_nats::{ConnectOptions, ServerAddr};
+use clap::Parser;
+use futures::{SinkExt, StreamExt};
+use log::{debug, error, info, warn};
+use tracing::{Instrument, field, info_span};
 use url::Url;
 
 #[derive(Parser, Debug)]
@@ -46,16 +51,28 @@ struct Args {
     outbound_subject: String,
 
     /// The search distance to use for matching
-    #[arg(short, env, long)]
+    #[arg(long, env)]
     search_distance: Option<f64>,
 }
 
 type E = OsmEntryId;
 type M = OsmEdgeMetadata;
 
+/// How a match attempt ended, as the `outcome`/`severity` labels the
+/// collector turns into the success-ratio series. Nominal failures are the
+/// data's fault (a point off every road, a trace the network cannot bridge)
+/// and are expected in healthy operation; fatal ones are ours.
+fn classify(err: MatchError) -> (&'static str, &'static str) {
+    match err {
+        MatchError::Unanchored(_) => ("unanchored", "nominal"),
+        MatchError::Disconnected(_) => ("disconnected", "nominal"),
+        MatchError::TrellisError(_) | MatchError::SolveError(_) => ("internal", "fatal"),
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    env_logger::init();
+    let _telemetry = routers_realtime::telemetry::init("routers-matcher");
 
     let args = Args::parse();
     info!("matcher started: {:?}", args);
@@ -73,7 +90,7 @@ async fn main() -> anyhow::Result<()> {
     let nats_url = ServerAddr::from_url(args.nats).context("could not create NATS url")?;
 
     let client = ConnectOptions::new()
-        .name("OrchestratorService")
+        .name("MatcherService")
         .connect(nats_url)
         .await
         .context("could not connect to NATS")?;
@@ -85,32 +102,123 @@ async fn main() -> anyhow::Result<()> {
         .subscribe(args.inbound_subject)
         .await
         .context("could not subscribe to NATS subject")?;
-    let mut source = NATSStream::<MatchContext>::new(subscriber);
+    let mut source = NATSStream::<MatchContext<E>>::new(subscriber);
 
-    let cache = Arc::new(PredicateCache::<E, M, _>::default());
     let runtime = OsmEdgeMetadata::runtime(None);
 
-    let opts = MatchOptions::new()
-        .with_runtime(runtime.clone())
-        .with_cache(cache.clone())
-        .with_solver(SolverVariant::Fastest)
-        .with_search_distance(args.search_distance);
+    let cache = Arc::new(PredicateCache::default());
+    let costing = CostingStrategies::default();
+
+    let mut generator = StandardGenerator::new(network.as_ref(), &costing.emission);
+    if let Some(distance) = args.search_distance {
+        generator = generator.with_search_distance(distance);
+    }
+
+    let weigher = AllCompute::default().use_cache(cache);
+    let matcher = Matcher::new(network.as_ref(), &costing, generator, weigher, &runtime);
+
+    // Run one context to completion, recording its outcome onto the current
+    // `match_event` span. Returns the result to publish, or `None` when there
+    // is nothing to emit (no anchor, or a nominal/fatal solve failure).
+    let attempt =
+        |vehicle_id: String, continuation: Continuation<E>| -> Option<MatchResult<E, M>> {
+            let span = tracing::Span::current();
+
+            let (mut trip, fresh) = match continuation {
+                Continuation::Resume { trip, fresh } => {
+                    span.record("continuation", "resume");
+                    debug!(
+                        "{vehicle_id}: resuming {} committed layer(s), {} fresh point(s)",
+                        trip.layers(),
+                        fresh.len()
+                    );
+                    (trip, fresh)
+                }
+                Continuation::Restart { fresh } => {
+                    span.record("continuation", "restart");
+                    debug!("{vehicle_id}: restarting over {} point(s)", fresh.len());
+                    (matcher.begin(), fresh)
+                }
+            };
+
+            info_span!("push", points = fresh.len()).in_scope(|| {
+                for point in fresh {
+                    match matcher.push(&mut trip, point) {
+                        Ok(_) => { /* OK! */ }
+                        Err(MatchError::Unanchored(err)) => {
+                            info_span!("point_drop", reason = "unanchored").in_scope(|| {
+                                debug!("{vehicle_id}: dropped off-network point ({err})");
+                            });
+                        }
+                        Err(err) => {
+                            info_span!("point_drop", reason = "push_error").in_scope(|| {
+                                error!("{vehicle_id}: could not push point: {err}");
+                            });
+                        }
+                    }
+                }
+            });
+
+            if trip.is_empty() {
+                span.record("outcome", "no_anchor");
+                span.record("severity", "nominal");
+                warn!("{vehicle_id}: no anchored layers to solve");
+                return None;
+            }
+
+            match info_span!("solve")
+                .in_scope(|| matcher.solve(&mut trip))
+                .map_err(classify)
+            {
+                Ok(path) => debug!("solved path: {path:?}"),
+                Err((outcome, severity)) => {
+                    span.record("outcome", outcome);
+                    span.record("severity", severity);
+                    error!("{vehicle_id}: unable to solve trip: {outcome}");
+                    return None;
+                }
+            }
+
+            let solution = match info_span!("snapshot")
+                .in_scope(|| matcher.snapshot(&mut trip))
+                .map_err(classify)
+            {
+                Ok(solution) => solution,
+                Err((outcome, severity)) => {
+                    span.record("outcome", outcome);
+                    span.record("severity", severity);
+                    return None;
+                }
+            };
+
+            span.record("outcome", "success");
+            span.record("severity", "ok");
+
+            let path = RoutedPath::new(solution, network.as_ref());
+            Some(MatchResult {
+                path,
+                vehicle_id,
+                trip,
+            })
+        };
 
     while let Some(MatchContext {
-        history,
         vehicle_id,
+        continuation,
     }) = source.next().await
     {
-        let linestring = LineString::from(history);
-        match network.r#match(linestring.clone(), opts.clone()) {
-            Ok(path) => {
-                sink.send(MatchResult { path, vehicle_id })
-                    .await
-                    .context("could not emit result to sink")?;
-            }
-            Err(err) => {
-                error!("unable to match payload: {err} (linestring={linestring:?})");
-            }
+        let span = info_span!(
+            "match_event",
+            outcome = field::Empty,
+            severity = field::Empty,
+            continuation = field::Empty,
+        );
+
+        if let Some(result) = span.in_scope(|| attempt(vehicle_id, continuation)) {
+            sink.send(result)
+                .instrument(info_span!(parent: &span, "publish_result"))
+                .await
+                .context("could not emit result to sink")?;
         }
     }
 

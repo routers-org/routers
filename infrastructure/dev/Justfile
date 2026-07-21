@@ -13,6 +13,9 @@ bringup: repos
     helm upgrade --install kube-prometheus-stack prometheus-community/kube-prometheus-stack \
         -n {{ namespace }} --create-namespace \
         -f kube-prometheus-stack-values.yaml
+    helm upgrade --install otel-collector open-telemetry/opentelemetry-collector \
+        -n {{ namespace }} --create-namespace \
+        -f otel-collector-values.yaml
     @echo ""
     @echo "Dev stack ready. Grafana: http://grafana.{{ namespace }}.svc.cluster.local  (just dev grafana)"
 
@@ -66,9 +69,13 @@ patch: repos
     helm upgrade kube-prometheus-stack prometheus-community/kube-prometheus-stack \
         -n {{ namespace }} \
         -f kube-prometheus-stack-values.yaml
+    helm upgrade --install otel-collector open-telemetry/opentelemetry-collector \
+        -n {{ namespace }} \
+        -f otel-collector-values.yaml
     kubectl rollout restart deployment,statefulset -n {{ namespace }}
 
 teardown:
+    helm uninstall otel-collector -n {{ namespace }} --ignore-not-found
     helm uninstall kube-prometheus-stack -n {{ namespace }} --ignore-not-found
     helm uninstall valkey -n {{ namespace }} --ignore-not-found
     helm uninstall nats -n {{ namespace }} --ignore-not-found
@@ -82,4 +89,5 @@ teardown:
 repos:
     @helm repo list 2>/dev/null | grep -q '^nats\s' || helm repo add nats https://nats-io.github.io/k8s/helm/charts/
     @helm repo list 2>/dev/null | grep -q '^prometheus-community\s' || helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
-    @helm repo update nats prometheus-community >/dev/null
+    @helm repo list 2>/dev/null | grep -q '^open-telemetry\s' || helm repo add open-telemetry https://open-telemetry.github.io/opentelemetry-helm-charts
+    @helm repo update nats prometheus-community open-telemetry >/dev/null

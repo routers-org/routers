@@ -1,270 +1,176 @@
 {
   "title": "Routers Realtime",
   "uid": "routers-realtime",
-  "version": 5,
-  "refresh": "2s",
+  "version": 7,
+  "refresh": "5s",
   "time": {
     "from": "now-15m",
     "to": "now"
   },
   "timezone": "browser",
-  "tags": ["routers"],
+  "tags": [
+    "routers"
+  ],
   "panels": [
     {
       "id": 1,
-      "title": "Event Throughput (events/s)",
-      "description": "Aggregated across all orchestrator replicas.",
+      "title": "Pipeline Throughput (events/s)",
+      "description": "One line per stage, aggregated across shards. Every series is a spanmetrics call counter \u2014 gaps between lines are work queued (or dropped) between stages.",
       "type": "timeseries",
-      "gridPos": { "x": 0, "y": 0, "w": 12, "h": 8 },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      },
       "fieldConfig": {
         "defaults": {
           "unit": "reqps",
-          "custom": { "lineWidth": 2 }
+          "custom": {
+            "lineWidth": 2
+          }
         }
       },
-      "options": { "tooltip": { "mode": "multi" } },
+      "options": {
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
       "targets": [
         {
-          "expr": "sum(rate(routers_events_received_total[3s]))",
-          "legendFormat": "ingest consumed",
-          "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
+          "expr": "sum(rate(routers_calls_total{span_name=\"orchestrate\"}[15s]))",
+          "legendFormat": "\u2460 orchestrated (raw events)",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
         },
         {
-          "expr": "sum(rate(nats_varz_in_msgs[3s]))",
-          "legendFormat": "published to NATS",
-          "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
+          "expr": "sum(rate(routers_calls_total{span_name=\"match_event\"}[15s]))",
+          "legendFormat": "\u2461 matched",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
         },
         {
-          "expr": "sum(rate(routers_matches_total_success[3s])) + sum(rate(routers_matches_total_no_candidate[3s])) + sum(rate(routers_matches_total_error[3s]))",
-          "legendFormat": "matched",
-          "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
+          "expr": "sum(rate(routers_calls_total{span_name=\"commit_result\"}[15s]))",
+          "legendFormat": "\u2462 results committed",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
         }
       ],
-      "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      }
     },
     {
       "id": 2,
-      "title": "Orchestrator Processing Latency (ms)",
-      "description": "Time from ingest receipt to NATS ack, aggregated across all replicas.",
+      "title": "Resume vs Restart (events/s)",
+      "description": "Whether the matcher could continue the vehicle's prior trellis. A high restart share means the streaming handoff isn't paying off (cold vehicles, diverging history, or lost state).",
       "type": "timeseries",
-      "gridPos": { "x": 12, "y": 0, "w": 12, "h": 8 },
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      },
       "fieldConfig": {
         "defaults": {
-          "unit": "ms",
-          "custom": { "lineWidth": 2 }
+          "unit": "reqps",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 12
+          }
         }
       },
-      "options": { "tooltip": { "mode": "multi" } },
+      "options": {
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
       "targets": [
         {
-          "expr": "histogram_quantile(0.50, sum(rate(routers_total_latency_ms_bucket[3s])) by (le))",
-          "legendFormat": "p50",
-          "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
-        },
-        {
-          "expr": "histogram_quantile(0.95, sum(rate(routers_total_latency_ms_bucket[3s])) by (le))",
-          "legendFormat": "p95",
-          "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
-        },
-        {
-          "expr": "histogram_quantile(0.99, sum(rate(routers_total_latency_ms_bucket[3s])) by (le))",
-          "legendFormat": "p99",
-          "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
+          "expr": "sum by (continuation) (rate(routers_calls_total{span_name=\"match_event\"}[15s]))",
+          "legendFormat": "{{continuation}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
         }
       ],
-      "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      }
     },
     {
       "id": 3,
-      "title": "Events Received (total)",
-      "type": "stat",
-      "gridPos": { "x": 0, "y": 8, "w": 6, "h": 4 },
-      "fieldConfig": { "defaults": { "unit": "short" } },
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } },
-      "targets": [
-        {
-          "expr": "sum(routers_events_received_total)",
-          "legendFormat": "",
-          "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
-        }
-      ],
-      "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
-    },
-    {
-      "id": 4,
-      "title": "Events Published to NATS (total)",
-      "type": "stat",
-      "gridPos": { "x": 6, "y": 8, "w": 6, "h": 4 },
-      "fieldConfig": { "defaults": { "unit": "short" } },
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } },
-      "targets": [
-        {
-          "expr": "sum(routers_events_published_total)",
-          "legendFormat": "",
-          "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
-        }
-      ],
-      "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
-    },
-    {
-      "id": 5,
-      "title": "Dropped Events (received − published)",
-      "type": "stat",
-      "gridPos": { "x": 12, "y": 8, "w": 6, "h": 4 },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              { "value": null, "color": "green" },
-              { "value": 1, "color": "red" }
-            ]
-          }
-        }
-      },
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } },
-      "targets": [
-        {
-          "expr": "sum(routers_events_received_total) - sum(routers_events_published_total)",
-          "legendFormat": "",
-          "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
-        }
-      ],
-      "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
-    },
-    {
-      "id": 6,
-      "title": "Store Errors (total)",
-      "type": "stat",
-      "gridPos": { "x": 18, "y": 8, "w": 6, "h": 4 },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              { "value": null, "color": "green" },
-              { "value": 1, "color": "red" }
-            ]
-          }
-        }
-      },
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } },
-      "targets": [
-        {
-          "expr": "sum(routers_store_errors_total)",
-          "legendFormat": "",
-          "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
-        }
-      ],
-      "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
-    },
-    {
-      "id": 7,
-      "title": "Per-Event Latency Breakdown (avg ms)",
-      "description": "Where time goes per event in the orchestrator. 'Valkey warm-up' is near-zero on cache hits — it only spikes when a worker first sees a vehicle and reads its history. 'other' = total − warm-up − NATS (serialisation, geohash, history filtering).",
-      "type": "timeseries",
-      "gridPos": { "x": 0, "y": 12, "w": 24, "h": 8 },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "ms",
-          "custom": { "lineWidth": 2 }
-        }
-      },
-      "options": { "tooltip": { "mode": "multi" } },
-      "targets": [
-        {
-          "expr": "sum(rate(routers_total_latency_ms_sum[3s])) / sum(rate(routers_total_latency_ms_count[3s]))",
-          "legendFormat": "total",
-          "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
-        },
-        {
-          "expr": "sum(rate(routers_store_latency_ms_sum[3s])) / sum(rate(routers_store_latency_ms_count[3s]))",
-          "legendFormat": "valkey warm-up (cache miss only)",
-          "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
-        },
-        {
-          "expr": "sum(rate(routers_nats_latency_ms_sum[3s])) / sum(rate(routers_nats_latency_ms_count[3s]))",
-          "legendFormat": "NATS publish + ack",
-          "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
-        },
-        {
-          "expr": "sum(rate(routers_total_latency_ms_sum[3s])) / sum(rate(routers_total_latency_ms_count[3s])) - sum(rate(routers_store_latency_ms_sum[3s])) / sum(rate(routers_store_latency_ms_count[3s]))",
-          "legendFormat": "other (deser + geohash + history filter)",
-          "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
-        }
-      ],
-      "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
-    },
-    {
-      "id": 8,
-      "title": "Event Age When Received (ms)",
-      "description": "How old GPS events are by the time the orchestrator receives them. High values indicate upstream queue backup.",
-      "type": "timeseries",
-      "gridPos": { "x": 0, "y": 20, "w": 24, "h": 7 },
-      "fieldConfig": { "defaults": { "unit": "ms" } },
-      "options": { "tooltip": { "mode": "multi" } },
-      "targets": [
-        {
-          "expr": "histogram_quantile(0.50, sum(rate(routers_event_age_ms_bucket[3s])) by (le))",
-          "legendFormat": "p50",
-          "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
-        },
-        {
-          "expr": "histogram_quantile(0.95, sum(rate(routers_event_age_ms_bucket[3s])) by (le))",
-          "legendFormat": "p95",
-          "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
-        }
-      ],
-      "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
-    },
-    {
-      "id": 9,
       "title": "Match Outcomes (total)",
+      "description": "success = published result. unanchored / disconnected / no_anchor are nominal \u2014 the trace itself is unmatchable, not a pipeline fault. internal is ours.",
       "type": "stat",
-      "gridPos": { "x": 0, "y": 27, "w": 8, "h": 5 },
+      "gridPos": {
+        "x": 0,
+        "y": 8,
+        "w": 8,
+        "h": 5
+      },
       "options": {
-        "reduceOptions": { "calcs": ["lastNotNull"] },
-        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
         "colorMode": "background"
       },
       "fieldConfig": {
         "defaults": {
-          "mappings": [],
           "thresholds": {
             "mode": "absolute",
-            "steps": [{ "color": "green", "value": null }]
+            "steps": [
+              {
+                "value": null,
+                "color": "green"
+              }
+            ]
           }
         }
       },
       "targets": [
         {
-          "expr": "sum(routers_matches_total_success)",
-          "legendFormat": "success",
-          "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
-        },
-        {
-          "expr": "sum(routers_matches_total_no_candidate)",
-          "legendFormat": "no_candidate",
-          "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
-        },
-        {
-          "expr": "sum(routers_matches_total_error)",
-          "legendFormat": "error",
-          "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
+          "expr": "sum by (outcome) (routers_calls_total{span_name=\"match_event\"})",
+          "legendFormat": "{{outcome}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
         }
       ],
-      "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      }
     },
     {
-      "id": 10,
-      "title": "Match Success Rate",
+      "id": 4,
+      "title": "Success Rate",
+      "description": "Share of match attempts that published a result. Nominal failures count against this but not against health \u2014 see the fatal panel for that.",
       "type": "stat",
-      "gridPos": { "x": 8, "y": 27, "w": 8, "h": 5 },
+      "gridPos": {
+        "x": 8,
+        "y": 8,
+        "w": 8,
+        "h": 5
+      },
       "options": {
-        "reduceOptions": { "calcs": ["lastNotNull"] },
-        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
         "colorMode": "background"
       },
       "fieldConfig": {
@@ -273,182 +179,498 @@
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "red", "value": null },
-              { "color": "yellow", "value": 0.8 },
-              { "color": "green", "value": 0.95 }
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 0.8
+              },
+              {
+                "color": "green",
+                "value": 0.95
+              }
             ]
           }
         }
       },
       "targets": [
         {
-          "expr": "sum(routers_matches_total_success) / (sum(routers_matches_total_success) + sum(routers_matches_total_no_candidate) + sum(routers_matches_total_error))",
-          "legendFormat": "success rate",
-          "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
+          "expr": "sum(routers_calls_total{span_name=\"match_event\",severity=\"ok\"}) / sum(routers_calls_total{span_name=\"match_event\"})",
+          "legendFormat": "success",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
         }
       ],
-      "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      }
     },
     {
-      "id": 11,
-      "title": "HMM Solve Time (ms)",
-      "type": "timeseries",
-      "gridPos": { "x": 16, "y": 27, "w": 8, "h": 5 },
-      "fieldConfig": { "defaults": { "unit": "ms" } },
-      "targets": [
-        {
-          "expr": "sum(rate(routers_solve_latency_ms_sum[30s])) / sum(rate(routers_solve_latency_ms_count[30s]))",
-          "legendFormat": "avg solve ms",
-          "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
-        }
-      ],
-      "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
-    },
-    {
-      "id": 12,
-      "title": "Match End-to-End Latency (ms)",
-      "description": "Time from GPS event emission to matched result — includes ingest queue wait, orchestrator processing, NATS transit, and HMM solve.",
-      "type": "timeseries",
-      "gridPos": { "x": 0, "y": 32, "w": 24, "h": 8 },
-      "fieldConfig": { "defaults": { "unit": "ms" } },
-      "options": { "tooltip": { "mode": "multi" } },
-      "targets": [
-        {
-          "expr": "sum(rate(routers_match_latency_ms_sum[30s])) / sum(rate(routers_match_latency_ms_count[30s]))",
-          "legendFormat": "avg",
-          "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
-        },
-        {
-          "expr": "histogram_quantile(0.50, sum(rate(routers_match_latency_ms_bucket[30s])) by (le))",
-          "legendFormat": "p50",
-          "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
-        },
-        {
-          "expr": "histogram_quantile(0.95, sum(rate(routers_match_latency_ms_bucket[30s])) by (le))",
-          "legendFormat": "p95",
-          "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
-        },
-        {
-          "expr": "histogram_quantile(0.99, sum(rate(routers_match_latency_ms_bucket[30s])) by (le))",
-          "legendFormat": "p99",
-          "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
-        }
-      ],
-      "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
-    },
-    {
-      "id": 100,
-      "title": "Pipeline Lag",
-      "type": "row",
-      "gridPos": { "x": 0, "y": 40, "w": 24, "h": 1 },
-      "collapsed": false
-    },
-    {
-      "id": 13,
-      "title": "Pipeline Stage Rates (events/s)",
-      "description": "Throughput at each stage aggregated across all replicas. Gaps between lines reveal where the pipeline is falling behind — the wider the gap, the deeper the queue at that stage.",
-      "type": "timeseries",
-      "gridPos": { "x": 0, "y": 41, "w": 24, "h": 8 },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "reqps",
-          "custom": { "lineWidth": 2 }
-        }
+      "id": 5,
+      "title": "Fatal Failures",
+      "description": "Errors that are the pipeline's fault (trellis/solver internals). Anything above zero deserves a look.",
+      "type": "stat",
+      "gridPos": {
+        "x": 16,
+        "y": 8,
+        "w": 8,
+        "h": 5
       },
-      "options": { "tooltip": { "mode": "multi" } },
-      "targets": [
-        {
-          "expr": "sum(rate(routers_events_received_total[3s]))",
-          "legendFormat": "① Ingest → Orchestrator (consumed)",
-          "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
         },
-        {
-          "expr": "sum(rate(routers_events_published_total[3s]))",
-          "legendFormat": "② Orchestrator → NATS (published)",
-          "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
-        },
-        {
-          "expr": "sum(rate(routers_matches_total_success[3s])) + sum(rate(routers_matches_total_no_candidate[3s])) + sum(rate(routers_matches_total_error[3s]))",
-          "legendFormat": "③ Matcher output (matched/s)",
-          "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
-        }
-      ],
-      "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
-    },
-    {
-      "id": 14,
-      "title": "Stage Backlogs (accumulated events)",
-      "description": "Orchestrator in-flight = received − published (events actively being processed). NATS backlog = published − matched (events sitting in JetStream waiting for a matcher). Both should stay near zero under a healthy load.",
-      "type": "timeseries",
-      "gridPos": { "x": 0, "y": 49, "w": 24, "h": 7 },
+        "colorMode": "background"
+      },
       "fieldConfig": {
         "defaults": {
           "unit": "short",
-          "min": 0,
-          "custom": { "lineWidth": 2, "fillOpacity": 12 }
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": null,
+                "color": "green"
+              },
+              {
+                "value": 1,
+                "color": "red"
+              }
+            ]
+          }
         }
       },
-      "options": { "tooltip": { "mode": "multi" } },
       "targets": [
         {
-          "expr": "sum(routers_events_received_total) - sum(routers_events_published_total)",
-          "legendFormat": "Orchestrator in-flight (received − published)",
-          "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
-        },
-        {
-          "expr": "sum(routers_events_published_total) - (sum(routers_matches_total_success) + sum(routers_matches_total_no_candidate) + sum(routers_matches_total_error))",
-          "legendFormat": "NATS backlog (published − matched)",
-          "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
+          "expr": "sum(routers_calls_total{span_name=\"match_event\",severity=\"fatal\"}) or vector(0)",
+          "legendFormat": "fatal",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
         }
       ],
-      "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      }
     },
     {
-      "id": 15,
-      "title": "Stage Latency Breakdown (avg ms)",
-      "description": "Time spent at each stage per event. 'Matcher queue wait' is the gap between NATS delivery and the start of the HMM solve — directly shows matcher saturation. 'Valkey warm-up' is near-zero in steady state (in-memory hot path); it only rises when workers first encounter a vehicle after a restart.",
+      "id": 100,
+      "title": "Latency",
+      "type": "row",
+      "gridPos": {
+        "x": 0,
+        "y": 13,
+        "w": 24,
+        "h": 1
+      },
+      "collapsed": false
+    },
+    {
+      "id": 6,
+      "title": "Stage Latency (avg ms per event)",
+      "description": "Where an event's wall-clock goes, one line per span. queue_wait is the time a message sat in NATS between services (send-stamp \u2192 delivery); everything else is measured in-process.",
       "type": "timeseries",
-      "gridPos": { "x": 0, "y": 56, "w": 24, "h": 8 },
+      "gridPos": {
+        "x": 0,
+        "y": 14,
+        "w": 24,
+        "h": 8
+      },
       "fieldConfig": {
         "defaults": {
           "unit": "ms",
-          "custom": { "lineWidth": 2 }
+          "custom": {
+            "lineWidth": 2
+          }
         }
       },
-      "options": { "tooltip": { "mode": "multi" } },
+      "options": {
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
       "targets": [
         {
-          "expr": "sum(rate(routers_total_latency_ms_sum[3s])) / sum(rate(routers_total_latency_ms_count[3s]))",
-          "legendFormat": "Orchestrator total (ingest recv → NATS ack)",
-          "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
-        },
-        {
-          "expr": "sum(rate(routers_store_latency_ms_sum[3s])) / sum(rate(routers_store_latency_ms_count[3s]))",
-          "legendFormat": "  └ Valkey warm-up (cache miss)",
-          "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
-        },
-        {
-          "expr": "sum(rate(routers_nats_latency_ms_sum[3s])) / sum(rate(routers_nats_latency_ms_count[3s]))",
-          "legendFormat": "  └ NATS publish + ack",
-          "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
-        },
-        {
-          "expr": "sum(rate(routers_match_latency_ms_sum[30s])) / sum(rate(routers_match_latency_ms_count[30s])) - sum(rate(routers_solve_latency_ms_sum[30s])) / sum(rate(routers_solve_latency_ms_count[30s]))",
-          "legendFormat": "Matcher queue wait (sitting in NATS before pickup)",
-          "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
-        },
-        {
-          "expr": "sum(rate(routers_solve_latency_ms_sum[30s])) / sum(rate(routers_solve_latency_ms_count[30s]))",
-          "legendFormat": "  └ HMM solve",
-          "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
-        },
-        {
-          "expr": "sum(rate(routers_match_latency_ms_sum[30s])) / sum(rate(routers_match_latency_ms_count[30s]))",
-          "legendFormat": "Matcher total (NATS delivery → result published)",
-          "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
+          "expr": "sum by (span_name) (rate(routers_duration_milliseconds_sum{span_name=~\"orchestrate|context_fetch|reconcile|publish_context|queue_wait|match_event|push|solve|snapshot|publish_result\"}[15s])) / sum by (span_name) (rate(routers_duration_milliseconds_count[15s]))",
+          "legendFormat": "{{span_name}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
         }
       ],
-      "interval": "1s", "datasource": { "type": "prometheus", "uid": "prometheus" }
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      }
+    },
+    {
+      "id": 13,
+      "title": "End-to-End Wait (ms) \u2014 raw event sent \u2192 match published",
+      "description": "Walltime from replay publishing a raw event to the matcher publishing its result, measured purely from message wire-stamps and correlated per vehicle in the orchestrator. The headline pipeline number.",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 0,
+        "y": 22,
+        "w": 24,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "lineWidth": 2
+          }
+        }
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(routers_duration_milliseconds_sum{span_name=\"event_to_match\"}[15s])) / sum(rate(routers_duration_milliseconds_count{span_name=\"event_to_match\"}[15s]))",
+          "legendFormat": "avg",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(routers_duration_milliseconds_bucket{span_name=\"event_to_match\"}[15s])))",
+          "legendFormat": "p50",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(routers_duration_milliseconds_bucket{span_name=\"event_to_match\"}[15s])))",
+          "legendFormat": "p95",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(routers_duration_milliseconds_bucket{span_name=\"event_to_match\"}[15s])))",
+          "legendFormat": "p99",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
+      ],
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      }
+    },
+    {
+      "id": 7,
+      "title": "Queue Wait (ms)",
+      "description": "Time messages spend in NATS before pickup, per subject family. Rising percentiles mean a consumer is saturating.",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 0,
+        "y": 30,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "lineWidth": 2
+          }
+        }
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(routers_duration_milliseconds_bucket{span_name=\"queue_wait\"}[15s])))",
+          "legendFormat": "p50",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(routers_duration_milliseconds_bucket{span_name=\"queue_wait\"}[15s])))",
+          "legendFormat": "p95",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(routers_duration_milliseconds_bucket{span_name=\"queue_wait\"}[15s])))",
+          "legendFormat": "p99",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
+      ],
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      }
+    },
+    {
+      "id": 8,
+      "title": "Match Latency (ms)",
+      "description": "The matcher's whole per-event span: reconcile handoff \u2192 push \u2192 solve \u2192 snapshot \u2192 publish. Split by resume/restart to see what the trellis handoff buys.",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 12,
+        "y": 30,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "lineWidth": 2
+          }
+        }
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum by (continuation) (rate(routers_duration_milliseconds_sum{span_name=\"match_event\"}[15s])) / sum by (continuation) (rate(routers_duration_milliseconds_count{span_name=\"match_event\"}[15s]))",
+          "legendFormat": "avg ({{continuation}})",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(routers_duration_milliseconds_bucket{span_name=\"match_event\"}[15s])))",
+          "legendFormat": "p95 (all)",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
+      ],
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      }
+    },
+    {
+      "id": 101,
+      "title": "Backlog & Drops",
+      "type": "row",
+      "gridPos": {
+        "x": 0,
+        "y": 38,
+        "w": 24,
+        "h": 1
+      },
+      "collapsed": false
+    },
+    {
+      "id": 9,
+      "title": "Stage Backlogs (accumulated events)",
+      "description": "Counter gaps between stages: contexts published but not yet matched, and results published but not yet committed. Healthy load keeps both near zero; a growing line is a saturated consumer.",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 0,
+        "y": 39,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 12
+          }
+        }
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum(routers_calls_total{span_name=\"orchestrate\"}) - sum(routers_calls_total{span_name=\"match_event\"})",
+          "legendFormat": "contexts awaiting matcher",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "expr": "sum(routers_calls_total{span_name=\"publish_result\"}) - sum(routers_calls_total{span_name=\"commit_result\"})",
+          "legendFormat": "results awaiting commit",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
+      ],
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      }
+    },
+    {
+      "id": 10,
+      "title": "Drops & Cuts (per second)",
+      "description": "point_drop: individual GPS points the matcher rejected (unanchored = off-network, nominal). history_cut: a gap/teleport discarded committed history. bus_drop: undecodable NATS messages.",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 12,
+        "y": 39,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 12
+          }
+        }
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum by (span_name, reason) (rate(routers_calls_total{span_name=~\"point_drop|history_cut|bus_drop\"}[15s]))",
+          "legendFormat": "{{span_name}} ({{reason}})",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
+      ],
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      }
+    },
+    {
+      "id": 11,
+      "title": "NATS Server Throughput (msgs/s)",
+      "description": "Ground truth from the NATS exporter, independent of application spans.",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 0,
+        "y": 47,
+        "w": 12,
+        "h": 7
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {
+            "lineWidth": 2
+          }
+        }
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(nats_varz_in_msgs[15s]))",
+          "legendFormat": "in",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "expr": "sum(rate(nats_varz_out_msgs[15s]))",
+          "legendFormat": "out",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
+      ],
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      }
+    },
+    {
+      "id": 12,
+      "title": "Collector Health (spans/s)",
+      "description": "The telemetry pipeline's own pulse: spans accepted vs refused by the otel-collector. If the routers series go quiet, look here first.",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 12,
+        "y": 47,
+        "w": 12,
+        "h": 7
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {
+            "lineWidth": 2
+          }
+        }
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(otelcol_receiver_accepted_spans_total[15s]))",
+          "legendFormat": "accepted",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "expr": "sum(rate(otelcol_receiver_refused_spans_total[15s])) or vector(0)",
+          "legendFormat": "refused",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
+      ],
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      }
     }
   ],
   "schemaVersion": 36
