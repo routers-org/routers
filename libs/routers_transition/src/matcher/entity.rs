@@ -148,10 +148,6 @@ where
     /// A point with no road candidate within the generator's search radius is
     /// rejected ([`UnanchoredError`]) and leaves the trip unchanged, so the
     /// caller may drop or retry the point.
-    #[cfg_attr(
-        feature = "tracing",
-        tracing::instrument(level = "debug", name = "matcher_push", skip_all)
-    )]
     pub fn push(&self, trip: &mut Trip<E>, origin: Point) -> Result<LayerId, MatchError> {
         let layer = trip.next_id();
         let candidates = self.generator.candidates(&origin, layer);
@@ -173,10 +169,6 @@ where
     ///
     /// Any point with no candidate rejects the whole batch ([`UnanchoredError`]
     /// reporting *every* such point) and leaves the trip unchanged.
-    #[cfg_attr(
-        feature = "tracing",
-        tracing::instrument(name = "matcher_extend", skip_all, fields(points = points.len()))
-    )]
     pub fn extend(&self, trip: &mut Trip<E>, points: &[Point]) -> Result<(), MatchError> {
         let first_layer = trip.next_id();
         let per_layer = self.generator.generate(points, first_layer);
@@ -206,10 +198,6 @@ where
     ///
     /// Already-resolved boundaries are never recomputed, so re-solving after an
     /// append weighs only the new boundaries (plus a µs-scale full DP pass).
-    #[cfg_attr(
-        feature = "tracing",
-        tracing::instrument(name = "matcher_solve", skip_all, fields(layers = trip.layers()))
-    )]
     pub fn solve<'b>(&self, trip: &'b mut Trip<E>) -> Result<&'b Path, MatchError> {
         let mut trellis = match trip.take_state() {
             TripState::Empty => return Err(TrellisError::Empty.into()),
@@ -265,10 +253,6 @@ where
     /// The trip is not consumed: the snapshot borrows its candidates, so the
     /// caller may keep streaming once the snapshot is dropped (or detached
     /// with [`CollapsedPath::into_owned`]).
-    #[cfg_attr(
-        feature = "tracing",
-        tracing::instrument(name = "matcher_snapshot", skip_all)
-    )]
     pub fn snapshot<'t>(&self, trip: &'t mut Trip<E>) -> Result<CollapsedPath<'t, E>, MatchError> {
         let Collapse {
             cost,

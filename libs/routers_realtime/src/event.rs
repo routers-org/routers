@@ -11,16 +11,8 @@ use crate::store::Storable;
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(bound(serialize = "E: Serialize", deserialize = "E: Deserialize<'de>"))]
 pub struct MatchContext<E: Entry> {
-    pub vehicle_id: String,
-
-    /// How the matcher should proceed, as reconciled by the orchestrator:
-    /// [`Resume`](Continuation::Resume) carries the trellis from the prior
-    /// solve plus the points it has not seen; [`Restart`](Continuation::Restart)
-    /// means no prior solve stands (first point, or a diverged history) and
-    /// the window is matched from scratch. The orchestrator can trim and
-    /// compare but never generate a layer — pushing points stays with the
-    /// matcher.
     pub continuation: Continuation<E>,
+    pub vehicle_id: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

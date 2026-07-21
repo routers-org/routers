@@ -109,16 +109,7 @@ async fn main() -> anyhow::Result<()> {
 
     let gap = chrono::Duration::from_std(args.gap).context("gap out of range")?;
 
-    // Each vehicle's trellis from its prior solve, as committed back by the
-    // matcher's results. Derived state, not a source of truth: losing it
-    // (restart, first sight) just means the next context says `Restart` and
-    // the matcher rebuilds from the committed history.
     let mut trips: HashMap<String, Trip<E>> = HashMap::new();
-
-    // When each vehicle's newest raw event was published (its wire stamp),
-    // so the matching result can be measured against it: the `event_to_match`
-    // span below is the pipeline's end-to-end walltime, replay's publish →
-    // the matcher's publish, taken entirely from message stamps.
     let mut origins: HashMap<String, web_time::SystemTime> = HashMap::new();
 
     while let Some(inbound) = source.next().await {
@@ -127,15 +118,12 @@ async fn main() -> anyhow::Result<()> {
                 if let Some(sent_at) = routers_realtime::bus::last_sent_at() {
                     origins.insert(payload.vehicle_id.clone(), sent_at);
                 }
+
                 payload
             }
-            // Commit-action for a completed solve: the returned trip becomes
-            // the state the vehicle's next context resumes from.
             Inbound::Result(result) => {
                 let _span = info_span!("commit_result", layers = result.trip.layers()).entered();
 
-                // The result's own stamp is when the matcher published it; the
-                // origin is when replay published the event it answers.
                 if let (Some(origin), Some(matched_at)) = (
                     origins.remove(&result.vehicle_id),
                     routers_realtime::bus::last_sent_at(),
@@ -148,9 +136,6 @@ async fn main() -> anyhow::Result<()> {
             }
         };
 
-        // One span per event; the collector aggregates these into the
-        // orchestrator's throughput and latency series. `continuation` is
-        // recorded once reconciliation decides, and becomes a metric label.
         let span = info_span!(
             "orchestrate",
             continuation = field::Empty,
@@ -165,9 +150,6 @@ async fn main() -> anyhow::Result<()> {
                 .await
                 .context("could not get entries from redis store")?;
 
-            // Normalise to newest-first regardless of the datasource's return
-            // order: the cutoff below walks back in time from the current event,
-            // discarding everything beyond the first gap or teleport.
             entries.sort_by_key(|event| std::cmp::Reverse(event.timestamp));
             let fetched = entries.len();
 
@@ -191,16 +173,11 @@ async fn main() -> anyhow::Result<()> {
                 )
                 .collect::<Vec<_>>();
 
-            // A cutoff means a gap or teleport discarded committed history —
-            // a marker span makes the occurrences countable.
             let cut = fetched - context.len();
             if cut > 0 {
                 info_span!("history_cut", reason = "gap_or_teleport").in_scope(|| {});
             }
 
-            // The matcher solves a directed trajectory, so it must receive the
-            // points in chronological order. The current payload may already be
-            // archived, so dedup by timestamp after sorting.
             let mut history: Vec<RawEvent> =
                 std::iter::once(payload.as_event()).chain(context).collect();
             history.sort_by_key(|event| event.timestamp);
@@ -211,11 +188,6 @@ async fn main() -> anyhow::Result<()> {
                 .map(|event| event.point)
                 .collect::<Vec<Point>>();
 
-            // Reconcile the prior solve against the committed window: pure data
-            // work (trim and compare — never generating a layer), so it belongs
-            // here rather than on the matcher's hot path. The trip is cloned,
-            // not taken: a second event racing the first result still resumes
-            // from the same state, just with one more fresh point.
             let continuation = info_span!("reconcile").in_scope(|| {
                 Continuation::reconcile(trips.get(&payload.vehicle_id).cloned(), &points)
             });
