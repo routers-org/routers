@@ -6619,6 +6619,7 @@ dependencies = [
  "routers_schema",
  "routers_transition",
  "routers_tz",
+ "time-tz",
  "tokio",
  "tracing",
  "tracing-opentelemetry",
