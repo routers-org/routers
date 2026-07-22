@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.3] - 2026-07-22
+
+### ⚙️ Miscellaneous Tasks
+
+- Updated the following local packages: routers_rpc
+
+
+
 ## [0.3.2] - 2026-07-22
 
 ### ⚙️ Miscellaneous Tasks
