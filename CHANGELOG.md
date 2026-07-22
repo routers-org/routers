@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.2] - 2026-07-22
+
+### ⚙️ Miscellaneous Tasks
+
+- Updated the following local packages: routers_shard, routers_shard, routers_rpc, routers_realtime, routers_transition, routers_transition
+
+
+
 ## [0.3.0] - 2026-07-17
 
 ### 🚀 Features
