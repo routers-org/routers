@@ -2,7 +2,6 @@
 //!
 //! Represents a unified network composed of multiple shards, based on
 //! a particular sharding strategy and cell window.
-//!
 
 mod network;
 
@@ -10,10 +9,9 @@ use core::hash::BuildHasherDefault;
 use std::sync::Arc;
 
 use petgraph::prelude::DiGraphMap;
-use rstar::RTree;
-use rustc_hash::{FxHashMap, FxHashSet, FxHasher};
+use rustc_hash::FxHasher;
 
-use routers_network::{DirectionAwareEdgeId, Entry, Metadata, Node, edge::Weight};
+use routers_network::{DirectionAwareEdgeId, Entry, Metadata, edge::Weight};
 
 use crate::network::ShardedNetwork;
 use crate::strategy::ShardId;
@@ -28,15 +26,7 @@ where
     S: ShardId,
 {
     shards: Vec<Arc<ShardedNetwork<E, M, S>>>,
-
     graph: GraphStructure<E>,
-    hash: FxHashMap<E, Node<E>>,
-
-    /// Spatial index over all unique nodes across all shards.
-    index: RTree<Node<E>>,
-
-    /// Spatial index over unique edges, in all shards.
-    index_edge: RTree<crate::network::EdgeRef<E>>,
 }
 
 impl<E, M, S> MultiShardNetwork<E, M, S>
@@ -47,17 +37,11 @@ where
 {
     pub fn new(shards: Vec<Arc<ShardedNetwork<E, M, S>>>) -> Self {
         let mut graph: GraphStructure<E> = GraphStructure::new();
-        let mut hash: FxHashMap<E, Node<E>> = FxHashMap::default();
-
-        let mut nodes_seen: FxHashSet<E> = FxHashSet::default();
-        let mut nodes: Vec<Node<E>> = Vec::new();
 
         for shard in &shards {
-            for (id, node) in &shard.hash {
-                if nodes_seen.insert(*id) {
-                    nodes.push(*node);
-                    hash.insert(*id, *node);
-                }
+            // Nodes first so isolated nodes (no incident edges) still count.
+            for node in shard.graph.nodes() {
+                graph.add_node(node);
             }
 
             for (src, dst, &(weight, edge_id)) in shard.graph.all_edges() {
@@ -65,24 +49,7 @@ where
             }
         }
 
-        let edges: Vec<crate::network::EdgeRef<E>> = graph
-            .all_edges()
-            .filter_map(|(s, t, _)| {
-                let src_pos = hash.get(&s)?.position;
-                let tgt_pos = hash.get(&t)?.position;
-                Some(crate::network::EdgeRef::new(s, t, src_pos, tgt_pos))
-            })
-            .collect();
-        let (index, index_edge) =
-            rayon::join(|| RTree::bulk_load(nodes), || RTree::bulk_load(edges));
-
-        Self {
-            shards,
-            graph,
-            hash,
-            index,
-            index_edge,
-        }
+        Self { shards, graph }
     }
 
     /// Number of shards composed into this network.
@@ -91,7 +58,7 @@ where
     }
 
     pub fn num_nodes(&self) -> usize {
-        self.hash.len()
+        self.graph.node_count()
     }
 
     pub fn num_edges(&self) -> usize {

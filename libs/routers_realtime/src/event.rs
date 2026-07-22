@@ -1,14 +1,17 @@
+use chrono::{DateTime, Utc};
 use geo::Point;
 use routers_network::{Entry, Metadata};
 use routers_shard::{Geohash, GeohashStrategy, ShardingStrategy};
 use routers_transition::candidate::RoutedPath;
+use routers_transition::matcher::{Continuation, Trip};
 use serde::{Deserialize, Serialize};
 
 use crate::store::Storable;
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct MatchContext {
-    pub history: Vec<Point>,
+#[serde(bound(serialize = "E: Serialize", deserialize = "E: Deserialize<'de>"))]
+pub struct MatchContext<E: Entry> {
+    pub continuation: Continuation<E>,
     pub vehicle_id: String,
 }
 
@@ -16,6 +19,7 @@ pub struct MatchContext {
 pub struct MatchResult<E: Entry, M: Metadata> {
     pub path: RoutedPath<E, M>,
     pub vehicle_id: String,
+    pub trip: Trip<E>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -24,7 +28,11 @@ pub struct Payload {
     pub vehicle_id: String,
 
     pub provider: String,
-    pub event_ms: u64,
+
+    /// When the observation was made. Serialized as microseconds since the
+    /// Unix epoch on the wire.
+    #[serde(with = "chrono::serde::ts_microseconds")]
+    pub timestamp: DateTime<Utc>,
 
     pub point: Point,
 }
@@ -34,7 +42,7 @@ impl Payload {
         RawEvent {
             vehicle_id: self.vehicle_id.clone(),
             point: self.point,
-            event_ms: self.event_ms,
+            timestamp: self.timestamp,
         }
     }
 }
@@ -43,7 +51,11 @@ impl Payload {
 pub struct RawEvent {
     pub vehicle_id: String,
     pub point: Point,
-    pub event_ms: u64,
+
+    /// When the observation was made. Serialized as microseconds since the
+    /// Unix epoch on the wire.
+    #[serde(with = "chrono::serde::ts_microseconds")]
+    pub timestamp: DateTime<Utc>,
 }
 
 impl Storable for RawEvent {

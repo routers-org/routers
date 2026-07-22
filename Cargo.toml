@@ -27,16 +27,16 @@ routers_viewer = { path = "libs/routers_viewer" }
 schema = { path = "schema", package = "routers_schema", version = "0.1.1" }
 routers_codec = { path = "libs/routers_codec", version = "0.1.7" }
 routers_geo = { path = "libs/routers_geo", version = "0.1.4" }
-routers_rpc = { path = "libs/routers_rpc", version = "0.1.4" }
+routers_rpc = { path = "libs/routers_rpc", version = "0.1.5" }
 routers_tiles = { path = "libs/routers_tiles", version = "0.1.3" }
 routers_network = { path = "libs/routers_network", version = "0.1.5" }
-routers_shard = { path = "libs/routers_shard", version = "0.1.1" }
-routers_realtime = { path = "libs/routers_realtime", version = "0.2.0" }
+routers_shard = { path = "libs/routers_shard", version = "0.1.2" }
+routers_realtime = { path = "libs/routers_realtime", version = "0.3.0" }
 routers_tz = { path = "libs/routers_tz", version = "0.1.2" }
 routers_tz_types = { path = "libs/routers_tz_types", version = "0.1.0" }
 routers_trellis = { path = "libs/routers_trellis", version = "0.2.0" }
-routers_transition = { path = "libs/routers_transition", version = "0.1.1" }
-routers = { path = ".", version = "0.3.0" }
+routers_transition = { path = "libs/routers_transition", version = "0.2.0" }
+routers = { path = ".", version = "0.3.1" }
 
 # Optimisation Crates
 rayon = "1.10.0"
@@ -91,8 +91,19 @@ tracing-opentelemetry = { version = "0.30.0" }
 opentelemetry = { version = "0.29.1" }
 opentelemetry_sdk = { version = "0.29.0", features = [
     "rt-tokio",
+    # Batch exports as spawned tokio tasks (fire & forget) instead of a
+    # dedicated thread that blocks on each send.
+    "experimental_trace_batch_span_processor_with_async_runtime",
 ] }
-opentelemetry-otlp = { version = "0.29.0", features = ["tls", "trace"] }
+opentelemetry-otlp = { version = "0.29.0", default-features = false, features = [
+    "http-proto",
+    # Async reqwest — the default `reqwest-blocking-client` serialises
+    # exports behind blocking sends.
+    "reqwest-client",
+    "trace",
+    "tls",
+    "internal-logs",
+] }
 opentelemetry-stdout = { version = "0.29.0", features = ["trace", "logs", "metrics"] }
 
 # Benchmarking
@@ -145,7 +156,7 @@ opt-level = 3
 name = "routers"
 description = "Rust-Based Routing Tooling for System-Agnostic Maps."
 readme = "README.md"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2024"
 license = "GPL-3.0-or-later"
 include = ["src/**/*", "readme.md"]

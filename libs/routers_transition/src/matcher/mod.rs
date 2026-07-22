@@ -7,8 +7,10 @@
 //! any matcher configured the same way. Start at [`Matcher`] for the full
 //! batch and streaming walkthroughs.
 
+mod continuation;
 mod entity;
 mod trip;
 
+pub use continuation::Continuation;
 pub use entity::Matcher;
-pub use trip::Trip;
+pub use trip::{Trip, TripState};

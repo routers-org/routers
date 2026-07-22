@@ -1,0 +1,103 @@
+# The devstack's span → metric bridge. The realtime binaries export OTLP
+# spans here; the spanmetrics connector aggregates every span into duration
+# histograms and call counters, which Prometheus scrapes from :8889. The
+# services therefore hold no metric registry at all — a span is the only
+# telemetry primitive they know.
+#
+# Traces are aggregated, not stored: add a Tempo exporter alongside
+# spanmetrics if trace browsing is ever wanted.
+
+mode: deployment
+replicaCount: 1
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    memory: 512Mi
+
+# spanmetrics lives in the contrib distribution.
+image:
+  repository: otel/opentelemetry-collector-contrib
+command:
+  name: otelcol-contrib
+
+ports:
+  # The spanmetrics output, scraped by Prometheus.
+  spanmetrics:
+    enabled: true
+    containerPort: 8889
+    servicePort: 8889
+    protocol: TCP
+  # The collector's own health series (accepted/refused/dropped spans) —
+  # the meta-signal when the routers series go quiet.
+  metrics:
+    enabled: true
+  # Only OTLP is spoken here.
+  jaeger-compact:
+    enabled: false
+  jaeger-thrift:
+    enabled: false
+  jaeger-grpc:
+    enabled: false
+  zipkin:
+    enabled: false
+
+# kube-prometheus-stack discovers ServiceMonitors in any namespace. Scrape
+# the spanmetrics port alongside the collector's own health metrics.
+serviceMonitor:
+  enabled: true
+  metricsEndpoints:
+    - port: metrics
+    - port: spanmetrics
+      interval: 1s
+
+config:
+  receivers:
+    otlp:
+      protocols:
+        grpc:
+          endpoint: 0.0.0.0:4317
+        http:
+          endpoint: 0.0.0.0:4318
+
+  connectors:
+    spanmetrics:
+      namespace: routers
+      # Keep the dev dashboard snappy; the default flush is a leisurely 60s.
+      metrics_flush_interval: 5s
+      histogram:
+        unit: ms
+        explicit:
+          # The sub-second buckets resolve compute spans; the tail out to
+          # 120s exists for the wait spans (`queue_wait`, `worker_wait`,
+          # `event_to_match`) — a backlogged run parks messages for tens of
+          # seconds, and a 5s cap censors exactly the quantiles that prove it.
+          buckets:
+            [
+              1ms, 2ms, 5ms, 10ms, 25ms, 50ms, 100ms, 250ms, 500ms,
+              1s, 2500ms, 5s, 10s, 30s, 60s, 120s,
+            ]
+      # Span attributes promoted to metric labels. Everything else on a span
+      # stays out of Prometheus, so attribute freely in the services.
+      dimensions:
+        - name: outcome
+        - name: severity
+        - name: reason
+        - name: continuation
+        - name: subject
+
+  exporters:
+    prometheus:
+      endpoint: 0.0.0.0:8889
+
+  service:
+    pipelines:
+      traces:
+        receivers: [otlp]
+        exporters: [spanmetrics]
+      metrics:
+        receivers: [spanmetrics]
+        exporters: [prometheus]
+      logs: null

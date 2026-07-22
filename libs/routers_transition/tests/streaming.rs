@@ -9,7 +9,7 @@ use routers_transition::costing::{CostingStrategies, DefaultEmissionCost, Defaul
 use routers_transition::layer::generation::StandardGenerator;
 use routers_transition::matcher::Trip;
 use routers_transition::weigh::AllCompute;
-use routers_transition::{MatchError, Matcher};
+use routers_transition::{Continuation, MatchError, Matcher};
 
 type Costing = CostingStrategies<DefaultEmissionCost, DefaultTransitionCost, MockEntryId>;
 
@@ -149,6 +149,131 @@ fn repeated_matches_reproduce_geometry() {
         .expect("match must succeed");
 
     assert_same_match(&a, &b);
+}
+
+/// Trimming a trip to its last `n` layers must leave a consistent,
+/// re-solvable state whose solution equals a fresh batch match of the same
+/// suffix — candidates re-stamped, trellis cut, resolved boundaries kept.
+#[test]
+fn tail_matches_batch_over_suffix() {
+    let net = bent_road();
+    let costing = Costing::default();
+    let generator = || StandardGenerator::new(&net, &costing.emission);
+    let m = Matcher::new(&net, &costing, generator(), AllCompute::default(), &());
+
+    let points = trajectory().into_points();
+
+    let mut trip = m.begin();
+    for &point in &points {
+        m.push(&mut trip, point).expect("push must anchor");
+    }
+    m.solve(&mut trip).expect("full trip must solve");
+
+    trip.tail(3);
+    assert_eq!(trip.layers(), 3, "trip must hold exactly the suffix");
+    assert_eq!(trip.points(), &points[3..], "origins must be the suffix");
+    assert!(!trip.is_solved(), "a cut certificate must reopen");
+
+    let streamed = m.snapshot(&mut trip).expect("trimmed trip must re-solve");
+    let batch = m
+        .r#match(LineString::from(points[3..].to_vec()))
+        .expect("batch match must succeed");
+    assert_same_match(&streamed, &batch);
+}
+
+/// `tail` is windowing, not surgery: asking for at least the current size
+/// changes nothing, and asking for zero empties the trip.
+#[test]
+fn tail_bounds_are_noop_and_empty() {
+    let net = bent_road();
+    let costing = Costing::default();
+    let generator = StandardGenerator::new(&net, &costing.emission);
+    let m = Matcher::new(&net, &costing, generator, AllCompute::default(), &());
+
+    let mut trip = m.begin();
+    for point in trajectory().into_points() {
+        m.push(&mut trip, point).expect("push must anchor");
+    }
+    m.solve(&mut trip).expect("trip must solve");
+
+    trip.tail(usize::MAX);
+    assert_eq!(trip.layers(), 6, "oversized tail must be a no-op");
+    assert!(trip.is_solved(), "a no-op tail must keep the certificate");
+
+    trip.tail(0);
+    assert!(trip.is_empty(), "tail(0) must empty the trip");
+}
+
+/// A persisted trip whose origins overlap the committed history resumes:
+/// trimmed to the overlap, with only the unseen points left to push — and the
+/// resumed stream lands on the batch match of the history.
+#[test]
+fn reconcile_resumes_and_trims_to_overlap() {
+    let net = bent_road();
+    let costing = Costing::default();
+    let generator = StandardGenerator::new(&net, &costing.emission);
+    let m = Matcher::new(&net, &costing, generator, AllCompute::default(), &());
+
+    let points = trajectory().into_points();
+
+    // "Yesterday's" persisted trip: the first four points.
+    let mut persisted = m.begin();
+    for &point in &points[..4] {
+        m.push(&mut persisted, point).expect("push must anchor");
+    }
+    m.solve(&mut persisted).expect("prefix must solve");
+
+    // Today's committed history: the window slid past the first point and
+    // two new points arrived.
+    let history = &points[1..];
+
+    let Continuation::Resume { mut trip, fresh } =
+        Continuation::reconcile(Some(persisted), history)
+    else {
+        panic!("overlapping history must resume");
+    };
+    assert_eq!(trip.layers(), 3, "trip must trim to the overlap");
+    assert_eq!(trip.points(), &points[1..4]);
+    assert_eq!(fresh, points[4..].to_vec(), "unseen points must be fresh");
+
+    for point in fresh {
+        m.push(&mut trip, point).expect("push must anchor");
+    }
+    let streamed = m.snapshot(&mut trip).expect("resumed trip must solve");
+    let batch = m
+        .r#match(LineString::from(history.to_vec()))
+        .expect("batch match must succeed");
+    assert_same_match(&streamed, &batch);
+}
+
+/// A history the trip's origins never overlap (a teleport cut everything the
+/// trellis knew) — and the absence of any trip at all — both restart.
+#[test]
+fn reconcile_restarts_on_divergence() {
+    let net = bent_road();
+    let costing = Costing::default();
+    let generator = StandardGenerator::new(&net, &costing.emission);
+    let m = Matcher::new(&net, &costing, generator, AllCompute::default(), &());
+
+    let points = trajectory().into_points();
+
+    let mut persisted = m.begin();
+    for &point in &points[..3] {
+        m.push(&mut persisted, point).expect("push must anchor");
+    }
+
+    // Post-teleport: the orchestrator discarded everything the trip has seen.
+    let history = points[3..].to_vec();
+
+    match Continuation::reconcile(Some(persisted), &history) {
+        Continuation::Restart { fresh } => assert_eq!(fresh, history),
+        Continuation::Resume { .. } => panic!("disjoint history must restart"),
+    }
+
+    match Continuation::<MockEntryId>::reconcile(None, &history) {
+        Continuation::Restart { fresh } => assert_eq!(fresh, history),
+        Continuation::Resume { .. } => panic!("no trip must restart"),
+    }
 }
 
 /// `LayerId` indexes everything on a trip: origins, candidate layers, trellis.

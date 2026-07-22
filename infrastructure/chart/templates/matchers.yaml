@@ -20,16 +20,11 @@ spec:
         {{- include "routers.labels" $ | nindent 8 }}
         app: matcher
         shard: "{{ $shard }}"
-      annotations:
-        {{- include "routers.scrapeAnnotations" (dict "port" $.Values.matcher.metricsPort) | nindent 8 }}
     spec:
       containers:
         - name: matcher
           image: "{{ $.Values.matcher.image.repository }}:{{ $.Values.matcher.image.tag }}"
           imagePullPolicy: {{ $.Values.matcher.image.pullPolicy }}
-          ports:
-            - name: metrics
-              containerPort: {{ $.Values.matcher.metricsPort }}
           env:
             - name: NATS
               value: {{ $.Values.infra.nats.url | quote }}
@@ -45,6 +40,17 @@ spec:
               value: "events.matched.{{ $shard }}"
             - name: RUST_LOG
               value: {{ $.Values.matcher.rustLog | quote }}
+            {{- range $name, $value := $.Values.matcher.env }}
+            - name: {{ $name }}
+              value: {{ $value | quote }}
+            {{- end }}
+            {{- if $.Values.infra.otlp.url }}
+            # Spans exported here become Prometheus series via the
+            # collector's spanmetrics pipeline; unset, telemetry degrades
+            # to plain structured logs.
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ $.Values.infra.otlp.url | quote }}
+            {{- end }}
           volumeMounts:
             - name: shards
               mountPath: /shards
@@ -64,18 +70,3 @@ spec:
           {{- fail (printf "shardCache.mode must be 'hostPath' or 'pvc', got %q" $.Values.shardCache.mode) }}
           {{- end }}
 {{- end }}
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: matcher-metrics
-  labels:
-    {{- include "routers.labels" . | nindent 4 }}
-    app: matcher
-spec:
-  selector:
-    app: matcher
-  ports:
-    - name: metrics
-      port: {{ .Values.matcher.metricsPort }}
-      targetPort: {{ .Values.matcher.metricsPort }}
