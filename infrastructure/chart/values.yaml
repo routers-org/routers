@@ -59,15 +59,6 @@ matcher:
     # ordering holds regardless of the count. Solves are CPU-bound, so this
     # is sized to actually cover the node's cores under load.
     WORKERS: "10"
-    # Deadline shedding: contexts older than this are dropped unmatched.
-    # Bounds commit staleness so a transient backlog cannot break the
-    # orchestrator's resume overlap and snowball into a restart storm.
-    SHED_AFTER: "1s"
-    # Full 50m reach for anchoring (35m dropped ~22% of points unanchored),
-    # but each layer keeps only the k best candidates by emission: boundary
-    # weighing is O(k²), so solve cost stays flat through dense grids
-    # instead of scaling with road density.
-    MAX_CANDIDATES: "16"
   resources:
     requests:
       cpu: 1000m

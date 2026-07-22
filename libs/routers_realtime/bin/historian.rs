@@ -45,10 +45,6 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Spans, not just logs: the historian is the third consumer of the raw
-    // stream, so its `queue_wait` series doubles as a measure of the offered
-    // event rate, and `archive` covers the Redis write path the
-    // orchestrator's `context_fetch` later reads from.
     let _telemetry = routers_realtime::telemetry::init("routers-historian");
     let args = Args::parse();
 
