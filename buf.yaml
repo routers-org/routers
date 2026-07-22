@@ -2,7 +2,6 @@ version: v2
 
 modules:
   - path: schema/proto
-    name: buf.build/osm/model
     includes:
       - schema/proto/osm
       - schema/proto/mvt
