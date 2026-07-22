@@ -6458,7 +6458,7 @@ dependencies = [
 
 [[package]]
 name = "routers"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "codspeed-criterion-compat",
  "geo",
@@ -6553,7 +6553,7 @@ dependencies = [
 
 [[package]]
 name = "routers_realtime"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "async-nats",
@@ -6590,7 +6590,7 @@ dependencies = [
 
 [[package]]
 name = "routers_rpc"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "buffa",
  "clap",
@@ -6630,7 +6630,7 @@ dependencies = [
 
 [[package]]
 name = "routers_shard"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "clap",
@@ -6685,7 +6685,7 @@ dependencies = [
 
 [[package]]
 name = "routers_transition"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "approx 0.5.1",
  "codspeed-criterion-compat",
