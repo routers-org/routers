@@ -14,10 +14,14 @@ use schema::proto::routers::api::timezone::v1::{
     BatchGetFromBoundingBoxResponse, BatchGetFromPointsResponse, BatchGetFromPolygonResponse,
     GetFromBoundingBoxResponse, GetFromPointResponse, GetFromPolygonResponse,
 };
+use schema::proto::routers::api::timezone::v1::{
+    GetFromBoundingBoxRequest, GetFromPointRequest, GetFromPolygonRequest,
+};
 use schema::proto::routers::model::v1::{
     BoundingBox as BoundingBoxMessage, Coordinate as CoordinateMessage, Polygon as PolygonMessage,
-    Timezone as TimezoneMessage,
+    Timezone as TimezoneMessage, UtcOffset,
 };
+use time_tz::{Offset as _, TimeZone as _};
 #[cfg(feature = "telemetry")]
 use tracing::Level;
 
@@ -31,9 +35,17 @@ impl<R> TimezoneAdapter<R> {
     }
 }
 
-fn timezone_message(tz: &TimeZone) -> TimezoneMessage {
+fn timezone_message(tz: TimeZone) -> TimezoneMessage {
+    let utc_offset = tz.get_offset_primary().to_utc();
+
     TimezoneMessage {
         iana_code: tz.name().to_string(),
+        utc_offset: MessageField::some(UtcOffset {
+            seconds: utc_offset.whole_seconds() as i32,
+            minutes: utc_offset.whole_minutes() as i32,
+            hours: utc_offset.whole_hours() as i32,
+            ..Default::default()
+        }),
         ..Default::default()
     }
 }
@@ -69,51 +81,6 @@ fn polygon_from(p: &PolygonMessage) -> Polygon {
     Polygon::new(LineString::from(coords), vec![])
 }
 
-fn resolve_point<R: TimezoneResolver>(
-    resolver: &R,
-    coordinate: &MessageField<CoordinateMessage>,
-) -> Result<Vec<TimezoneMessage>, ConnectError> {
-    let point = coordinate
-        .as_option()
-        .map(point_from)
-        .ok_or_else(|| ConnectError::invalid_argument("Missing Coordinate"))?;
-
-    resolver
-        .search(&point.bounding_rect())
-        .map(|tzs| tzs.iter().map(timezone_message).collect())
-        .map_err(|e| ConnectError::internal(format!("{:?}", e)))
-}
-
-fn resolve_bounding_box<R: TimezoneResolver>(
-    resolver: &R,
-    bounding_box: &MessageField<BoundingBoxMessage>,
-) -> Result<Vec<TimezoneMessage>, ConnectError> {
-    let rect = bounding_box
-        .as_option()
-        .and_then(rect_from)
-        .ok_or_else(|| ConnectError::invalid_argument("Missing BoundingBox"))?;
-
-    resolver
-        .search(&rect)
-        .map(|tzs| tzs.iter().map(timezone_message).collect())
-        .map_err(|e| ConnectError::internal(format!("{:?}", e)))
-}
-
-fn resolve_polygon<R: TimezoneResolver>(
-    resolver: &R,
-    polygon: &MessageField<PolygonMessage>,
-) -> Result<Vec<TimezoneMessage>, ConnectError> {
-    let polygon = polygon
-        .as_option()
-        .map(polygon_from)
-        .ok_or_else(|| ConnectError::invalid_argument("Missing Polygon"))?;
-
-    resolver
-        .search_polygon(&polygon)
-        .map(|tzs| tzs.iter().map(timezone_message).collect())
-        .map_err(|e| ConnectError::internal(format!("{:?}", e)))
-}
-
 #[allow(refining_impl_trait)]
 impl<R> TimezoneService for TimezoneAdapter<R>
 where
@@ -125,8 +92,17 @@ where
         _ctx: RequestContext,
         request: OwnedView<GetFromPointRequestView<'static>>,
     ) -> ServiceResult<GetFromPointResponse> {
-        let owned = request.to_owned_message();
-        let timezones = resolve_point(&*self.inner, &owned.coordinate)?;
+        let GetFromPointRequest { coordinate, .. } = request.to_owned_message();
+        let point = coordinate
+            .as_option()
+            .map(point_from)
+            .ok_or_else(|| ConnectError::invalid_argument("Missing Coordinate"))?;
+
+        let timezones = self
+            .inner
+            .search(&point.bounding_rect())
+            .map(|tzs| tzs.into_iter().map(timezone_message).collect())
+            .map_err(|e| ConnectError::internal(format!("{:?}", e)))?;
 
         Ok(GetFromPointResponse {
             timezones,
@@ -150,7 +126,7 @@ where
                 .inner
                 .search(&point.bounding_rect())
                 .map_err(|e| ConnectError::internal(format!("{:?}", e)))?;
-            timezones.extend(found.iter().map(timezone_message));
+            timezones.extend(found.into_iter().map(timezone_message));
         }
 
         Ok(BatchGetFromPointsResponse {
@@ -166,8 +142,18 @@ where
         _ctx: RequestContext,
         request: OwnedView<GetFromBoundingBoxRequestView<'static>>,
     ) -> ServiceResult<GetFromBoundingBoxResponse> {
-        let owned = request.to_owned_message();
-        let timezones = resolve_bounding_box(&*self.inner, &owned.bounding_box)?;
+        let GetFromBoundingBoxRequest { bounding_box, .. } = request.to_owned_message();
+
+        let rect = bounding_box
+            .as_option()
+            .and_then(rect_from)
+            .ok_or_else(|| ConnectError::invalid_argument("Missing BoundingBox"))?;
+
+        let timezones = self
+            .inner
+            .search(&rect)
+            .map(|tzs| tzs.into_iter().map(timezone_message).collect())
+            .map_err(|e| ConnectError::internal(format!("{:?}", e)))?;
 
         Ok(GetFromBoundingBoxResponse {
             timezones,
@@ -192,7 +178,7 @@ where
                 .inner
                 .search(&rect)
                 .map_err(|e| ConnectError::internal(format!("{:?}", e)))?;
-            timezones.extend(found.iter().map(timezone_message));
+            timezones.extend(found.into_iter().map(timezone_message));
         }
 
         Ok(BatchGetFromBoundingBoxResponse {
@@ -208,8 +194,18 @@ where
         _ctx: RequestContext,
         request: OwnedView<GetFromPolygonRequestView<'static>>,
     ) -> ServiceResult<GetFromPolygonResponse> {
-        let owned = request.to_owned_message();
-        let timezones = resolve_polygon(&*self.inner, &owned.polygon)?;
+        let GetFromPolygonRequest { polygon, .. } = request.to_owned_message();
+
+        let polygon = polygon
+            .as_option()
+            .map(polygon_from)
+            .ok_or_else(|| ConnectError::invalid_argument("Missing Polygon"))?;
+
+        let timezones = self
+            .inner
+            .search_polygon(&polygon)
+            .map(|tzs| tzs.into_iter().map(timezone_message).collect())
+            .map_err(|e| ConnectError::internal(format!("{:?}", e)))?;
 
         Ok(GetFromPolygonResponse {
             timezones,
@@ -233,7 +229,7 @@ where
                 .inner
                 .search_polygon(&polygon)
                 .map_err(|e| ConnectError::internal(format!("{:?}", e)))?;
-            timezones.extend(found.iter().map(timezone_message));
+            timezones.extend(found.into_iter().map(timezone_message));
         }
 
         Ok(BatchGetFromPolygonResponse {

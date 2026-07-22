@@ -17,6 +17,8 @@ routers_network = { workspace = true }
 routers_tz = { workspace = true }
 schema = { workspace = true }
 
+time-tz = { workspace = true }
+
 # Protobuf Handling
 buffa = { workspace = true }
 connectrpc = { workspace = true }
