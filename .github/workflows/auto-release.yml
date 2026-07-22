@@ -67,18 +67,21 @@ jobs:
       - name: Parse new tag
         id: parse_tag
         if: steps.release.outputs.releases != '[]' && steps.release.outputs.releases != ''
+        env:
+          RELEASES_JSON: ${{ steps.release.outputs.releases }}
         run: |
-          echo "is_released=false" >> "$GITHUB_OUTPUT"
-
           # https://release-plz.dev/docs/usage/release#json-output
           RELEASED=$(echo "$RELEASES_JSON" | jq -r 'any(.[]; .package_name == "routers")')
-          TAG=$(echo '${{ steps.release.outputs.releases }}' | jq -r '.[] | select(.package_name == "routers") | .tag')
+          TAG=$(echo "$RELEASES_JSON" | jq -r '.[] | select(.package_name == "routers") | .tag')
 
           if [ "$RELEASED" = "true" ]; then
             echo "is_released=true" >> "$GITHUB_OUTPUT"
             echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
             echo "Successfully released and tagged: $TAG"
+          else
+            echo "is_released=false" >> "$GITHUB_OUTPUT"
+            echo "Did not release package: $RELEASES_JSON"
           fi
 
   build-containers:
