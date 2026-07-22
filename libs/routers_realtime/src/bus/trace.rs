@@ -1,4 +1,5 @@
-//! Trace context over the NATS hop, carried in message headers,
+//! Trace context over the NATS hop, carried in message headers so the event
+//! payloads stay untouched.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -16,15 +17,9 @@ use opentelemetry::trace::{Span, Tracer, TracerProvider};
 use opentelemetry::{Context, KeyValue, global};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
-/// Millisecond wall-clock send time; `traceparent` alone carries no times,
-/// so queue wait needs this one extra header.
 const SENT_AT: &str = "x-routers-sent-at-ms";
-
-/// The send stamp of the most recently yielded message (ms since epoch; 0 = none seen).
 static LAST_SENT_AT: AtomicU64 = AtomicU64::new(0);
 
-/// When the message most recently yielded by any [`NATSStream`] in this
-/// process was published, per its wire stamp.
 pub fn last_sent_at() -> Option<SystemTime> {
     match LAST_SENT_AT.load(Ordering::Relaxed) {
         0 => None,
@@ -32,7 +27,10 @@ pub fn last_sent_at() -> Option<SystemTime> {
     }
 }
 
-/// Emit a span covering an arbitrary wall-clock interval
+pub fn wallclock() -> SystemTime {
+    now()
+}
+
 pub fn span_between(name: &'static str, start: SystemTime, end: SystemTime) {
     if end < start {
         return;
@@ -84,7 +82,6 @@ pub(super) fn outbound() -> HeaderMap {
     headers
 }
 
-/// Record the queue wait of an inbound message
 pub(super) fn inbound(subject: &str, headers: Option<&HeaderMap>) {
     let Some(headers) = headers else { return };
     let Some(sent_at) = headers

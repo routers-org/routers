@@ -1,7 +1,5 @@
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::thread::sleep;
-use std::time::Duration;
 
 use routers_codec::osm::{OsmEdgeMetadata, OsmEntryId};
 use routers_network::Metadata;
@@ -9,18 +7,22 @@ use routers_realtime::{
     bus::{NATSSink, NATSStream},
     event::{MatchContext, MatchResult},
 };
-use routers_shard::{FileFetcher, Geohash, ShardLoader};
+use routers_shard::{FileFetcher, Geohash, ShardLoader, ShardedNetwork};
 use routers_transition::{
-    Continuation, MatchError, Matcher, candidate::RoutedPath, costing::CostingStrategies,
-    layer::generation::StandardGenerator, primitives::PredicateCache, weigh::AllCompute,
+    Continuation, MatchError, Matcher,
+    candidate::RoutedPath,
+    costing::{CostingStrategies, DefaultEmissionCost, DefaultTransitionCost},
+    layer::generation::StandardGenerator,
+    primitives::PredicateCache,
+    weigh::AllCompute,
 };
 
 use anyhow::Context;
 use async_nats::{ConnectOptions, ServerAddr};
 use clap::Parser;
-use futures::{SinkExt, StreamExt};
+use futures::StreamExt;
 use log::{debug, error, info, warn};
-use tracing::{Instrument, field, info_span};
+use tracing::{field, info_span};
 use url::Url;
 
 #[derive(Parser, Debug)]
@@ -53,15 +55,131 @@ struct Args {
     /// The search distance to use for matching
     #[arg(long, env)]
     search_distance: Option<f64>,
+
+    /// How many contexts to solve concurrently. Solving is CPU-bound and each
+    /// context is self-contained, so contexts fan out across a blocking pool
+    /// with no shared state to serialise on.
+    #[arg(short, env, long, default_value = "5")]
+    workers: usize,
 }
 
 type E = OsmEntryId;
 type M = OsmEdgeMetadata;
+type Net = ShardedNetwork<E, M, Geohash>;
 
-/// How a match attempt ended, as the `outcome`/`severity` labels the
-/// collector turns into the success-ratio series. Nominal failures are the
-/// data's fault (a point off every road, a trace the network cannot bridge)
-/// and are expected in healthy operation; fatal ones are ours.
+/// Everything a solve needs, owned so the service can be shared (`Arc`) across
+/// the concurrent solves without leaking or juggling `'static` borrows. The
+/// network's spatial index and the predicate cache are the only heavy state,
+/// and both are shared; a per-solve [`Matcher`] is just a bundle of borrows
+/// into this and is free to build.
+struct Matching {
+    network: Arc<Net>,
+    runtime: <M as Metadata>::Runtime,
+    costing: CostingStrategies<DefaultEmissionCost, DefaultTransitionCost, E>,
+    cache: Arc<PredicateCache<E, M, Net>>,
+    search_distance: Option<f64>,
+}
+
+impl Matching {
+    /// Solve one context, recording its outcome onto a fresh `match_event`
+    /// span. Returns the result to publish, or `None` when there is nothing to
+    /// emit (no anchor, or a nominal/fatal solve failure).
+    fn solve(
+        &self,
+        MatchContext {
+            vehicle_id,
+            continuation,
+        }: MatchContext<E>,
+    ) -> Option<MatchResult<E, M>> {
+        let mut generator = StandardGenerator::new(self.network.as_ref(), &self.costing.emission);
+        if let Some(distance) = self.search_distance {
+            generator = generator.with_search_distance(distance);
+        }
+
+        let weigher = AllCompute::default().use_cache(self.cache.clone());
+        let matcher = Matcher::new(
+            self.network.as_ref(),
+            &self.costing,
+            generator,
+            weigher,
+            &self.runtime,
+        );
+
+        let span = info_span!(
+            "match_event",
+            outcome = field::Empty,
+            severity = field::Empty,
+            continuation = field::Empty,
+        );
+        let _entered = span.enter();
+
+        let (mut trip, fresh) = match continuation {
+            Continuation::Resume { trip, fresh } => {
+                span.record("continuation", "resume");
+                (trip, fresh)
+            }
+            Continuation::Restart { fresh } => {
+                span.record("continuation", "restart");
+                (matcher.begin(), fresh)
+            }
+        };
+
+        info_span!("push", points = fresh.len()).in_scope(|| {
+            for point in fresh {
+                match matcher.push(&mut trip, point) {
+                    Ok(_) => {}
+                    Err(MatchError::Unanchored(err)) => {
+                        info_span!("point_drop", reason = "unanchored")
+                            .in_scope(|| debug!("{vehicle_id}: dropped off-network point ({err})"));
+                    }
+                    Err(err) => {
+                        info_span!("point_drop", reason = "push_error")
+                            .in_scope(|| error!("{vehicle_id}: could not push point: {err}"));
+                    }
+                }
+            }
+        });
+
+        if trip.is_empty() {
+            span.record("outcome", "no_anchor");
+            span.record("severity", "nominal");
+            warn!("{vehicle_id}: no anchored layers to solve");
+            return None;
+        }
+
+        if let Err(err) = info_span!("solve").in_scope(|| matcher.solve(&mut trip)) {
+            let (outcome, severity) = classify(err);
+            span.record("outcome", outcome);
+            span.record("severity", severity);
+            error!("{vehicle_id}: unable to solve trip");
+            return None;
+        }
+
+        let solution = match info_span!("snapshot").in_scope(|| matcher.snapshot(&mut trip)) {
+            Ok(solution) => solution,
+            Err(err) => {
+                let (outcome, severity) = classify(err);
+                span.record("outcome", outcome);
+                span.record("severity", severity);
+                return None;
+            }
+        };
+
+        span.record("outcome", "success");
+        span.record("severity", "ok");
+
+        let path = RoutedPath::new(solution, self.network.as_ref());
+        Some(MatchResult {
+            path,
+            vehicle_id,
+            trip,
+        })
+    }
+}
+
+/// A match attempt's `outcome`/`severity` labels for the success-ratio series.
+/// Nominal failures are the data's fault (a point off every road, a trace the
+/// network cannot bridge) and expected in healthy operation; fatal ones are ours.
 fn classify(err: MatchError) -> (&'static str, &'static str) {
     match err {
         MatchError::Unanchored(_) => ("unanchored", "nominal"),
@@ -95,134 +213,41 @@ async fn main() -> anyhow::Result<()> {
         .await
         .context("could not connect to NATS")?;
 
-    let mut sink =
-        NATSSink::<MatchResult<E, M>>::new(client.clone(), move |_| args.outbound_subject.clone());
-
     let subscriber = client
         .subscribe(args.inbound_subject)
         .await
         .context("could not subscribe to NATS subject")?;
-    let mut source = NATSStream::<MatchContext<E>>::new(subscriber);
+    let source = NATSStream::<MatchContext<E>>::new(subscriber);
 
-    let runtime = OsmEdgeMetadata::runtime(None);
+    let sink = NATSSink::<MatchResult<E, M>>::new(client, move |_| args.outbound_subject.clone());
 
-    let cache = Arc::new(PredicateCache::default());
-    let costing = CostingStrategies::default();
+    let matching = Arc::new(Matching {
+        network,
+        runtime: OsmEdgeMetadata::runtime(None),
+        costing: CostingStrategies::default(),
+        cache: Arc::new(PredicateCache::default()),
+        search_distance: args.search_distance,
+    });
 
-    let mut generator = StandardGenerator::new(network.as_ref(), &costing.emission);
-    if let Some(distance) = args.search_distance {
-        generator = generator.with_search_distance(distance);
-    }
-
-    let weigher = AllCompute::default().use_cache(cache);
-    let matcher = Matcher::new(network.as_ref(), &costing, generator, weigher, &runtime);
-
-    // Run one context to completion, recording its outcome onto the current
-    // `match_event` span. Returns the result to publish, or `None` when there
-    // is nothing to emit (no anchor, or a nominal/fatal solve failure).
-    let attempt =
-        |vehicle_id: String, continuation: Continuation<E>| -> Option<MatchResult<E, M>> {
-            let span = tracing::Span::current();
-
-            let (mut trip, fresh) = match continuation {
-                Continuation::Resume { trip, fresh } => {
-                    span.record("continuation", "resume");
-                    debug!(
-                        "{vehicle_id}: resuming {} committed layer(s), {} fresh point(s)",
-                        trip.layers(),
-                        fresh.len()
-                    );
-                    (trip, fresh)
-                }
-                Continuation::Restart { fresh } => {
-                    span.record("continuation", "restart");
-                    debug!("{vehicle_id}: restarting over {} point(s)", fresh.len());
-                    (matcher.begin(), fresh)
-                }
-            };
-
-            info_span!("push", points = fresh.len()).in_scope(|| {
-                for point in fresh {
-                    match matcher.push(&mut trip, point) {
-                        Ok(_) => { /* OK! */ }
-                        Err(MatchError::Unanchored(err)) => {
-                            info_span!("point_drop", reason = "unanchored").in_scope(|| {
-                                debug!("{vehicle_id}: dropped off-network point ({err})");
-                            });
-                        }
-                        Err(err) => {
-                            info_span!("point_drop", reason = "push_error").in_scope(|| {
-                                error!("{vehicle_id}: could not push point: {err}");
-                            });
-                        }
-                    }
-                }
-            });
-
-            if trip.is_empty() {
-                span.record("outcome", "no_anchor");
-                span.record("severity", "nominal");
-                warn!("{vehicle_id}: no anchored layers to solve");
-                return None;
+    // Each context is solved on the blocking pool (solving is synchronous and
+    // CPU-bound); `buffer_unordered` keeps `workers` in flight at once. Results
+    // stream straight into the sink in completion order.
+    source
+        .map(|context| {
+            let matching = Arc::clone(&matching);
+            async move {
+                tokio::task::spawn_blocking(move || matching.solve(context))
+                    .await
+                    .ok()
+                    .flatten()
             }
+        })
+        .buffer_unordered(args.workers)
+        .filter_map(std::future::ready)
+        .map(Ok)
+        .forward(sink)
+        .await?;
 
-            match info_span!("solve")
-                .in_scope(|| matcher.solve(&mut trip))
-                .map_err(classify)
-            {
-                Ok(path) => debug!("solved path: {path:?}"),
-                Err((outcome, severity)) => {
-                    span.record("outcome", outcome);
-                    span.record("severity", severity);
-                    error!("{vehicle_id}: unable to solve trip: {outcome}");
-                    return None;
-                }
-            }
-
-            let solution = match info_span!("snapshot")
-                .in_scope(|| matcher.snapshot(&mut trip))
-                .map_err(classify)
-            {
-                Ok(solution) => solution,
-                Err((outcome, severity)) => {
-                    span.record("outcome", outcome);
-                    span.record("severity", severity);
-                    return None;
-                }
-            };
-
-            span.record("outcome", "success");
-            span.record("severity", "ok");
-
-            let path = RoutedPath::new(solution, network.as_ref());
-            Some(MatchResult {
-                path,
-                vehicle_id,
-                trip,
-            })
-        };
-
-    while let Some(MatchContext {
-        vehicle_id,
-        continuation,
-    }) = source.next().await
-    {
-        let span = info_span!(
-            "match_event",
-            outcome = field::Empty,
-            severity = field::Empty,
-            continuation = field::Empty,
-        );
-
-        if let Some(result) = span.in_scope(|| attempt(vehicle_id, continuation)) {
-            sink.send(result)
-                .instrument(info_span!(parent: &span, "publish_result"))
-                .await
-                .context("could not emit result to sink")?;
-        }
-    }
-
-    loop {
-        sleep(Duration::from_secs(1));
-    }
+    error!("source terminated");
+    Ok(())
 }

@@ -1,0 +1,27 @@
+# Valkey backs the pipeline's per-vehicle history: every raw event costs one
+# XREVRANGE on the orchestrator hot path, so valkey's latency is pipeline
+# latency. The bitnami chart's default `resourcesPreset: nano` caps the
+# primary at cpu=150m — under load CFS then freezes the (single-threaded)
+# event loop in ~100ms throttle windows and every in-flight command queues
+# behind the freeze: measured as a 50–100ms stall tail on reads (~14% of
+# calls at 6.8k reads/s) while actual execution stayed at ~7µs/call.
+# No CPU limit: valkey burns what it needs (~10–40% of a core at 10k evt/s);
+# the memory limit still bounds the pod.
+auth:
+  enabled: false
+
+primary:
+  resources:
+    requests:
+      cpu: 500m
+      memory: 256Mi
+    limits:
+      memory: 1Gi
+
+replica:
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      memory: 1Gi

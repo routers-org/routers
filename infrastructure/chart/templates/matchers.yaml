@@ -40,6 +40,10 @@ spec:
               value: "events.matched.{{ $shard }}"
             - name: RUST_LOG
               value: {{ $.Values.matcher.rustLog | quote }}
+            {{- range $name, $value := $.Values.matcher.env }}
+            - name: {{ $name }}
+              value: {{ $value | quote }}
+            {{- end }}
             {{- if $.Values.infra.otlp.url }}
             # Spans exported here become Prometheus series via the
             # collector's spanmetrics pipeline; unset, telemetry degrades

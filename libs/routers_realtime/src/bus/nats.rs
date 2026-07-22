@@ -9,7 +9,7 @@ use serde::de::DeserializeOwned;
 
 pub struct NATSSink<T: Serialize> {
     client: async_nats::Client,
-    subject_of: Box<dyn Fn(&T) -> String>,
+    subject_of: Box<dyn Fn(&T) -> String + Send + Sync>,
     in_flight: Option<BoxFuture<'static, anyhow::Result<()>>>,
 
     _phantom: std::marker::PhantomData<T>,
@@ -21,7 +21,10 @@ pub struct NATSStream<T: DeserializeOwned> {
 }
 
 impl<T: Serialize> NATSSink<T> {
-    pub fn new(client: async_nats::Client, subject_of: impl Fn(&T) -> String + 'static) -> Self {
+    pub fn new(
+        client: async_nats::Client,
+        subject_of: impl Fn(&T) -> String + Send + Sync + 'static,
+    ) -> Self {
         Self {
             client,
             subject_of: Box::new(subject_of),
