@@ -1,22 +1,11 @@
 //! Trace context over the NATS hop, carried in message headers so the event
 //! payloads stay untouched.
-//!
-//! On publish, the sink stamps the message with the W3C `traceparent` of the
-//! span it was sent under, plus the wall-clock send time. On receipt, the
-//! stream closes the loop by emitting a `queue_wait` span *backdated to the
-//! send time* — so the time a message spends sitting in NATS becomes an
-//! ordinary span, and therefore an ordinary latency histogram once the
-//! collector's spanmetrics aggregates it. No hand-kept metric registry, and
-//! no timestamps in the event structs.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use web_time::{SystemTime, UNIX_EPOCH};
 
-/// The stamp must be a real wall clock — it crosses process boundaries.
-/// `web_time` re-exports std on native targets, so the wasm lint still
-/// resolves to the disallowed method; these binaries are native-only.
 #[allow(clippy::disallowed_methods)]
 fn now() -> SystemTime {
     SystemTime::now()
@@ -28,21 +17,9 @@ use opentelemetry::trace::{Span, Tracer, TracerProvider};
 use opentelemetry::{Context, KeyValue, global};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
-/// Millisecond wall-clock send time; `traceparent` alone carries no times,
-/// so queue wait needs this one extra header.
 const SENT_AT: &str = "x-routers-sent-at-ms";
-
-/// The send stamp of the most recently yielded message (ms since epoch;
-/// 0 = none seen). An ambient slot rather than part of the stream's item
-/// type, so consumers that don't care never see it. Sound because every
-/// service consumes messages one at a time: between a stream yielding an
-/// item and the loop body reading this, nothing else can have been yielded.
 static LAST_SENT_AT: AtomicU64 = AtomicU64::new(0);
 
-/// When the message most recently yielded by any [`NATSStream`] in this
-/// process was published, per its wire stamp. Lets a consumer correlate
-/// walltimes across services — e.g. the orchestrator measuring raw-event →
-/// matched-result — without the event structs carrying timestamps.
 pub fn last_sent_at() -> Option<SystemTime> {
     match LAST_SENT_AT.load(Ordering::Relaxed) {
         0 => None,
@@ -50,18 +27,10 @@ pub fn last_sent_at() -> Option<SystemTime> {
     }
 }
 
-/// The wall clock, for stamping the start of an interval later handed to
-/// [`span_between`] — e.g. when a message enters an in-process queue. Kept
-/// here so callers need not re-litigate the wasm clock lint themselves.
 pub fn wallclock() -> SystemTime {
     now()
 }
 
-/// Emit a span covering an arbitrary wall-clock interval — the primitive
-/// behind cross-service walltime metrics: hand it two wire stamps and the
-/// collector's spanmetrics does the rest. A no-op without an OTLP provider,
-/// and inverted intervals (skewed clocks, out-of-order arrival) are ignored
-/// rather than recorded as nonsense.
 pub fn span_between(name: &'static str, start: SystemTime, end: SystemTime) {
     if end < start {
         return;
@@ -113,9 +82,6 @@ pub(super) fn outbound() -> HeaderMap {
     headers
 }
 
-/// Record the queue wait of an inbound message: a span covering send → now,
-/// parented to the publisher's trace. A no-op (`~ns`) when no OTLP provider
-/// is installed.
 pub(super) fn inbound(subject: &str, headers: Option<&HeaderMap>) {
     let Some(headers) = headers else { return };
     let Some(sent_at) = headers

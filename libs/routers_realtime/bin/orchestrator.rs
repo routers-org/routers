@@ -192,7 +192,11 @@ async fn main() -> anyhow::Result<()> {
                             kv: &mut kv,
                         };
 
-                        match app.try_create_context(payload).instrument(span.clone()).await {
+                        match app
+                            .try_create_context(payload)
+                            .instrument(span.clone())
+                            .await
+                        {
                             Ok(ctx) => {
                                 if let Err(err) = sink
                                     .send(ctx)
@@ -212,7 +216,11 @@ async fn main() -> anyhow::Result<()> {
                         if let (Some(origin), Some(matched_at)) =
                             (origins.remove(&result.vehicle_id), sent_at)
                         {
-                            routers_realtime::bus::span_between("event_to_match", origin, matched_at);
+                            routers_realtime::bus::span_between(
+                                "event_to_match",
+                                origin,
+                                matched_at,
+                            );
                         }
 
                         trips.insert(result.vehicle_id, result.trip);
@@ -265,13 +273,6 @@ impl App<'_> {
             ..
         }: Payload,
     ) -> Result<MatchContext<E>> {
-        // Fetch deeper than the window: the store may hold points newer than
-        // this event (the historian archives straight off the raw stream, so
-        // under backlog it runs ahead of us), and those are the vehicle's future
-        // relative to the event being matched. Dropping them keeps the
-        // gap/teleport cutoff below firing on data quality, not pipeline latency
-        // — otherwise a backlog discards committed history and forces the
-        // matcher's expensive restart path exactly when it is already behind.
         let mut entries = self
             .kv
             .get_many(&vehicle_id, self.context_window * 3)
@@ -280,11 +281,10 @@ impl App<'_> {
             .context("could not get entries from redis store")?;
 
         entries.retain(|event| event.timestamp <= timestamp);
-        // Newest-first, so the cutoff below walks back in time from this event.
         entries.sort_by_key(|event| std::cmp::Reverse(event.timestamp));
         entries.truncate(self.context_window);
-        let fetched = entries.len();
 
+        let fetched = entries.len();
         let context = entries
             .into_iter()
             .inspect(|v| debug!("event: {:?}", v))
@@ -307,9 +307,6 @@ impl App<'_> {
             info_span!("history_cut", reason = "gap_or_teleport").in_scope(|| {});
         }
 
-        // The matcher solves a directed trajectory, so points must arrive
-        // chronologically; the current payload may already be archived, so
-        // dedup by timestamp after sorting.
         let mut history: Vec<RawEvent> = std::iter::once(RawEvent {
             vehicle_id: vehicle_id.clone(),
             point,
@@ -321,11 +318,11 @@ impl App<'_> {
         history.sort_by_key(|event| event.timestamp);
         history.dedup_by_key(|event| event.timestamp);
 
-        let points = history.into_iter().map(|event| event.point).collect::<Vec<Point>>();
+        let points = history
+            .into_iter()
+            .map(|event| event.point)
+            .collect::<Vec<Point>>();
 
-        // Reconcile the prior solve against the window: pure data work (trim and
-        // compare, never generating a layer), so it belongs here and not on the
-        // matcher's hot path.
         let continuation = info_span!("reconcile")
             .in_scope(|| Continuation::reconcile(self.trips.get(&vehicle_id).cloned(), &points));
 
