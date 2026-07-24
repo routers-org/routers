@@ -245,7 +245,10 @@ where
     /// The trip is not consumed: the snapshot borrows its candidates, so the
     /// caller may keep streaming once the snapshot is dropped (or detached
     /// with [`CollapsedPath::into_owned`]).
-    pub fn snapshot<'t>(&self, trip: &'t mut Trip<N::Entry>) -> Result<CollapsedPath<'t, N::Entry>, MatchError> {
+    pub fn snapshot<'t>(
+        &self,
+        trip: &'t mut Trip<N::Entry>,
+    ) -> Result<CollapsedPath<'t, N::Entry>, MatchError> {
         let Collapse {
             cost,
             route,
@@ -263,7 +266,10 @@ where
     /// Match a whole trajectory in one call: batch candidate generation,
     /// parallel weighing, solve, and collapse. The trip is internal here, so
     /// the result owns its candidates.
-    pub fn r#match(&self, linestring: LineString) -> Result<CollapsedPath<'a, N::Entry>, MatchError> {
+    pub fn r#match(
+        &self,
+        linestring: LineString,
+    ) -> Result<CollapsedPath<'a, N::Entry>, MatchError> {
         let mut trip = self.begin();
         self.extend(&mut trip, &linestring.into_points())?;
 

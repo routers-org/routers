@@ -30,19 +30,14 @@ pub enum SolverVariant {
 }
 
 impl SolverVariant {
-    pub(crate) fn without_cache<N: Network>(
-        self,
-    ) -> WeigherImpl<N> {
+    pub(crate) fn without_cache<N: Network>(self) -> WeigherImpl<N> {
         match self {
             SolverVariant::Selective => WeigherImpl::Selective(Selective::default()),
             _ => WeigherImpl::AllCompute(AllCompute::default()),
         }
     }
 
-    pub(crate) fn instance<N: Network>(
-        self,
-        cache: Arc<PredicateCache<N>>,
-    ) -> WeigherImpl<N> {
+    pub(crate) fn instance<N: Network>(self, cache: Arc<PredicateCache<N>>) -> WeigherImpl<N> {
         match self {
             SolverVariant::Selective => {
                 WeigherImpl::Selective(Selective::default().use_cache(cache))

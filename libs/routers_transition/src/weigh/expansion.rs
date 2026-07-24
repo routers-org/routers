@@ -50,10 +50,7 @@ impl<'a, N> Expansion<'a, N>
 where
     N: Network,
 {
-    pub(crate) fn new(
-        ctx: &'a RoutingContext<'a, N>,
-        predicate: &'a PredicateCache<N>,
-    ) -> Self {
+    pub(crate) fn new(ctx: &'a RoutingContext<'a, N>, predicate: &'a PredicateCache<N>) -> Self {
         Self { ctx, predicate }
     }
 
@@ -63,7 +60,11 @@ where
     /// Candidates already sharing a directed edge resolve directly (by distance);
     /// otherwise the routed path between their edges is walked from the predicate
     /// map.
-    pub(crate) fn reach(&self, from: CandidateRef, to: CandidateRef) -> Option<Reachable<N::Entry>> {
+    pub(crate) fn reach(
+        &self,
+        from: CandidateRef,
+        to: CandidateRef,
+    ) -> Option<Reachable<N::Entry>> {
         let source = self.ctx.candidate(&from)?;
         let target = self.ctx.candidate(&to)?;
 
@@ -76,7 +77,11 @@ where
 
     /// The road edges linking `source`'s edge to `target`'s edge, walked from the
     /// bounded-Dijkstra predicate map rooted at `source`'s edge target.
-    fn route(&self, source: &Candidate<N::Entry>, target: &Candidate<N::Entry>) -> Option<Vec<Edge<N::Entry>>> {
+    fn route(
+        &self,
+        source: &Candidate<N::Entry>,
+        target: &Candidate<N::Entry>,
+    ) -> Option<Vec<Edge<N::Entry>>> {
         let parents = self.predicate.query(self.ctx, source.edge.target);
         let nodes = parents.path(&source.edge.target, &target.edge.source)?;
 

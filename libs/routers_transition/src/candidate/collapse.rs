@@ -3,8 +3,8 @@ use alloc::borrow::Cow;
 use crate::candidate::*;
 use crate::primitives::Reachable;
 use geo::LineString;
-use routers_network::Network;
 use routers_network::Entry;
+use routers_network::Network;
 
 /// A solved map-match: the chosen candidate per input point, plus the routed
 /// path between them.

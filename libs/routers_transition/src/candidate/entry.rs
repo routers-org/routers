@@ -122,11 +122,7 @@ where
     }
 
     /// Calculates the offset, in meters, of the candidate to it's edge by the [`VirtualTail`].
-    pub fn offset<N>(
-        &self,
-        ctx: &RoutingContext<N>,
-        variant: VirtualTail,
-    ) -> Option<f64>
+    pub fn offset<N>(&self, ctx: &RoutingContext<N>, variant: VirtualTail) -> Option<f64>
     where
         N: Network<Entry = E> + ?Sized,
     {

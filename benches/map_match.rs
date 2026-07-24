@@ -184,12 +184,7 @@ fn target_benchmark(c: &mut criterion::Criterion) {
                 format!("selective_forward_solver:match:cold: {}", sc.name),
                 |b| {
                     b.iter_batched(
-                        || {
-                            Arc::new(
-                                PredicateCache::<OsmNetwork>::default(
-                                ),
-                            )
-                        },
+                        || Arc::new(PredicateCache::<OsmNetwork>::default()),
                         |cold_cache| {
                             let opts = MatchOptions::new()
                                 .with_runtime(runtime.clone())
