@@ -1,7 +1,7 @@
 use buffa::view::OwnedView;
 use connectrpc::{ConnectError, RequestContext, ServiceResult};
 use geo::Point;
-use routers_network::{Entry, Metadata, Network};
+use routers_network::Network;
 use schema::connect::routers::api::optimise::v1::OptimiseService;
 use schema::proto::routers::api::optimise::v1::{__buffa::view::RouteRequestView, RouteResponse};
 #[cfg(feature = "telemetry")]
@@ -11,11 +11,9 @@ use crate::sdk::r#match::coordinate;
 use crate::services::RPCAdapter;
 
 #[allow(refining_impl_trait)]
-impl<T, E, M> OptimiseService for RPCAdapter<T, E, M>
+impl<T> OptimiseService for RPCAdapter<T>
 where
-    T: Network<E, M> + Send + Sync + 'static,
-    M: Metadata + Send + Sync + 'static,
-    E: Entry + Send + Sync + 'static,
+    T: Network + Send + Sync + 'static,
 {
     #[cfg_attr(feature="telemetry", tracing::instrument(skip_all, level = Level::INFO))]
     async fn route(

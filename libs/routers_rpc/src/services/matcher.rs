@@ -89,11 +89,10 @@ impl<Ctx> Util<Ctx> {
 }
 
 #[allow(refining_impl_trait)]
-impl<T, E, M> MatchService for RPCAdapter<T, E, M>
+impl<T> MatchService for RPCAdapter<T>
 where
-    T: Network<E, M> + Send + Sync + 'static,
-    M: Metadata + MatchSdk + Send + Sync + 'static,
-    E: Entry + Send + Sync + 'static,
+    T: Network + Send + Sync + 'static,
+    T::Meta: MatchSdk,
 {
     #[cfg_attr(feature="telemetry", tracing::instrument(skip_all, level = Level::INFO))]
     async fn r#match(
@@ -108,7 +107,7 @@ where
             .options
             .as_option()
             .and_then(|opts| opts.costing_method.as_option())
-            .and_then(M::trip_context);
+            .and_then(<T::Meta>::trip_context);
 
         let solver = optimise_for(
             owned
@@ -117,7 +116,7 @@ where
                 .map(|o| o.optimise_for)
                 .unwrap_or_default(),
         );
-        let runtime = M::runtime(context);
+        let runtime = <T::Meta>::runtime(context);
 
         let opts = MatchOptions::new()
             .with_runtime(runtime.clone())
@@ -131,7 +130,7 @@ where
             .map_err(ConnectError::internal)?;
 
         Ok(MatchResponse {
-            matches: Util::<M::Runtime>::process::<E, M>(result, runtime),
+            matches: Util::<T::Runtime>::process::<T::Entry, T::Meta>(result, runtime),
             ..Default::default()
         }
         .into())
@@ -150,7 +149,7 @@ where
             .options
             .as_option()
             .and_then(|opts| opts.costing_method.as_option())
-            .and_then(M::trip_context);
+            .and_then(<T::Meta>::trip_context);
 
         let solver = optimise_for(
             owned
@@ -159,7 +158,7 @@ where
                 .map(|o| o.optimise_for)
                 .unwrap_or_default(),
         );
-        let runtime = M::runtime(context);
+        let runtime = <T::Meta>::runtime(context);
 
         let opts = MatchOptions::new()
             .with_runtime(runtime.clone())
@@ -173,7 +172,7 @@ where
             .map_err(ConnectError::internal)?;
 
         Ok(SnapResponse {
-            matches: Util::<M::Runtime>::process::<E, M>(result, runtime),
+            matches: Util::<T::Runtime>::process::<T::Entry, T::Meta>(result, runtime),
             ..Default::default()
         }
         .into())

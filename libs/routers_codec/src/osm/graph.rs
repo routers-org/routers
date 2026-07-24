@@ -339,14 +339,11 @@ impl Default for OsmNetwork {
     }
 }
 
-impl Discovery<OsmEntryId> for OsmNetwork {
+impl Discovery for OsmNetwork {
     fn edges_in_box<'a>(
         &'a self,
         aabb: AABB<Point>,
-    ) -> Box<dyn Iterator<Item = Edge<Node<OsmEntryId>>> + Send + 'a>
-    where
-        OsmEntryId: 'a,
-    {
+    ) -> Box<dyn Iterator<Item = Edge<Node<OsmEntryId>>> + Send + 'a> {
         Box::new(
             self.index_edge
                 .locate_in_envelope_intersecting(&aabb)
@@ -357,10 +354,7 @@ impl Discovery<OsmEntryId> for OsmNetwork {
     fn nodes_in_box<'a>(
         &'a self,
         aabb: AABB<Point>,
-    ) -> Box<dyn Iterator<Item = &'a Node<OsmEntryId>> + Send + 'a>
-    where
-        OsmEntryId: 'a,
-    {
+    ) -> Box<dyn Iterator<Item = &'a Node<OsmEntryId>> + Send + 'a> {
         Box::new(self.index.locate_in_envelope(&aabb))
     }
 
@@ -380,16 +374,13 @@ impl Discovery<OsmEntryId> for OsmNetwork {
     }
 }
 
-impl Scan<OsmEntryId> for OsmNetwork {
-    fn nearest_node<'a>(&'a self, point: &Point) -> Option<&'a Node<OsmEntryId>>
-    where
-        OsmEntryId: 'a,
-    {
+impl Scan for OsmNetwork {
+    fn nearest_node<'a>(&'a self, point: &Point) -> Option<&'a Node<OsmEntryId>> {
         self.index.nearest_neighbor(point)
     }
 }
 
-impl Route<OsmEntryId> for OsmNetwork {
+impl Route for OsmNetwork {
     fn route_nodes(
         &self,
         start_node: OsmEntryId,
@@ -420,6 +411,7 @@ impl Debug for OsmNetwork {
 
 impl routers_network::DataPlane for OsmNetwork {
     type Entry = OsmEntryId;
+    type Runtime = <OsmEdgeMetadata as routers_network::Metadata>::Runtime;
     type Meta = OsmEdgeMetadata;
 
     fn metadata(&self, id: &OsmEntryId) -> Option<&OsmEdgeMetadata> {

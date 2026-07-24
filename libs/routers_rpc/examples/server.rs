@@ -2,7 +2,7 @@ extern crate alloc;
 
 use alloc::sync::Arc;
 use dotenv::dotenv;
-use routers_codec::osm::{OsmEdgeMetadata, OsmEntryId, OsmNetwork};
+use routers_codec::osm::OsmNetwork;
 use routers_fixtures::{LOS_ANGELES, LOS_ANGELES_SAVED, fixture};
 use routers_rpc::Tracer;
 use routers_rpc::services::RPCAdapter;
@@ -12,7 +12,7 @@ use schema::connect::routers::api::r#match::v1::MatchServiceExt;
 use schema::connect::routers::api::optimise::v1::OptimiseServiceExt;
 use schema::connect::routers::api::scan::v1::ScanServiceExt;
 
-type OsmRPCAdapter = RPCAdapter<OsmNetwork, OsmEntryId, OsmEdgeMetadata>;
+type OsmRPCAdapter = RPCAdapter<OsmNetwork>;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn core::error::Error>> {

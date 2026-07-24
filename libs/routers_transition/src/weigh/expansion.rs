@@ -3,7 +3,7 @@
 
 use core::hash::Hash;
 
-use routers_network::{Edge, Entry, Metadata, Network};
+use routers_network::{Edge, Network};
 use rustc_hash::FxHashMap;
 
 use crate::{
@@ -38,25 +38,21 @@ where
     }
 }
 
-pub(crate) struct Expansion<'a, E, M, N>
+pub(crate) struct Expansion<'a, N>
 where
-    E: Entry,
-    M: Metadata,
-    N: Network<E, M>,
+    N: Network,
 {
-    ctx: &'a RoutingContext<'a, E, M, N>,
-    predicate: &'a PredicateCache<E, M, N>,
+    ctx: &'a RoutingContext<'a, N>,
+    predicate: &'a PredicateCache<N>,
 }
 
-impl<'a, E, M, N> Expansion<'a, E, M, N>
+impl<'a, N> Expansion<'a, N>
 where
-    E: Entry,
-    M: Metadata,
-    N: Network<E, M>,
+    N: Network,
 {
     pub(crate) fn new(
-        ctx: &'a RoutingContext<'a, E, M, N>,
-        predicate: &'a PredicateCache<E, M, N>,
+        ctx: &'a RoutingContext<'a, N>,
+        predicate: &'a PredicateCache<N>,
     ) -> Self {
         Self { ctx, predicate }
     }
@@ -67,7 +63,7 @@ where
     /// Candidates already sharing a directed edge resolve directly (by distance);
     /// otherwise the routed path between their edges is walked from the predicate
     /// map.
-    pub(crate) fn reach(&self, from: CandidateRef, to: CandidateRef) -> Option<Reachable<E>> {
+    pub(crate) fn reach(&self, from: CandidateRef, to: CandidateRef) -> Option<Reachable<N::Entry>> {
         let source = self.ctx.candidate(&from)?;
         let target = self.ctx.candidate(&to)?;
 
@@ -80,7 +76,7 @@ where
 
     /// The road edges linking `source`'s edge to `target`'s edge, walked from the
     /// bounded-Dijkstra predicate map rooted at `source`'s edge target.
-    fn route(&self, source: &Candidate<E>, target: &Candidate<E>) -> Option<Vec<Edge<E>>> {
+    fn route(&self, source: &Candidate<N::Entry>, target: &Candidate<N::Entry>) -> Option<Vec<Edge<N::Entry>>> {
         let parents = self.predicate.query(self.ctx, source.edge.target);
         let nodes = parents.path(&source.edge.target, &target.edge.source)?;
 

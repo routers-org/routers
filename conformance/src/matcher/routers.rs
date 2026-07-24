@@ -5,7 +5,7 @@ use anyhow::{Context, Result};
 use geo::{Coord, LineString};
 use routers::primitives::PredicateCache;
 use routers::{Match, MatchOptions};
-use routers_codec::osm::{OsmEdgeMetadata, OsmEntryId, OsmNetwork};
+use routers_codec::osm::OsmNetwork;
 
 use crate::config::RoutersConfig;
 use crate::matcher::{MatchResult, Matcher};
@@ -13,7 +13,7 @@ use crate::trace::GpsTrace;
 
 pub struct RoutersMatcher {
     graph: OsmNetwork,
-    cache: Arc<PredicateCache<OsmEntryId, OsmEdgeMetadata, OsmNetwork>>,
+    cache: Arc<PredicateCache<OsmNetwork>>,
 
     search_distance: f64,
 }
@@ -29,7 +29,7 @@ impl RoutersMatcher {
         let graph = OsmNetwork::from_pbf(&pbf_path)
             .map_err(|e| anyhow::anyhow!("loading OSM network from {}: {e}", pbf_path.display()))?;
 
-        let cache = Arc::new(PredicateCache::<OsmEntryId, OsmEdgeMetadata, OsmNetwork>::default());
+        let cache = Arc::new(PredicateCache::<OsmNetwork>::default());
 
         Ok(Self {
             graph,
@@ -45,7 +45,7 @@ impl Matcher for RoutersMatcher {
     }
 
     fn match_trace(&self, trace: &GpsTrace) -> Result<MatchResult> {
-        let opts = MatchOptions::<OsmEntryId, OsmEdgeMetadata, OsmNetwork>::new()
+        let opts = MatchOptions::<OsmNetwork>::new()
             .with_search_distance(Some(self.search_distance))
             .with_cache(self.cache.clone());
 

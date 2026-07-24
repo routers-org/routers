@@ -2,7 +2,7 @@ use crate::{candidate::CandidateRef, primitives::RoutingContext};
 
 use core::fmt::Debug;
 use geo::{Bearing, Distance, Haversine, LineLocatePoint, LineString, Point};
-use routers_network::{Edge, Entry, Metadata, Network};
+use routers_network::{Edge, Entry, Network};
 use serde::{Deserialize, Serialize};
 
 /// One possible anchoring of a trajectory point: an edge of the network, the
@@ -75,7 +75,7 @@ where
     ///               (40%)            (90%)
     /// ```
     ///
-    pub fn percentage<M: Metadata>(&self, graph: &dyn Network<E, M>) -> Option<f64> {
+    pub fn percentage<N: Network<Entry = E> + ?Sized>(&self, graph: &N) -> Option<f64> {
         let edge = graph
             .line(&[self.edge.source, self.edge.target])
             .into_iter()
@@ -89,10 +89,10 @@ where
     /// ahead of `self`. `None` when the shared edge is too degenerate to locate a
     /// position on. A `Some(false)` covers candidates on different edges (which
     /// must be routed between) and same-edge back-tracking.
-    pub fn directly_reachable<M: Metadata>(
+    pub fn directly_reachable<N: Network<Entry = E> + ?Sized>(
         &self,
         other: &Candidate<E>,
-        graph: &dyn Network<E, M>,
+        graph: &N,
     ) -> Option<bool> {
         if self.edge.id.index() != other.edge.id.index() {
             return Some(false);
@@ -106,10 +106,9 @@ where
     }
 
     /// Get the bearing of the candidate's edge (source endpoint -> target endpoint).
-    pub fn edge_heading<M, N>(&self, ctx: &RoutingContext<E, M, N>) -> Option<f64>
+    pub fn edge_heading<N>(&self, ctx: &RoutingContext<N>) -> Option<f64>
     where
-        M: Metadata,
-        N: Network<E, M>,
+        N: Network<Entry = E> + ?Sized,
     {
         let s = ctx.map.point(&self.edge.source)?;
         let t = ctx.map.point(&self.edge.target)?;
@@ -123,13 +122,13 @@ where
     }
 
     /// Calculates the offset, in meters, of the candidate to it's edge by the [`VirtualTail`].
-    pub fn offset<N, M: Metadata>(
+    pub fn offset<N>(
         &self,
-        ctx: &RoutingContext<E, M, N>,
+        ctx: &RoutingContext<N>,
         variant: VirtualTail,
     ) -> Option<f64>
     where
-        N: Network<E, M>,
+        N: Network<Entry = E> + ?Sized,
     {
         match variant {
             VirtualTail::ToSource => {

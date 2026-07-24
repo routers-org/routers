@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use egui::Response;
 use geo::{Coord, LineString};
-use routers_codec::osm::{OsmEdgeMetadata, OsmEntryId, OsmNetwork, OsmTripConfiguration};
+use routers_codec::osm::{OsmNetwork, OsmTripConfiguration};
 use routers_transition::LayerId;
 use routers_transition::layer::generation::StandardGenerator;
 use routers_transition::primitives::PredicateCache;
@@ -11,7 +11,7 @@ use routers_transition::{Matcher as TransitionMatcher, costing::CostingStrategie
 
 use crate::utils::{Component, MatchCandidate, MatchData, MatchLayer};
 
-pub type MatchCache = Arc<PredicateCache<OsmEntryId, OsmEdgeMetadata, OsmNetwork>>;
+pub type MatchCache = Arc<PredicateCache<OsmNetwork>>;
 
 pub struct MatchOutput {
     pub confirmed: Option<Result<MatchData, String>>,

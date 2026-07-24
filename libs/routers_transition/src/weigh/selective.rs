@@ -5,10 +5,9 @@
 //! guaranteed-exact matching use [`AllCompute`](crate::AllCompute).
 
 use alloc::sync::Arc;
-use core::marker::PhantomData;
 
 use geo::{Distance, Haversine};
-use routers_network::{Entry, Metadata, Network};
+use routers_network::Network;
 use routers_trellis::NodeId;
 
 use crate::{
@@ -22,39 +21,31 @@ pub const DEFAULT_FANOUT: usize = 16;
 
 /// Weighs the `fanout` nearest next-layer candidates per source. Inherits the
 /// full [`Weigher`] pipeline.
-pub struct Selective<E, M, N>
+pub struct Selective<N>
 where
-    E: Entry,
-    M: Metadata,
-    N: Network<E, M>,
+    N: Network,
 {
-    predicate: Arc<PredicateCache<E, M, N>>,
+    predicate: Arc<PredicateCache<N>>,
     fanout: usize,
-    _phantom: PhantomData<N>,
 }
 
-impl<E, M, N> Default for Selective<E, M, N>
+impl<N> Default for Selective<N>
 where
-    E: Entry,
-    M: Metadata,
-    N: Network<E, M>,
+    N: Network,
 {
     fn default() -> Self {
         Self {
             predicate: Arc::new(PredicateCache::default()),
             fanout: DEFAULT_FANOUT,
-            _phantom: PhantomData,
         }
     }
 }
 
-impl<E, M, N> Selective<E, M, N>
+impl<N> Selective<N>
 where
-    E: Entry,
-    M: Metadata,
-    N: Network<E, M>,
+    N: Network,
 {
-    pub fn use_cache(self, cache: Arc<PredicateCache<E, M, N>>) -> Self {
+    pub fn use_cache(self, cache: Arc<PredicateCache<N>>) -> Self {
         Self {
             predicate: cache,
             ..self
@@ -67,21 +58,19 @@ where
     }
 }
 
-impl<E, M, N> Weigher<E, M, N> for Selective<E, M, N>
+impl<N> Weigher<N> for Selective<N>
 where
-    E: Entry,
-    M: Metadata,
-    N: Network<E, M>,
+    N: Network,
 {
-    fn cache(&self) -> &PredicateCache<E, M, N> {
+    fn cache(&self) -> &PredicateCache<N> {
         &self.predicate
     }
 
     fn select(
         &self,
-        _ctx: &RoutingContext<E, M, N>,
-        source: &Candidate<E>,
-        to_layer: &[Candidate<E>],
+        _ctx: &RoutingContext<N>,
+        source: &Candidate<N::Entry>,
+        to_layer: &[Candidate<N::Entry>],
     ) -> Vec<NodeId> {
         let mut nearest = (0..to_layer.len()).collect::<Vec<_>>();
         if nearest.len() > self.fanout {

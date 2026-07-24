@@ -1,8 +1,7 @@
 use alloc::borrow::Cow;
-use core::marker::PhantomData;
 
 use geo::{LineString, Point};
-use routers_network::{Entry, Metadata, Network};
+use routers_network::{Entry, Network};
 use routers_trellis::{LayerId, Path, SolveError, TrellisError, ViterbiSolver};
 
 use crate::candidate::{CandidateRef, CollapsedPath};
@@ -70,23 +69,19 @@ use crate::weigh::{Weigher, frontier_collapse};
 /// // given any solved point, you can obtain this information by using `snapshot(..)`.
 /// let collapsed = matcher.snapshot(&mut trip)?;
 /// ```
-pub struct Matcher<'a, Emmis, Trans, G, W, E, M, N>
+pub struct Matcher<'a, Emmis, Trans, G, W, N>
 where
-    E: Entry,
-    M: Metadata,
-    N: Network<E, M>,
+    N: Network,
     Emmis: EmissionStrategy + Send + Sync,
-    Trans: TransitionStrategy<E> + Send + Sync,
-    G: LayerGeneration<E>,
-    W: Weigher<E, M, N> + Sync,
+    Trans: TransitionStrategy<N::Entry> + Send + Sync,
+    G: LayerGeneration<N::Entry>,
+    W: Weigher<N> + Sync,
 {
     map: &'a N,
-    heuristics: &'a CostingStrategies<Emmis, Trans, E>,
+    heuristics: &'a CostingStrategies<Emmis, Trans, N::Entry>,
     generator: G,
     weigher: W,
-    runtime: &'a M::Runtime,
-
-    _phantom: PhantomData<(E, M)>,
+    runtime: &'a N::Runtime,
 }
 
 /// The store-independent parts of a [`CollapsedPath`], as derived by
@@ -100,22 +95,20 @@ where
     interpolated: Vec<Reachable<E>>,
 }
 
-impl<'a, Emmis, Trans, G, W, E, M, N> Matcher<'a, Emmis, Trans, G, W, E, M, N>
+impl<'a, Emmis, Trans, G, W, N> Matcher<'a, Emmis, Trans, G, W, N>
 where
-    E: Entry,
-    M: Metadata,
-    N: Network<E, M>,
+    N: Network,
     Emmis: EmissionStrategy + Send + Sync,
-    Trans: TransitionStrategy<E> + Send + Sync,
-    G: LayerGeneration<E>,
-    W: Weigher<E, M, N> + Sync,
+    Trans: TransitionStrategy<N::Entry> + Send + Sync,
+    G: LayerGeneration<N::Entry>,
+    W: Weigher<N> + Sync,
 {
     pub fn new(
         map: &'a N,
-        heuristics: &'a CostingStrategies<Emmis, Trans, E>,
+        heuristics: &'a CostingStrategies<Emmis, Trans, N::Entry>,
         generator: G,
         weigher: W,
-        runtime: &'a M::Runtime,
+        runtime: &'a N::Runtime,
     ) -> Self {
         Self {
             map,
@@ -123,17 +116,16 @@ where
             generator,
             weigher,
             runtime,
-            _phantom: PhantomData,
         }
     }
 
     /// A fresh, empty [`Trip`].
-    pub fn begin(&self) -> Trip<E> {
+    pub fn begin(&self) -> Trip<N::Entry> {
         Trip::new()
     }
 
     /// The [`RoutingContext`] over a trip's candidates.
-    fn context<'b>(&'b self, trip: &'b Trip<E>) -> RoutingContext<'b, E, M, N> {
+    fn context<'b>(&'b self, trip: &'b Trip<N::Entry>) -> RoutingContext<'b, N> {
         RoutingContext {
             candidates: trip.candidates(),
             map: self.map,
@@ -148,7 +140,7 @@ where
     /// A point with no road candidate within the generator's search radius is
     /// rejected ([`UnanchoredError`]) and leaves the trip unchanged, so the
     /// caller may drop or retry the point.
-    pub fn push(&self, trip: &mut Trip<E>, origin: Point) -> Result<LayerId, MatchError> {
+    pub fn push(&self, trip: &mut Trip<N::Entry>, origin: Point) -> Result<LayerId, MatchError> {
         let layer = trip.next_id();
         let candidates = self.generator.candidates(&origin, layer);
 
@@ -169,7 +161,7 @@ where
     ///
     /// Any point with no candidate rejects the whole batch ([`UnanchoredError`]
     /// reporting *every* such point) and leaves the trip unchanged.
-    pub fn extend(&self, trip: &mut Trip<E>, points: &[Point]) -> Result<(), MatchError> {
+    pub fn extend(&self, trip: &mut Trip<N::Entry>, points: &[Point]) -> Result<(), MatchError> {
         let first_layer = trip.next_id();
         let per_layer = self.generator.generate(points, first_layer);
 
@@ -198,7 +190,7 @@ where
     ///
     /// Already-resolved boundaries are never recomputed, so re-solving after an
     /// append weighs only the new boundaries (plus a µs-scale full DP pass).
-    pub fn solve<'b>(&self, trip: &'b mut Trip<E>) -> Result<&'b Path, MatchError> {
+    pub fn solve<'b>(&self, trip: &'b mut Trip<N::Entry>) -> Result<&'b Path, MatchError> {
         let mut trellis = match trip.take_state() {
             TripState::Empty => return Err(TrellisError::Empty.into()),
             TripState::Solved(solved) => {
@@ -253,7 +245,7 @@ where
     /// The trip is not consumed: the snapshot borrows its candidates, so the
     /// caller may keep streaming once the snapshot is dropped (or detached
     /// with [`CollapsedPath::into_owned`]).
-    pub fn snapshot<'t>(&self, trip: &'t mut Trip<E>) -> Result<CollapsedPath<'t, E>, MatchError> {
+    pub fn snapshot<'t>(&self, trip: &'t mut Trip<N::Entry>) -> Result<CollapsedPath<'t, N::Entry>, MatchError> {
         let Collapse {
             cost,
             route,
@@ -271,7 +263,7 @@ where
     /// Match a whole trajectory in one call: batch candidate generation,
     /// parallel weighing, solve, and collapse. The trip is internal here, so
     /// the result owns its candidates.
-    pub fn r#match(&self, linestring: LineString) -> Result<CollapsedPath<'a, E>, MatchError> {
+    pub fn r#match(&self, linestring: LineString) -> Result<CollapsedPath<'a, N::Entry>, MatchError> {
         let mut trip = self.begin();
         self.extend(&mut trip, &linestring.into_points())?;
 
@@ -292,7 +284,7 @@ where
 
     /// Solve (if pending) and derive the collapse: total cost, the chosen
     /// candidate per layer, and each hop's routed geometry.
-    fn collapse(&self, trip: &mut Trip<E>) -> Result<Collapse<E>, MatchError> {
+    fn collapse(&self, trip: &mut Trip<N::Entry>) -> Result<Collapse<N::Entry>, MatchError> {
         let path = self.solve(trip)?;
         let cost = path.cost;
 
@@ -320,10 +312,10 @@ where
     /// the caller owns any per-tick memoisation.
     pub fn hop(
         &self,
-        trip: &Trip<E>,
+        trip: &Trip<N::Entry>,
         from: CandidateRef,
         to: CandidateRef,
-    ) -> Option<Reachable<E>> {
+    ) -> Option<Reachable<N::Entry>> {
         let ctx = self.context(trip);
         self.weigher.reach(&ctx, from, to)
     }
@@ -339,7 +331,7 @@ where
 
     /// Boundary breaks as a [`DisconnectedError`], carrying the origins of the
     /// layers on each side.
-    fn disconnected(&self, trip: &Trip<E>, breaks: Vec<LayerId>) -> MatchError {
+    fn disconnected(&self, trip: &Trip<N::Entry>, breaks: Vec<LayerId>) -> MatchError {
         let breaks = breaks
             .into_iter()
             .map(|boundary| {

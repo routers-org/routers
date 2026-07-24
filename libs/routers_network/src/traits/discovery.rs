@@ -3,24 +3,20 @@ use alloc::sync::Arc;
 use geo::{Destination, Geodesic, Point};
 use rstar::AABB;
 
-use crate::{Edge, Entry, Node};
+use crate::{DataPlane, Edge, Node};
 
-pub trait Discovery<E: Entry> {
+pub trait Discovery: DataPlane {
     /// Returns an iterator of edges which fall within the given AABB.
     fn edges_in_box<'a>(
         &'a self,
         aabb: AABB<Point>,
-    ) -> Box<dyn Iterator<Item = Edge<Node<E>>> + Send + 'a>
-    where
-        E: 'a;
+    ) -> Box<dyn Iterator<Item = Edge<Node<Self::Entry>>> + Send + 'a>;
 
     /// Returns an iterator of nodes which fall within the given AABB.
     fn nodes_in_box<'a>(
         &'a self,
         aabb: AABB<Point>,
-    ) -> Box<dyn Iterator<Item = &'a Node<E>> + Send + 'a>
-    where
-        E: 'a;
+    ) -> Box<dyn Iterator<Item = &'a Node<Self::Entry>> + Send + 'a>;
 
     /// A function which returns an unsorted iterator of [`Node`] references which are within
     /// the provided `distance` of the input [point](Point).
@@ -36,10 +32,7 @@ pub trait Discovery<E: Entry> {
         &'a self,
         point: &Point,
         distance: f64,
-    ) -> Box<dyn Iterator<Item = &'a Node<E>> + Send + 'a>
-    where
-        E: 'a,
-    {
+    ) -> Box<dyn Iterator<Item = &'a Node<Self::Entry>> + Send + 'a> {
         let aabb = square_box(point, distance);
         self.nodes_in_box(aabb)
     }
@@ -58,50 +51,40 @@ pub trait Discovery<E: Entry> {
         &'a self,
         point: &Point,
         distance: f64,
-    ) -> Box<dyn Iterator<Item = Edge<Node<E>>> + Send + 'a>
-    where
-        E: 'a,
-    {
+    ) -> Box<dyn Iterator<Item = Edge<Node<Self::Entry>>> + Send + 'a> {
         let aabb = square_box(point, distance);
         self.edges_in_box(aabb)
     }
 
-    fn node(&self, id: &E) -> Option<&Node<E>>;
-    fn edge(&self, source: &E, target: &E) -> Option<Edge<E>>;
+    fn node(&self, id: &Self::Entry) -> Option<&Node<Self::Entry>>;
+    fn edge(&self, source: &Self::Entry, target: &Self::Entry) -> Option<Edge<Self::Entry>>;
 }
 
 // Forward through `Arc<T>` so shard-managed networks can be held behind
 // an `Arc` without losing trait-method access.
-impl<T, E> Discovery<E> for Arc<T>
+impl<T> Discovery for Arc<T>
 where
-    T: Discovery<E>,
-    E: Entry,
+    T: Discovery,
 {
     fn edges_in_box<'a>(
         &'a self,
         aabb: AABB<Point>,
-    ) -> Box<dyn Iterator<Item = Edge<Node<E>>> + Send + 'a>
-    where
-        E: 'a,
-    {
+    ) -> Box<dyn Iterator<Item = Edge<Node<Self::Entry>>> + Send + 'a> {
         (**self).edges_in_box(aabb)
     }
 
     fn nodes_in_box<'a>(
         &'a self,
         aabb: AABB<Point>,
-    ) -> Box<dyn Iterator<Item = &'a Node<E>> + Send + 'a>
-    where
-        E: 'a,
-    {
+    ) -> Box<dyn Iterator<Item = &'a Node<Self::Entry>> + Send + 'a> {
         (**self).nodes_in_box(aabb)
     }
 
-    fn node(&self, id: &E) -> Option<&Node<E>> {
+    fn node(&self, id: &Self::Entry) -> Option<&Node<Self::Entry>> {
         (**self).node(id)
     }
 
-    fn edge(&self, source: &E, target: &E) -> Option<Edge<E>> {
+    fn edge(&self, source: &Self::Entry, target: &Self::Entry) -> Option<Edge<Self::Entry>> {
         (**self).edge(source, target)
     }
 }

@@ -36,6 +36,7 @@ where
     S: ShardId,
 {
     type Entry = E;
+    type Runtime = M::Runtime;
     type Meta = M;
 
     fn metadata(&self, id: &E) -> Option<&M> {
@@ -76,7 +77,7 @@ where
     }
 }
 
-impl<E, M, S> Discovery<E> for MultiShardNetwork<E, M, S>
+impl<E, M, S> Discovery for MultiShardNetwork<E, M, S>
 where
     E: Entry,
     M: Metadata,
@@ -85,10 +86,7 @@ where
     fn edges_in_box<'a>(
         &'a self,
         aabb: AABB<Point>,
-    ) -> Box<dyn Iterator<Item = Edge<Node<E>>> + Send + 'a>
-    where
-        E: 'a,
-    {
+    ) -> Box<dyn Iterator<Item = Edge<Node<E>>> + Send + 'a> {
         let mut seen: FxHashSet<(E, E)> = FxHashSet::default();
 
         Box::new(
@@ -121,10 +119,7 @@ where
     fn nodes_in_box<'a>(
         &'a self,
         aabb: AABB<Point>,
-    ) -> Box<dyn Iterator<Item = &'a Node<E>> + Send + 'a>
-    where
-        E: 'a,
-    {
+    ) -> Box<dyn Iterator<Item = &'a Node<E>> + Send + 'a> {
         let mut seen: FxHashSet<E> = FxHashSet::default();
 
         Box::new(
@@ -151,16 +146,13 @@ where
     }
 }
 
-impl<E, M, S> Scan<E> for MultiShardNetwork<E, M, S>
+impl<E, M, S> Scan for MultiShardNetwork<E, M, S>
 where
     E: Entry,
     M: Metadata,
     S: ShardId,
 {
-    fn nearest_node<'a>(&'a self, point: &Point) -> Option<&'a Node<E>>
-    where
-        E: 'a,
-    {
+    fn nearest_node<'a>(&'a self, point: &Point) -> Option<&'a Node<E>> {
         self.shards
             .iter()
             .filter_map(|s| s.index.nearest_neighbor(point))
@@ -173,7 +165,7 @@ where
     }
 }
 
-impl<E, M, S> Route<E> for MultiShardNetwork<E, M, S>
+impl<E, M, S> Route for MultiShardNetwork<E, M, S>
 where
     E: Entry,
     M: Metadata,

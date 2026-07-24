@@ -8,21 +8,20 @@ use crate::primitives::MatchError;
 use geo::LineString;
 use log::info;
 use routers_network::Network;
-use routers_network::{Entry, Metadata};
 
 #[cfg(feature = "tracing")]
 use tracing::Level;
 
-impl<T, E: Entry, M: Metadata> Match<E, M, T> for T
+impl<T> Match<T> for T
 where
-    T: Network<E, M>,
+    T: Network,
 {
     #[cfg_attr(feature = "tracing", tracing::instrument(skip_all, level = Level::INFO))]
     fn r#match(
         &self,
         linestring: LineString,
-        opts: MatchOptions<E, M, T>,
-    ) -> Result<RoutedPath<E, M>, MatchError> {
+        opts: MatchOptions<T>,
+    ) -> Result<RoutedPath<T::Entry, T::Meta>, MatchError> {
         info!("Finding matched route for {} positions", linestring.0.len());
 
         let costing = CostingStrategies::default();
@@ -43,8 +42,8 @@ where
     fn snap(
         &self,
         _linestring: LineString,
-        _opts: MatchOptions<E, M, T>,
-    ) -> Result<RoutedPath<E, M>, MatchError> {
+        _opts: MatchOptions<T>,
+    ) -> Result<RoutedPath<T::Entry, T::Meta>, MatchError> {
         unimplemented!()
     }
 }

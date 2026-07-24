@@ -4,7 +4,7 @@ use serde::Serialize;
 
 /// TODO: Description
 pub trait Entry:
-    Default + Serialize + Copy + Clone + PartialEq + Eq + Ord + Hash + Debug + Send + Sync
+    Default + Serialize + Copy + Clone + PartialEq + Eq + Ord + Hash + Debug + Send + Sync + 'static
 {
     fn identifier(&self) -> i64;
 }

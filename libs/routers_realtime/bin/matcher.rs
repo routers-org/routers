@@ -76,7 +76,7 @@ struct Matching {
     network: Arc<Net>,
     runtime: <M as Metadata>::Runtime,
     costing: CostingStrategies<DefaultEmissionCost, DefaultTransitionCost, E>,
-    cache: Arc<PredicateCache<E, M, Net>>,
+    cache: Arc<PredicateCache<Net>>,
     search_distance: Option<f64>,
 }
 
