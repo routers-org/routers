@@ -339,7 +339,7 @@ where
     }
 }
 
-impl<E, M, S> Discovery<E> for ShardedNetwork<E, M, S>
+impl<E, M, S> Discovery for ShardedNetwork<E, M, S>
 where
     E: Entry,
     M: Metadata,
@@ -348,10 +348,7 @@ where
     fn edges_in_box<'a>(
         &'a self,
         aabb: AABB<Point>,
-    ) -> Box<dyn Iterator<Item = Edge<Node<E>>> + Send + 'a>
-    where
-        E: 'a,
-    {
+    ) -> Box<dyn Iterator<Item = Edge<Node<E>>> + Send + 'a> {
         Box::new(
             self.index_edge
                 .locate_in_envelope_intersecting(&aabb)
@@ -377,10 +374,7 @@ where
     fn nodes_in_box<'a>(
         &'a self,
         aabb: AABB<Point>,
-    ) -> Box<dyn Iterator<Item = &'a Node<E>> + Send + 'a>
-    where
-        E: 'a,
-    {
+    ) -> Box<dyn Iterator<Item = &'a Node<E>> + Send + 'a> {
         Box::new(self.index.locate_in_envelope(&aabb))
     }
 
@@ -400,21 +394,18 @@ where
     }
 }
 
-impl<E, M, S> Scan<E> for ShardedNetwork<E, M, S>
+impl<E, M, S> Scan for ShardedNetwork<E, M, S>
 where
     E: Entry,
     M: Metadata,
     S: ShardId,
 {
-    fn nearest_node<'a>(&'a self, point: &Point) -> Option<&'a Node<E>>
-    where
-        E: 'a,
-    {
+    fn nearest_node<'a>(&'a self, point: &Point) -> Option<&'a Node<E>> {
         self.index.nearest_neighbor(point)
     }
 }
 
-impl<E, M, S> Route<E> for ShardedNetwork<E, M, S>
+impl<E, M, S> Route for ShardedNetwork<E, M, S>
 where
     E: Entry,
     M: Metadata,
@@ -443,6 +434,7 @@ where
     S: ShardId,
 {
     type Entry = E;
+    type Runtime = M::Runtime;
     type Meta = M;
 
     fn metadata(&self, id: &E) -> Option<&M> {

@@ -3,8 +3,8 @@ use alloc::borrow::Cow;
 use crate::candidate::*;
 use crate::primitives::Reachable;
 use geo::LineString;
+use routers_network::Entry;
 use routers_network::Network;
-use routers_network::{Entry, Metadata};
 
 /// A solved map-match: the chosen candidate per input point, plus the routed
 /// path between them.
@@ -63,7 +63,7 @@ where
 
     /// The full driven path as a [`LineString`] — the matched positions with the
     /// routed road geometry between them filled in, showing the turns taken.
-    pub fn interpolated<M: Metadata>(&self, map: &impl Network<E, M>) -> LineString {
+    pub fn interpolated(&self, map: &impl Network<Entry = E>) -> LineString {
         self.interpolated
             .iter()
             .enumerate()

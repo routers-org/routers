@@ -3,9 +3,8 @@
 //! See [`Selective`](crate::Selective) for the pruned counterpart.
 
 use alloc::sync::Arc;
-use core::marker::PhantomData;
 
-use routers_network::{Entry, Metadata, Network};
+use routers_network::Network;
 use routers_trellis::NodeId;
 
 use crate::{
@@ -15,37 +14,29 @@ use crate::{
 };
 
 /// Weighs every reachable transition. Inherits the full [`Weigher`] pipeline.
-pub struct AllCompute<E, M, N>
+pub struct AllCompute<N>
 where
-    E: Entry,
-    M: Metadata,
-    N: Network<E, M>,
+    N: Network,
 {
-    predicate: Arc<PredicateCache<E, M, N>>,
-    _phantom: PhantomData<N>,
+    predicate: Arc<PredicateCache<N>>,
 }
 
-impl<E, M, N> Default for AllCompute<E, M, N>
+impl<N> Default for AllCompute<N>
 where
-    E: Entry,
-    M: Metadata,
-    N: Network<E, M>,
+    N: Network,
 {
     fn default() -> Self {
         Self {
             predicate: Arc::new(PredicateCache::default()),
-            _phantom: PhantomData,
         }
     }
 }
 
-impl<E, M, N> AllCompute<E, M, N>
+impl<N> AllCompute<N>
 where
-    E: Entry,
-    M: Metadata,
-    N: Network<E, M>,
+    N: Network,
 {
-    pub fn use_cache(self, cache: Arc<PredicateCache<E, M, N>>) -> Self {
+    pub fn use_cache(self, cache: Arc<PredicateCache<N>>) -> Self {
         Self {
             predicate: cache,
             ..self
@@ -53,21 +44,19 @@ where
     }
 }
 
-impl<E, M, N> Weigher<E, M, N> for AllCompute<E, M, N>
+impl<N> Weigher<N> for AllCompute<N>
 where
-    E: Entry,
-    M: Metadata,
-    N: Network<E, M>,
+    N: Network,
 {
-    fn cache(&self) -> &PredicateCache<E, M, N> {
+    fn cache(&self) -> &PredicateCache<N> {
         &self.predicate
     }
 
     fn select(
         &self,
-        _ctx: &RoutingContext<E, M, N>,
-        _source: &Candidate<E>,
-        to_layer: &[Candidate<E>],
+        _ctx: &RoutingContext<N>,
+        _source: &Candidate<N::Entry>,
+        to_layer: &[Candidate<N::Entry>],
     ) -> Vec<NodeId> {
         (0..to_layer.len() as u32).map(NodeId).collect()
     }

@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use geo::LineString;
 use routers::{Match, MatchOptions, primitives::PredicateCache};
-use routers_codec::osm::{OsmEdgeMetadata, OsmEntryId, OsmNetwork};
+use routers_codec::osm::{OsmEdgeMetadata, OsmNetwork};
 use routers_network::Metadata;
 
 use routers_fixtures::{SYDNEY, SYDNEY_SAVED, SYNDEY_TRIP, fixture};
@@ -29,7 +29,7 @@ fn main() {
 
     println!("Initialisation time: {}ms", now.elapsed().as_millis());
 
-    let cache = Arc::new(PredicateCache::<OsmEntryId, OsmEdgeMetadata, OsmNetwork>::default());
+    let cache = Arc::new(PredicateCache::<OsmNetwork>::default());
     let runtime = OsmEdgeMetadata::default_runtime();
 
     let match_times = (0..1_000)

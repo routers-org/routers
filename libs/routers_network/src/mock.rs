@@ -107,14 +107,11 @@ impl Debug for MockNetwork {
     }
 }
 
-impl Discovery<MockEntryId> for MockNetwork {
+impl Discovery for MockNetwork {
     fn edges_in_box<'a>(
         &'a self,
         aabb: AABB<Point>,
-    ) -> Box<dyn Iterator<Item = Edge<Node<MockEntryId>>> + Send + 'a>
-    where
-        MockEntryId: 'a,
-    {
+    ) -> Box<dyn Iterator<Item = Edge<Node<MockEntryId>>> + Send + 'a> {
         Box::new(
             self.edge_index
                 .locate_in_envelope_intersecting(&aabb)
@@ -125,10 +122,7 @@ impl Discovery<MockEntryId> for MockNetwork {
     fn nodes_in_box<'a>(
         &'a self,
         aabb: AABB<Point>,
-    ) -> Box<dyn Iterator<Item = &'a Node<MockEntryId>> + Send + 'a>
-    where
-        MockEntryId: 'a,
-    {
+    ) -> Box<dyn Iterator<Item = &'a Node<MockEntryId>> + Send + 'a> {
         Box::new(self.node_index.locate_in_envelope(&aabb))
     }
 
@@ -148,16 +142,13 @@ impl Discovery<MockEntryId> for MockNetwork {
     }
 }
 
-impl Scan<MockEntryId> for MockNetwork {
-    fn nearest_node<'a>(&'a self, point: &Point) -> Option<&'a Node<MockEntryId>>
-    where
-        MockEntryId: 'a,
-    {
+impl Scan for MockNetwork {
+    fn nearest_node<'a>(&'a self, point: &Point) -> Option<&'a Node<MockEntryId>> {
         self.node_index.nearest_neighbor(point)
     }
 }
 
-impl Route<MockEntryId> for MockNetwork {
+impl Route for MockNetwork {
     fn route_nodes(
         &self,
         start_node: MockEntryId,
@@ -182,6 +173,7 @@ impl Route<MockEntryId> for MockNetwork {
 
 impl DataPlane for MockNetwork {
     type Entry = MockEntryId;
+    type Runtime = ();
     type Meta = MockMetadata;
 
     fn metadata(&self, id: &MockEntryId) -> Option<&MockMetadata> {

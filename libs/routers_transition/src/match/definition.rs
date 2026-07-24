@@ -1,7 +1,7 @@
 use alloc::sync::Arc;
 
 use geo::LineString;
-use routers_network::{Entry, Metadata, Network};
+use routers_network::{Metadata, Network};
 
 use crate::{
     candidate::RoutedPath,
@@ -25,7 +25,7 @@ pub const DEFAULT_SEARCH_DISTANCE: f64 = 50.0; // 50m
 /// let routed = network.r#match(linestring, opts)?;
 /// ```
 #[derive(Clone, Debug)]
-pub struct MatchOptions<E: Entry, M: Metadata, N: Network<E, M>> {
+pub struct MatchOptions<N: Network> {
     /// The distance the solver will use to search for candidates
     /// around every given input position.
     ///
@@ -55,36 +55,36 @@ pub struct MatchOptions<E: Entry, M: Metadata, N: Network<E, M>> {
     /// Alternatively, it may be created directly if the value and
     /// type are known. This may be particularly useful in a custom
     /// implementation of graph metadata.
-    pub runtime: M::Runtime,
+    pub runtime: N::Runtime,
 
     /// The variant of solver to be used by the matcher.
     /// Any given value of the enumeration is accepted,
     pub solver: SolverVariant,
 
-    pub cache: Option<Arc<PredicateCache<E, M, N>>>,
+    pub cache: Option<Arc<PredicateCache<N>>>,
 }
 
-impl<E: Entry, M: Metadata, N: Network<E, M>> Default for MatchOptions<E, M, N> {
+impl<N: Network> Default for MatchOptions<N> {
     fn default() -> Self {
         Self {
             search_distance: DEFAULT_SEARCH_DISTANCE,
-            runtime: M::default_runtime(),
+            runtime: <N::Meta>::default_runtime(),
             solver: SolverVariant::default(),
             cache: None,
         }
     }
 }
 
-impl<E: Entry, M: Metadata, N: Network<E, M>> MatchOptions<E, M, N> {
+impl<N: Network> MatchOptions<N> {
     pub fn new() -> Self {
         Self::default()
     }
 
-    pub fn with_runtime(self, runtime: M::Runtime) -> Self {
+    pub fn with_runtime(self, runtime: N::Runtime) -> Self {
         Self { runtime, ..self }
     }
 
-    pub fn with_cache(self, cache: Arc<PredicateCache<E, M, N>>) -> Self {
+    pub fn with_cache(self, cache: Arc<PredicateCache<N>>) -> Self {
         Self {
             cache: Some(cache),
             ..self
@@ -114,11 +114,9 @@ impl<E: Entry, M: Metadata, N: Network<E, M>> MatchOptions<E, M, N> {
 /// pipeline, and resolves the result against the network into a
 /// [`RoutedPath`]. When the default options suffice, [`MatchSimpleExt`] drops
 /// the options argument too.
-pub trait Match<E, M, N>
+pub trait Match<N>
 where
-    E: Entry,
-    M: Metadata,
-    N: Network<E, M>,
+    N: Network,
 {
     /// Matches a given [linestring](LineString) against the map, collapsing
     /// the input onto the network to find the most plausible match for every
@@ -126,8 +124,8 @@ where
     fn r#match(
         &self,
         linestring: LineString,
-        opts: MatchOptions<E, M, N>,
-    ) -> Result<RoutedPath<E, M>, MatchError>;
+        opts: MatchOptions<N>,
+    ) -> Result<RoutedPath<N::Entry, N::Meta>, MatchError>;
 
     /// Snaps a given linestring against the map: each position moved to its
     /// most plausible road position, without routing between them.
@@ -136,27 +134,28 @@ where
     fn snap(
         &self,
         linestring: LineString,
-        opts: MatchOptions<E, M, N>,
-    ) -> Result<RoutedPath<E, M>, MatchError>;
+        opts: MatchOptions<N>,
+    ) -> Result<RoutedPath<N::Entry, N::Meta>, MatchError>;
 }
 
 /// Simplifies the interface to the `Match` trait, providing methods that uses appropriate options.
-pub trait MatchSimpleExt<E, M, N>: Match<E, M, N>
+pub trait MatchSimpleExt<N>: Match<N>
 where
-    E: Entry,
-    M: Metadata,
-    N: Network<E, M>,
+    N: Network,
 {
-    fn r#match_simple(&self, linestring: LineString) -> Result<RoutedPath<E, M>, MatchError> {
+    fn r#match_simple(
+        &self,
+        linestring: LineString,
+    ) -> Result<RoutedPath<N::Entry, N::Meta>, MatchError> {
         self.r#match(linestring, MatchOptions::default())
     }
 
-    fn snap_simple(&self, linestring: LineString) -> Result<RoutedPath<E, M>, MatchError> {
+    fn snap_simple(
+        &self,
+        linestring: LineString,
+    ) -> Result<RoutedPath<N::Entry, N::Meta>, MatchError> {
         self.snap(linestring, MatchOptions::default())
     }
 }
 
-impl<T, E: Entry, M: Metadata, N: Network<E, M>> MatchSimpleExt<E, M, N> for T where
-    T: Match<E, M, N>
-{
-}
+impl<T, N: Network> MatchSimpleExt<N> for T where T: Match<N> {}

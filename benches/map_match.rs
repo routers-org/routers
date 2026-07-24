@@ -13,7 +13,7 @@ use std::sync::Arc;
 use routers::Match;
 use routers::transition::*;
 
-use routers_codec::osm::{OsmEdgeMetadata, OsmEntryId, OsmNetwork};
+use routers_codec::osm::{OsmEdgeMetadata, OsmNetwork};
 use routers_network::{Entry, Metadata, Network};
 
 use criterion::{BatchSize, black_box, criterion_main};
@@ -71,7 +71,7 @@ fn target_benchmark(c: &mut criterion::Criterion) {
     group.significance_level(0.1).sample_size(30);
 
     MATCH_CASES.into_iter().for_each(|ga| {
-        let cache = Arc::new(PredicateCache::<OsmEntryId, OsmEdgeMetadata, OsmNetwork>::default());
+        let cache = Arc::new(PredicateCache::<OsmNetwork>::default());
         let graph = OsmNetwork::from_pbf(fixture!(ga.source_file)).expect("Graph must be created");
 
         let costing = DefaultEmissionCost::default();
@@ -184,12 +184,7 @@ fn target_benchmark(c: &mut criterion::Criterion) {
                 format!("selective_forward_solver:match:cold: {}", sc.name),
                 |b| {
                     b.iter_batched(
-                        || {
-                            Arc::new(
-                                PredicateCache::<OsmEntryId, OsmEdgeMetadata, OsmNetwork>::default(
-                                ),
-                            )
-                        },
+                        || Arc::new(PredicateCache::<OsmNetwork>::default()),
                         |cold_cache| {
                             let opts = MatchOptions::new()
                                 .with_runtime(runtime.clone())
@@ -211,9 +206,9 @@ fn target_benchmark(c: &mut criterion::Criterion) {
     group.finish();
 }
 
-fn bench_match<E: Entry, M: Metadata, N: Network<E, M>>(
-    graph: &dyn Match<E, M, N>,
-    opts: MatchOptions<E, M, N>,
+fn bench_match<N: Network>(
+    graph: &dyn Match<N>,
+    opts: MatchOptions<N>,
     coordinates: LineString<f64>,
 ) -> (LineString, Vec<i64>) {
     let result = graph

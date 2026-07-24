@@ -6,14 +6,14 @@
 //! [`Route`](crate::Route), [`Scan`](crate::Scan) and
 //! [`Discovery`](crate::Discovery) traits.
 //!
-//! **Associated types vs. generics.** `DataPlane` exposes its `Entry` and
+//! **Associated types, not generics.** `DataPlane` exposes its `Entry` and
 //! `Metadata` types as associated types (`type Entry`, `type Meta`) rather
 //! than trait-level generics. This means downstream consumers — viewers,
 //! exporters — can bound on `N: DataPlane` alone and pick the concrete
-//! `N::Entry` / `N::Meta` off the type, instead of threading `<E, M, N>`
-//! through every signature. The full [`Network`](crate::Network) trait is
-//! still parameterised on `<E, M>` for backwards compatibility; the two
-//! styles bridge via the blanket impl in `network.rs`.
+//! `N::Entry` / `N::Meta` / `N::Runtime` off the type, instead of threading
+//! `<E, M, N>` through every signature. The full [`Network`](crate::Network)
+//! trait follows the same style, inheriting these associated types via the
+//! blanket impl in `network.rs`.
 
 use alloc::sync::Arc;
 use core::fmt::Debug;
@@ -33,7 +33,13 @@ pub type GraphEdge<E> = (E, E, EdgeData<E>);
 /// (shortest path).
 pub trait DataPlane: Debug + Send + Sync {
     type Entry: Entry;
-    type Meta: Metadata;
+    /// The runtime configuration type of this plane's metadata.
+    ///
+    /// Declared here (and tied to `Meta` by the bound below) so consumers can
+    /// bound and name `N::Runtime` without reaching into the [`Metadata`]
+    /// trait themselves.
+    type Runtime: Clone + Debug + Send + Sync;
+    type Meta: Metadata<Runtime = Self::Runtime>;
 
     fn metadata(&self, id: &Self::Entry) -> Option<&Self::Meta>;
 
@@ -68,6 +74,7 @@ where
     T: DataPlane,
 {
     type Entry = <T as DataPlane>::Entry;
+    type Runtime = <T as DataPlane>::Runtime;
     type Meta = <T as DataPlane>::Meta;
 
     fn metadata(&self, id: &Self::Entry) -> Option<&Self::Meta> {

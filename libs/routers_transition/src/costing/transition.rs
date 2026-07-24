@@ -4,7 +4,7 @@ use crate::costing::Strategy;
 use crate::map_path::MapPath;
 use crate::primitives::{ResolutionMethod, RoutingContext};
 use geo::{Distance, Haversine, Point};
-use routers_network::{Entry, Metadata, Network};
+use routers_network::{Entry, Network};
 
 pub trait TransitionStrategy<E>: for<'a> Strategy<TransitionContext<'a, E>> {}
 impl<T, E> TransitionStrategy<E> for T where T: for<'a> Strategy<TransitionContext<'a, E>> {}
@@ -135,14 +135,13 @@ where
     /// Candidate positions and the [`MapPath`] representation of the optimal
     /// path are derived internally — the caller supplies the candidate IDs
     /// and the map-node sequence between them.
-    pub fn new<M, N>(
-        ctx: &'a RoutingContext<'a, E, M, N>,
+    pub fn new<N>(
+        ctx: &'a RoutingContext<'a, N>,
         (src, trg): (CandidateRef, CandidateRef),
         map_path: &'a [E],
     ) -> Option<Self>
     where
-        M: Metadata,
-        N: Network<E, M>,
+        N: Network<Entry = E> + ?Sized,
     {
         let source = ctx.candidate(&src)?;
         let target = ctx.candidate(&trg)?;

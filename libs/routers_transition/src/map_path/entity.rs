@@ -4,7 +4,7 @@ use core::{
 };
 
 use geo::{Bearing, Distance, Haversine, LineString, Point};
-use routers_network::{Entry, Metadata, Network, Node};
+use routers_network::{Entry, Network, Node};
 
 /// For asking geometric questions of a path over the network, use a
 /// [`MapPath`].
@@ -45,7 +45,7 @@ where
 
     // TODO: This should be done lazily, since we may not need the points but possibly OK as is.
     /// Creates a new path from a slice of node ids, and a map to look up their locations.
-    pub fn new_with_map<M: Metadata>(map: &dyn Network<E, M>, nodes: &[E]) -> Self {
+    pub fn new_with_map<N: Network<Entry = E> + ?Sized>(map: &N, nodes: &[E]) -> Self {
         let resolved = map.line(nodes);
 
         let nodes = resolved

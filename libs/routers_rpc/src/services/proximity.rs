@@ -6,7 +6,7 @@ use connectrpc::{ConnectError, RequestContext, ServiceResult};
 use core::cmp::Ordering;
 use geo::{Distance, Haversine, Point};
 use log::{debug, info};
-use routers_network::{Entry, Metadata, Network};
+use routers_network::Network;
 use schema::connect::routers::api::scan::v1::ScanService;
 use schema::proto::routers::api::scan::v1::{
     __buffa::view::{EdgeRequestView, PointRequestView, PointSnappedRequestView},
@@ -16,11 +16,9 @@ use schema::proto::routers::api::scan::v1::{
 use tracing::Level;
 
 #[allow(refining_impl_trait)]
-impl<T, E, M> ScanService for RPCAdapter<T, E, M>
+impl<T> ScanService for RPCAdapter<T>
 where
-    T: Network<E, M> + Send + Sync + 'static,
-    M: Metadata + Send + Sync + 'static,
-    E: Entry + Send + Sync + 'static,
+    T: Network + Send + Sync + 'static,
 {
     #[cfg_attr(feature="telemetry", tracing::instrument(skip_all, level = Level::INFO))]
     async fn point(

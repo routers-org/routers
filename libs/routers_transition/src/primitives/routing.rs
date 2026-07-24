@@ -1,4 +1,4 @@
-use routers_network::{Edge, Entry, Metadata, Network};
+use routers_network::{Edge, Network};
 
 use crate::candidate::{Candidate, CandidateRef, CandidateStore};
 
@@ -9,30 +9,26 @@ use crate::candidate::{Candidate, CandidateRef, CandidateStore};
 /// references, so an extension point sees exactly what the built-in pipeline
 /// sees.
 #[derive(Clone, Copy, Debug)]
-pub struct RoutingContext<'a, E, M, N>
+pub struct RoutingContext<'a, N>
 where
-    E: Entry + 'a,
-    M: Metadata + 'a,
-    N: Network<E, M>,
+    N: Network + ?Sized,
 {
-    pub candidates: &'a CandidateStore<E>,
+    pub candidates: &'a CandidateStore<N::Entry>,
     pub map: &'a N,
-    pub runtime: &'a M::Runtime,
+    pub runtime: &'a N::Runtime,
 }
 
-impl<N, E, M> RoutingContext<'_, E, M, N>
+impl<N> RoutingContext<'_, N>
 where
-    E: Entry,
-    M: Metadata,
-    N: Network<E, M>,
+    N: Network + ?Sized,
 {
     /// Obtain a [candidate](Candidate), should it exist, by its [ref](CandidateRef).
-    pub fn candidate(&self, candidate: &CandidateRef) -> Option<Candidate<E>> {
+    pub fn candidate(&self, candidate: &CandidateRef) -> Option<Candidate<N::Entry>> {
         self.candidates.candidate(candidate)
     }
 
     /// Obtain the [edge](Edge), should it exist, between two nodes (specified as ids).
-    pub fn edge(&self, a: &E, b: &E) -> Option<Edge<E>> {
+    pub fn edge(&self, a: &N::Entry, b: &N::Entry) -> Option<Edge<N::Entry>> {
         self.map.edge(a, b)
     }
 }

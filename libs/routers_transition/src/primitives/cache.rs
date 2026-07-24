@@ -1,48 +1,51 @@
 use alloc::sync::Arc;
 use core::fmt::Debug;
 use geo::Distance;
-use routers_network::{Entry, Metadata, Network};
+use routers_network::{DataPlane, Metadata, Network};
 use rustc_hash::{FxBuildHasher, FxHashMap};
 use scc::HashMap;
 
-pub trait CacheKey: Entry {}
-impl<T> CacheKey for T where T: Entry {}
-
 /// A generic read-through cache for a hashmap-backed data structure
-#[derive(Debug)]
-pub struct CacheMap<K, V, M, N, Meta>
+pub struct CacheMap<V, N, Meta>
 where
-    K: CacheKey,
     V: Debug,
-    M: Metadata,
     Meta: Debug,
-    N: Network<K, M>,
+    N: Network,
 {
-    pub(crate) map: HashMap<K, Arc<V>, FxBuildHasher>,
+    pub(crate) map: HashMap<N::Entry, Arc<V>, FxBuildHasher>,
     pub(crate) metadata: Meta,
+}
 
-    _marker: core::marker::PhantomData<M>,
-    _marker2: core::marker::PhantomData<N>,
+// Hand-rolled so the `Debug` bound stays off the moka cache (whose own `Debug`,
+// and its stats accessors, would drag `V: Send + Sync + 'static` onto every use
+// of `CacheMap`). The entries themselves are elided.
+impl<V, N, Meta> Debug for CacheMap<V, N, Meta>
+where
+    V: Debug,
+    Meta: Debug,
+    N: Network,
+{
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("CacheMap")
+            .field("metadata", &self.metadata)
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Debug)]
-pub struct LockedMap<K, V, M, N, Meta>(Arc<CacheMap<K, V, M, N, Meta>>)
+pub struct LockedMap<V, N, Meta>(Arc<CacheMap<V, N, Meta>>)
 where
-    LockedMap<K, V, M, N, Meta>: Calculable<K, M, N, V>,
-    M: Metadata,
-    K: CacheKey,
-    N: Network<K, M>,
+    LockedMap<V, N, Meta>: Calculable<N, V>,
+    N: Network,
     V: Debug,
     Meta: Debug;
 
-impl<K, V, M, N, Meta> Default for LockedMap<K, V, M, N, Meta>
+impl<V, N, Meta> Default for LockedMap<V, N, Meta>
 where
-    LockedMap<K, V, M, N, Meta>: Calculable<K, M, N, V>,
-    CacheMap<K, V, M, N, Meta>: Default,
-    M: Metadata,
-    K: CacheKey,
+    LockedMap<V, N, Meta>: Calculable<N, V>,
+    CacheMap<V, N, Meta>: Default,
     V: Debug,
-    N: Network<K, M>,
+    N: Network,
     Meta: Debug,
 {
     fn default() -> Self {
@@ -50,13 +53,11 @@ where
     }
 }
 
-impl<K, V, M, N, Meta> Clone for LockedMap<K, V, M, N, Meta>
+impl<V, N, Meta> Clone for LockedMap<V, N, Meta>
 where
-    LockedMap<K, V, M, N, Meta>: Calculable<K, M, N, V>,
-    CacheMap<K, V, M, N, Meta>: Default,
-    N: Network<K, M>,
-    M: Metadata,
-    K: CacheKey,
+    LockedMap<V, N, Meta>: Calculable<N, V>,
+    CacheMap<V, N, Meta>: Default,
+    N: Network,
     V: Debug,
     Meta: Debug,
 {
@@ -65,13 +66,11 @@ where
     }
 }
 
-impl<K, V, N, M, Meta> LockedMap<K, V, M, N, Meta>
+impl<V, N, Meta> LockedMap<V, N, Meta>
 where
-    LockedMap<K, V, M, N, Meta>: Calculable<K, M, N, V>,
-    M: Metadata,
-    K: CacheKey,
-    N: Network<K, M>,
-    V: Debug,
+    LockedMap<V, N, Meta>: Calculable<N, V>,
+    N: Network,
+    V: Debug + Send + Sync + 'static,
     Meta: Debug,
 {
     /// Exposes a query call for the cache map, allowing the caller
@@ -84,9 +83,9 @@ where
     ///
     /// The function returns the value, [`V`] wrapped in a reference counter.
     /// This, therefore does not require [`V`] to be `Clone`. However, it
-    /// consumes an owned value of the key, [`K`], which is required for the
-    /// call to the [`Calculable::calculate`] function.
-    pub fn query(&self, ctx: &RoutingContext<K, M, N>, key: K) -> Arc<V> {
+    /// consumes an owned value of the key, [`N::Entry`], which is required
+    /// for the call to the [`Calculable::calculate`] function.
+    pub fn query(&self, ctx: &RoutingContext<N>, key: N::Entry) -> Arc<V> {
         if let Some(value) = self.0.map.get(&key) {
             return Arc::clone(value.get());
         }
@@ -98,29 +97,24 @@ where
     }
 }
 
-impl<K, V, M, N, Meta> Default for CacheMap<K, V, M, N, Meta>
+impl<V, N, Meta> Default for CacheMap<V, N, Meta>
 where
-    K: CacheKey,
-    V: Debug,
-    M: Metadata,
-    N: Network<K, M>,
+    V: Debug + Send + Sync + 'static,
+    N: Network,
     Meta: Default + Debug,
 {
     fn default() -> Self {
         Self {
             map: HashMap::default(),
             metadata: Meta::default(),
-
-            _marker: core::marker::PhantomData,
-            _marker2: core::marker::PhantomData,
         }
     }
 }
 
 /// Implementation of a routing-domain calculable KV pair.
 ///
-/// Asserts that the value, [`V`] can be generated from the key, [`K`],
-/// given routing context, and the base structure.
+/// Asserts that the value, [`V`] can be generated from the key
+/// (the network's [`Entry`]), given routing context, and the base structure.
 ///
 /// ### Examples
 ///
@@ -130,13 +124,13 @@ where
 /// The [`SuccessorsCache`], given an underlying map key,
 /// can derive the successors using the routing map and an
 /// upper-bounded dijkstra algorithm.
-pub trait Calculable<E: CacheKey, M: Metadata, N: Network<E, M>, V> {
+pub trait Calculable<N: Network, V> {
     /// The concrete implementation of the function which derives the
-    /// value, [`V`], from the key, [`K`].
+    /// value, [`V`], from the key.
     ///
     /// The function parameters include relevant [`RoutingContext`] which
     /// may be required for the calculation.
-    fn calculate(&self, ctx: &RoutingContext<E, M, N>, key: E) -> V;
+    fn calculate(&self, ctx: &RoutingContext<N>, key: N::Entry) -> V;
 }
 
 mod successor {
@@ -153,13 +147,11 @@ mod successor {
     ///
     /// It accepts a node id as input, from which it will obtain all outgoing
     /// edges and obtain the distances to each one as a [`WeightAndDistance`].
-    pub type SuccessorsCache<E, M, N> = LockedMap<E, SuccessorWeights<E>, M, N, ()>;
+    pub type SuccessorsCache<N> = LockedMap<SuccessorWeights<<N as DataPlane>::Entry>, N, ()>;
 
-    impl<E: CacheKey, M: Metadata, N: Network<E, M>> Calculable<E, M, N, SuccessorWeights<E>>
-        for SuccessorsCache<E, M, N>
-    {
+    impl<N: Network> Calculable<N, SuccessorWeights<N::Entry>> for SuccessorsCache<N> {
         #[inline]
-        fn calculate(&self, ctx: &RoutingContext<E, M, N>, key: E) -> SuccessorWeights<E> {
+        fn calculate(&self, ctx: &RoutingContext<N>, key: N::Entry) -> SuccessorWeights<N::Entry> {
             // Calc. once
             #[allow(unsafe_code)]
             let source = unsafe { ctx.map.point(&key).unwrap_unchecked() };
@@ -189,32 +181,28 @@ mod successor {
 
 mod predicate {
     use crate::primitives::{Dijkstra, algorithms::DijkstraReachableItem};
-    use routers_network::{Entry, Network};
+    use routers_network::Network;
 
     use super::*;
 
     const DEFAULT_THRESHOLD: f64 = 200_000f64; // 2km in cm
 
     #[derive(Debug)]
-    pub struct PredicateMetadata<E, M, N>
+    pub struct PredicateMetadata<N>
     where
-        E: Entry,
-        M: Metadata,
-        N: Network<E, M>,
+        N: Network,
     {
         /// The successors cache used to back the successors and
         /// prevent repeated calculations.
-        successors: SuccessorsCache<E, M, N>,
+        successors: SuccessorsCache<N>,
 
         /// The threshold by which the solver is bounded, in centimeters.
         threshold_distance: f64,
     }
 
-    impl<E, M, N> Default for PredicateMetadata<E, M, N>
+    impl<N> Default for PredicateMetadata<N>
     where
-        E: Entry,
-        M: Metadata,
-        N: Network<E, M>,
+        N: Network,
     {
         fn default() -> Self {
             Self {
@@ -244,10 +232,10 @@ mod predicate {
     /// matches (see
     /// [`MatchOptions::with_cache`](crate::MatchOptions::with_cache)) so
     /// later matches run warm.
-    pub type PredicateCache<E, M, N> =
-        LockedMap<E, Predicates<E>, M, N, PredicateMetadata<E, M, N>>;
+    pub type PredicateCache<N> =
+        LockedMap<Predicates<<N as DataPlane>::Entry>, N, PredicateMetadata<N>>;
 
-    impl<E: CacheKey, M: Metadata, N: Network<E, M>> PredicateCache<E, M, N> {
+    impl<N: Network> PredicateCache<N> {
         pub fn with_threshold(threshold_cm: f64) -> Self {
             LockedMap(Arc::new(CacheMap {
                 map: HashMap::default(),
@@ -255,17 +243,13 @@ mod predicate {
                     successors: SuccessorsCache::default(),
                     threshold_distance: threshold_cm,
                 },
-                _marker: core::marker::PhantomData,
-                _marker2: core::marker::PhantomData,
             }))
         }
     }
 
-    impl<E: CacheKey, M: Metadata, N: Network<E, M>> Calculable<E, M, N, Predicates<E>>
-        for PredicateCache<E, M, N>
-    {
+    impl<N: Network> Calculable<N, Predicates<N::Entry>> for PredicateCache<N> {
         #[inline]
-        fn calculate(&self, ctx: &RoutingContext<E, M, N>, key: E) -> Predicates<E> {
+        fn calculate(&self, ctx: &RoutingContext<N>, key: N::Entry) -> Predicates<N::Entry> {
             let threshold = self.0.metadata.threshold_distance;
 
             Dijkstra
@@ -299,7 +283,7 @@ mod predicate {
                 .map(|DijkstraReachableItem { node, parent, .. }| {
                     (node, parent.unwrap_or_default())
                 })
-                .collect::<Predicates<E>>()
+                .collect::<Predicates<N::Entry>>()
         }
     }
 }

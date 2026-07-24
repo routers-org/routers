@@ -1,18 +1,14 @@
 use alloc::sync::Arc;
 use routers_codec::osm::OsmNetwork;
-use std::{marker::PhantomData, path::PathBuf};
+use std::path::PathBuf;
 
-pub struct RPCAdapter<T, E, M> {
+pub struct RPCAdapter<T> {
     pub(crate) inner: Arc<T>,
-    _marker: PhantomData<(E, M)>,
 }
 
-impl<T, E, M> RPCAdapter<T, E, M> {
+impl<T> RPCAdapter<T> {
     pub fn new(inner: Arc<T>) -> Self {
-        Self {
-            inner,
-            _marker: PhantomData,
-        }
+        Self { inner }
     }
 }
 

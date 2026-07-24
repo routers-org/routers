@@ -3,7 +3,7 @@ use crate::costing::{EmissionContext, EmissionStrategy};
 use crate::r#match::DEFAULT_SEARCH_DISTANCE;
 use crate::{candidate::Candidate, layer::generation::LayerGeneration};
 use geo::{Distance, Haversine, Point};
-use routers_network::{Entry, Metadata, Network};
+use routers_network::Network;
 use routers_trellis::{LayerId, NodeId};
 
 /// The default candidate generator: a radius search projected onto nearby
@@ -13,10 +13,9 @@ use routers_trellis::{LayerId, NodeId};
 /// trajectory point contributes one candidate — the point's projection onto
 /// that edge — priced by the supplied emission strategy.
 #[derive(Copy, Clone)]
-pub struct StandardGenerator<'a, E, M, Emmis>
+pub struct StandardGenerator<'a, N, Emmis>
 where
-    E: Entry,
-    M: Metadata,
+    N: Network + ?Sized,
     Emmis: EmissionStrategy + Send + Sync,
 {
     /// The maximum distance by which the generator will search for nodes,
@@ -34,17 +33,16 @@ where
     pub emission: &'a Emmis,
 
     /// The routing map used to pull candidates from, and provide layout context.
-    map: &'a dyn Network<E, M>,
+    map: &'a N,
 }
 
-impl<'a, E, M, Emmis> StandardGenerator<'a, E, M, Emmis>
+impl<'a, N, Emmis> StandardGenerator<'a, N, Emmis>
 where
-    E: Entry,
-    M: Metadata,
+    N: Network + ?Sized,
     Emmis: EmissionStrategy + Send + Sync,
 {
     /// Creates a [`StandardGenerator`] from a map and emission heuristic.
-    pub fn new(map: &'a dyn Network<E, M>, emission: &'a Emmis) -> Self {
+    pub fn new(map: &'a N, emission: &'a Emmis) -> Self {
         StandardGenerator {
             map,
             emission,
@@ -58,13 +56,12 @@ where
     }
 }
 
-impl<Emmis, E, M> LayerGeneration<E> for StandardGenerator<'_, E, M, Emmis>
+impl<Emmis, N> LayerGeneration<N::Entry> for StandardGenerator<'_, N, Emmis>
 where
-    E: Entry,
-    M: Metadata,
+    N: Network + ?Sized,
     Emmis: EmissionStrategy + Send + Sync,
 {
-    fn candidates(&self, origin: &Point, layer: LayerId) -> Vec<Candidate<E>> {
+    fn candidates(&self, origin: &Point, layer: LayerId) -> Vec<Candidate<N::Entry>> {
         self.map
             .nearest_nodes_projected(origin, self.search_distance)
             .enumerate()

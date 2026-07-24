@@ -2,18 +2,13 @@ use alloc::sync::Arc;
 
 use geo::{Haversine, InterpolatableLine, Line, LineLocatePoint, Point};
 
-use crate::{Discovery, Edge, Entry, Node};
+use crate::{Discovery, Edge, Node};
 
 /// Trait containing utility functions to find nodes on a root structure.
-pub trait Scan<E>: Discovery<E>
-where
-    E: Entry,
-{
+pub trait Scan: Discovery {
     /// Searches for, and returns a reference to nearest node from the origin [point](Point).
     /// This node may not exist, and therefore the return type is optional.
-    fn nearest_node<'a>(&'a self, point: &Point) -> Option<&'a Node<E>>
-    where
-        E: 'a;
+    fn nearest_node<'a>(&'a self, point: &Point) -> Option<&'a Node<Self::Entry>>;
 
     /// Returns an iterator over [`Projected`] nodes on each edge within the specified `distance`.
     /// It does so using the [`Scan::nearest_edges`] function.
@@ -28,10 +23,7 @@ where
         &'a self,
         point: &'a Point,
         distance: f64,
-    ) -> Box<dyn Iterator<Item = (Point, Edge<Node<E>>)> + Send + 'a>
-    where
-        E: 'a,
-    {
+    ) -> Box<dyn Iterator<Item = (Point, Edge<Node<Self::Entry>>)> + Send + 'a> {
         // Total overhead of this function is negligible.
         Box::new(
             self.edges_at_distance(point, distance)
@@ -50,15 +42,11 @@ where
     }
 }
 
-impl<T, E> Scan<E> for Arc<T>
+impl<T> Scan for Arc<T>
 where
-    T: Scan<E>,
-    E: Entry,
+    T: Scan,
 {
-    fn nearest_node<'a>(&'a self, point: &Point) -> Option<&'a Node<E>>
-    where
-        E: 'a,
-    {
+    fn nearest_node<'a>(&'a self, point: &Point) -> Option<&'a Node<Self::Entry>> {
         (**self).nearest_node(point)
     }
 }

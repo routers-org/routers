@@ -24,7 +24,7 @@ use crate::{
 };
 use itertools::Itertools;
 use rayon::prelude::*;
-use routers_network::{Entry, Metadata, Network};
+use routers_network::Network;
 use routers_trellis::{LayerId, MAX_WEIGHT, NO_EDGE, NodeId, Trellis};
 
 /// A strategy for weighing the pending boundaries of a [`Trellis`].
@@ -32,23 +32,21 @@ use routers_trellis::{LayerId, MAX_WEIGHT, NO_EDGE, NodeId, Trellis};
 /// Weighing touches only **pending** boundaries: resolved weights are
 /// append-stable and never recomputed, so weighing a grown trellis costs only
 /// the new boundaries.
-pub trait Weigher<E, M, N>
+pub trait Weigher<N>
 where
-    E: Entry,
-    M: Metadata,
-    N: Network<E, M>,
+    N: Network,
 {
     /// The predicate cache backing this weigher's reachability queries.
-    fn cache(&self) -> &PredicateCache<E, M, N>;
+    fn cache(&self) -> &PredicateCache<N>;
 
     /// Which next-layer candidates to weigh for `source`, as positions within
     /// `to_layer`. All-compute returns all of them; a selective strategy returns a
     /// promising subset.
     fn select(
         &self,
-        ctx: &RoutingContext<E, M, N>,
-        source: &Candidate<E>,
-        to_layer: &[Candidate<E>],
+        ctx: &RoutingContext<N>,
+        source: &Candidate<N::Entry>,
+        to_layer: &[Candidate<N::Entry>],
     ) -> Vec<NodeId>;
 
     /// How candidate `to` is reached from `from` on the road network, or `None`
@@ -56,10 +54,10 @@ where
     /// deterministic, so it reproduces exactly what weighing costed.
     fn reach(
         &self,
-        ctx: &RoutingContext<E, M, N>,
+        ctx: &RoutingContext<N>,
         from: CandidateRef,
         to: CandidateRef,
-    ) -> Option<Reachable<E>> {
+    ) -> Option<Reachable<N::Entry>> {
         Expansion::new(ctx, self.cache()).reach(from, to)
     }
 
@@ -68,14 +66,14 @@ where
     /// here — they are node weights.
     fn hop<Emmis, Trans>(
         &self,
-        ctx: &RoutingContext<E, M, N>,
-        costing: &CostingStrategies<Emmis, Trans, E>,
+        ctx: &RoutingContext<N>,
+        costing: &CostingStrategies<Emmis, Trans, N::Entry>,
         from: CandidateRef,
         to: CandidateRef,
     ) -> Option<u32>
     where
         Emmis: EmissionStrategy + Send + Sync,
-        Trans: TransitionStrategy<E> + Send + Sync,
+        Trans: TransitionStrategy<N::Entry> + Send + Sync,
     {
         let reachable = self.reach(ctx, from, to)?;
 
@@ -90,14 +88,14 @@ where
     /// where absent.
     fn weigh_source<Emmis, Trans>(
         &self,
-        ctx: &RoutingContext<E, M, N>,
-        costing: &CostingStrategies<Emmis, Trans, E>,
-        source: &Candidate<E>,
-        to_layer: &[Candidate<E>],
+        ctx: &RoutingContext<N>,
+        costing: &CostingStrategies<Emmis, Trans, N::Entry>,
+        source: &Candidate<N::Entry>,
+        to_layer: &[Candidate<N::Entry>],
     ) -> Vec<u32>
     where
         Emmis: EmissionStrategy + Send + Sync,
-        Trans: TransitionStrategy<E> + Send + Sync,
+        Trans: TransitionStrategy<N::Entry> + Send + Sync,
     {
         let mut row = vec![NO_EDGE; to_layer.len()];
 
@@ -118,13 +116,13 @@ where
     /// narrow boundaries don't drown the row's work in task overhead.
     fn weigh_boundary<Emmis, Trans>(
         &self,
-        ctx: &RoutingContext<E, M, N>,
-        costing: &CostingStrategies<Emmis, Trans, E>,
+        ctx: &RoutingContext<N>,
+        costing: &CostingStrategies<Emmis, Trans, N::Entry>,
         boundary: LayerId,
     ) -> Vec<u32>
     where
         Emmis: EmissionStrategy + Send + Sync,
-        Trans: TransitionStrategy<E> + Send + Sync,
+        Trans: TransitionStrategy<N::Entry> + Send + Sync,
         Self: Sync,
     {
         let (Some(from_layer), Some(to_layer)) = (
@@ -150,13 +148,13 @@ where
     /// records a gap (see [`Trellis::disconnections`]).
     fn weigh<Emmis, Trans>(
         &self,
-        ctx: &RoutingContext<E, M, N>,
-        costing: &CostingStrategies<Emmis, Trans, E>,
+        ctx: &RoutingContext<N>,
+        costing: &CostingStrategies<Emmis, Trans, N::Entry>,
         trellis: &mut Trellis,
     ) -> Result<(), MatchError>
     where
         Emmis: EmissionStrategy + Send + Sync,
-        Trans: TransitionStrategy<E> + Send + Sync,
+        Trans: TransitionStrategy<N::Entry> + Send + Sync,
         Self: Sync,
     {
         let pending = trellis

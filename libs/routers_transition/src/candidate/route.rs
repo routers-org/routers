@@ -43,7 +43,10 @@ where
     E: Entry,
     M: Metadata,
 {
-    pub fn new(collapsed_path: CollapsedPath<'_, E>, network: &impl Network<E, M>) -> Self {
+    pub fn new(
+        collapsed_path: CollapsedPath<'_, E>,
+        network: &impl Network<Entry = E, Meta = M>,
+    ) -> Self {
         // Collect matched candidates in order.  Virtual start/end nodes have no
         // lookup entry so flat_map quietly skips them.
         let matched: Vec<Candidate<E>> = collapsed_path
@@ -191,7 +194,10 @@ where
     E: Entry,
     M: Metadata,
 {
-    pub fn new(candidate: Candidate<E>, network: &impl Network<E, M>) -> Option<Self> {
+    pub fn new(
+        candidate: Candidate<E>,
+        network: &impl Network<Entry = E, Meta = M>,
+    ) -> Option<Self> {
         Some(PathElement {
             point: candidate.position.0,
             edge: network.fatten(&candidate.edge)?,
@@ -199,7 +205,10 @@ where
         })
     }
 
-    pub fn from_edge_source(edge: Edge<Node<E>>, network: &impl Network<E, M>) -> Option<Self> {
+    pub fn from_edge_source(
+        edge: Edge<Node<E>>,
+        network: &impl Network<Entry = E, Meta = M>,
+    ) -> Option<Self> {
         Some(PathElement {
             point: edge.source.position.0,
             metadata: network.metadata(edge.id())?.clone(),
@@ -207,7 +216,10 @@ where
         })
     }
 
-    pub fn from_edge_target(edge: Edge<Node<E>>, network: &impl Network<E, M>) -> Option<Self> {
+    pub fn from_edge_target(
+        edge: Edge<Node<E>>,
+        network: &impl Network<Entry = E, Meta = M>,
+    ) -> Option<Self> {
         Some(PathElement {
             point: edge.target.position.0,
             metadata: network.metadata(edge.id())?.clone(),
