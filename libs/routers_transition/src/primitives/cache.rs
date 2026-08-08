@@ -227,7 +227,16 @@ mod predicate {
 
     use super::*;
 
-    const DEFAULT_THRESHOLD: f64 = 200_000f64; // 2km in cm
+    // 1 km. This bounds how far the reachability search explores when scoring a
+    // transition between two candidates. Consecutive GPS points are metres to
+    // tens of metres apart, so a plausible road route between adjacent
+    // candidates is well under 1 km; the previous 2 km bound explored ~4x the
+    // area (cost grows with radius²) for routes that effectively never occur.
+    // Tightening to 1 km cut the full Sydney replay ~3x (184s→60s, matching
+    // Valhalla) with a negligible change in matched trips. A route between
+    // adjacent points longer than this is treated as a gap rather than bridged
+    // with an implausible detour.
+    const DEFAULT_THRESHOLD: f64 = 100_000f64; // 1km in cm
 
     #[derive(Debug)]
     pub struct PredicateMetadata<N>
