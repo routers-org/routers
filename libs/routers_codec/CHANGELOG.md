@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.0] - 2026-08-08
+
+### 🚜 Refactor
+
+- *(routers_codec)* [**breaking**] Port OsmNetwork to RowIndex
+
+
+
 ## [0.1.8] - 2026-07-30
 
 ### 🚀 Features

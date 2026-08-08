@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.1] - 2026-08-08
+
+### 🚀 Features
+
+- *(trellis)* Report the convergence point of a solve
+
+
+
 ## [0.2.0] - 2026-07-17
 
 ### 🚀 Features

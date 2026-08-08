@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.0] - 2026-08-08
+
+### 🚜 Refactor
+
+- *(routers_network)* [**breaking**] Replace rstar spatial indices with geo-index RowIndex
+
+
+
 ## [0.2.0] - 2026-07-30
 
 ### 🚀 Features
