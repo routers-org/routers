@@ -2,6 +2,26 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.4.0] - 2026-08-08
+
+### 🚀 Features
+
+- *(realtime)* Multiple performance and throughput-oriented improvements
+- *(realtime)* [**breaking**] Widen vehicle id to u64 and retire trip id
+- *(realtime)* Extract the stable hashing contract into a partition module
+- *(transition)* Carry observation timestamps through the trip
+- *(realtime)* [**breaking**] Emit convergence diffs and cut the trip behind them
+- *(realtime)* [**breaking**] Matchers serve request/reply behind a queue group
+- *(realtime)* [**breaking**] Durable partitioned ingest and the owner-authoritative orchestrator
+- *(realtime)* Route requests by geography and degrade foreign resumes
+- *(infra)* [**breaking**] Deploy the vehicle-partitioned fleet
+
+### 🐛 Bug Fixes
+
+- *(realtime)* Type enforcement
+
+
+
 ## [0.3.2] - 2026-07-30
 
 ### 🚀 Features

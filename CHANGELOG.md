@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.5] - 2026-08-08
+
+### 🚀 Features
+
+- Include licensing section in README
+
+
+
 ## [0.3.4] - 2026-07-30
 
 ### ⚙️ Miscellaneous Tasks

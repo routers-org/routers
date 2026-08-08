@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.9] - 2026-08-08
+
+### ⚙️ Miscellaneous Tasks
+
+- Updated the following local packages: routers_network, routers_schema, routers_codec, routers_transition
+
+
+
 ## [0.1.8] - 2026-07-30
 
 ### 🚀 Features
