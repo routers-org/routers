@@ -185,10 +185,20 @@ mod successor {
     /// The weights, given as output from the [`SuccessorsCache::calculate`] function.
     type SuccessorWeights<E> = Vec<(E, DirectionAwareEdgeId<E>, WeightAndDistance)>;
 
-    /// The cache map definition for the successors.
+    /// Per-node cache of the **accessible** outgoing edges and their costs.
     ///
-    /// It accepts a node id as input, from which it will obtain all outgoing
-    /// edges and obtain the distances to each one as a [`WeightAndDistance`].
+    /// Resolves two things once per node and caches the result: the geometry
+    /// (distance/weight to each neighbour) *and* whether each edge is traversable
+    /// under the routing runtime. The reachability Dijkstra then walks this list
+    /// directly — where it used to call `metadata`/`accessible` on every edge of
+    /// every relaxation, the accessibility check now happens once per node.
+    ///
+    /// Because the accessibility filter is runtime-dependent, a cached list is
+    /// only valid for one runtime; the enclosing [`PredicateCache`] binds and
+    /// guards that runtime, and this cache is only reached through it. (The
+    /// geometry half is runtime-independent, but keeping one cache avoids a
+    /// second lookup + allocation per relaxation, which measured *slower* than
+    /// the per-edge check it would replace.)
     pub type SuccessorsCache<N> = LockedMap<SuccessorWeights<<N as DataPlane>::Entry>, N, ()>;
 
     impl<N: Network> Calculable<N, SuccessorWeights<N::Entry>> for SuccessorsCache<N> {
@@ -200,6 +210,13 @@ mod successor {
 
             ctx.map
                 .edges_outof(key)
+                // Keep only edges traversable by the runtime; an edge with no
+                // metadata is not traversable. Resolved here, once per node,
+                // rather than on every Dijkstra relaxation.
+                .filter(|(_, _, (_, edge))| match ctx.map.metadata(&edge.index()) {
+                    Some(meta) => meta.accessible(ctx.runtime, edge.direction()),
+                    None => false,
+                })
                 .map(|(_, next, (w, edge))| {
                     const METER_TO_CM: f64 = 100.0;
 
@@ -222,6 +239,8 @@ mod successor {
 }
 
 mod predicate {
+    use std::sync::OnceLock;
+
     use crate::primitives::{Dijkstra, algorithms::DijkstraReachableItem};
     use routers_network::Network;
 
@@ -234,12 +253,21 @@ mod predicate {
     where
         N: Network,
     {
-        /// The successors cache used to back the successors and
-        /// prevent repeated calculations.
+        /// Accessibility-resolved successors: resolves each node's traversable
+        /// edges (and their costs) once, so the reachability Dijkstra no longer
+        /// re-checks accessibility on every edge relaxation.
         successors: SuccessorsCache<N>,
 
         /// The threshold by which the solver is bounded, in centimeters.
         threshold_distance: f64,
+
+        /// The runtime this cache was first queried with. Every stored
+        /// reachability map is filtered for it, so serving another runtime
+        /// would return one configuration's reachability for another's query —
+        /// the tainting this cache is now guarded against. Captured lazily on
+        /// the first query so callers still construct the cache without a
+        /// runtime (which only arrives per-match).
+        bound_runtime: OnceLock<N::Runtime>,
     }
 
     impl<N> Default for PredicateMetadata<N>
@@ -250,6 +278,7 @@ mod predicate {
             Self {
                 successors: SuccessorsCache::default(),
                 threshold_distance: DEFAULT_THRESHOLD,
+                bound_runtime: OnceLock::new(),
             }
         }
     }
@@ -282,6 +311,7 @@ mod predicate {
             LockedMap(Arc::new(CacheMap::with_metadata(PredicateMetadata {
                 successors: SuccessorsCache::default(),
                 threshold_distance: threshold_cm,
+                bound_runtime: OnceLock::new(),
             })))
         }
     }
@@ -289,30 +319,38 @@ mod predicate {
     impl<N: Network> Calculable<N, Predicates<N::Entry>> for PredicateCache<N> {
         #[inline]
         fn calculate(&self, ctx: &RoutingContext<N>, key: N::Entry) -> Predicates<N::Entry> {
+            // Bind this cache to the runtime it first serves, and guard that it
+            // is never reused with another. Accessibility — and therefore every
+            // reachability map stored here — is a function of the runtime, so
+            // mixing runtimes on one cache would hand a query the wrong
+            // configuration's reachability. This is the invariant the old
+            // inline-filter TODO could not uphold; resolving accessibility
+            // through a runtime-bound cache does.
+            let bound = self
+                .0
+                .metadata
+                .bound_runtime
+                .get_or_init(|| ctx.runtime.clone());
+            // A hard invariant, not a debug check: serving a different runtime
+            // would return one configuration's reachability for another's query
+            // — silently wrong routes. The compare is one cheap `PartialEq` per
+            // cache miss (each of which is already a full Dijkstra), so enforce
+            // it in every build. In practice a cache serves one runtime (one
+            // mode per shard/deployment); multiple modes need a cache each.
+            assert!(
+                bound == ctx.runtime,
+                "PredicateCache reused across runtimes: its cached reachability was \
+                 resolved for a different routing configuration and would taint this \
+                 query — use a separate cache per runtime"
+            );
+
             let threshold = self.0.metadata.threshold_distance;
 
             Dijkstra
                 .reach(&key, move |node| {
+                    // Successors are already accessibility-resolved for the
+                    // bound runtime, so the hot relaxation loop is a plain walk.
                     ArcIter::new(self.0.metadata.successors.query(ctx, *node))
-                        .filter(|(_, edge, _)| {
-                            // Only traverse paths which can be accessed by
-                            // the specific runtime routing conditions available
-                            let meta = ctx.map.metadata(&edge.index());
-                            if meta.is_none() {
-                                return false;
-                            }
-
-                            let direction = edge.direction();
-
-                            // TODO: Does not uphold invariant.
-                            //       => Idempotency
-                            //       The accessibility check is not considered in the key,
-                            //       and so may taint other queries by pre-filtering accessible
-                            //       paths, which may be accessible with a different runtime
-                            //       configuration.
-
-                            meta.unwrap().accessible(ctx.runtime, direction)
-                        })
                         .map(|(a, _, b)| (a, b))
                 })
                 .take_while(|p| {
