@@ -38,7 +38,7 @@ pub trait DataPlane: Debug + Send + Sync {
     /// Declared here (and tied to `Meta` by the bound below) so consumers can
     /// bound and name `N::Runtime` without reaching into the [`Metadata`]
     /// trait themselves.
-    type Runtime: Clone + Debug + Send + Sync;
+    type Runtime: Clone + Debug + Send + Sync + PartialEq;
     type Meta: Metadata<Runtime = Self::Runtime>;
 
     fn metadata(&self, id: &Self::Entry) -> Option<&Self::Meta>;

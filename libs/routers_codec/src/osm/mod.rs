@@ -241,7 +241,7 @@ pub mod runtime {
     use crate::osm::primitives::condition::VehicleProperty;
     use crate::osm::primitives::opening_hours::TimeOfWeek;
 
-    #[derive(Debug, Clone)]
+    #[derive(Debug, Clone, PartialEq)]
     pub struct OsmTripConfiguration {
         /// The transport mode by which a vehicle is travelling.
         /// This is used in order to validate access to ways,
