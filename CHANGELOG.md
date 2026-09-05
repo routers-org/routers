@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.12] - 2026-09-05
+
+### 🚀 Features
+
+- *(terraform)* Terragrunt units, cluster-free registry and shard cache, infracost
+
+### 🐛 Bug Fixes
+
+- Remove `infrastructure` module ([#254](https://github.com/routers-org/routers/pull/254))
+
+### ⚙️ Miscellaneous Tasks
+
+- *(infra)* Move terraform to routers-org/infrastructure
+
+
+
 ## [0.3.11] - 2026-09-04
 
 ### 🚀 Features
