@@ -22,6 +22,8 @@ anyhow = { workspace = true }
 # Geography
 geo = { workspace = true }
 petgraph = { workspace = true }
+# S2 cell hierarchy, behind the `s2` feature (see below).
+s2 = { workspace = true, optional = true }
 
 # Utilities
 rustc-hash = { workspace = true }
@@ -55,12 +57,17 @@ web-sys = { version = "0.3", optional = true, features = [
 ] }
 
 [features]
-default = ["osm", "parallel"]
+default = ["osm", "parallel", "s2"]
 osm = ["dep:routers_codec", "routers_codec/osm"]
 
 # Rebuild spatial indices across a rayon pool; off for single-threaded targets
 # (wasm), where the two trees build in sequence.
 parallel = ["dep:rayon", "routers_codec?/parallel"]
+
+# The `S2Strategy` partitioner. Pulls in the `s2` crate (and through it
+# `float_extras`, which binds the C maths library), so it is a feature the
+# wasm build can leave off.
+s2 = ["dep:s2"]
 
 # The browser `window.fetch` shard fetcher (wasm-bindgen). Off for component
 # builds, which take shard bytes from the host instead.

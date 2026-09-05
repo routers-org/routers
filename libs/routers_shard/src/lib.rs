@@ -5,6 +5,11 @@
 //! constructing a [`ShardedNetwork`] containing only the data relevant
 //! to a chosen shard (optionally including its neighbours).
 //!
+//! Three strategies ship with the crate: [`QuadTreeStrategy`] and
+//! [`GeohashStrategy`] subdivide the equirectangular world rectangle, and
+//! [`S2Strategy`] (behind the `s2` feature) uses the S2 cell hierarchy on the
+//! sphere, which keeps cell areas near-uniform and wraps the antimeridian.
+//!
 //! The library is agnostic of the underlying map data format: it operates
 //! on the generic [`Entry`](routers_network::Entry) and
 //! [`Metadata`](routers_network::Metadata) traits. An OSM-specific ingestion
@@ -25,6 +30,9 @@ pub use strategy::{
     geohash::{Geohash, GeohashParseError, GeohashStrategy},
     quadtree::{QuadKey, QuadTreeStrategy},
 };
+
+#[cfg(feature = "s2")]
+pub use strategy::s2::{S2CellId, S2ParseError, S2Strategy};
 
 #[cfg(not(target_arch = "wasm32"))]
 pub use loader::FileFetcher;

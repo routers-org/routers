@@ -6,6 +6,8 @@
 
 pub mod geohash;
 pub mod quadtree;
+#[cfg(feature = "s2")]
+pub mod s2;
 
 use core::fmt::Debug;
 use core::hash::Hash;
