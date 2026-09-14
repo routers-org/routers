@@ -36,7 +36,7 @@ web-time = "1"
 scc = { workspace = true }
 fnv_rs = "0.4.4"
 futures = "0.3.32"
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["signal"] }
 itertools = { workspace = true }
 clap = { workspace = true, features = ["derive", "env"] }
 url = { workspace = true }

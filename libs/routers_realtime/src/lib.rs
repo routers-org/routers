@@ -1,3 +1,5 @@
+extern crate alloc;
+
 pub mod bus;
 pub mod event;
 pub mod ingest;
