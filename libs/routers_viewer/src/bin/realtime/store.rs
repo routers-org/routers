@@ -4,18 +4,21 @@ use std::collections::HashMap;
 use web_time::Instant;
 
 use geo::Point;
-use routers_realtime::event::{MatchedDiff, MatchedEvent, VehicleId};
+use routers_realtime::event::{MatchedDiff, VehicleId};
+use routers_realtime::protocol::output::supersedes;
+use routers_realtime::protocol::{CommittedOutput, OutputKind, Revision};
 
 use crate::E;
 
-/// A vehicle's matched history, merged from diff emissions: one geometry
+/// A vehicle's matched history, merged from committed outputs: one geometry
 /// segment per observation timestamp. Overlapping emissions supersede per
-/// layer — re-emission is convergence, not conflict — so the trace heals as
-/// later solves refine earlier layers.
+/// layer by revision — higher wins, equal-or-lower is a duplicate or stale
+/// re-delivery — so the trace heals as later solves refine earlier layers
+/// without a stale emission ever clobbering a newer one.
 pub struct VehicleTrace {
-    /// Observation timestamp → the geometry driven into that observation
-    /// (its inbound road path, then its matched position).
-    layers: BTreeMap<i64, Vec<Point>>,
+    /// Observation timestamp → `(revision that set it, geometry driven into
+    /// that observation)`. The revision gates every merge at that timestamp.
+    layers: BTreeMap<i64, (Revision, Vec<Point>)>,
     pub last_seen: Instant,
 }
 
@@ -27,11 +30,16 @@ impl VehicleTrace {
         }
     }
 
-    fn merge(&mut self, diff: &MatchedDiff<E>, capacity: usize) {
+    /// Merge a matched diff, keeping the highest revision per timestamp. A
+    /// layer whose revision does not supersede the one already held is dropped.
+    fn merge(&mut self, revision: Revision, diff: &MatchedDiff<E>, capacity: usize) {
         for layer in &diff.layers {
-            let mut segment = layer.path.clone();
-            segment.push(layer.position);
-            self.layers.insert(layer.timestamp, segment);
+            let existing = self.layers.get(&layer.timestamp).map(|(rev, _)| *rev);
+            if supersedes(revision, existing) {
+                let mut segment = layer.path.clone();
+                segment.push(layer.position);
+                self.layers.insert(layer.timestamp, (revision, segment));
+            }
         }
 
         // Bound by observation count, trimming the oldest.
@@ -39,12 +47,28 @@ impl VehicleTrace {
             self.layers.pop_first();
         }
 
+        self.touch();
+    }
+
+    /// Drop the retracted (non-final) timestamps.
+    fn retract(&mut self, timestamps: &[i64]) {
+        for timestamp in timestamps {
+            self.layers.remove(timestamp);
+        }
+        self.touch();
+    }
+
+    fn touch(&mut self) {
         self.last_seen = Instant::now();
     }
 
     /// The full tail as one point sequence, oldest observation first.
     pub fn flattened(&self) -> Vec<Point> {
-        self.layers.values().flatten().copied().collect()
+        self.layers
+            .values()
+            .flat_map(|(_, points)| points)
+            .copied()
+            .collect()
     }
 }
 
@@ -76,23 +100,36 @@ impl TraceStore {
         }
     }
 
-    pub fn ingest(&mut self, result: MatchedEvent<E>) {
+    pub fn ingest(&mut self, output: CommittedOutput<E>) {
         let now = Instant::now();
 
         self.event_bucket.push_back(now);
         self.total_events += 1;
 
-        if result.diff.layers.is_empty() {
-            return;
+        match &output.kind {
+            // Layers merge by observation timestamp under revision gating, so
+            // the newest timestamp is the vehicle's current position, which the
+            // plugin marks with the head dot.
+            OutputKind::Matched { diff, .. } => {
+                self.traces
+                    .entry(output.vehicle_id)
+                    .or_insert_with(VehicleTrace::new)
+                    .merge(output.revision, diff, self.capacity);
+            }
+            // A retraction only edits a vehicle we already know about.
+            OutputKind::Retraction { timestamps } => {
+                if let Some(trace) = self.traces.get_mut(&output.vehicle_id) {
+                    trace.retract(timestamps);
+                }
+            }
+            // Resets and terminals leave the drawn geometry alone; they only
+            // keep a known vehicle alive against idle eviction.
+            OutputKind::Terminal { .. } | OutputKind::Reset { .. } => {
+                if let Some(trace) = self.traces.get_mut(&output.vehicle_id) {
+                    trace.touch();
+                }
+            }
         }
-
-        // Layers merge by observation timestamp, so the newest one is the
-        // vehicle's current position, which the plugin marks with the head
-        // dot.
-        self.traces
-            .entry(result.vehicle_id)
-            .or_insert_with(VehicleTrace::new)
-            .merge(&result.diff, self.capacity);
     }
 
     pub fn evict_idle(&mut self) {

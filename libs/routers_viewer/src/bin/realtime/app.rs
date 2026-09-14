@@ -5,7 +5,7 @@ use eframe::CreationContext;
 use egui::SidePanel;
 use futures::StreamExt;
 use routers_realtime::bus::NATSStream;
-use routers_realtime::event::MatchedEvent;
+use routers_realtime::protocol::{CommittedOutput, OutputKind};
 use walkers::{MapMemory, lon_lat};
 
 use routers_viewer::{ColourFactory, Component, Context, Map, Regular};
@@ -21,14 +21,14 @@ const DRAIN_PER_FRAME: usize = 2_000;
 pub struct RealtimeApp {
     map: Map,
     store: TraceStore,
-    rx: Receiver<MatchedEvent<E>>,
+    rx: Receiver<CommittedOutput<E>>,
     centered: bool,
 }
 
 impl RealtimeApp {
     pub fn new(
         ctx: &CreationContext<'_>,
-        mut source: NATSStream<MatchedEvent<E>>,
+        mut source: NATSStream<CommittedOutput<E>>,
         trace_capacity: usize,
         idle_ttl: Duration,
     ) -> Self {
@@ -65,16 +65,19 @@ impl eframe::App for RealtimeApp {
             layout: Box::new(Regular),
         };
 
-        for result in self.rx.try_iter().take(DRAIN_PER_FRAME) {
+        for output in self.rx.try_iter().take(DRAIN_PER_FRAME) {
+            // Recentre once, on the first matched layer we see; other output
+            // kinds carry no geometry to centre on.
             if !self.centered
-                && let Some(layer) = result.diff.layers.first()
+                && let OutputKind::Matched { diff, .. } = &output.kind
+                && let Some(layer) = diff.layers.first()
             {
                 self.map
                     .center_at(lon_lat(layer.position.x(), layer.position.y()));
                 self.centered = true;
             }
 
-            self.store.ingest(result);
+            self.store.ingest(output);
         }
         self.store.evict_idle();
 
