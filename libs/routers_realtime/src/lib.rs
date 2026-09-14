@@ -2,7 +2,6 @@ extern crate alloc;
 
 pub mod bus;
 pub mod event;
-pub mod ingest;
 pub mod ingress;
 pub mod lifecycle;
 pub mod matcher;

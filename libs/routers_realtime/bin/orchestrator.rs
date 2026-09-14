@@ -9,9 +9,9 @@ use routers_codec::osm::OsmEntryId;
 use routers_realtime::{
     bus::{self, Wire},
     event::{MatchContext, MatchReply, MatchedEvent, Payload, RawEvent},
-    ingest,
     partition::{self, PARTITIONS},
     store::RedisStore,
+    topology,
 };
 use routers_transition::matcher::Trip;
 use routers_transition::{Continuation, Origin};
@@ -257,7 +257,13 @@ async fn main() -> anyhow::Result<()> {
         .context("could not connect to NATS")?;
     let stream = jetstream::new(client.clone());
 
-    ingest::matched_stream(&stream, args.matched_retention).await?;
+    topology::ensure_output_stream(
+        &stream,
+        &topology::OutputConfig {
+            max_age: args.matched_retention,
+        },
+    )
+    .await?;
 
     let gap = chrono::Duration::from_std(args.gap).context("gap out of range")?;
 
@@ -403,13 +409,17 @@ async fn main() -> anyhow::Result<()> {
     // and pin to the vehicle's worker. Poison messages (undecodable) are
     // acked away — redelivering them can never succeed.
     let owned = owned_partitions(&args)?;
+    let raw_cfg = topology::RawConfig {
+        streams: args.streams,
+        max_ack_pending: args.max_ack_pending,
+        ack_wait: args.ack_wait,
+        ..Default::default()
+    };
     let mut forwarders = Vec::new();
     for partition in owned.clone() {
-        let index = ingest::stream_index(partition, args.streams);
-        let raw = ingest::raw_stream(&stream, index, args.streams).await?;
-        let consumer =
-            ingest::partition_consumer(&raw, partition, args.max_ack_pending, args.ack_wait)
-                .await?;
+        let index = topology::raw_stream_index(partition, args.streams);
+        let raw = topology::ensure_raw_stream(&stream, index, args.streams, &raw_cfg).await?;
+        let consumer = topology::raw_consumer(&raw, partition, &raw_cfg, None).await?;
 
         let txs = txs.clone();
         forwarders.push(tokio::spawn(async move {
@@ -561,7 +571,7 @@ impl Worker {
             let matched = MatchedEvent { vehicle_id, diff };
             let bytes = matched.encode().context("could not encode emission")?;
 
-            let subject = ingest::matched_subject(partition::partition_of(vehicle_id));
+            let subject = topology::output_subject(partition::partition_of(vehicle_id));
             self.stream
                 .publish_with_headers(subject, bus::outbound(), bytes.into())
                 .instrument(info_span!("publish_matched"))

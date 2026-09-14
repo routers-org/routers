@@ -1,1 +1,231 @@
 //! Regional solve-job plane. (T05)
+//!
+//! Solve jobs are addressed by three tokens: the graph version they must be
+//! solved against, the region whose matchers own the ground, and a priority
+//! lane. The subject is `solve.v1.g.<graph>.r.<region>.q.<lane>`, versioned in
+//! its second token so a future contract can run a parallel subject space.
+//!
+//! One stream per region (`SOLVE-JOBS-<region>`) captures every graph and lane
+//! for that region, and it is a
+//! [`WorkQueue`](async_nats::jetstream::stream::RetentionPolicy::WorkQueue):
+//! a job is claimed once, by one matcher replica, and deleted on ack. Every
+//! replica serving a `(graph, region)` shares a single durable pull consumer
+//! (`matchers-g<graph>-r<region>`) whose filter narrows the region stream to
+//! that graph, so the broker load-balances jobs across the replicas without
+//! any two solving the same job.
+//!
+//! Because `graph` and `region` are validated NATS tokens (they cannot contain
+//! `.`), the subject splits unambiguously and [`parse_job_subject`] can
+//! recover the triple a job was addressed with.
+
+use core::time::Duration;
+
+use anyhow::Context as _;
+use async_nats::jetstream::{
+    self,
+    consumer::{AckPolicy, PullConsumer, pull},
+    stream::{Config, RetentionPolicy, StorageType},
+};
+
+use super::{DUPLICATE_WINDOW, create_or_update_stream};
+use crate::protocol::ids::{GraphVersion, Lane, RegionId};
+
+/// The versioned subject prefix every solve job shares.
+pub const JOB_PREFIX: &str = "solve.v1";
+
+/// Retention and delivery knobs for the regional job plane.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct JobsConfig {
+    /// How long an unclaimed job lives before it ages out — its useful
+    /// lifetime, past which its deadline has expired anyway.
+    pub max_age: Duration,
+    /// How many times a job is redelivered before the broker gives up. Bounds
+    /// a poison job's blast radius while still tolerating replica churn.
+    pub max_deliver: i64,
+    /// How long the broker waits for an ack before redelivering — sized to a
+    /// solve's worst case, so a slow (not crashed) matcher is not double-served.
+    pub ack_wait: Duration,
+    /// Unclaimed-but-delivered jobs the consumer may hold across all replicas.
+    pub max_ack_pending: i64,
+}
+
+impl Default for JobsConfig {
+    fn default() -> Self {
+        Self {
+            max_age: Duration::from_secs(60),
+            max_deliver: 3,
+            ack_wait: Duration::from_secs(30),
+            max_ack_pending: 2048,
+        }
+    }
+}
+
+/// The subject one job publishes to: `solve.v1.g.<graph>.r.<region>.q.<lane>`.
+pub fn job_subject(graph: &GraphVersion, region: &RegionId, lane: Lane) -> String {
+    format!("{JOB_PREFIX}.g.{graph}.r.{region}.q.{}", lane.0)
+}
+
+/// The name of a region's job stream: `SOLVE-JOBS-<region>`.
+pub fn job_stream_name(region: &RegionId) -> String {
+    format!("SOLVE-JOBS-{region}")
+}
+
+/// The subject set a region's stream captures: every graph and lane for the
+/// region, `solve.v1.g.*.r.<region>.q.*`.
+pub fn job_stream_subjects(region: &RegionId) -> String {
+    format!("{JOB_PREFIX}.g.*.r.{region}.q.*")
+}
+
+/// The durable consumer name matchers serving one `(graph, region)` share:
+/// `matchers-g<graph>-r<region>`.
+pub fn job_consumer_name(graph: &GraphVersion, region: &RegionId) -> String {
+    format!("matchers-g{graph}-r{region}")
+}
+
+/// The filter narrowing a region stream to one graph, across every lane:
+/// `solve.v1.g.<graph>.r.<region>.q.>`.
+pub fn job_consumer_filter(graph: &GraphVersion, region: &RegionId) -> String {
+    format!("{JOB_PREFIX}.g.{graph}.r.{region}.q.>")
+}
+
+/// Recover the `(graph, region, lane)` a job subject addressed, validating
+/// each token. Returns [`None`] for anything that is not a well-formed job
+/// subject — a wildcard filter, a foreign plane, or an unsafe token.
+pub fn parse_job_subject(subject: &str) -> Option<(GraphVersion, RegionId, Lane)> {
+    let parts: [&str; 8] = subject.split('.').collect::<Vec<_>>().try_into().ok()?;
+    match parts {
+        ["solve", "v1", "g", graph, "r", region, "q", lane] => {
+            let graph = GraphVersion::new(graph).ok()?;
+            let region = RegionId::new(region).ok()?;
+            let lane = lane.parse::<u8>().ok().map(Lane)?;
+            Some((graph, region, lane))
+        }
+        _ => None,
+    }
+}
+
+/// Idempotently reconcile a region's job stream.
+///
+/// Work-queue retention on
+/// [`File`](async_nats::jetstream::stream::StorageType::File) storage: a job is
+/// claimed once and deleted on ack. The `duplicate_window` lets an ambiguous
+/// re-publish under the same [`Nats-Msg-Id`](crate::protocol::ids::headers::MSG_ID)
+/// collapse rather than double-enqueue.
+pub async fn ensure_job_stream(
+    context: &jetstream::Context,
+    region: &RegionId,
+    config: &JobsConfig,
+) -> anyhow::Result<jetstream::stream::Stream> {
+    create_or_update_stream(
+        context,
+        Config {
+            name: job_stream_name(region),
+            subjects: vec![job_stream_subjects(region)],
+            retention: RetentionPolicy::WorkQueue,
+            storage: StorageType::File,
+            max_age: config.max_age,
+            duplicate_window: DUPLICATE_WINDOW,
+            ..Default::default()
+        },
+    )
+    .await
+    .with_context(|| format!("could not reconcile job stream for region {region}"))
+}
+
+/// The shared durable pull consumer for the matchers of one `(graph, region)`.
+/// Explicit ack with bounded redelivery: a claimed job is redelivered up to
+/// [`JobsConfig::max_deliver`] times if unacked within
+/// [`JobsConfig::ack_wait`], so a crashed replica's work is picked up by
+/// another without a poison job looping forever.
+pub async fn job_consumer(
+    stream: &jetstream::stream::Stream,
+    graph: &GraphVersion,
+    region: &RegionId,
+    config: &JobsConfig,
+) -> anyhow::Result<PullConsumer> {
+    let name = job_consumer_name(graph, region);
+
+    stream
+        .get_or_create_consumer(
+            &name,
+            pull::Config {
+                durable_name: Some(name.clone()),
+                filter_subject: job_consumer_filter(graph, region),
+                ack_policy: AckPolicy::Explicit,
+                max_deliver: config.max_deliver,
+                ack_wait: config.ack_wait,
+                max_ack_pending: config.max_ack_pending,
+                ..Default::default()
+            },
+        )
+        .await
+        .with_context(|| format!("could not create job consumer {name}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn graph() -> GraphVersion {
+        GraphVersion::new("europe-2026-09").unwrap()
+    }
+
+    fn region() -> RegionId {
+        RegionId::new("syd").unwrap()
+    }
+
+    #[test]
+    fn subject_and_names_format() {
+        assert_eq!(
+            job_subject(&graph(), &region(), Lane(0)),
+            "solve.v1.g.europe-2026-09.r.syd.q.0"
+        );
+        assert_eq!(
+            job_subject(&graph(), &region(), Lane(7)),
+            "solve.v1.g.europe-2026-09.r.syd.q.7"
+        );
+        assert_eq!(job_stream_name(&region()), "SOLVE-JOBS-syd");
+        assert_eq!(job_stream_subjects(&region()), "solve.v1.g.*.r.syd.q.*");
+        assert_eq!(
+            job_consumer_name(&graph(), &region()),
+            "matchers-geurope-2026-09-rsyd"
+        );
+        assert_eq!(
+            job_consumer_filter(&graph(), &region()),
+            "solve.v1.g.europe-2026-09.r.syd.q.>"
+        );
+    }
+
+    #[test]
+    fn subject_round_trips_through_parser() {
+        for lane in [0u8, 1, 9, 255] {
+            let subject = job_subject(&graph(), &region(), Lane(lane));
+            assert_eq!(
+                parse_job_subject(&subject),
+                Some((graph(), region(), Lane(lane)))
+            );
+        }
+    }
+
+    #[test]
+    fn parser_rejects_the_malformed() {
+        let rejected = [
+            "events.raw.p.3",                    // foreign plane
+            "solve.v1.g.europe.r.syd.q.>",       // wildcard, not a concrete lane
+            "solve.v1.g.europe.r.syd.q.-1",      // signed lane
+            "solve.v1.g.europe.r.syd.q.256",     // lane overflows u8
+            "solve.v1.g.europe.r.syd.q",         // too few tokens
+            "solve.v1.g.europe.r.syd.q.0.extra", // too many tokens
+            "solve.v2.g.europe.r.syd.q.0",       // wrong version
+            "solve.v1.x.europe.r.syd.q.0",       // wrong graph marker
+            "",                                  // empty
+        ];
+        for subject in rejected {
+            assert_eq!(
+                parse_job_subject(subject),
+                None,
+                "{subject:?} should not parse"
+            );
+        }
+    }
+}

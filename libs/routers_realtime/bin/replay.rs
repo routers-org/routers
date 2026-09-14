@@ -1,7 +1,7 @@
 /// Loads and sorts the full dataset, then walks events in chronological
 /// order. Publishes each event, broker-acknowledged, to its vehicle's
 /// partition subject on the durable raw streams — the reference producer for
-/// the ingest contract (`routers_realtime::partition` + `ingest`).
+/// the ingest contract (`routers_realtime::partition` + `topology`).
 use anyhow::Context;
 use async_nats::{ConnectOptions, ServerAddr, jetstream};
 use clap::Parser;
@@ -16,7 +16,7 @@ use polars::prelude::*;
 use routers_realtime::{
     bus::{self, Wire},
     event::{Payload, VehicleId},
-    ingest, partition,
+    partition, topology,
 };
 use std::future::IntoFuture;
 use std::{fmt::Write, path::PathBuf, time::Duration};
@@ -99,8 +99,12 @@ async fn main() -> anyhow::Result<()> {
         .await?;
 
     let stream = jetstream::new(client);
+    let raw_cfg = topology::RawConfig {
+        streams: args.streams,
+        ..Default::default()
+    };
     for index in 0..args.streams {
-        ingest::raw_stream(&stream, index, args.streams).await?;
+        topology::ensure_raw_stream(&stream, index, args.streams, &raw_cfg).await?;
     }
 
     let df = LazyCsvReader::new(args.file)
@@ -169,7 +173,7 @@ async fn main() -> anyhow::Result<()> {
             let offset = Duration::from_micros(time - min).div_f64(speed);
             tokio::time::sleep_until(start + offset).await;
 
-            let subject = ingest::raw_subject(partition::partition_of(payload.vehicle_id));
+            let subject = topology::raw_subject(partition::partition_of(payload.vehicle_id));
             let bytes = payload.encode().context("could not encode payload")?;
 
             acks.push(
