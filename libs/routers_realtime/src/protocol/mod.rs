@@ -7,3 +7,6 @@ pub mod output;
 pub mod result;
 
 pub use ids::*;
+pub use job::{BaseState, JobIdentity, SolveJob};
+pub use output::{CommittedOutput, OutputKind, ResetReason, TerminalReason};
+pub use result::{SolveOutcome, SolveResult};
