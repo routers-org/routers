@@ -55,6 +55,12 @@ async-nats = "0.38.0"
 redis = { version = "0.29", features = ["tokio-comp", "streams"] }
 polars = { version = "0.46", default-features = false, features = ["lazy", "csv", "strings", "dtype-full"] }
 
+# Configuration, checksums, cancellation
+toml = "0.8"
+sha2 = "0.10"
+tokio-util = "0.7"
+serde_json = { workspace = true }
+
 [dev-dependencies]
 routers_network = { workspace = true, features = ["testing"] }
 
@@ -72,3 +78,7 @@ path = "bin/orchestrator.rs"
 [[bin]]
 name = "matcher"
 path = "bin/matcher.rs"
+
+[[bin]]
+name = "materializer"
+path = "bin/materializer.rs"

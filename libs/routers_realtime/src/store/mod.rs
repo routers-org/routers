@@ -1,3 +1,6 @@
+pub mod checkpoint;
+pub mod valkey;
+
 use serde::{Serialize, de::DeserializeOwned};
 
 mod redis;

@@ -1,3 +1,6 @@
+pub mod adapter;
+pub mod jetstream;
+pub mod memory;
 mod nats;
 mod trace;
 
