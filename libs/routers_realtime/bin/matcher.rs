@@ -26,6 +26,7 @@ use routers_realtime::matcher::engine::Engine;
 use routers_realtime::matcher::publish::{PublishConfig, ResultPublisher};
 use routers_realtime::matcher::pull::{PullConfig, PullLoop, RawBytes};
 use routers_realtime::matcher::validate::ValidateConfig;
+use routers_realtime::metrics::Metrics;
 use routers_realtime::protocol::ids::{IdError, RegionId};
 use routers_realtime::protocol::result::SolveResult;
 use routers_realtime::topology::jobs::{JobsConfig, ensure_job_stream, job_consumer};
@@ -100,6 +101,8 @@ struct Args {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let _telemetry = routers_realtime::telemetry::init("routers-matcher");
+    // Built after telemetry so the instruments bind to the installed meter.
+    let metrics = Metrics::new();
 
     let args = Args::parse();
     info!(?args, "matcher starting");
@@ -182,7 +185,8 @@ async fn main() -> anyhow::Result<()> {
         cfg,
         shutdown,
         Drain::new(),
-    );
+    )
+    .with_metrics(metrics);
 
     let stats = pull.run().await;
     info!(?stats, "matcher drained; exiting");

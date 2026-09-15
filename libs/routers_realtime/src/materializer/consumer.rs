@@ -14,6 +14,7 @@ use tracing::{debug, warn};
 use crate::bus::adapter::{AckHandle, Source};
 use crate::lifecycle::Shutdown;
 use crate::materializer::sink::{Applied, Sink};
+use crate::metrics::Metrics;
 use crate::protocol::output::CommittedOutput;
 
 /// How long to hold back a redelivery after a sink error.
@@ -47,11 +48,41 @@ impl Stats {
     }
 }
 
+/// The bounded metric label for one [`Applied`] outcome.
+fn applied_kind(applied: &Applied) -> &'static str {
+    match applied {
+        Applied::Inserted { .. } => "inserted",
+        Applied::Superseded { .. } => "superseded",
+        Applied::Duplicate => "duplicate",
+        Applied::Retracted { .. } => "retracted",
+        Applied::SegmentOpened => "segment_opened",
+        Applied::Terminal => "terminal",
+    }
+}
+
 /// Run the materialiser consume loop until shutdown or the source drains.
+///
+/// Equivalent to [`run_with_metrics`] with a [`Metrics::noop`] handle.
+pub async fn run<E, S, Src>(source: Src, sink: S, shutdown: Shutdown) -> anyhow::Result<Stats>
+where
+    E: Entry + DeserializeOwned,
+    S: Sink<E>,
+    Src: Source<CommittedOutput<E>>,
+{
+    run_with_metrics(source, sink, shutdown, &Metrics::noop()).await
+}
+
+/// Run the materialiser consume loop until shutdown or the source drains,
+/// recording bounded-label metrics through `metrics`.
 ///
 /// Returns the run's [`Stats`]; an error is returned only if acknowledging fails
 /// irrecoverably, which the caller treats as fatal.
-pub async fn run<E, S, Src>(mut source: Src, sink: S, shutdown: Shutdown) -> anyhow::Result<Stats>
+pub async fn run_with_metrics<E, S, Src>(
+    mut source: Src,
+    sink: S,
+    shutdown: Shutdown,
+    metrics: &Metrics,
+) -> anyhow::Result<Stats>
 where
     E: Entry + DeserializeOwned,
     S: Sink<E>,
@@ -77,6 +108,7 @@ where
 
                 match sink.apply(&delivery.item).await {
                     Ok(applied) => {
+                        metrics.materialized(applied_kind(&applied));
                         stats.record(applied);
                         if let Err(err) = delivery.handle.ack().await {
                             warn!(error = %err, "could not acknowledge applied output");

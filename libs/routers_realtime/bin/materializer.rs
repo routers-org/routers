@@ -20,6 +20,7 @@ use routers_realtime::bus::adapter::Source;
 use routers_realtime::bus::jetstream::JetStreamSource;
 use routers_realtime::lifecycle::Shutdown;
 use routers_realtime::materializer::{ValkeySink, consumer};
+use routers_realtime::metrics::Metrics;
 use routers_realtime::partition::PARTITIONS;
 use routers_realtime::protocol::output::CommittedOutput;
 use routers_realtime::topology;
@@ -103,6 +104,9 @@ async fn build_consumer(
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let _telemetry = routers_realtime::telemetry::init("routers-materializer");
+    // Built after telemetry so the instruments bind to the installed meter (a
+    // no-op meter, and thus free, when no OTLP endpoint is configured).
+    let metrics = Metrics::new();
 
     let args = Args::parse();
     info!("materializer started: {args:?}");
@@ -131,7 +135,7 @@ async fn main() -> anyhow::Result<()> {
         .await
         .context("could not connect to valkey")?;
 
-    let stats = run_materializer(source, sink, shutdown).await?;
+    let stats = run_materializer(source, sink, shutdown, &metrics).await?;
     info!("materializer stopped: {stats:?}");
     Ok(())
 }
@@ -141,12 +145,13 @@ async fn run_materializer<Src, S>(
     source: Src,
     sink: S,
     shutdown: Shutdown,
+    metrics: &Metrics,
 ) -> anyhow::Result<consumer::Stats>
 where
     Src: Source<CommittedOutput<E>>,
     S: routers_realtime::materializer::Sink<E>,
 {
-    consumer::run::<E, _, _>(source, sink, shutdown).await
+    consumer::run_with_metrics::<E, _, _>(source, sink, shutdown, metrics).await
 }
 
 #[cfg(test)]

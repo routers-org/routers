@@ -24,6 +24,7 @@ use routers_codec::osm::OsmEntryId;
 use routers_realtime::bus::jetstream::{JetStreamPublisher, JetStreamSource};
 use routers_realtime::lifecycle::Shutdown;
 use routers_realtime::matcher::pull::RawBytes;
+use routers_realtime::metrics::Metrics;
 use routers_realtime::orchestrator::admission::{Admission, AdmissionConfig};
 use routers_realtime::orchestrator::commit::{CommitConfig, Committer};
 use routers_realtime::orchestrator::dispatch::{DispatchConfig, Dispatcher};
@@ -237,6 +238,9 @@ fn admission_config(args: &Args) -> AdmissionConfig {
 #[tokio::main]
 async fn main() -> Result<()> {
     let _telemetry = routers_realtime::telemetry::init("routers-orchestrator");
+    // Built after telemetry so the instruments bind to the installed meter; a
+    // clone per partition worker (each instrument is a cheap Arc handle).
+    let metrics = Metrics::new();
 
     let args = Args::parse();
     info!("orchestrator started: {args:?}");
@@ -297,6 +301,9 @@ async fn main() -> Result<()> {
         admission_config(&args),
         catalog.regions.iter().map(|r| &r.id),
     );
+
+    // Register process-scoped admission gauges once, not per worker.
+    let _admission_gauges = admission.register_gauges(&metrics);
 
     // Publishers are shared by every partition and retry ambiguous publishes.
     let job_publisher = JetStreamPublisher::<SolveJob<E>>::new(context.clone(), args.ack_timeout);
@@ -362,7 +369,8 @@ async fn main() -> Result<()> {
             results,
             &report,
             shutdown.clone(),
-        );
+        )
+        .with_metrics(metrics.clone());
         handles.push((partition, tokio::spawn(worker.run())));
     }
 

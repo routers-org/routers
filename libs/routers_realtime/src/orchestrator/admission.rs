@@ -13,6 +13,7 @@ use std::collections::HashMap;
 
 use thiserror::Error;
 
+use crate::metrics::{AdmissionGauges, AdmissionRow, Metrics};
 use crate::protocol::ids::RegionId;
 
 /// Configured credit ceilings for the admission controller.
@@ -362,6 +363,39 @@ impl Admission {
     /// A reading of the process-wide scope (its `region` is `None`).
     pub fn global(&self) -> RegionUsage {
         self.0.global.usage()
+    }
+
+    /// Register the admission observable gauges (`jobs_outstanding`,
+    /// `admission_waiting`) against `metrics`, reading live [`snapshot`]s.
+    ///
+    /// The gauges are *observable*: OpenTelemetry pulls the current outstanding
+    /// and waiting counts on every metrics collection through the closure
+    /// installed here, so nothing on the hot dispatch path ever pushes a gauge
+    /// value. The hook lives beside the controller because only it can read the
+    /// credit scopes. The returned [`AdmissionGauges`] must be kept alive for
+    /// the lifetime of the process (drop it to stop reporting).
+    ///
+    /// [`snapshot`]: Self::snapshot
+    pub fn register_gauges(&self, metrics: &Metrics) -> AdmissionGauges {
+        let admission = self.clone();
+        metrics.register_admission(move || {
+            let mut rows: Vec<AdmissionRow> = admission
+                .snapshot()
+                .into_iter()
+                .map(|usage| AdmissionRow {
+                    region: usage.region.map(|r| r.as_str().to_owned()),
+                    jobs: usage.jobs,
+                    waiting: usage.waiting,
+                })
+                .collect();
+            let global = admission.global();
+            rows.push(AdmissionRow {
+                region: None,
+                jobs: global.jobs,
+                waiting: global.waiting,
+            });
+            rows
+        })
     }
 }
 
