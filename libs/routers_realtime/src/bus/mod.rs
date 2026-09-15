@@ -4,7 +4,6 @@ pub mod memory;
 mod nats;
 mod trace;
 
-pub use nats::NATSSink;
 pub use nats::NATSStream;
 pub use trace::{inbound, outbound, span_between, wallclock};
 
