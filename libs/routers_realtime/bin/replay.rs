@@ -1,25 +1,33 @@
 /// Loads and sorts the full dataset, then walks events in chronological
-/// order. Publishes each event, broker-acknowledged, to its vehicle's
-/// partition subject on the durable raw streams — the reference producer for
-/// the ingest contract (`routers_realtime::partition` + `topology`).
+/// order. Each event is validated and published, broker-acknowledged, through
+/// [`Ingress`] — the reference producer for the ingest contract
+/// (`routers_realtime::ingress` + `topology`). By default it feeds the live
+/// raw journal; with `--isolated <run>` it provisions and feeds a private
+/// `replay.<run>.` journal instead, so rematching history never injects
+/// historical work into the live deadline path.
+extern crate alloc;
+
+use alloc::collections::BTreeMap;
+use core::fmt::Write;
+use core::time::Duration;
+use std::path::PathBuf;
+
 use anyhow::Context;
 use async_nats::{ConnectOptions, ServerAddr, jetstream};
 use clap::Parser;
 use fnv_rs::{Fnv64, FnvHasher};
-use futures::{StreamExt, stream::FuturesUnordered};
 use geo::Point;
 use indicatif::{ProgressBar, ProgressState, ProgressStyle};
 use indicatif_log_bridge::LogWrapper;
 use itertools::izip;
-use log::{debug, info};
+use log::{debug, info, warn};
 use polars::prelude::*;
 use routers_realtime::{
-    bus::{self, Wire},
+    bus,
     event::{Payload, VehicleId},
-    partition, topology,
+    ingress::{Ingress, IngressLimits},
+    topology,
 };
-use std::future::IntoFuture;
-use std::{fmt::Write, path::PathBuf, time::Duration};
 use tokio::time::Instant;
 use url::Url;
 
@@ -49,15 +57,31 @@ struct Args {
     /// to different streams is a migration, not a tuning knob.
     #[arg(long, env, default_value_t = 4)]
     streams: u64,
+
+    /// Replay into an isolated processing run instead of the live journal.
+    /// Subjects and streams are prefixed `replay.<run>.`, so the historical
+    /// events never enter the live deadline path and age out on their own.
+    /// `<run>` must be NATS-safe (`[A-Za-z0-9_-]+`).
+    #[arg(long, env = "REPLAY_ISOLATED")]
+    isolated: Option<String>,
+
+    /// Reject observations older than this before publishing (a humantime
+    /// duration, e.g. `7days`, `36h`). A historical backfill should pass a
+    /// large value — e.g. `--max-age 3650days` — so old rows are admitted
+    /// rather than dropped. Defaults to `IngressLimits::default()` (7 days).
+    #[arg(long, env, value_parser = humantime::parse_duration)]
+    max_age: Option<Duration>,
+
+    /// Reject observations whose timestamp is more than this far in the future
+    /// (a humantime duration, e.g. `5min`). Guards against clock skew, not
+    /// history. Defaults to `IngressLimits::default()` (5 minutes).
+    #[arg(long, env, value_parser = humantime::parse_duration)]
+    max_ahead: Option<Duration>,
 }
 
 // 2026-04-01 03:40:02 UTC, or 2026-04-01 03:40:02.123456 UTC
 const TIME_FORMAT: &str = "%Y-%m-%d %H:%M:%S %Z";
 const TIME_FORMAT_FRACTIONAL: &str = "%Y-%m-%d %H:%M:%S%.f %Z";
-
-/// Publish acknowledgements kept in flight before the sender waits: enough
-/// to hide broker latency in flood mode without unbounded memory.
-const ACK_WINDOW: usize = 256;
 
 // Column names
 const VEHICLE_ID_COL: &str = "VehicleID";
@@ -98,14 +122,30 @@ async fn main() -> anyhow::Result<()> {
         .connect(ServerAddr::from_url(args.nats)?)
         .await?;
 
-    let stream = jetstream::new(client);
+    let context = jetstream::new(client);
+
+    // Age/skew limits: whatever the caller passed, otherwise the shared
+    // ingress defaults.
+    let defaults = IngressLimits::default();
+    let limits = IngressLimits {
+        max_age: args.max_age.unwrap_or(defaults.max_age),
+        max_ahead: args.max_ahead.unwrap_or(defaults.max_ahead),
+    };
+
+    let ingress = match &args.isolated {
+        Some(run) => {
+            info!("isolated replay run: {run:?}");
+            Ingress::isolated(context, run, limits)
+                .with_context(|| format!("invalid --isolated run token {run:?}"))?
+        }
+        None => Ingress::live(context, limits),
+    };
+
     let raw_cfg = topology::RawConfig {
         streams: args.streams,
         ..Default::default()
     };
-    for index in 0..args.streams {
-        topology::ensure_raw_stream(&stream, index, args.streams, &raw_cfg).await?;
-    }
+    ingress.ensure_streams(args.streams, &raw_cfg).await?;
 
     let df = LazyCsvReader::new(args.file)
         .with_has_header(true)
@@ -158,7 +198,10 @@ async fn main() -> anyhow::Result<()> {
         ));
     }
 
-    let mut acks = FuturesUnordered::new();
+    // Tally rejected observations by variant so one bad row is skipped and
+    // counted, never fatal. A publish (broker) failure is different — that is
+    // infrastructure, and it stops the run.
+    let mut rejected: BTreeMap<&'static str, u64> = BTreeMap::new();
 
     for iteration in 0..args.loops {
         pg.reset();
@@ -173,33 +216,43 @@ async fn main() -> anyhow::Result<()> {
             let offset = Duration::from_micros(time - min).div_f64(speed);
             tokio::time::sleep_until(start + offset).await;
 
-            let subject = topology::raw_subject(partition::partition_of(payload.vehicle_id));
-            let bytes = payload.encode().context("could not encode payload")?;
-
-            acks.push(
-                stream
-                    .publish_with_headers(subject, bus::outbound(), bytes.into())
-                    .await
-                    .context("could not publish event")?
-                    .into_future(),
-            );
-
-            // The broker confirms out of band; only wait once the window is
-            // full, so acknowledgement latency overlaps the next sends.
-            while acks.len() >= ACK_WINDOW {
-                acks.next().await.transpose()?;
+            // Await each publish before the next: JetStream assigns revisions
+            // in per-connection send order, so awaiting in loop order is what
+            // keeps a vehicle's observations in order downstream.
+            match ingress.publish(&payload, bus::wallclock()).await {
+                Ok(_) => {}
+                Err(error) if error.is_data_fault() => {
+                    *rejected.entry(error.kind()).or_default() += 1;
+                }
+                Err(error) => {
+                    return Err(anyhow::Error::new(error).context("could not publish event"));
+                }
             }
-        }
-
-        while let Some(ack) = acks.next().await {
-            ack?;
         }
         pg.finish();
     }
 
     multi.remove(&pg);
 
+    report_rejections(&rejected);
+
     Ok(())
+}
+
+/// Log the per-variant tally of observations that failed validation, or note a
+/// clean run. Bounded to the fixed [`IngressError::kind`] labels, so it never
+/// prints a vehicle id or coordinate.
+fn report_rejections(rejected: &BTreeMap<&'static str, u64>) {
+    if rejected.is_empty() {
+        info!("replay complete: no observations rejected");
+        return;
+    }
+
+    let total: u64 = rejected.values().sum();
+    warn!("replay complete: {total} observation(s) rejected by validation");
+    for (kind, count) in rejected {
+        warn!("  {kind}: {count}");
+    }
 }
 
 fn rows_of(df: &DataFrame) -> PolarsResult<impl Iterator<Item = (u64, Payload)> + '_> {
