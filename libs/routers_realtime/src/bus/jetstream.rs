@@ -18,7 +18,7 @@ use tracing::warn;
 use crate::bus::adapter::{
     AckHandle, Consumer, Delivery, PublishError, PublishOutcome, Publisher, Source,
 };
-use crate::bus::{Wire, inbound, last_sent_at};
+use crate::bus::{Wire, inbound};
 use crate::protocol::ids::headers::{msg_id_of, stamp_msg_id};
 
 /// The continuous pull-consumer message stream a [`JetStreamSource`] drives.
@@ -65,8 +65,7 @@ async fn build_delivery<T: Wire>(message: jetstream::Message) -> Option<Delivery
     let subject = message.subject.to_string();
     let headers = message.headers.clone();
 
-    inbound(&subject, headers.as_ref());
-    let sent_at = last_sent_at();
+    let sent_at = inbound(&subject, headers.as_ref());
     let msg_id = headers
         .as_ref()
         .and_then(|headers| msg_id_of(headers).map(str::to_owned));
@@ -93,6 +92,7 @@ async fn build_delivery<T: Wire>(message: jetstream::Message) -> Option<Delivery
         item,
         subject,
         msg_id,
+        headers: headers.unwrap_or_default(),
         sent_at,
         redelivered: deliveries > 1,
         handle: JetStreamAck {

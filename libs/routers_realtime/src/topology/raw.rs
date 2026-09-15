@@ -8,9 +8,9 @@ use core::time::Duration;
 
 use anyhow::Context as _;
 use async_nats::jetstream::{
-    self,
+    self, ErrorCode,
     consumer::{AckPolicy, DeliverPolicy, PullConsumer, pull},
-    stream::{Config, DiscardPolicy, RetentionPolicy, StorageType},
+    stream::{Config, ConsumerErrorKind, DiscardPolicy, RetentionPolicy, StorageType},
 };
 
 use super::{DUPLICATE_WINDOW, create_or_update_stream};
@@ -99,14 +99,20 @@ pub async fn raw_consumer(
 
     let deliver_policy = match start {
         Some(start_sequence) => {
-            // Deliver policy is immutable, so recreate the durable to move it.
-            let _ = stream.delete_consumer(&name).await;
+            // A missing consumer is benign fresh recovery; any other delete failure is fatal.
+            if let Err(err) = stream.delete_consumer(&name).await
+                && !is_consumer_not_found(&err)
+            {
+                return Err(anyhow::Error::new(err)).with_context(|| {
+                    format!("could not delete consumer for partition {partition} before moving it")
+                });
+            }
             DeliverPolicy::ByStartSequence { start_sequence }
         }
         None => DeliverPolicy::All,
     };
 
-    stream
+    let mut consumer = stream
         .get_or_create_consumer(
             &name,
             pull::Config {
@@ -120,7 +126,36 @@ pub async fn raw_consumer(
             },
         )
         .await
-        .with_context(|| format!("could not create consumer for partition {partition}"))
+        .with_context(|| format!("could not create consumer for partition {partition}"))?;
+
+    // `get_or_create_consumer` binds an *existing* durable as-is: if a stale
+    // consumer survived with a different deliver policy (a durable's policy is
+    // immutable, so it cannot be updated in place), recovery would resume from
+    // the wrong sequence. Confirm the broker's view matches what we asked for
+    // and refuse to run the partition otherwise.
+    let actual = consumer
+        .info()
+        .await
+        .with_context(|| format!("could not read consumer info for partition {partition}"))?
+        .config
+        .deliver_policy;
+    if actual != deliver_policy {
+        anyhow::bail!(
+            "partition {partition} consumer has deliver policy {actual:?}, expected {deliver_policy:?}"
+        );
+    }
+
+    Ok(consumer)
+}
+
+/// Whether a [`delete_consumer`](jetstream::stream::Stream::delete_consumer)
+/// error is the benign "consumer not found" case (JetStream error code 10014) —
+/// the fresh-recovery path where there is nothing to delete.
+fn is_consumer_not_found(err: &async_nats::jetstream::stream::ConsumerError) -> bool {
+    matches!(
+        err.kind(),
+        ConsumerErrorKind::JetStream(js) if js.error_code() == ErrorCode::CONSUMER_NOT_FOUND
+    )
 }
 
 #[cfg(test)]

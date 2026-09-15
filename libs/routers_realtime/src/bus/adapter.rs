@@ -36,6 +36,7 @@ pub struct Delivery<T, H: AckHandle> {
     pub subject: String,
     /// The broker dedup key (`Nats-Msg-Id`), if one was set.
     pub msg_id: Option<String>,
+    pub headers: HeaderMap,
     /// When the producer published it, if it stamped a send time.
     pub sent_at: Option<SystemTime>,
     pub redelivered: bool,

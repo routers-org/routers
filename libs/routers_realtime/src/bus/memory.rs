@@ -83,6 +83,7 @@ struct Polled {
     seq: u64,
     subject: String,
     msg_id: Option<String>,
+    headers: HeaderMap,
     bytes: Vec<u8>,
     sent_at: Option<SystemTime>,
     redelivered: bool,
@@ -95,6 +96,7 @@ impl Polled {
             seq: stored.seq,
             subject: stored.subject.clone(),
             msg_id: stored.msg_id.clone(),
+            headers: stored.headers.clone(),
             bytes: stored.bytes.clone(),
             sent_at: sent_at_from(&stored.headers),
             redelivered,
@@ -424,6 +426,7 @@ impl MemoryBus {
             },
             subject: polled.subject,
             msg_id: polled.msg_id,
+            headers: polled.headers,
             sent_at: polled.sent_at,
             redelivered: polled.redelivered,
         })
