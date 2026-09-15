@@ -230,6 +230,12 @@ pub struct PublishAck {
 /// so its traffic never reaches the live orchestrators. Construct with
 /// [`Ingress::live`] or [`Ingress::isolated`], provision streams once with
 /// [`Ingress::ensure_streams`], then [`Ingress::publish`] each observation.
+///
+/// It is `Clone`: the JetStream context underneath is an `Arc`-backed handle, so
+/// a clone shares one connection while carrying the same run token and limits.
+/// A batch producer hands each publish lane its own clone, so the lanes overlap
+/// their broker round-trips without sharing any per-observation state.
+#[derive(Clone)]
 pub struct Ingress {
     js: jetstream::Context,
     /// The isolated run token, or `None` for the live journal. The subject
