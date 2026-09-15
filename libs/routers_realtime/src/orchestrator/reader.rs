@@ -635,6 +635,7 @@ mod tests {
             handle: fx.ack(4),
             subject: subject(),
             msg_id: None,
+            headers: HeaderMap::new(),
             sent_at: None,
             redelivered: false,
         };

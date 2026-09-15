@@ -5,32 +5,26 @@
 //! before acknowledging so its consumption recovers independently. It owns none
 //! of the orchestrator's state: the output plane alone defines the served view.
 //!
-//! The `Source` adapter over the JetStream pull stream is thin and lives here on
-//! purpose — T32/T35 will lift a shared JetStream adapter into `bus::jetstream`,
-//! at which point this local one is replaced (follow-up).
+//! The consume loop drives the shared JetStream `Source` adapter in
+//! [`bus::jetstream`](routers_realtime::bus::jetstream), the same one the matcher
+//! and orchestrator use, so poison handling and trace plumbing stay in one place.
 
 use core::ops::RangeInclusive;
-use core::time::Duration;
 
 use anyhow::Context as _;
-use async_nats::jetstream::AckKind;
 use async_nats::jetstream::consumer::{AckPolicy, PullConsumer, pull};
 use async_nats::jetstream::stream::Stream as JetStream;
 use async_nats::{ConnectOptions, ServerAddr};
 use clap::Parser;
-use futures::StreamExt;
-use log::{info, warn};
-use serde::de::DeserializeOwned;
+use log::info;
 use url::Url;
 
 use routers_codec::osm::OsmEntryId;
-use routers_network::Entry;
-use routers_realtime::bus::Wire;
-use routers_realtime::bus::adapter::{AckHandle, Delivery, Source};
+use routers_realtime::bus::adapter::Source;
+use routers_realtime::bus::jetstream::JetStreamSource;
 use routers_realtime::lifecycle::Shutdown;
 use routers_realtime::materializer::{ValkeySink, consumer};
 use routers_realtime::partition::PARTITIONS;
-use routers_realtime::protocol::ids::headers;
 use routers_realtime::protocol::output::CommittedOutput;
 use routers_realtime::topology;
 
@@ -80,93 +74,6 @@ struct Args {
     /// a distinct name replays the plane independently.
     #[arg(long, env, default_value = "materializer")]
     consumer_name: String,
-}
-
-/// A [`Source`] over a JetStream pull consumer's message stream.
-struct JetStreamSource {
-    messages: pull::Stream,
-}
-
-/// The acknowledgement handle for one pulled output — it owns the message, so
-/// the ack travels with the work it drove.
-struct JetStreamAck {
-    message: async_nats::jetstream::Message,
-    sequence: u64,
-    deliveries: u32,
-}
-
-impl AckHandle for JetStreamAck {
-    async fn ack(self) -> anyhow::Result<()> {
-        self.message
-            .ack()
-            .await
-            .map_err(|err| anyhow::anyhow!("acknowledge failed: {err}"))
-    }
-
-    async fn nak(self, delay: Option<Duration>) -> anyhow::Result<()> {
-        self.message
-            .ack_with(AckKind::Nak(delay))
-            .await
-            .map_err(|err| anyhow::anyhow!("negative acknowledge failed: {err}"))
-    }
-
-    fn sequence(&self) -> u64 {
-        self.sequence
-    }
-
-    fn deliveries(&self) -> u32 {
-        self.deliveries
-    }
-}
-
-impl<T> Source<CommittedOutput<T>> for JetStreamSource
-where
-    T: Entry + DeserializeOwned,
-{
-    type Handle = JetStreamAck;
-
-    async fn next(&mut self) -> Option<anyhow::Result<Delivery<CommittedOutput<T>, JetStreamAck>>> {
-        let message = match self.messages.next().await? {
-            Ok(message) => message,
-            Err(err) => return Some(Err(anyhow::anyhow!("output pull error: {err}"))),
-        };
-
-        let (sequence, deliveries) = match message.info() {
-            Ok(info) => (info.stream_sequence, info.delivered.max(0) as u32),
-            Err(_) => (0, 1),
-        };
-
-        let item = match CommittedOutput::<T>::decode(&message.payload) {
-            Ok(item) => item,
-            Err(err) => {
-                // Retire the poison so the broker does not redeliver it forever,
-                // then surface the failure for the consumer to count.
-                if let Err(ack_err) = message.ack().await {
-                    warn!("could not ack poison output: {ack_err}");
-                }
-                return Some(Err(err.context("undecodable committed output")));
-            }
-        };
-
-        let subject = message.subject.to_string();
-        let msg_id = message
-            .headers
-            .as_ref()
-            .and_then(|headers| headers::msg_id_of(headers).map(str::to_owned));
-
-        Some(Ok(Delivery {
-            item,
-            handle: JetStreamAck {
-                message,
-                sequence,
-                deliveries,
-            },
-            subject,
-            msg_id,
-            sent_at: None,
-            redelivered: deliveries > 1,
-        }))
-    }
 }
 
 /// Build the durable pull consumer over the output plane, narrowed to
@@ -225,11 +132,9 @@ async fn main() -> anyhow::Result<()> {
     )
     .await?;
     let pull = build_consumer(&stream, &args.consumer_name, args.partitions).await?;
-    let messages = pull
-        .messages()
+    let source = JetStreamSource::<CommittedOutput<E>>::from_consumer(&pull)
         .await
         .context("could not start the output pull")?;
-    let source = JetStreamSource { messages };
 
     let sink = ValkeySink::connect(&args.valkey)
         .await
@@ -242,12 +147,13 @@ async fn main() -> anyhow::Result<()> {
 
 /// Drive the consume loop for the concrete entry type. Separated so the generic
 /// wiring is named once and the `main` body stays about connection setup.
-async fn run_materializer<S>(
-    source: JetStreamSource,
+async fn run_materializer<Src, S>(
+    source: Src,
     sink: S,
     shutdown: Shutdown,
 ) -> anyhow::Result<consumer::Stats>
 where
+    Src: Source<CommittedOutput<E>>,
     S: routers_realtime::materializer::Sink<E>,
 {
     consumer::run::<E, _, _>(source, sink, shutdown).await

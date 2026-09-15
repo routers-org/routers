@@ -52,11 +52,12 @@ pub trait AckHandle: Send + 'static {
 
 /// One message taken off the bus together with the handle that acknowledges it.
 ///
-/// `item` is already decoded; `subject`, `msg_id`, and `sent_at` are the
-/// envelope facts a receiver validates against (the subject encodes the
-/// partition, `msg_id` is the broker's dedup key, `sent_at` feeds queue-wait
-/// timing). `redelivered` is `true` when this is not the first delivery, so a
-/// handler can be defensive about work it may have already half-done.
+/// `item` is already decoded; `subject`, `msg_id`, `headers`, and `sent_at` are
+/// the envelope facts a receiver validates against (the subject encodes the
+/// partition, `msg_id` is the broker's dedup key, `headers` carry the schema and
+/// trace context, `sent_at` feeds queue-wait timing). `redelivered` is `true`
+/// when this is not the first delivery, so a handler can be defensive about work
+/// it may have already half-done.
 pub struct Delivery<T, H: AckHandle> {
     /// The decoded message body.
     pub item: T,
@@ -66,6 +67,11 @@ pub struct Delivery<T, H: AckHandle> {
     pub subject: String,
     /// The broker dedup key (`Nats-Msg-Id`), if one was set.
     pub msg_id: Option<String>,
+    /// The message's headers as published. The reader validates the schema
+    /// header (`x-routers-schema`) out of these; an empty map means the producer
+    /// stamped none. Carried whole rather than pre-parsed so the raw plane can
+    /// hand bytes and headers together to a poison-aware reader.
+    pub headers: HeaderMap,
     /// When the producer published it, if it stamped a send time.
     pub sent_at: Option<SystemTime>,
     /// `true` when the broker has delivered this message before.
