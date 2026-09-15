@@ -53,6 +53,7 @@ use crate::bus::adapter::{AckHandle, Delivery, Publisher, Source};
 use crate::event::VehicleId;
 use crate::lifecycle::{Drain, Shutdown};
 use crate::matcher::pull::RawBytes;
+use crate::metrics::Metrics;
 use crate::orchestrator::admission::{Admission, Waiting};
 use crate::orchestrator::commit::{self, CommitConfig, CommitError, Committer, Decision};
 use crate::orchestrator::deadline::{self, DeadlineConfig, Deadlines, Expiry};
@@ -285,6 +286,10 @@ where
     drain: Drain,
     last_evict: Instant,
     stats: WorkerStats,
+    /// Bounded-label metrics. [`Metrics::noop`] by default so existing
+    /// constructors and tests record nothing; the binary installs a real handle
+    /// via [`with_metrics`](PartitionWorker::with_metrics).
+    metrics: Metrics,
 }
 
 impl<E, S, JP, OP, RS, XS> PartitionWorker<E, S, JP, OP, RS, XS>
@@ -354,7 +359,25 @@ where
             drain: Drain::new(),
             last_evict: now,
             stats: WorkerStats::default(),
+            metrics: Metrics::noop(),
         }
+    }
+
+    /// Install a metrics handle, so the worker records bounded-label counters,
+    /// histograms, and gauges through its push instruments.
+    ///
+    /// The process-scoped admission observable gauges are registered once by the
+    /// binary (see `bin/orchestrator.rs`), not here: `Admission` is `Arc`-shared
+    /// and cloned into every partition worker, so registering them per worker
+    /// would duplicate the same global instrument N times.
+    ///
+    /// Without this the worker uses [`Metrics::noop`] and records nothing
+    /// measurable, which is why every existing constructor and test keeps
+    /// compiling unchanged.
+    #[must_use]
+    pub fn with_metrics(mut self, metrics: Metrics) -> Self {
+        self.metrics = metrics;
+        self
     }
 
     /// Run the partition until shutdown, returning the run's [`WorkerStats`].
@@ -409,6 +432,8 @@ where
     /// disposition, then drive any newly-ready vehicle.
     async fn on_raw(&mut self, delivery: Delivery<RawBytes, RS::Handle>) {
         self.stats.observed += 1;
+        self.metrics
+            .observed(&Metrics::partition_class(self.cfg.partition));
         let now = Instant::now();
         let reader = self.reader;
         let envelope = RawEnvelope {
@@ -421,9 +446,11 @@ where
         match disposition {
             RawDisposition::Queued { .. } => {
                 self.stats.queued += 1;
+                self.metrics.queued();
             }
             RawDisposition::Poison { handle, reason } => {
                 self.stats.poison += 1;
+                self.metrics.poison(reason.label());
                 debug!(reason = reason.label(), "poison raw message");
                 let seq = handle.sequence();
                 let _ = handle.ack().await;
@@ -431,6 +458,7 @@ where
             }
             RawDisposition::Suppressed { handle, reason } => {
                 self.stats.suppressed += 1;
+                self.metrics.suppressed(reason.label());
                 if reason == SuppressReason::Coalesced {
                     self.stats.coalesced += 1;
                 }
@@ -469,6 +497,8 @@ where
                     }
                     return;
                 };
+                self.metrics
+                    .result(meta.region.as_str(), result.outcome.kind());
                 let decision = if matches!(result.outcome, SolveOutcome::Solved { .. }) {
                     Decision::Solved {
                         result,
@@ -492,6 +522,7 @@ where
             }
             ResultVerdict::Park => {
                 self.stats.parked += 1;
+                self.metrics.parked();
                 self.scheduler.park(vehicle, result, now);
                 // Ack the parked delivery immediately: the content is retained in
                 // memory, so a crash loses it, and redelivery / re-dispatch cover
@@ -503,6 +534,7 @@ where
             }
             ResultVerdict::Reject(reason) => {
                 self.stats.rejected += 1;
+                self.metrics.rejected(reason.label());
                 debug!(
                     vehicle = vehicle.0,
                     reason = reason.label(),
@@ -514,6 +546,7 @@ where
             }
             ResultVerdict::Quarantine(reason) => {
                 self.stats.quarantined += 1;
+                self.metrics.quarantined(reason.label());
                 warn!(
                     vehicle = vehicle.0,
                     reason = reason.label(),
@@ -559,6 +592,14 @@ where
     /// vehicles, and periodically evict idle ones.
     async fn on_tick(&mut self) {
         let now = Instant::now();
+
+        // Publish the partition's completion-frontier lag: raw sequences seen
+        // but not yet completed. Bucketed to a partition class so the label
+        // alphabet stays bounded.
+        self.metrics.frontier_lag(
+            &Metrics::partition_class(self.cfg.partition),
+            self.tracker.outstanding() as u64,
+        );
 
         if let Some(frontier) = self.tracker.due(now)
             && self.store.set_frontier(frontier).await.is_ok()
@@ -698,6 +739,7 @@ where
                     .or_else(|| pending.and_then(|p| p.prior));
                 let fire = self.cfg.deadline.fire_at(d.job.deadline);
                 let job_id = d.job.id;
+                let job_bytes = d.job.bytes;
                 self.active_meta.insert(
                     vehicle,
                     ActiveMeta {
@@ -716,6 +758,10 @@ where
                 self.deadlines.arm(fire, vehicle, job_id);
                 self.held.remove(&vehicle);
                 self.stats.dispatched += 1;
+                self.metrics
+                    .dispatched(resolution.region.as_str(), resolution.lane.0);
+                self.metrics
+                    .job_bytes(resolution.region.as_str(), job_bytes);
 
                 // A just-dispatched job may already have a parked answer.
                 for result in self.scheduler.take_parked(vehicle) {
@@ -725,6 +771,7 @@ where
             }
             Err(DispatchError::Held(reason)) => {
                 self.stats.held += 1;
+                self.metrics.held(resolution.region.as_str());
                 debug!(vehicle = vehicle.0, reason = %reason, "dispatch held by admission");
                 self.held
                     .insert(vehicle, self.admission.hold(&resolution.region));
@@ -783,6 +830,13 @@ where
             "a commit must not change the segment without a reset",
         );
         let is_terminal = matches!(decision, Decision::Terminal { .. });
+        // Capture the bounded completion labels before `decision` is consumed by
+        // `plan`: the terminal reason (if any) and the reset reason (if any).
+        let terminal_reason = match &decision {
+            Decision::Terminal { reason, .. } => Some(reason.label()),
+            _ => None,
+        };
+        let reset_reason = reset_opt.map(|reason| reason.label());
 
         let plan = commit::plan(
             prev.as_ref(),
@@ -794,6 +848,7 @@ where
         );
         let next = plan.next.clone();
 
+        let commit_start = Instant::now();
         match self
             .committer
             .commit(vehicle, self.cfg.partition, plan, meta.expected_base, raw)
@@ -815,6 +870,20 @@ where
                 self.pending_reset.remove(&vehicle);
                 self.blocked.remove(&vehicle);
                 self.stats.committed += 1;
+                let kind = if is_terminal { "terminal" } else { "matched" };
+                self.metrics
+                    .commit_seconds(kind, commit_start.elapsed().as_secs_f64());
+                // A reset commit emits the reset before the matched/terminal
+                // output, so both completions are counted for the one commit.
+                if let Some(reason) = reset_reason {
+                    self.metrics.completion("reset", reason);
+                }
+                if is_terminal {
+                    self.metrics
+                        .completion("terminal", terminal_reason.unwrap_or("internal"));
+                } else {
+                    self.metrics.completion("matched", "solved");
+                }
                 if is_terminal {
                     self.stats.terminal += 1;
                 }

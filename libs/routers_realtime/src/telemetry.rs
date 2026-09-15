@@ -2,10 +2,10 @@
 //! export when configured.
 //!
 //! The only developer-facing surface is the `tracing` macros —
-//! `#[instrument]`, `info!`, `info_span!` — everything here is plumbing.
-//! Spans become Prometheus metrics downstream: the devstack's
-//! otel-collector aggregates every span into duration histograms and call
-//! counters (spanmetrics), so no metric registry lives in the application.
+//! `#[instrument]`, `info!`, `info_span!` — plus the bounded-label
+//! [`Metrics`](crate::metrics::Metrics) handle. Spans carry per-request detail
+//! (vehicle and job ids), while the meter this module installs carries the
+//! bounded-cardinality aggregates: the two are exported side by side over OTLP.
 //!
 //! Export is driven entirely by the standard OTLP environment:
 //!
@@ -13,12 +13,25 @@
 //! OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318   # omit to disable
 //! RUST_LOG=info                                            # filters logs AND exported spans
 //! ```
+//!
+//! # Metric export and the OTLP client
+//!
+//! Spans export through the async-runtime batch processor (`runtime::Tokio`).
+//! The metrics [`PeriodicReader`] drives its exporter on its own thread with a
+//! blocking `block_on`, which the async `reqwest` client (`reqwest-client`
+//! feature) cannot service off a Tokio reactor. Making the collector metric
+//! path robust therefore needs either the SDK's
+//! `experimental_metrics_periodicreader_with_async_runtime` feature or the
+//! `reqwest-blocking-client` on `opentelemetry-otlp` — Cargo changes outside
+//! this task's remit. The no-endpoint path (all tests, local runs) is
+//! unaffected: the global meter is a no-op and nothing exports.
 
-use std::time::Duration;
+use core::time::Duration;
 
 use opentelemetry::global;
 use opentelemetry::trace::TracerProvider as _;
 use opentelemetry_sdk::Resource;
+use opentelemetry_sdk::metrics::{PeriodicReader, SdkMeterProvider};
 use opentelemetry_sdk::propagation::TraceContextPropagator;
 use opentelemetry_sdk::runtime;
 use opentelemetry_sdk::trace::span_processor_with_async_runtime::BatchSpanProcessor;
@@ -27,10 +40,12 @@ use tracing_subscriber::EnvFilter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
-/// Keeps the OTLP pipeline alive; dropping it flushes any batched spans.
-/// Bind it in `main` — `let _telemetry = telemetry::init("matcher");`.
+/// Keeps the OTLP pipeline alive; dropping it flushes any batched spans and the
+/// last metrics collection. Bind it in `main` —
+/// `let _telemetry = telemetry::init("matcher");`.
 pub struct Telemetry {
     provider: Option<SdkTracerProvider>,
+    meter_provider: Option<SdkMeterProvider>,
 }
 
 impl Drop for Telemetry {
@@ -39,6 +54,12 @@ impl Drop for Telemetry {
             && let Err(err) = provider.shutdown()
         {
             eprintln!("telemetry shutdown: {err}");
+        }
+        // Flush the final metrics collection before the reader's thread stops.
+        if let Some(provider) = self.meter_provider.take()
+            && let Err(err) = provider.shutdown()
+        {
+            eprintln!("meter shutdown: {err}");
         }
     }
 }
@@ -88,6 +109,34 @@ pub fn init(service: &'static str) -> Telemetry {
             provider
         });
 
+    // The bounded-label meter shares the same OTLP endpoint. When it is set we
+    // install a `PeriodicReader` that collects and exports every 10 s (metrics
+    // are aggregates, so a coarse cadence is fine) and register it globally so
+    // `Metrics::new` binds to it. Absent the endpoint the global meter stays a
+    // no-op and every `Metrics` instrument is free. The reader drives its
+    // exporter on a dedicated thread; see the module-level note on the OTLP
+    // client feature that path needs.
+    let meter_provider = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
+        .is_ok()
+        .then(|| {
+            let exporter = opentelemetry_otlp::MetricExporter::builder()
+                .with_http()
+                .build()
+                .expect("OTLP metric exporter builds from its environment");
+
+            let reader = PeriodicReader::builder(exporter)
+                .with_interval(Duration::from_secs(10))
+                .build();
+
+            let provider = SdkMeterProvider::builder()
+                .with_reader(reader)
+                .with_resource(Resource::builder().with_service_name(service).build())
+                .build();
+
+            global::set_meter_provider(provider.clone());
+            provider
+        });
+
     // `Option<Layer>` is itself a `Layer`, so one registry serves both modes.
     let export = provider
         .as_ref()
@@ -111,5 +160,8 @@ pub fn init(service: &'static str) -> Telemetry {
         .with(export)
         .init();
 
-    Telemetry { provider }
+    Telemetry {
+        provider,
+        meter_provider,
+    }
 }

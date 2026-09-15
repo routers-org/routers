@@ -65,6 +65,7 @@ use crate::lifecycle::{Drain, InFlight, QuiesceOutcome, Shutdown};
 use crate::matcher::engine::Engine;
 use crate::matcher::publish::ResultPublisher;
 use crate::matcher::validate::{Checked, ValidateConfig, check, check_bytes};
+use crate::metrics::Metrics;
 use crate::protocol::result::SolveResult;
 use crate::region::Region;
 
@@ -161,6 +162,7 @@ pub struct PullLoop<N: Network, C, P> {
     cfg: PullConfig,
     shutdown: Shutdown,
     drain: Drain,
+    metrics: Metrics,
 }
 
 impl<N: Network, C, P> PullLoop<N, C, P> {
@@ -195,7 +197,17 @@ impl<N: Network, C, P> PullLoop<N, C, P> {
             cfg,
             shutdown,
             drain,
+            metrics: Metrics::noop(),
         }
+    }
+
+    /// Attach a metrics handle, so the loop records bounded-label solve, queue,
+    /// and publish latencies (and a `graph_ready` gauge while it runs). Without
+    /// this the loop uses [`Metrics::noop`] and records nothing measurable.
+    #[must_use]
+    pub fn with_metrics(mut self, metrics: Metrics) -> Self {
+        self.metrics = metrics;
+        self
     }
 }
 
@@ -226,12 +238,18 @@ where
             cfg,
             shutdown,
             drain,
+            metrics,
         } = self;
 
         // Share the read-only validator inputs across every handler without a
         // per-job clone of the served-cell set.
         let region = Arc::new(region);
         let cells = Arc::new(cells);
+
+        // This replica is serving a usable graph for as long as the loop runs
+        // (it is only constructed after bootstrap reached `Ready`); flip the
+        // gauge to 1 now and back to 0 when the loop returns.
+        metrics.graph_ready(region.id.as_str(), 1);
 
         let mut stats = PullStats::default();
         let mut in_flight = FuturesUnordered::new();
@@ -265,6 +283,7 @@ where
                                 Arc::clone(&region),
                                 Arc::clone(&cells),
                                 cfg.validate,
+                                metrics.clone(),
                                 drain.begin(),
                             ));
                         }
@@ -296,6 +315,9 @@ where
             }
         };
 
+        // The loop is exiting: this replica no longer serves the graph.
+        metrics.graph_ready(region.id.as_str(), 0);
+
         stats
     }
 }
@@ -325,6 +347,7 @@ fn record(done: Handled, stats: &mut PullStats) {
 /// Handle exactly one delivery end to end: size-gate, validate, solve or refuse,
 /// publish, and acknowledge — holding `_guard` for its whole life so the drain
 /// phase can wait on it.
+#[allow(clippy::too_many_arguments)]
 async fn handle_one<N, H, P>(
     delivery: Delivery<RawBytes, H>,
     engine: Arc<Engine<N>>,
@@ -332,6 +355,7 @@ async fn handle_one<N, H, P>(
     region: Arc<Region>,
     cells: Arc<HashSet<Geohash>>,
     validate: ValidateConfig,
+    metrics: Metrics,
     _guard: InFlight,
 ) -> Handled
 where
@@ -355,9 +379,13 @@ where
         }
     };
 
-    // Record the delivery's queue wait as a span, mirroring the old binary.
+    // Record the delivery's queue wait as a span and a bounded histogram.
     if let Some(sent) = sent_at {
-        bus::span_between("queue_wait", sent, bus::wallclock());
+        let now = bus::wallclock();
+        bus::span_between("queue_wait", sent, now);
+        if let Ok(waited) = now.duration_since(sent) {
+            metrics.queue_wait_seconds(region.id.as_str(), waited.as_secs_f64());
+        }
     }
 
     let now_us = unix_micros();
@@ -382,7 +410,12 @@ where
             let identity = job.identity.clone();
             let started = bus::wallclock();
             let outcome = engine.solve_blocking(job).await;
-            bus::span_between("solve_seconds", started, bus::wallclock());
+            let solved_at = bus::wallclock();
+            bus::span_between("solve_seconds", started, solved_at);
+            if let Ok(elapsed) = solved_at.duration_since(started) {
+                metrics.solve_seconds(region.id.as_str(), outcome.kind(), elapsed.as_secs_f64());
+            }
+            metrics.result(region.id.as_str(), outcome.kind());
 
             let result = SolveResult {
                 job: job_id,
@@ -390,7 +423,12 @@ where
                 outcome,
                 solved_at_us: unix_micros(),
             };
-            match publisher.publish_then_ack(&result, handle).await {
+            let publish_start = bus::wallclock();
+            let published = publisher.publish_then_ack(&result, handle).await;
+            if let Ok(elapsed) = bus::wallclock().duration_since(publish_start) {
+                metrics.result_publish_seconds(elapsed.as_secs_f64());
+            }
+            match published {
                 Ok(_) => Handled::Solved,
                 Err(error) => {
                     warn!(%error, job = %job_id, "failed to publish solve result");
