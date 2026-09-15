@@ -93,7 +93,7 @@ use crate::bus::adapter::Publisher;
 use crate::event::VehicleId;
 use crate::orchestrator::commit::{CommitError, Committer};
 use crate::orchestrator::scheduler::CheckpointState;
-use crate::protocol::ids::SCHEMA_VERSION;
+use crate::protocol::ids::{Revision, SCHEMA_VERSION};
 use crate::protocol::output::{CommittedOutput, ResetReason};
 use crate::store::checkpoint::{CheckpointStore, VehicleCheckpoint};
 
@@ -226,6 +226,14 @@ pub struct Restored<E: Entry> {
     /// The reset the next dispatch must apply, if state was lost. `None` on a
     /// clean restore (present or genuinely fresh).
     pub reset: Option<ResetReason>,
+    /// The revision the store still holds for this vehicle, even when the
+    /// checkpoint could not be decoded. This is the base a `Reset { StateLost }`
+    /// commit must compare-and-swap against: the vehicle resumes with a fresh
+    /// `base: None`, but the store still carries the stale checkpoint's revision,
+    /// so a commit staged with `expected_base: None` would hit
+    /// [`PrepareOutcome::Conflict`](crate::store::checkpoint::PrepareOutcome::Conflict)
+    /// and loop. `None` when nothing was stored (a genuinely fresh vehicle).
+    pub prior: Option<Revision>,
 }
 
 /// Restore one vehicle's state on its first observation after the worker
@@ -284,20 +292,27 @@ where
         return Ok(Restored {
             checkpoint: CheckpointState::Absent,
             reset: None,
+            prior: None,
         });
     };
+
+    // The store holds this revision regardless of whether the bytes decode; a
+    // state-lost reset's commit must compare-and-swap against it.
+    let prior = Some(stored.revision);
 
     match VehicleCheckpoint::<E>::decode(&stored.bytes) {
         // A clean, current-schema checkpoint resumes as-is.
         Ok(checkpoint) if checkpoint.schema == SCHEMA_VERSION => Ok(Restored {
             checkpoint: CheckpointState::Present(checkpoint),
             reset: None,
+            prior,
         }),
         // Decoded but stale schema, or would not decode at all: unusable state.
         // Start a new segment; the old segment's finalised layers stay.
         Ok(_) | Err(_) => Ok(Restored {
             checkpoint: CheckpointState::Absent,
             reset: Some(ResetReason::StateLost),
+            prior,
         }),
     }
 }
@@ -684,6 +699,7 @@ mod tests {
 
         assert!(matches!(restored.checkpoint, CheckpointState::Absent));
         assert_eq!(restored.reset, None);
+        assert_eq!(restored.prior, None, "nothing stored, so no prior revision");
     }
 
     #[tokio::test]
@@ -704,6 +720,7 @@ mod tests {
             other => panic!("expected Present, got {other:?}"),
         }
         assert_eq!(restored.reset, None);
+        assert_eq!(restored.prior, Some(Revision(100)));
     }
 
     #[tokio::test]
@@ -721,6 +738,11 @@ mod tests {
 
         assert!(matches!(restored.checkpoint, CheckpointState::Absent));
         assert_eq!(restored.reset, Some(ResetReason::StateLost));
+        assert_eq!(
+            restored.prior,
+            Some(Revision(100)),
+            "state was lost but the store still holds the stale revision to CAS against",
+        );
     }
 
     #[tokio::test]
