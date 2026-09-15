@@ -34,19 +34,19 @@
 //!
 //! `bus::adapter` futures are not `Send`, so the worker keeps every source,
 //! publisher, and ack on this single task — it never spawns them. The raw plane
-//! arrives as undecoded [`RawBytes`]: a [`Delivery`] carries no `HeaderMap`, so
-//! the schema header is unavailable on the raw path here and envelope schema
-//! enforcement waits on the JetStream source carrying headers (T35). See the
-//! module report's deviations.
+//! arrives as undecoded [`RawBytes`] alongside the delivery's `HeaderMap`, so
+//! the schema header travels with each raw message: the worker hands those
+//! headers to the reader, which poisons a stamped `x-routers-schema` mismatch
+//! and treats an empty map as "no schema stamped".
 
+use alloc::collections::VecDeque;
 use alloc::sync::Arc;
-use core::cmp::Ordering;
 use core::time::Duration;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use routers_network::Entry;
 use tokio::time::{Instant, MissedTickBehavior, interval, sleep_until};
-use tracing::{debug, warn};
+use tracing::{debug, error, warn};
 use web_time::UNIX_EPOCH;
 
 use crate::bus::adapter::{AckHandle, Delivery, Publisher, Source};
@@ -60,8 +60,10 @@ use crate::orchestrator::dispatch::{DispatchConfig, DispatchError, Dispatcher};
 use crate::orchestrator::frontier::{FrontierConfig, FrontierTracker};
 use crate::orchestrator::reader::{RawDisposition, RawEnvelope, RawReader, SuppressReason};
 use crate::orchestrator::recovery::{RecoveryReport, restore_vehicle};
-use crate::orchestrator::scheduler::{ActiveJob, CheckpointState, Scheduler, SchedulerConfig};
-use crate::orchestrator::validate::{QuarantineReason, RejectReason};
+use crate::orchestrator::scheduler::{
+    ActiveJob, CheckpointState, Scheduler, SchedulerConfig, VehicleState,
+};
+use crate::orchestrator::validate::{self, QuarantineReason, RejectReason, Verdict};
 use crate::protocol::ids::{GraphVersion, RegionId, Revision, SCHEMA_VERSION, SegmentId};
 use crate::protocol::job::{BaseState, JobIdentity, SolveJob};
 use crate::protocol::output::{CommittedOutput, ResetReason, TerminalReason};
@@ -147,6 +149,10 @@ pub struct WorkerStats {
     pub rejected: u64,
     /// Same-identity results quarantined out of the commit path.
     pub quarantined: u64,
+    /// Vehicles retired to the quarantine set after a permanent commit fault
+    /// (an encode/decode error that would spin on retry); never dispatched
+    /// again this process lifetime.
+    pub quarantined_vehicles: u64,
     /// Commits made durable (matched or terminal alike).
     pub committed: u64,
     /// Terminal commits (no match).
@@ -176,9 +182,26 @@ struct ActiveMeta {
     expected_base: Option<Revision>,
 }
 
-/// The worker's own owned verdict for one result, mirroring
-/// [`validate::Verdict`](crate::orchestrator::validate::Verdict) without
-/// borrowing the vehicle state (which the scheduler does not hand out).
+/// A reset a restore reported, held until the first commit after the worker
+/// re-acquires the vehicle applies it.
+///
+/// It carries the stored revision alongside the reason so a `Reset { StateLost }`
+/// commit compare-and-swaps against the *stale* checkpoint the store still holds
+/// (the vehicle resumes with `base: None`, but the store is not empty). Without
+/// this the prepare would see a `Conflict` and the vehicle would loop.
+#[derive(Clone, Copy)]
+struct PendingReset {
+    /// Why continuity was broken (only ever [`ResetReason::StateLost`] today —
+    /// gap/teleport resets are detected at dispatch with a live checkpoint).
+    reason: ResetReason,
+    /// The revision the reset's commit must compare-and-swap against, or `None`
+    /// when the store held nothing.
+    prior: Option<Revision>,
+}
+
+/// The worker's own owned projection of [`Verdict`], taken so the immutable
+/// borrow of the vehicle state ends before the worker mutates itself to act on
+/// the decision (commit / park / ack / retain).
 enum ResultVerdict {
     /// Commit this result as the answer to the active job.
     Accept,
@@ -188,6 +211,20 @@ enum ResultVerdict {
     Reject(RejectReason),
     /// A same-identity duplicate to keep out of the commit path.
     Quarantine(QuarantineReason),
+}
+
+impl From<Verdict<'_>> for ResultVerdict {
+    /// Drop the borrow the pure validator returns, keeping only the class the
+    /// worker acts on. The `Accept` job reference is not needed here — the worker
+    /// commits from its own [`ActiveMeta`] provenance, not the borrowed job.
+    fn from(verdict: Verdict<'_>) -> Self {
+        match verdict {
+            Verdict::Accept { .. } => ResultVerdict::Accept,
+            Verdict::Park => ResultVerdict::Park,
+            Verdict::Reject(reason) => ResultVerdict::Reject(reason),
+            Verdict::Quarantine(reason) => ResultVerdict::Quarantine(reason),
+        }
+    }
 }
 
 /// What one [`PartitionWorker::try_dispatch`] attempt did.
@@ -237,8 +274,13 @@ where
     /// Per-vehicle provenance for the job currently in flight.
     active_meta: HashMap<VehicleId, ActiveMeta>,
     /// A pending `Reset { StateLost }` a restore reported, applied to the first
-    /// commit after re-acquiring the vehicle.
-    pending_reset: HashMap<VehicleId, ResetReason>,
+    /// commit after re-acquiring the vehicle, with the stale revision its commit
+    /// must compare-and-swap against.
+    pending_reset: HashMap<VehicleId, PendingReset>,
+    /// Vehicles retired after a permanent commit fault (an encode/decode error a
+    /// retry would only reproduce): never restored, dispatched, or retried again
+    /// this process lifetime. Bounded by the number of distinct poison commits.
+    quarantined: HashSet<VehicleId>,
     shutdown: Shutdown,
     drain: Drain,
     last_evict: Instant,
@@ -307,6 +349,7 @@ where
             held: HashMap::new(),
             active_meta: HashMap::new(),
             pending_reset: HashMap::new(),
+            quarantined: HashSet::new(),
             shutdown,
             drain: Drain::new(),
             last_evict: now,
@@ -370,7 +413,7 @@ where
         let reader = self.reader;
         let envelope = RawEnvelope {
             subject: &delivery.subject,
-            headers: None,
+            headers: Some(&delivery.headers),
             bytes: delivery.item.0.as_slice(),
             handle: delivery.handle,
         };
@@ -414,7 +457,8 @@ where
     /// (`handle` is `Some`) and a parked one replayed after dispatch (`None`).
     async fn on_result_inner(&mut self, result: SolveResult<E>, handle: Option<XS::Handle>) {
         let vehicle = result.identity.vehicle_id;
-        match self.classify_result(vehicle, &result) {
+        let now = Instant::now();
+        match self.result_verdict(vehicle, &result, now) {
             ResultVerdict::Accept => {
                 self.stats.accepted += 1;
                 let Some(meta) = self.active_meta.get(&vehicle).cloned() else {
@@ -448,7 +492,6 @@ where
             }
             ResultVerdict::Park => {
                 self.stats.parked += 1;
-                let now = Instant::now();
                 self.scheduler.park(vehicle, result, now);
                 // Ack the parked delivery immediately: the content is retained in
                 // memory, so a crash loses it, and redelivery / re-dispatch cover
@@ -488,7 +531,14 @@ where
     async fn on_deadlines(&mut self) {
         let now = Instant::now();
         for (vehicle, job) in self.deadlines.pop_expired(now) {
-            let Expiry::Terminal(reason) = self.classify_expiry(vehicle, job) else {
+            // Reuse the pure deadline arbitration over the real vehicle state, so
+            // the `committing` flag it reads is the scheduler's own — an untracked
+            // vehicle has no live job to terminate, so its timer is ignored.
+            let expiry = self
+                .scheduler
+                .state(vehicle)
+                .map_or(Expiry::Ignore, |state| deadline::on_expiry(state, job));
+            let Expiry::Terminal(reason) = expiry else {
                 continue;
             };
             let Some(segment) = self.active_meta.get(&vehicle).map(|m| m.segment) else {
@@ -545,6 +595,11 @@ where
 
     /// Acquire, resolve, and dispatch one vehicle's head observation.
     async fn try_dispatch(&mut self, vehicle: VehicleId) -> DispatchOutcome {
+        // A quarantined vehicle carries a poison commit that a retry only
+        // reproduces; it never dispatches again this process lifetime.
+        if self.quarantined.contains(&vehicle) {
+            return DispatchOutcome::Skipped;
+        }
         if self.blocked.contains_key(&vehicle) {
             return DispatchOutcome::Skipped;
         }
@@ -561,8 +616,16 @@ where
         if !self.scheduler.checkpoint(vehicle).is_loaded() {
             match restore_vehicle(&self.store, vehicle, self.cfg.partition, &self.committer).await {
                 Ok(restored) => {
-                    if let Some(reset) = restored.reset {
-                        self.pending_reset.insert(vehicle, reset);
+                    if let Some(reason) = restored.reset {
+                        // Carry the stored revision so the reset's commit CASes
+                        // against the stale checkpoint the store still holds.
+                        self.pending_reset.insert(
+                            vehicle,
+                            PendingReset {
+                                reason,
+                                prior: restored.prior,
+                            },
+                        );
                     }
                     self.scheduler.set_checkpoint(vehicle, restored.checkpoint);
                 }
@@ -620,8 +683,19 @@ where
 
         match dispatched {
             Ok(d) => {
-                let reset = d.reset.or_else(|| self.pending_reset.remove(&vehicle));
-                let expected_base = d.job.identity.base.map(|b| b.revision);
+                let pending = self.pending_reset.remove(&vehicle);
+                let reset = d.reset.or(pending.map(|p| p.reason));
+                // Prefer the job's own base (a normal resume); fall back to the
+                // restore's stored `prior` so a state-lost reset's commit CASes
+                // against the stale revision instead of `None` (which would
+                // Conflict and loop). A gap/teleport reset already carries the
+                // live checkpoint's base, so the fallback only bites on state loss.
+                let expected_base = d
+                    .job
+                    .identity
+                    .base
+                    .map(|b| b.revision)
+                    .or_else(|| pending.and_then(|p| p.prior));
                 let fire = self.cfg.deadline.fire_at(d.job.deadline);
                 let job_id = d.job.id;
                 self.active_meta.insert(
@@ -767,6 +841,11 @@ where
                 }
                 self.blocked.insert(vehicle, now + self.cfg.blocked_retry);
             }
+            Err(error) if is_permanent_commit_error(&error) => {
+                // An encode/decode fault is deterministic: retrying only
+                // reproduces it. Quarantine the vehicle rather than spin.
+                self.quarantine_vehicle(vehicle, &error);
+            }
             Err(error) => {
                 // Busy (a prepared commit exists) or a publish/store fault: the
                 // prepared record survives. Block and retry `finish_prepared`.
@@ -776,14 +855,44 @@ where
         }
     }
 
+    /// Retire a vehicle whose commit failed with a permanent encode/decode fault.
+    ///
+    /// Such a fault is deterministic — the same prepared bytes will not decode,
+    /// the same output will not encode — so blocked-retry would loop forever. The
+    /// vehicle is logged at error, dropped from the blocked and pending sets, and
+    /// added to the quarantine set so it is never dispatched or retried again
+    /// this process lifetime. Its head observation is left un-acked: the worker
+    /// cannot make it durable, and advancing the frontier past it would lose it.
+    fn quarantine_vehicle(&mut self, vehicle: VehicleId, error: &CommitError<S::Error>) {
+        error!(
+            vehicle = vehicle.0,
+            %error,
+            "commit failed permanently; quarantining vehicle for this process lifetime"
+        );
+        self.blocked.remove(&vehicle);
+        self.pending_reset.remove(&vehicle);
+        self.held.remove(&vehicle);
+        if self.quarantined.insert(vehicle) {
+            self.stats.quarantined_vehicles += 1;
+        }
+    }
+
     /// Commit an `UnsupportedCoverage` terminal for a vehicle no region serves.
     ///
     /// There is no job to dispatch, but the scheduler can only advance past a
     /// head through a live [`ActiveJob`], so the worker reserves a zero-byte
     /// permit and activates a synthetic job first, then commits the terminal
-    /// through the ordinary path. A fresh, unserved vehicle has no region of its
-    /// own, so it is billed to the checkpoint's region if it has one, else the
-    /// first catalog region (see the module report's deviation).
+    /// through the ordinary path.
+    ///
+    /// An unserved point resolves to no region, so the synthetic job has none of
+    /// its own to bill. A vehicle with a committed checkpoint is billed to that
+    /// checkpoint's region (keeping its provenance coherent); a fresh, unserved
+    /// vehicle has no region at all and falls back to the **first catalog region**
+    /// as a documented, arbitrary billing choice (the zero-byte permit is a
+    /// bookkeeping placeholder, never a real solve). Either way the permit is
+    /// released on every path: an early return before `try_admit` reserves
+    /// nothing, an `activate` failure drops the job (and with it the permit), and
+    /// a successful commit releases it when the finished job is dropped.
     async fn commit_unserved(
         &mut self,
         vehicle: VehicleId,
@@ -826,7 +935,15 @@ where
             region: region.clone(),
         };
         let job_id = identity.job_id();
-        let expected_base = base.map(|b| b.revision);
+        // When the checkpoint is absent because the vehicle was state-lost, the
+        // store still holds the stale revision a restore reported. Fall the
+        // expected base back to that `prior` (mirroring `try_dispatch`) so the
+        // terminal's CAS targets the stale revision and actually lands, instead
+        // of `None` — which would `Conflict` and leave the vehicle blocked with
+        // the `UnsupportedCoverage` terminal silently dropped.
+        let expected_base = base
+            .map(|b| b.revision)
+            .or_else(|| self.pending_reset.get(&vehicle).and_then(|p| p.prior));
         self.active_meta.insert(
             vehicle,
             ActiveMeta {
@@ -850,6 +967,10 @@ where
             self.active_meta.remove(&vehicle);
             return;
         }
+        // Consume the state-lost reset: its `prior` has now been folded into the
+        // terminal's CAS above, so leaving it would mis-target a later commit
+        // against a revision this terminal is about to supersede.
+        self.pending_reset.remove(&vehicle);
 
         debug!(vehicle = vehicle.0, %cell, "committing unsupported-coverage terminal");
         let decision = Decision::Terminal {
@@ -890,6 +1011,11 @@ where
                         .await
                     {
                         Ok(_) => self.resolve_blocked(vehicle, now).await,
+                        Err(error) if is_permanent_commit_error(&error) => {
+                            // The prepared bytes will never decode: quarantine
+                            // rather than retry the same poison record forever.
+                            self.quarantine_vehicle(vehicle, &error);
+                        }
                         Err(error) => {
                             debug!(vehicle = vehicle.0, %error, "blocked commit still cannot finish");
                             self.blocked.insert(vehicle, now + self.cfg.blocked_retry);
@@ -938,86 +1064,49 @@ where
         }
     }
 
-    /// Classify one result against a vehicle's current state.
+    /// Classify one result by reusing the pure
+    /// [`validate::validate`](crate::orchestrator::validate::validate) over the
+    /// vehicle's real state, then project its borrow-carrying [`Verdict`] into the
+    /// worker's owned [`ResultVerdict`] so the borrow ends before the worker acts.
     ///
-    /// This mirrors [`validate::validate`](crate::orchestrator::validate::validate),
-    /// reimplemented over the scheduler's public accessors because it does not
-    /// hand out a `&VehicleState`; the `committing` flag is read from the blocked
-    /// set (the only state in which a commit is left in flight across turns). See
-    /// the module report's deviation.
-    fn classify_result(&self, vehicle: VehicleId, result: &SolveResult<E>) -> ResultVerdict {
-        if result.verify().is_err() {
-            return ResultVerdict::Reject(RejectReason::IdMismatch);
-        }
-        if result.identity.schema != SCHEMA_VERSION {
-            return ResultVerdict::Reject(RejectReason::Schema);
-        }
-        if result.partition() != self.cfg.partition {
-            return ResultVerdict::Reject(RejectReason::WrongVehicle);
-        }
-
-        let checkpoint = self.scheduler.checkpoint(vehicle).present();
-        if let (Some(cp), Some(base)) = (checkpoint, result.identity.base)
-            && base.segment != cp.segment
-        {
-            return ResultVerdict::Reject(RejectReason::SegmentClosed);
-        }
-
-        let committing = self.blocked.contains_key(&vehicle);
-        match self.scheduler.active(vehicle) {
-            Some(active) if active.id == result.job => {
-                if committing {
-                    ResultVerdict::Quarantine(QuarantineReason::DuplicateAfterCommit)
-                } else {
-                    ResultVerdict::Accept
-                }
+    /// The `committing` flag the validator reads is the scheduler's own, not a
+    /// proxy through the blocked set. An untracked vehicle has no state yet, so it
+    /// is validated against a detached empty state: the envelope checks still run,
+    /// and a well-formed early result parks (a no-op for an untracked vehicle).
+    fn result_verdict(
+        &self,
+        vehicle: VehicleId,
+        result: &SolveResult<E>,
+        now: Instant,
+    ) -> ResultVerdict {
+        match self.scheduler.state(vehicle) {
+            Some(state) => validate::validate(state, result, self.cfg.partition).into(),
+            None => {
+                let detached = detached_state::<E, XS::Handle>(now);
+                validate::validate(&detached, result, self.cfg.partition).into()
             }
-            Some(active) => match result.identity.observation.cmp(&active.observation) {
-                Ordering::Less => ResultVerdict::Reject(older_reject(checkpoint, active, result)),
-                Ordering::Greater => ResultVerdict::Park,
-                Ordering::Equal => ResultVerdict::Reject(RejectReason::StaleBase {
-                    expected: active.identity.base,
-                    got: result.identity.base,
-                }),
-            },
-            None => match checkpoint {
-                Some(cp) => match result.identity.observation.cmp(&cp.last_input) {
-                    Ordering::Less => ResultVerdict::Reject(RejectReason::Committed),
-                    Ordering::Equal => ResultVerdict::Reject(RejectReason::ExpiredJob),
-                    Ordering::Greater => ResultVerdict::Park,
-                },
-                None => ResultVerdict::Park,
-            },
-        }
-    }
-
-    /// Classify a fired deadline for `job`, mirroring
-    /// [`deadline::on_expiry`](crate::orchestrator::deadline::on_expiry) over the
-    /// scheduler's accessors (the blocked set stands in for `committing`).
-    fn classify_expiry(&self, vehicle: VehicleId, job: crate::protocol::ids::JobId) -> Expiry {
-        match self.scheduler.active(vehicle) {
-            Some(active) if active.id != job => Expiry::Ignore,
-            Some(_) if self.blocked.contains_key(&vehicle) => Expiry::Ignore,
-            Some(_) => Expiry::Terminal(TerminalReason::DeadlineExpired),
-            None => Expiry::Ignore,
         }
     }
 }
 
-/// The reject reason for a result older than the vehicle's in-flight job.
-fn older_reject<E: Entry>(
-    checkpoint: Option<&VehicleCheckpoint<E>>,
-    active: &ActiveJob,
-    result: &SolveResult<E>,
-) -> RejectReason {
-    if let Some(cp) = checkpoint
-        && result.identity.observation <= cp.last_input
-    {
-        return RejectReason::Committed;
-    }
-    RejectReason::StaleBase {
-        expected: active.identity.base,
-        got: result.identity.base,
+/// Whether a commit failed permanently — an encode or decode fault a retry would
+/// only reproduce. Such a vehicle is quarantined rather than blocked-retried.
+fn is_permanent_commit_error<SE>(error: &CommitError<SE>) -> bool {
+    matches!(error, CommitError::Decode(_) | CommitError::Encode(_))
+}
+
+/// A detached, empty [`VehicleState`] used to validate a result for a vehicle the
+/// scheduler is not yet tracking (a redelivery that outran raw replay). It has no
+/// checkpoint, job, or commit in flight, so validation runs only the envelope
+/// checks and then parks — exactly what an untracked vehicle warrants.
+fn detached_state<E: Entry, H: AckHandle>(now: Instant) -> VehicleState<E, H> {
+    VehicleState {
+        checkpoint: CheckpointState::Unloaded,
+        pending: VecDeque::new(),
+        active: None,
+        committing: false,
+        parked: Vec::new(),
+        last_touch: now,
     }
 }
 
@@ -1069,7 +1158,9 @@ mod tests {
     use crate::event::{MatchedDiff, Payload, shard_of};
     use crate::orchestrator::admission::AdmissionConfig;
     use crate::partition::partition_of;
-    use crate::store::checkpoint::MemoryCheckpointStore;
+    use crate::protocol::ids::{JobId, ObservationId, OutputId};
+    use crate::protocol::output::OutputKind;
+    use crate::store::checkpoint::{CommitPhase, MemoryCheckpointStore, PreparedCommit};
     use crate::topology::{output_subject, raw_subject, result_subject};
 
     type E = MockEntryId;
@@ -1120,6 +1211,25 @@ freshness_budget_ms = {budget_ms}
         }
     }
 
+    /// An admission controller knowing exactly the catalog's regions.
+    fn admission_for(catalog: &Catalog) -> Admission {
+        Admission::new(
+            AdmissionConfig::default(),
+            catalog.regions.iter().map(|r| &r.id),
+        )
+    }
+
+    /// A recovery report for a clean partition (no frontier, nothing prepared).
+    fn clean_report(partition: u16) -> RecoveryReport {
+        RecoveryReport {
+            partition,
+            frontier: None,
+            prepared_found: 0,
+            prepared_finished: 0,
+            prepared_failed: Vec::new(),
+        }
+    }
+
     fn build_worker(
         cfg: WorkerConfig,
         catalog: Arc<Catalog>,
@@ -1127,10 +1237,23 @@ freshness_budget_ms = {budget_ms}
         store: &MemoryCheckpointStore,
         shutdown: Shutdown,
     ) -> Worker {
-        let admission = Admission::new(
-            AdmissionConfig::default(),
-            catalog.regions.iter().map(|r| &r.id),
-        );
+        let admission = admission_for(&catalog);
+        let report = clean_report(cfg.partition);
+        build_worker_with(cfg, catalog, bus, store, admission, &report, shutdown)
+    }
+
+    /// Build a worker with a caller-supplied admission controller and recovery
+    /// report, so tests can inspect admission usage or seed a blocked set.
+    #[allow(clippy::too_many_arguments)]
+    fn build_worker_with(
+        cfg: WorkerConfig,
+        catalog: Arc<Catalog>,
+        bus: &MemoryBus,
+        store: &MemoryCheckpointStore,
+        admission: Admission,
+        report: &RecoveryReport,
+        shutdown: Shutdown,
+    ) -> Worker {
         let dispatcher = Dispatcher::new(bus.publisher::<SolveJob<E>>(), DispatchConfig::default());
         let committer = Committer::new(
             store.clone(),
@@ -1142,13 +1265,6 @@ freshness_budget_ms = {budget_ms}
         );
         let raw = bus.source::<RawBytes>(&raw_subject(u64::from(cfg.partition)));
         let results = bus.source::<SolveResult<E>>(&result_subject(u64::from(cfg.partition)));
-        let report = RecoveryReport {
-            partition: cfg.partition,
-            frontier: None,
-            prepared_found: 0,
-            prepared_finished: 0,
-            prepared_failed: Vec::new(),
-        };
         PartitionWorker::new(
             cfg,
             catalog,
@@ -1158,7 +1274,7 @@ freshness_budget_ms = {budget_ms}
             committer,
             raw,
             results,
-            &report,
+            report,
             shutdown,
         )
     }
@@ -1518,5 +1634,375 @@ freshness_budget_ms = {budget_ms}
             store.snapshot().prepared.is_empty(),
             "no prepared records remain"
         );
+    }
+
+    /// Install a committed checkpoint whose stored `bytes` are `garbage` at
+    /// revision `rev`, by staging a self-contained prepared record and finishing
+    /// it on a throwaway bus (so its output never lands on the worker's bus). The
+    /// store then holds a `StoredCheckpoint` at `rev` whose bytes will not decode.
+    async fn seed_checkpoint_bytes(
+        store: &MemoryCheckpointStore,
+        vehicle: u64,
+        partition: u16,
+        rev: u64,
+        garbage: Vec<u8>,
+    ) {
+        let seed_bus = MemoryBus::new();
+        let obs = ObservationId {
+            partition,
+            sequence: rev,
+        };
+        let out_subject = output_subject(u64::from(partition));
+        let output = CommittedOutput::<E>::new(
+            JobId(u128::from(rev)),
+            VehicleId(vehicle),
+            obs,
+            Revision(rev),
+            SegmentId(rev),
+            OutputKind::Terminal {
+                reason: TerminalReason::Unanchored,
+                closes_segment: false,
+            },
+        );
+        let entries: Vec<(String, String, Vec<u8>)> = vec![(
+            out_subject.clone(),
+            output.msg_id(),
+            output.encode().unwrap(),
+        )];
+        let prepared = PreparedCommit {
+            output: output.id,
+            output_subject: out_subject,
+            output_bytes: postcard::to_allocvec(&entries).unwrap(),
+            next_checkpoint: garbage,
+            next_revision: Revision(rev),
+            next_segment: SegmentId(rev),
+            expected_base: None,
+            phase: CommitPhase::Prepared,
+            raw: obs,
+        };
+        store
+            .prepare(VehicleId(vehicle), partition, prepared.clone())
+            .await
+            .unwrap();
+        let committer = Committer::new(
+            store.clone(),
+            seed_bus.publisher::<CommittedOutput<E>>(),
+            CommitConfig {
+                publish_attempts: 4,
+                backoff: Duration::ZERO,
+            },
+        );
+        committer
+            .finish_prepared(VehicleId(vehicle), partition, prepared)
+            .await
+            .expect("seed installs the checkpoint bytes");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn state_lost_reset_supersedes_the_stale_checkpoint_without_looping() {
+        let vehicle = 1u64;
+        let partition = partition_for(vehicle);
+        let bus = MemoryBus::new();
+        let store = MemoryCheckpointStore::new();
+        let shutdown = Shutdown::new();
+
+        // The store holds an undecodable checkpoint at revision 5: state was lost,
+        // but a `Reset { StateLost }` committed with `expected_base: None` would
+        // Conflict against that revision and loop. The fix CASes against it.
+        seed_checkpoint_bytes(&store, vehicle, partition, 5, b"not a checkpoint".to_vec()).await;
+
+        publish_raw(&bus, partition, vehicle, 1_775_000_000_000_000).await;
+
+        let worker = build_worker(
+            config(partition),
+            Arc::new(catalog(30_000)),
+            &bus,
+            &store,
+            shutdown.clone(),
+        );
+
+        let out_subject = output_subject(u64::from(partition));
+        let driver = {
+            let bus = bus.clone();
+            let shutdown = shutdown.clone();
+            let out_subject = out_subject.clone();
+            async move {
+                // A reset then a match: two outputs, and no retry loop.
+                wait_until(|| bus.published(&out_subject).len() >= 2).await;
+                shutdown.trigger(crate::lifecycle::DrainReason::Operator);
+            }
+        };
+
+        let (stats, (), ()) = tokio::join!(
+            worker.run(),
+            run_matcher(bus.clone(), shutdown.clone()),
+            driver
+        );
+        let stats = stats.expect("worker ran");
+
+        assert_eq!(stats.committed, 1, "exactly one commit, no loop");
+        assert_eq!(stats.resets, 1, "the commit opened a fresh segment");
+        assert_eq!(stats.conflicts, 0, "the CAS targeted the stale revision");
+        assert_eq!(stats.quarantined_vehicles, 0);
+
+        // The two outputs, in order: a StateLost reset then the match.
+        let published = bus.published(&out_subject);
+        assert_eq!(published.len(), 2, "a reset then a match");
+        let first = CommittedOutput::<E>::decode(&published[0].2).unwrap();
+        match first.kind {
+            OutputKind::Reset { reason, .. } => assert_eq!(reason, ResetReason::StateLost),
+            other => panic!("expected a StateLost reset first, got {}", other.kind()),
+        }
+        let second = CommittedOutput::<E>::decode(&published[1].2).unwrap();
+        assert!(
+            matches!(second.kind, OutputKind::Matched { .. }),
+            "the match follows the reset"
+        );
+
+        // The checkpoint was promoted (no prepared record survives) and the raw
+        // input was acked, so the vehicle made real progress rather than spinning.
+        let (checkpoint, prepared) = store.load(VehicleId(vehicle)).await.unwrap();
+        assert!(checkpoint.is_some(), "a fresh checkpoint was promoted");
+        assert!(prepared.is_none(), "nothing is left staged");
+        assert_eq!(bus.acked_count(&raw_subject(u64::from(partition))), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_poison_prepared_record_quarantines_the_vehicle_instead_of_spinning() {
+        let vehicle = 1u64;
+        let partition = partition_for(vehicle);
+        let bus = MemoryBus::new();
+        let store = MemoryCheckpointStore::new();
+        let shutdown = Shutdown::new();
+
+        // Plant a prepared record whose staged output bytes will never decode.
+        let prepared = PreparedCommit {
+            output: OutputId(1),
+            output_subject: output_subject(u64::from(partition)),
+            output_bytes: vec![0xff, 0xff, 0xff, 0xff],
+            next_checkpoint: Vec::new(),
+            next_revision: Revision(1),
+            next_segment: SegmentId(1),
+            expected_base: None,
+            phase: CommitPhase::Prepared,
+            raw: ObservationId {
+                partition,
+                sequence: 1,
+            },
+        };
+        store
+            .prepare(VehicleId(vehicle), partition, prepared)
+            .await
+            .unwrap();
+
+        // Start with the vehicle blocked (recovery could not finish its commit),
+        // so the housekeeping tick drives `finish_prepared` and hits the decode.
+        let admission = admission_for(&catalog(30_000));
+        let report = RecoveryReport {
+            partition,
+            frontier: None,
+            prepared_found: 1,
+            prepared_finished: 0,
+            prepared_failed: vec![VehicleId(vehicle)],
+        };
+        let worker = build_worker_with(
+            config(partition),
+            Arc::new(catalog(30_000)),
+            &bus,
+            &store,
+            admission,
+            &report,
+            shutdown.clone(),
+        );
+
+        let driver = {
+            let shutdown = shutdown.clone();
+            async move {
+                // Let several housekeeping ticks fire; a spinning retry would keep
+                // re-blocking, a quarantine fires exactly once.
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                shutdown.trigger(crate::lifecycle::DrainReason::Operator);
+            }
+        };
+
+        let (stats, ()) = tokio::join!(worker.run(), driver);
+        let stats = stats.expect("worker ran");
+
+        assert_eq!(
+            stats.quarantined_vehicles, 1,
+            "the poison vehicle was quarantined exactly once"
+        );
+        assert_eq!(stats.committed, 0, "nothing could be committed");
+        // The poison record is retained (the worker stopped retrying it rather
+        // than deleting or spinning on it).
+        assert!(
+            store.snapshot().prepared.contains_key(&VehicleId(vehicle)),
+            "the undecodable record is left in place"
+        );
+    }
+
+    /// A one-region catalog that serves a cell far from `point()`, so `point()`
+    /// resolves to no region (an unserved coverage hole).
+    fn unserved_catalog() -> Catalog {
+        // The precision-4 cell of the null island — a valid geohash nowhere near
+        // Sydney, so `point()` never matches this coverage.
+        let elsewhere = shard_of(Point::new(0.0, 0.0)).to_string();
+        assert_ne!(elsewhere, shard_of(point()).to_string());
+        let toml = format!(
+            r#"
+version = 1
+routing_version = 1
+
+[[regions]]
+id = "r1"
+graph = "g1"
+coverage = ["{elsewhere}"]
+overlap = []
+lanes = 1
+resource_class = "c"
+replicas = {{ min = 1, max = 1 }}
+freshness_budget_ms = 30000
+"#,
+        );
+        Catalog::parse(&toml).expect("catalog parses")
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_unserved_point_yields_one_terminal_and_leaves_admission_at_zero() {
+        let vehicle = 1u64;
+        let partition = partition_for(vehicle);
+        let bus = MemoryBus::new();
+        let store = MemoryCheckpointStore::new();
+        let shutdown = Shutdown::new();
+
+        publish_raw(&bus, partition, vehicle, 1_775_000_000_000_000).await;
+
+        let catalog = Arc::new(unserved_catalog());
+        let admission = admission_for(&catalog);
+        // A clone to inspect the controller after the worker has consumed its own.
+        let admission_probe = admission.clone();
+        let report = clean_report(partition);
+        let worker = build_worker_with(
+            config(partition),
+            catalog,
+            &bus,
+            &store,
+            admission,
+            &report,
+            shutdown.clone(),
+        );
+
+        let out_subject = output_subject(u64::from(partition));
+        let driver = {
+            let bus = bus.clone();
+            let shutdown = shutdown.clone();
+            let out_subject = out_subject.clone();
+            async move {
+                // No matcher runs: the terminal flows straight through the commit
+                // path from the unserved resolution.
+                wait_until(|| !bus.published(&out_subject).is_empty()).await;
+                shutdown.trigger(crate::lifecycle::DrainReason::Operator);
+            }
+        };
+
+        let (stats, ()) = tokio::join!(worker.run(), driver);
+        let stats = stats.expect("worker ran");
+
+        assert_eq!(stats.terminal, 1, "one terminal was committed");
+        assert_eq!(stats.committed, 1);
+        assert_eq!(stats.dispatched, 0, "no real job was dispatched");
+
+        // Exactly one Terminal output, tagged UnsupportedCoverage.
+        let published = bus.published(&out_subject);
+        assert_eq!(published.len(), 1);
+        let output = CommittedOutput::<E>::decode(&published[0].2).unwrap();
+        match output.kind {
+            OutputKind::Terminal { reason, .. } => {
+                assert_eq!(reason, TerminalReason::UnsupportedCoverage);
+            }
+            other => panic!("expected a Terminal output, got {}", other.kind()),
+        }
+
+        // The synthetic zero-byte permit was released on the commit path: no
+        // credit leaked in the billed region or globally.
+        assert_eq!(admission_probe.global().jobs, 0, "no job credit leaked");
+        assert!(
+            admission_probe.snapshot().iter().all(|r| r.jobs == 0),
+            "no region credit leaked",
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_state_lost_unserved_point_still_lands_its_terminal_without_looping() {
+        let vehicle = 1u64;
+        let partition = partition_for(vehicle);
+        let bus = MemoryBus::new();
+        let store = MemoryCheckpointStore::new();
+        let shutdown = Shutdown::new();
+
+        // The store holds an undecodable checkpoint at revision 7 (state lost),
+        // and the vehicle's first observation resolves to an unserved cell. The
+        // unserved terminal is committed with `expected_base: None` unless it
+        // folds in the stale revision — so before the fix it would `Conflict`
+        // against revision 7 and the `UnsupportedCoverage` terminal would be
+        // silently dropped while the vehicle looped under blocked-retry.
+        seed_checkpoint_bytes(&store, vehicle, partition, 7, b"not a checkpoint".to_vec()).await;
+
+        publish_raw(&bus, partition, vehicle, 1_775_000_000_000_000).await;
+
+        let catalog = Arc::new(unserved_catalog());
+        let admission = admission_for(&catalog);
+        let admission_probe = admission.clone();
+        let report = clean_report(partition);
+        let worker = build_worker_with(
+            config(partition),
+            catalog,
+            &bus,
+            &store,
+            admission,
+            &report,
+            shutdown.clone(),
+        );
+
+        let out_subject = output_subject(u64::from(partition));
+        let driver = {
+            let bus = bus.clone();
+            let shutdown = shutdown.clone();
+            let out_subject = out_subject.clone();
+            async move {
+                // No matcher runs: the terminal flows straight through the commit
+                // path from the unserved resolution.
+                wait_until(|| !bus.published(&out_subject).is_empty()).await;
+                shutdown.trigger(crate::lifecycle::DrainReason::Operator);
+            }
+        };
+
+        let (stats, ()) = tokio::join!(worker.run(), driver);
+        let stats = stats.expect("worker ran");
+
+        assert_eq!(stats.terminal, 1, "the terminal landed");
+        assert_eq!(stats.committed, 1, "exactly one commit, no loop");
+        assert_eq!(stats.conflicts, 0, "the CAS targeted the stale revision");
+        assert_eq!(stats.quarantined_vehicles, 0);
+
+        // Exactly one Terminal output, tagged UnsupportedCoverage — no Conflict
+        // swallowed it.
+        let published = bus.published(&out_subject);
+        assert_eq!(published.len(), 1, "exactly one terminal output");
+        let output = CommittedOutput::<E>::decode(&published[0].2).unwrap();
+        match output.kind {
+            OutputKind::Terminal { reason, .. } => {
+                assert_eq!(reason, TerminalReason::UnsupportedCoverage);
+            }
+            other => panic!("expected a Terminal output, got {}", other.kind()),
+        }
+
+        // A fresh checkpoint was promoted (no prepared record survives) and the
+        // raw input was acked: real progress rather than a spin.
+        let (checkpoint, prepared) = store.load(VehicleId(vehicle)).await.unwrap();
+        assert!(checkpoint.is_some(), "a fresh checkpoint was promoted");
+        assert!(prepared.is_none(), "nothing is left staged");
+        assert_eq!(bus.acked_count(&raw_subject(u64::from(partition))), 1);
+        assert_eq!(admission_probe.global().jobs, 0, "no job credit leaked");
     }
 }
