@@ -174,6 +174,8 @@ pub struct PublishAck {
 ///
 /// Construct with [`Ingress::live`] or [`Ingress::isolated`], provision streams
 /// once with [`Ingress::ensure_streams`], then [`Ingress::publish`] observations.
+/// Clones share the JetStream handle and can publish concurrently.
+#[derive(Clone)]
 pub struct Ingress {
     js: jetstream::Context,
     /// The isolated run token, or `None` for the live journal.
