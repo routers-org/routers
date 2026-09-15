@@ -1,227 +1,122 @@
+//! The regional matcher worker binary.
+//!
+//! One matcher serves exactly one region (spec A3): it loads that region's
+//! pinned graph before pulling a single job, then pulls solve jobs only as fast
+//! as it has CPU slots to answer them, solves each, and publishes the result
+//! *before* acknowledging the job so a crash never loses work. This binary is
+//! only the wiring — argument parsing, telemetry, the broker connection, and
+//! the lifecycle dance — around the reusable pieces it composes:
+//!
+//! * [`bootstrap`](routers_realtime::matcher::bootstrap) loads and verifies the
+//!   graph and publishes readiness; a failure exits non-zero so an unready
+//!   process never pulls.
+//! * [`Engine`](routers_realtime::matcher::engine::Engine) is the solve core,
+//!   [`ResultPublisher`](routers_realtime::matcher::publish::ResultPublisher)
+//!   sequences publish-then-ack, and
+//!   [`PullLoop`](routers_realtime::matcher::pull::PullLoop) is the
+//!   capacity-bound intake loop.
+//! * The [`JetStream`](routers_realtime::bus::jetstream) adapters are the
+//!   production transport under the loop's `Consumer`/`Publisher` seams.
+//!
+//! The legacy request/reply path (`queue_subscribe`, `MatchContext`,
+//! `MatchReply`) is gone: jobs arrive on a durable work-queue consumer and
+//! results are published to the partitioned result plane.
+
+// `Arc` has no `alloc`-path form available here: a binary crate has no
+// `extern crate alloc`, so `std::sync::Arc` is the only spelling and the
+// `alloc`-preference lint does not apply.
+#![allow(clippy::std_instead_of_alloc)]
+
+use core::time::Duration;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use routers_codec::osm::{OsmEdgeMetadata, OsmEntryId};
-use routers_network::Metadata;
-use routers_realtime::{
-    bus::{self, Wire},
-    event::{MatchContext, MatchReply, MatchedDiff},
-};
-use routers_shard::{FileFetcher, Geohash, ShardLoader, ShardedNetwork};
-use routers_transition::{
-    Continuation, MatchError, Matcher,
-    costing::{CostingStrategies, DefaultEmissionCost, DefaultTransitionCost},
-    layer::generation::StandardGenerator,
-    primitives::PredicateCache,
-    weigh::AllCompute,
-};
-
-use anyhow::Context;
-use async_nats::{ConnectOptions, ServerAddr};
+use anyhow::Context as _;
 use clap::Parser;
-use futures::StreamExt;
-use log::{debug, error, info, warn};
-use tracing::{field, info_span};
+use tracing::info;
 use url::Url;
 
+use routers_codec::osm::{OsmEdgeMetadata, OsmEntryId};
+use routers_network::Metadata;
+
+use routers_realtime::bus::jetstream::{JetStreamConsumer, JetStreamPublisher};
+use routers_realtime::lifecycle::{Drain, Readiness, ReadyState, Shutdown};
+use routers_realtime::matcher::bootstrap::{BootstrapConfig, bootstrap};
+use routers_realtime::matcher::engine::Engine;
+use routers_realtime::matcher::publish::{PublishConfig, ResultPublisher};
+use routers_realtime::matcher::pull::{PullConfig, PullLoop, RawBytes};
+use routers_realtime::matcher::validate::ValidateConfig;
+use routers_realtime::protocol::ids::{IdError, RegionId};
+use routers_realtime::protocol::result::SolveResult;
+use routers_realtime::topology::jobs::{JobsConfig, ensure_job_stream, job_consumer};
+
+/// The network entry type this region's graph is keyed by.
+type E = OsmEntryId;
+
+/// How long a result publish waits for the broker's ack before the publish is
+/// treated as ambiguous and retried idempotently.
+const PUBLISH_ACK_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// How long one fetch waits for a batch to fill before returning what it has.
+const FETCH_WAIT: Duration = Duration::from_secs(1);
+
+/// The default solve-slot count: one per available core, since a solve is
+/// CPU-bound. Falls back to a single slot when parallelism is unknown.
+fn default_slots() -> usize {
+    std::thread::available_parallelism().map_or(1, |n| n.get())
+}
+
+/// Validate a `--region` value as a NATS-safe [`RegionId`].
+fn parse_region(value: &str) -> Result<RegionId, IdError> {
+    RegionId::new(value)
+}
+
+/// Command-line configuration for a regional matcher.
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 struct Args {
-    /// URL of the NATS server
-    #[arg(short, env, long)]
+    /// URL of the NATS server to connect to.
+    #[arg(long)]
     nats: Url,
 
-    /// The directory of stored shard files
-    #[arg(short, env, long)]
-    directory: PathBuf,
+    /// Path to the region catalog TOML (mounted read-only).
+    #[arg(long)]
+    catalog: PathBuf,
 
-    /// The shard precision the system is configured to
-    #[arg(short, env, long)]
-    precision: usize,
+    /// The region this matcher serves; must exist in the catalog.
+    #[arg(long, value_parser = parse_region)]
+    region: RegionId,
 
-    // The configured "owned" shard.
-    #[arg(short, env, long)]
-    shard: Geohash,
+    /// Directory holding the `manifest.json` and the region's `.shard.rt`
+    /// bundles.
+    #[arg(long)]
+    shard_dir: PathBuf,
 
-    // The inbound NATS subject to serve match requests from.
-    #[arg(short, env, long)]
-    inbound_subject: String,
+    /// The most solves to run concurrently and, therefore, the most jobs ever
+    /// claimed-but-unanswered on this replica. Defaults to the available
+    /// parallelism.
+    #[arg(long, default_value_t = default_slots())]
+    slots: usize,
 
-    /// The queue group shared by this shard's matchers: NATS delivers each
-    /// request to exactly one member, so replicas divide the load instead of
-    /// duplicating it.
-    #[arg(short, env, long, default_value = "matchers")]
-    queue_group: String,
+    /// Optional marker file created once the graph is ready and removed on any
+    /// other state, so an exec probe can `test -f <path>`.
+    #[arg(long)]
+    ready_file: Option<PathBuf>,
 
-    /// The search distance to use for matching
-    #[arg(long, env)]
+    /// How long to wait for in-flight solves to finish on shutdown before
+    /// abandoning them to redelivery.
+    #[arg(long, default_value = "20s", value_parser = humantime::parse_duration)]
+    grace: Duration,
+
+    /// The largest wire buffer a job may decode to; enforced before decode so a
+    /// hostile length prefix cannot force an unbounded allocation.
+    #[arg(long, default_value_t = ValidateConfig::DEFAULT_MAX_DECODED_BYTES)]
+    max_decoded_bytes: usize,
+
+    /// Override the candidate generator's search distance; `None` keeps the
+    /// generator's own default.
+    #[arg(long)]
     search_distance: Option<f64>,
-
-    /// How many contexts to solve concurrently. Solving is CPU-bound and each
-    /// context is self-contained, so contexts fan out across a blocking pool
-    /// with no shared state to serialise on.
-    #[arg(short, env, long, default_value = "5")]
-    workers: usize,
-}
-
-type E = OsmEntryId;
-type M = OsmEdgeMetadata;
-type Net = ShardedNetwork<E, M, Geohash>;
-
-/// Everything a solve needs, owned so the service can be shared (`Arc`) across
-/// the concurrent solves without leaking or juggling `'static` borrows. The
-/// network's spatial index and the predicate cache are the only heavy state,
-/// and both are shared; a per-solve [`Matcher`] is just a bundle of borrows
-/// into this and is free to build.
-struct Matching {
-    network: Arc<Net>,
-    runtime: <M as Metadata>::Runtime,
-    costing: CostingStrategies<DefaultEmissionCost, DefaultTransitionCost, E>,
-    cache: Arc<PredicateCache<Net>>,
-    search_distance: Option<f64>,
-}
-
-impl Matching {
-    /// Solve one context, recording its outcome onto a fresh `match_event`
-    /// span. Returns the reply to send: the emission and resume state, or
-    /// [`MatchReply::NoMatch`] when there is nothing to emit (no anchor, or a
-    /// nominal/fatal solve failure).
-    fn solve(
-        &self,
-        MatchContext {
-            vehicle_id,
-            continuation,
-        }: MatchContext<E>,
-    ) -> MatchReply<E> {
-        let mut generator = StandardGenerator::new(self.network.as_ref(), &self.costing.emission);
-        if let Some(distance) = self.search_distance {
-            generator = generator.with_search_distance(distance);
-        }
-
-        let weigher = AllCompute::default().use_cache(self.cache.clone());
-        let matcher = Matcher::new(
-            self.network.as_ref(),
-            &self.costing,
-            generator,
-            weigher,
-            &self.runtime,
-        );
-
-        let span = info_span!(
-            "match_event",
-            outcome = field::Empty,
-            severity = field::Empty,
-            continuation = field::Empty,
-            converged = field::Empty,
-            emitted = field::Empty,
-        );
-        let _entered = span.enter();
-
-        let (mut trip, fresh, downgraded) = match continuation {
-            // A resume solved on another shard references edges this shard's
-            // padding may not cover: adopting it would route through nodes
-            // that do not exist here. Degrade to a restart over the trip's
-            // own observations — the emission re-covers them under a higher
-            // revision, so the reconciled history heals the seam.
-            Continuation::Resume { trip, fresh } if !matcher.supports(&trip) => {
-                span.record("continuation", "downgrade");
-                warn!("{vehicle_id}: resume references a foreign shard; restarting");
-
-                let fresh = trip.origins().iter().copied().chain(fresh).collect();
-                (matcher.begin(), fresh, true)
-            }
-            Continuation::Resume { trip, fresh } => {
-                span.record("continuation", "resume");
-                (trip, fresh, false)
-            }
-            Continuation::Restart { fresh } => {
-                span.record("continuation", "restart");
-                (matcher.begin(), fresh, false)
-            }
-        };
-
-        info_span!("push", points = fresh.len()).in_scope(|| {
-            for origin in fresh {
-                match matcher.push(&mut trip, origin) {
-                    Ok(_) => {}
-                    Err(MatchError::Unanchored(err)) => {
-                        info_span!("point_drop", reason = "unanchored")
-                            .in_scope(|| debug!("{vehicle_id}: dropped off-network point ({err})"));
-                    }
-                    Err(err) => {
-                        info_span!("point_drop", reason = "push_error")
-                            .in_scope(|| error!("{vehicle_id}: could not push point: {err}"));
-                    }
-                }
-            }
-        });
-
-        if trip.is_empty() {
-            span.record("outcome", "no_anchor");
-            span.record("severity", "nominal");
-            warn!("{vehicle_id}: no anchored layers to solve");
-            return MatchReply::NoMatch;
-        }
-
-        if let Err(err) = info_span!("solve").in_scope(|| matcher.solve(&mut trip)) {
-            let (outcome, severity) = classify(err);
-            span.record("outcome", outcome);
-            span.record("severity", severity);
-            error!("{vehicle_id}: unable to solve trip");
-            return MatchReply::NoMatch;
-        }
-
-        // Copied out: the snapshot's borrow spans the whole trip mutably.
-        let origins = trip.origins().to_vec();
-
-        let solution = match info_span!("snapshot").in_scope(|| matcher.snapshot(&mut trip)) {
-            Ok(solution) => solution,
-            Err(err) => {
-                let (outcome, severity) = classify(err);
-                span.record("outcome", outcome);
-                span.record("severity", severity);
-                return MatchReply::NoMatch;
-            }
-        };
-
-        // Emit everything a future solve could still change — the whole trip
-        // since its last cut. The owner stamps the real revision (the ingest
-        // stream sequence) before publishing.
-        let mut diff = info_span!("emit")
-            .in_scope(|| MatchedDiff::new(&solution, &origins, self.network.as_ref(), 0));
-        diff.downgraded = downgraded;
-        drop(solution);
-        span.record("emitted", diff.layers.len());
-
-        // Cut behind the convergence point: those layers are final, already
-        // emitted, and only cost wire from here on. The convergence layer
-        // itself stays as the resume anchor. An unfused trip stays whole —
-        // the orchestrator's context window bounds its growth.
-        match matcher.convergence(&trip) {
-            Ok(Some(layer)) => {
-                span.record("converged", layer.index() as u64);
-                trip.tail(trip.layers() - layer.index());
-            }
-            Ok(None) => {}
-            Err(err) => error!("{vehicle_id}: convergence query failed: {err}"),
-        }
-
-        span.record("outcome", "success");
-        span.record("severity", "ok");
-
-        MatchReply::Solved { diff, trip }
-    }
-}
-
-/// A match attempt's `outcome`/`severity` labels for the success-ratio series.
-/// Nominal failures are the data's fault (a point off every road, a trace the
-/// network cannot bridge) and expected in healthy operation; fatal ones are ours.
-fn classify(err: MatchError) -> (&'static str, &'static str) {
-    match err {
-        MatchError::Unanchored(_) => ("unanchored", "nominal"),
-        MatchError::Disconnected(_) => ("disconnected", "nominal"),
-        MatchError::TrellisError(_) | MatchError::SolveError(_) => ("internal", "fatal"),
-    }
 }
 
 #[tokio::main]
@@ -229,92 +124,188 @@ async fn main() -> anyhow::Result<()> {
     let _telemetry = routers_realtime::telemetry::init("routers-matcher");
 
     let args = Args::parse();
-    info!("matcher started: {:?}", args);
+    info!(?args, "matcher starting");
 
-    let fetcher = FileFetcher::new(args.directory);
-    let mut loader = ShardLoader::<E, M, Geohash, _, _>::new(fetcher, |key: &Geohash| {
-        format!("{}.shard.rt", key)
+    // Stop-intake signal shared with the pull loop; a SIGTERM/SIGINT triggers
+    // the drain.
+    let shutdown = Shutdown::from_signals();
+
+    // Readiness starts `Starting`; bootstrap drives it to `Ready` (or `Failed`).
+    let (readiness, _watcher) = Readiness::new();
+    let readiness = match args.ready_file.clone() {
+        Some(path) => readiness.with_ready_file(path),
+        None => readiness,
+    };
+
+    // Load and verify the pinned graph before pulling any work. On failure
+    // bootstrap has already published `Failed`; returning the error exits
+    // non-zero so an unready process never pulls a job.
+    let boot = BootstrapConfig {
+        catalog: args.catalog.clone(),
+        region: args.region.clone(),
+        shard_dir: args.shard_dir.clone(),
+    };
+    let loaded = bootstrap(&boot, &readiness)
+        .await
+        .context("graph bootstrap failed")?;
+
+    // Now that we are `Ready`, flip readiness to `Draining` the instant a
+    // shutdown begins, so a probe steers traffic away while in-flight solves
+    // finish. The setter is owned by this task for the rest of the process.
+    let drain_signal = shutdown.clone();
+    tokio::spawn(async move {
+        drain_signal.triggered().await;
+        readiness.set(ReadyState::Draining);
     });
 
-    let network = loader
-        .load(&args.shard)
+    let client = async_nats::connect(args.nats.as_str())
         .await
-        .context("could not find shard in cache")?;
+        .with_context(|| format!("could not connect to NATS at {}", args.nats))?;
+    let context = async_nats::jetstream::new(client);
 
-    let nats_url = ServerAddr::from_url(args.nats).context("could not create NATS url")?;
-
-    let client = ConnectOptions::new()
-        .name("MatcherService")
-        .connect(nats_url)
+    // Reconcile the region's job stream and the shared durable pull consumer
+    // (idempotent get-or-create), then read raw job bytes so the loop can
+    // size-gate them before decode.
+    let jobs = JobsConfig::default();
+    let stream = ensure_job_stream(&context, &loaded.region.id, &jobs)
         .await
-        .context("could not connect to NATS")?;
-
-    // The queue group makes replicas additive: each request lands on exactly
-    // one member, so scaling a shard's matchers divides the load.
-    let subscriber = client
-        .queue_subscribe(args.inbound_subject, args.queue_group)
+        .context("could not ensure the region job stream")?;
+    let consumer = job_consumer(&stream, &loaded.region.graph, &loaded.region.id, &jobs)
         .await
-        .context("could not subscribe to NATS subject")?;
+        .context("could not create the job consumer")?;
+    let consumer = JetStreamConsumer::<RawBytes>::new(consumer);
 
-    let matching = Arc::new(Matching {
-        network,
-        runtime: OsmEdgeMetadata::runtime(None),
-        costing: CostingStrategies::default(),
-        cache: Arc::new(PredicateCache::default()),
-        search_distance: args.search_distance,
-    });
+    let engine = Arc::new(Engine::new(
+        Arc::clone(&loaded.network),
+        OsmEdgeMetadata::runtime(None),
+        args.search_distance,
+    ));
 
-    // Each context is solved on the blocking pool (solving is synchronous and
-    // CPU-bound); `for_each_concurrent` keeps `workers` in flight at once.
-    // Every request is answered on its reply inbox — a NoMatch is still an
-    // answer, so the asking orchestrator never waits out a timeout for an
-    // event that solved to nothing.
-    subscriber
-        .for_each_concurrent(args.workers, |message| {
-            let matching = Arc::clone(&matching);
-            let client = client.clone();
+    let publisher = ResultPublisher::new(
+        JetStreamPublisher::<SolveResult<E>>::new(context.clone(), PUBLISH_ACK_TIMEOUT),
+        PublishConfig::default(),
+    );
 
-            async move {
-                bus::inbound(message.subject.as_str(), message.headers.as_ref());
+    let cfg = PullConfig {
+        slots: args.slots,
+        fetch_wait: FETCH_WAIT,
+        max_batch: args.slots,
+        validate: ValidateConfig {
+            max_decoded_bytes: args.max_decoded_bytes,
+            min_remaining: ValidateConfig::DEFAULT_MIN_REMAINING,
+        },
+        grace: args.grace,
+    };
 
-                let Some(inbox) = message.reply else {
-                    warn!("dropping request without a reply inbox — not a request?");
-                    return;
-                };
+    info!(
+        region = %loaded.region.id,
+        graph = %loaded.region.graph,
+        slots = args.slots,
+        "matcher ready; pulling jobs"
+    );
 
-                let context = match MatchContext::<E>::decode(&message.payload) {
-                    Ok(context) => context,
-                    Err(err) => {
-                        warn!("skipping undecodable context: {err}");
-                        return;
-                    }
-                };
+    let pull = PullLoop::new(
+        engine,
+        consumer,
+        publisher,
+        loaded.region.clone(),
+        loaded.cells.clone(),
+        cfg,
+        shutdown,
+        Drain::new(),
+    );
 
-                let reply = tokio::task::spawn_blocking(move || matching.solve(context))
-                    .await
-                    .unwrap_or_else(|err| {
-                        error!("solve task panicked: {err}");
-                        MatchReply::NoMatch
-                    });
+    // `run` pulls, solves, and answers until shutdown, then drains in-flight
+    // solves within the grace budget and returns the run's tally.
+    let stats = pull.run().await;
+    info!(?stats, "matcher drained; exiting");
 
-                let payload = match reply.encode() {
-                    Ok(payload) => payload,
-                    Err(err) => {
-                        error!("could not encode reply: {err:#}");
-                        return;
-                    }
-                };
-
-                if let Err(err) = client
-                    .publish_with_headers(inbox, bus::outbound(), payload.into())
-                    .await
-                {
-                    error!("could not send reply: {err:#}");
-                }
-            }
-        })
-        .await;
-
-    error!("source terminated");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The minimal required argument set every test starts from.
+    fn base() -> Vec<&'static str> {
+        vec![
+            "matcher",
+            "--nats",
+            "nats://localhost:4222",
+            "--catalog",
+            "/etc/routers/catalog.toml",
+            "--region",
+            "syd",
+            "--shard-dir",
+            "/var/lib/routers/shards",
+        ]
+    }
+
+    #[test]
+    fn parses_required_fields_and_defaults() {
+        let args = Args::parse_from(base());
+
+        assert_eq!(args.nats.as_str(), "nats://localhost:4222");
+        assert_eq!(args.catalog, PathBuf::from("/etc/routers/catalog.toml"));
+        assert_eq!(args.region, RegionId::new("syd").unwrap());
+        assert_eq!(args.shard_dir, PathBuf::from("/var/lib/routers/shards"));
+
+        // Defaults for everything optional.
+        assert_eq!(args.slots, default_slots());
+        assert_eq!(args.grace, Duration::from_secs(20));
+        assert_eq!(
+            args.max_decoded_bytes,
+            ValidateConfig::DEFAULT_MAX_DECODED_BYTES
+        );
+        assert!(args.ready_file.is_none());
+        assert!(args.search_distance.is_none());
+    }
+
+    #[test]
+    fn parses_the_full_optional_set() {
+        let mut argv = base();
+        argv.extend([
+            "--slots",
+            "8",
+            "--ready-file",
+            "/run/matcher.ready",
+            "--grace",
+            "45s",
+            "--max-decoded-bytes",
+            "1048576",
+            "--search-distance",
+            "35.5",
+        ]);
+
+        let args = Args::parse_from(argv);
+
+        assert_eq!(args.slots, 8);
+        assert_eq!(args.ready_file, Some(PathBuf::from("/run/matcher.ready")));
+        assert_eq!(args.grace, Duration::from_secs(45));
+        assert_eq!(args.max_decoded_bytes, 1 << 20);
+        assert_eq!(args.search_distance, Some(35.5));
+    }
+
+    #[test]
+    fn rejects_a_non_token_safe_region() {
+        let mut argv = base();
+        // Replace the region value with one holding a subject separator.
+        let region_index = argv.iter().position(|arg| *arg == "syd").unwrap();
+        argv[region_index] = "not/a/token";
+
+        assert!(Args::try_parse_from(argv).is_err());
+    }
+
+    #[test]
+    fn requires_the_mandatory_arguments() {
+        // Missing every required flag: parsing must fail rather than default.
+        assert!(Args::try_parse_from(["matcher"]).is_err());
+    }
+
+    #[test]
+    fn arg_definitions_are_valid() {
+        use clap::CommandFactory;
+        Args::command().debug_assert();
+    }
 }
