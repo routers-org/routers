@@ -7556,7 +7556,6 @@ dependencies = [
  "routers_schema",
  "routers_shard",
  "routers_transition",
- "scc",
  "serde",
  "serde_json",
  "sha2",
