@@ -43,10 +43,11 @@ use-pvc: install
         --set shardCache.mode=pvc \
         --set shardCache.pvc.claimName=routers-shards
 
-use-shards shards="{r3gq,r3gr,r3gw}": install
-    helm upgrade routers-realtime . \
-        -n {{ namespace }} \
-        --set 'shards={{ shards }}'
+# Render just the region catalog the chart would mount, so you can eyeball the
+# TOML before an install. Regions are a structured list, not a --set-able
+# scalar, so edit them in a values file rather than on the command line.
+show-catalog:
+    helm template routers-realtime . -f {{ values }} -s templates/catalog-configmap.yaml
 
 use-shard-cache cache-dir="": install
     helm upgrade routers-realtime . \

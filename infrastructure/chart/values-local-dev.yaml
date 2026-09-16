@@ -24,6 +24,9 @@ matcher:
 
 orchestrator:
   rustLog: info
-  # A single-node devstack has no room for a real fleet; one pod owns the
-  # whole partition space.
+  # A single-node devstack has no room for a real fleet; one pod owns the whole
+  # partition space (1 divides 1024).
   replicas: 1
+
+materializer:
+  rustLog: info

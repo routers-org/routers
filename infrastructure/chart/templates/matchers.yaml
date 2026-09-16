@@ -1,35 +1,51 @@
+# One Deployment per catalog region. A matcher serves exactly one region: it
+# loads that region's shards (its `coverage` cells) from /shards, verifies them
+# against the catalog's graph version, and only then pulls jobs. The matcher
+# binary carries no clap env vars, so its identity is passed through `args`; the
+# catalog is mounted read-only, identical to the orchestrator's.
 {{- include "routers.validate" . -}}
-{{- range $shard := .Values.shards }}
+{{- range $region := $.Values.catalog.regions }}
+{{- $id := toString $region.id }}
+{{- $per := dict }}
+{{- if hasKey $.Values.matcher.perRegion $id }}{{ $per = index $.Values.matcher.perRegion $id }}{{ end }}
+{{- $replicas := $.Values.matcher.replicas }}
+{{- if hasKey $per "replicas" }}{{ $replicas = $per.replicas }}{{ end }}
+{{- $resources := $.Values.matcher.resources }}
+{{- if hasKey $per "resources" }}{{ $resources = $per.resources }}{{ end }}
+{{- $autoscaling := $.Values.matcher.autoscaling }}
+{{- if hasKey $per "autoscaling" }}{{ $autoscaling = $per.autoscaling }}{{ end }}
 ---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: matcher-{{ $shard }}
+  name: matcher-{{ $id }}
   labels:
     {{- include "routers.labels" $ | nindent 4 }}
     app: matcher
-    shard: "{{ $shard }}"
+    region: "{{ $id }}"
 spec:
-  # Replicas divide load: matchers queue-subscribe their shard subject, so
-  # NATS delivers each request to exactly one member.
-  replicas: {{ $.Values.matcher.replicas }}
+  # Replicas share one durable pull consumer on the region's work queue, so
+  # NATS hands each job to exactly one member; scale per region density, or let
+  # the HPA do it.
+  replicas: {{ $replicas }}
   selector:
     matchLabels:
       app: matcher
-      shard: "{{ $shard }}"
+      region: "{{ $id }}"
   template:
     metadata:
-      {{- if eq $.Values.shardCache.mode "gcsfuse" }}
       annotations:
+        checksum/catalog: {{ include "routers.catalog.toml" $ | sha256sum }}
+        {{- if eq $.Values.shardCache.mode "gcsfuse" }}
         # The CSI driver injects its sidecar only into pods carrying this
         # annotation. Without it the pod sits Pending on a volume that cannot
         # mount, and nothing in the event names the annotation as the cause.
         gke-gcsfuse/volumes: "true"
-      {{- end }}
+        {{- end }}
       labels:
         {{- include "routers.labels" $ | nindent 8 }}
         app: matcher
-        shard: "{{ $shard }}"
+        region: "{{ $id }}"
     spec:
       {{- with (include "routers.podSpecCommon" (dict "root" $ "service" $.Values.matcher) | trim) }}
       {{- . | nindent 6 }}
@@ -38,37 +54,66 @@ spec:
         - name: matcher
           image: {{ include "routers.image" (dict "registry" $.Values.image.registry "image" $.Values.matcher.image) | quote }}
           imagePullPolicy: {{ $.Values.matcher.image.pullPolicy }}
+          args:
+            - "--nats"
+            - {{ $.Values.infra.nats.url | quote }}
+            - "--catalog"
+            - "/etc/routers/catalog.toml"
+            - "--region"
+            - {{ $id | quote }}
+            - "--shard-dir"
+            - "/shards"
+            # The matcher drops this marker once its graph is loaded; the exec
+            # probes below `test -f` it so an unready pod is never sent work.
+            - "--ready-file"
+            - "/tmp/routers-ready"
+            {{- if $.Values.matcher.slots }}
+            - "--slots"
+            - {{ $.Values.matcher.slots | quote }}
+            {{- end }}
+            {{- range $arg := $.Values.matcher.extraArgs }}
+            - {{ $arg | quote }}
+            {{- end }}
           env:
-            - name: NATS
-              value: {{ $.Values.infra.nats.url | quote }}
-            - name: DIRECTORY
-              value: "/shards"
-            - name: PRECISION
-              value: {{ $.Values.shardPrecision | quote }}
-            - name: SHARD
-              value: {{ $shard | quote }}
-            - name: INBOUND_SUBJECT
-              value: "events.match.{{ $shard }}"
             - name: RUST_LOG
               value: {{ $.Values.matcher.rustLog | quote }}
+            {{- if $.Values.infra.otlp.url }}
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ $.Values.infra.otlp.url | quote }}
+            {{- end }}
             {{- range $name, $value := $.Values.matcher.env }}
             - name: {{ $name }}
               value: {{ $value | quote }}
             {{- end }}
-            {{- if $.Values.infra.otlp.url }}
-            # Spans exported here become Prometheus series via the
-            # collector's spanmetrics pipeline; unset, telemetry degrades
-            # to plain structured logs.
-            - name: OTEL_EXPORTER_OTLP_ENDPOINT
-              value: {{ $.Values.infra.otlp.url | quote }}
-            {{- end }}
+          readinessProbe:
+            # Marker present == graph loaded and pulling; its removal on drain or
+            # failure steers traffic away without killing in-flight solves.
+            exec:
+              command: ["test", "-f", "/tmp/routers-ready"]
+            periodSeconds: 5
+            failureThreshold: 3
+          startupProbe:
+            # Loading and verifying a multi-hundred-megabyte shard can take
+            # minutes; a generous budget keeps the kubelet from killing the pod
+            # before its graph is ready. 10s x 60 = up to ten minutes.
+            exec:
+              command: ["test", "-f", "/tmp/routers-ready"]
+            periodSeconds: 10
+            failureThreshold: 60
           volumeMounts:
+            - name: catalog
+              mountPath: /etc/routers/catalog.toml
+              subPath: catalog.toml
+              readOnly: true
             - name: shards
               mountPath: /shards
               readOnly: true
           resources:
-            {{- toYaml $.Values.matcher.resources | nindent 12 }}
+            {{- toYaml $resources | nindent 12 }}
       volumes:
+        - name: catalog
+          configMap:
+            name: {{ $.Release.Name }}-catalog
         - name: shards
           {{- if eq $.Values.shardCache.mode "hostPath" }}
           hostPath:
@@ -82,7 +127,7 @@ spec:
           {{- fail "shardCache.mode is 'gcsfuse' but shardCache.gcs.bucket is empty; matchers would start with an empty /shards and match nothing" }}
           {{- end }}
           # An inline CSI volume rather than a PV/PVC pair: the bucket is the
-          # volume's identity, so there is nothing per-shard to provision and
+          # volume's identity, so there is nothing per-region to provision and
           # every matcher mounts the same bucket read-only.
           csi:
             driver: gcsfuse.csi.storage.gke.io
@@ -93,29 +138,29 @@ spec:
           {{- else }}
           {{- fail (printf "shardCache.mode must be 'hostPath', 'pvc' or 'gcsfuse', got %q" $.Values.shardCache.mode) }}
           {{- end }}
-{{- if $.Values.matcher.autoscaling.enabled }}
+{{- if $autoscaling.enabled }}
 ---
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:
-  name: matcher-{{ $shard }}
+  name: matcher-{{ $id }}
   labels:
     {{- include "routers.labels" $ | nindent 4 }}
     app: matcher
-    shard: "{{ $shard }}"
+    region: "{{ $id }}"
 spec:
   scaleTargetRef:
     apiVersion: apps/v1
     kind: Deployment
-    name: matcher-{{ $shard }}
-  minReplicas: {{ $.Values.matcher.autoscaling.minReplicas }}
-  maxReplicas: {{ $.Values.matcher.autoscaling.maxReplicas }}
+    name: matcher-{{ $id }}
+  minReplicas: {{ $autoscaling.minReplicas }}
+  maxReplicas: {{ $autoscaling.maxReplicas }}
   metrics:
     - type: Resource
       resource:
         name: cpu
         target:
           type: Utilization
-          averageUtilization: {{ $.Values.matcher.autoscaling.targetCPUUtilizationPercentage }}
+          averageUtilization: {{ $autoscaling.targetCPUUtilizationPercentage }}
 {{- end }}
 {{- end }}
