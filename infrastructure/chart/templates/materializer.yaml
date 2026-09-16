@@ -1,8 +1,4 @@
-# The materializer tails the committed-output plane and applies every output to
-# the Valkey served view idempotently. It is the one consumer that *is* the
-# served history, and owns none of the orchestrator's state. Replicas that share
-# `consumerName` share the durable consumer, so they divide the plane; a
-# `partitions` range narrows the filter so a shard of materializers can split it.
+# Materializer: tails the committed-output plane and applies it to the kv served view.
 {{- if .Values.materializer.enabled }}
 {{- include "routers.validate" . }}
 apiVersion: apps/v1
@@ -32,22 +28,20 @@ spec:
           imagePullPolicy: {{ .Values.materializer.image.pullPolicy }}
           env:
             - name: NATS
-              value: {{ .Values.infra.nats.url | quote }}
+              value: {{ .Values.infra.eventBus.url | quote }}
             - name: VALKEY
-              value: {{ .Values.infra.valkey.url | quote }}
+              value: {{ .Values.infra.kv.url | quote }}
             - name: CONSUMER_NAME
               value: {{ .Values.materializer.consumerName | quote }}
             {{- if .Values.materializer.partitions }}
-            # A range narrows the durable consumer's filter so this shard of
-            # materializers owns only part of the output plane.
             - name: PARTITIONS
               value: {{ .Values.materializer.partitions | quote }}
             {{- end }}
             - name: RUST_LOG
               value: {{ .Values.materializer.rustLog | quote }}
-            {{- if .Values.infra.otlp.url }}
+            {{- if .Values.infra.telemetry.otlpUrl }}
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
-              value: {{ .Values.infra.otlp.url | quote }}
+              value: {{ .Values.infra.telemetry.otlpUrl | quote }}
             {{- end }}
             {{- range $name, $value := .Values.materializer.env }}
             - name: {{ $name }}

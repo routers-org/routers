@@ -1,9 +1,4 @@
-# The orchestrator fleet is vehicle-partitioned, not geographic: a
-# StatefulSet whose pods each derive a disjoint slice of the 1024 vehicle
-# partitions from their ordinal (POD_NAME + FLEET; see the binary's
-# --pod-name/--fleet). Scaling the fleet re-slices the space, so change
-# `orchestrator.replicas` with the fleet quiesced or accept a window of
-# double-ownership — which revisions make wasteful, not wrong.
+# Vehicle-partitioned orchestrator fleet: a StatefulSet whose ordinals slice the 1024 partitions.
 {{- include "routers.validate" . }}
 apiVersion: v1
 kind: Service
@@ -34,9 +29,6 @@ spec:
   template:
     metadata:
       annotations:
-        # The orchestrator loads the catalog once at startup, so a mount change
-        # only reaches it on a restart. Rolling the pods on the catalog's
-        # checksum is what makes `helm upgrade` actually apply a new topology.
         checksum/catalog: {{ include "routers.catalog.toml" . | sha256sum }}
       labels:
         {{- include "routers.labels" . | nindent 8 }}
@@ -51,13 +43,11 @@ spec:
           imagePullPolicy: {{ .Values.orchestrator.image.pullPolicy }}
           env:
             - name: NATS
-              value: {{ .Values.infra.nats.url | quote }}
+              value: {{ .Values.infra.eventBus.url | quote }}
             - name: VALKEY
-              value: {{ .Values.infra.valkey.url | quote }}
+              value: {{ .Values.infra.kv.url | quote }}
             - name: CATALOG
               value: "/etc/routers/catalog.toml"
-            # The StatefulSet ordinal in POD_NAME, paired with FLEET, is what the
-            # binary turns into this pod's disjoint partition slice.
             - name: POD_NAME
               valueFrom:
                 fieldRef:
@@ -68,11 +58,9 @@ spec:
               value: {{ .Values.streams | quote }}
             - name: RUST_LOG
               value: {{ .Values.orchestrator.rustLog | quote }}
-            {{- if .Values.infra.otlp.url }}
-            # Spans exported here become Prometheus series via the collector's
-            # spanmetrics pipeline; unset, telemetry degrades to plain logs.
+            {{- if .Values.infra.telemetry.otlpUrl }}
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
-              value: {{ .Values.infra.otlp.url | quote }}
+              value: {{ .Values.infra.telemetry.otlpUrl | quote }}
             {{- end }}
             {{- range $name, $value := .Values.orchestrator.env }}
             - name: {{ $name }}

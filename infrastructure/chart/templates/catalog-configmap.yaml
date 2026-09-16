@@ -1,8 +1,4 @@
-# The region catalog: the map from geohash cells to the solve regions that own
-# them, rendered verbatim from `.Values.catalog` into TOML and mounted read-only
-# at /etc/routers/catalog.toml in every orchestrator and matcher pod. It is the
-# single source of truth both binaries validate at startup, so a change here
-# rolls those pods through the checksum annotation on their templates.
+# The region catalog, rendered to TOML and mounted read-only into orchestrator and matcher pods.
 {{- include "routers.validate" . }}
 apiVersion: v1
 kind: ConfigMap

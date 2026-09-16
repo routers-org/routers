@@ -1,30 +1,23 @@
 routers-realtime installed as {{ .Release.Name }} in namespace {{ .Release.Namespace }}.
 
-Regions ({{ len .Values.catalog.regions }}), from the catalog mounted at /etc/routers/catalog.toml:
+Deployed:
 {{- range $region := .Values.catalog.regions }}
-  - {{ $region.id }} (graph {{ $region.graph }}): matcher-{{ $region.id }}, coverage {{ join ", " $region.coverage }}
+  - matcher-{{ $region.id }} (graph {{ $region.graph }}, coverage {{ join ", " $region.coverage }}){{ if $.Values.matcher.autoscaling.enabled }}, HPA to {{ $.Values.matcher.autoscaling.maxReplicas }}{{ end }}
 {{- end }}
-
-What was deployed:
-  - One matcher Deployment per region ({{ .Values.matcher.replicas }} replica(s) by default{{ if .Values.matcher.autoscaling.enabled }}, HPA to {{ .Values.matcher.autoscaling.maxReplicas }}{{ end }}), each pinned to its region's graph and shards.
-  - Orchestrator fleet ({{ .Values.orchestrator.replicas }} pod(s) slicing 1024 vehicle partitions across {{ .Values.streams }} raw stream(s)).
+  - orchestrator fleet: {{ .Values.orchestrator.replicas }} pod(s) over 1024 partitions, {{ .Values.streams }} raw stream(s)
 {{- if .Values.materializer.enabled }}
-  - Materializer ({{ .Values.materializer.replicas }} replica(s) sharing the durable consumer "{{ .Values.materializer.consumerName }}"{{ if .Values.materializer.partitions }}, partitions {{ .Values.materializer.partitions }}{{ end }}).
+  - materializer: {{ .Values.materializer.replicas }} replica(s), consumer "{{ .Values.materializer.consumerName }}"{{ if .Values.materializer.partitions }}, partitions {{ .Values.materializer.partitions }}{{ end }}
 {{- end }}
 {{- if .Values.grafanaDashboard.enabled }}
-  - Grafana dashboard ConfigMap.
+  - grafana dashboard ConfigMap
 {{- end }}
 
-The four JetStream planes the roles pass messages over (none call each other):
-  - events.raw.p.<p>                                     raw observations, ingress -> orchestrator
-  - solve.v1.g.<graph>.r.<region>.q.<lane>               solve jobs, orchestrator -> matcher
-  - solve-result.v1.p.<p>                                solve results, matcher -> orchestrator
-  - events.matched.v1.p.<p>                              committed output, orchestrator -> materializer
+Planes: events.raw.p.<p>, solve.v1.g.<graph>.r.<region>.q.<lane>, solve-result.v1.p.<p>, events.matched.v1.p.<p>
 
-Pre-existing dependencies this chart does NOT install:
-  - NATS (JetStream enabled, server 2.10+) at {{ .Values.infra.nats.url }}
-  - Valkey at {{ .Values.infra.valkey.url }}
-{{- if .Values.infra.otlp.url }}
-  - OTLP collector at {{ .Values.infra.otlp.url }} (spanmetrics -> Prometheus)
+Depends on (not installed by this chart):
+  - event bus (NATS JetStream, 2.10+) at {{ .Values.infra.eventBus.url }}
+  - kv store (Valkey) at {{ .Values.infra.kv.url }}
+{{- if .Values.infra.telemetry.otlpUrl }}
+  - OTLP collector at {{ .Values.infra.telemetry.otlpUrl }}
 {{- end }}
   - kube-prometheus-stack (consumes the dashboard ConfigMap)
