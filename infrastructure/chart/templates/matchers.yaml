@@ -1,9 +1,5 @@
-# One Deployment per catalog region. A matcher serves exactly one region: it
-# loads that region's shards (its `coverage` cells) from /shards, verifies them
-# against the catalog's graph version, and only then pulls jobs. The matcher
-# binary carries no clap env vars, so its identity is passed through `args`; the
-# catalog is mounted read-only, identical to the orchestrator's.
-{{- include "routers.validate" . -}}
+# One matcher Deployment per catalog region, configured through args (the binary has no clap env).
+{{- include "routers.validate" . }}
 {{- range $region := $.Values.catalog.regions }}
 {{- $id := toString $region.id }}
 {{- $per := dict }}
@@ -24,9 +20,6 @@ metadata:
     app: matcher
     region: "{{ $id }}"
 spec:
-  # Replicas share one durable pull consumer on the region's work queue, so
-  # NATS hands each job to exactly one member; scale per region density, or let
-  # the HPA do it.
   replicas: {{ $replicas }}
   selector:
     matchLabels:
@@ -37,9 +30,6 @@ spec:
       annotations:
         checksum/catalog: {{ include "routers.catalog.toml" $ | sha256sum }}
         {{- if eq $.Values.shardCache.mode "gcsfuse" }}
-        # The CSI driver injects its sidecar only into pods carrying this
-        # annotation. Without it the pod sits Pending on a volume that cannot
-        # mount, and nothing in the event names the annotation as the cause.
         gke-gcsfuse/volumes: "true"
         {{- end }}
       labels:
@@ -56,15 +46,13 @@ spec:
           imagePullPolicy: {{ $.Values.matcher.image.pullPolicy }}
           args:
             - "--nats"
-            - {{ $.Values.infra.nats.url | quote }}
+            - {{ $.Values.infra.eventBus.url | quote }}
             - "--catalog"
             - "/etc/routers/catalog.toml"
             - "--region"
             - {{ $id | quote }}
             - "--shard-dir"
             - "/shards"
-            # The matcher drops this marker once its graph is loaded; the exec
-            # probes below `test -f` it so an unready pod is never sent work.
             - "--ready-file"
             - "/tmp/routers-ready"
             {{- if $.Values.matcher.slots }}
@@ -77,25 +65,21 @@ spec:
           env:
             - name: RUST_LOG
               value: {{ $.Values.matcher.rustLog | quote }}
-            {{- if $.Values.infra.otlp.url }}
+            {{- if $.Values.infra.telemetry.otlpUrl }}
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
-              value: {{ $.Values.infra.otlp.url | quote }}
+              value: {{ $.Values.infra.telemetry.otlpUrl | quote }}
             {{- end }}
             {{- range $name, $value := $.Values.matcher.env }}
             - name: {{ $name }}
               value: {{ $value | quote }}
             {{- end }}
+          # Marker present == graph loaded; startup budget is generous since a shard load can take minutes.
           readinessProbe:
-            # Marker present == graph loaded and pulling; its removal on drain or
-            # failure steers traffic away without killing in-flight solves.
             exec:
               command: ["test", "-f", "/tmp/routers-ready"]
             periodSeconds: 5
             failureThreshold: 3
           startupProbe:
-            # Loading and verifying a multi-hundred-megabyte shard can take
-            # minutes; a generous budget keeps the kubelet from killing the pod
-            # before its graph is ready. 10s x 60 = up to ten minutes.
             exec:
               command: ["test", "-f", "/tmp/routers-ready"]
             periodSeconds: 10
@@ -126,9 +110,6 @@ spec:
           {{- if not $.Values.shardCache.gcs.bucket }}
           {{- fail "shardCache.mode is 'gcsfuse' but shardCache.gcs.bucket is empty; matchers would start with an empty /shards and match nothing" }}
           {{- end }}
-          # An inline CSI volume rather than a PV/PVC pair: the bucket is the
-          # volume's identity, so there is nothing per-region to provision and
-          # every matcher mounts the same bucket read-only.
           csi:
             driver: gcsfuse.csi.storage.gke.io
             readOnly: true

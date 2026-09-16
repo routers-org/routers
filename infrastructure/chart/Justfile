@@ -1,8 +1,4 @@
-# Per-invocation knobs. Environment-static config (infra URLs, log levels)
-# lives in values-*.yaml. Override via env var:
-#   ROUTERS_NAMESPACE      release namespace
-#   ROUTERS_VALUES         values file to layer on top of values.yaml
-#   ROUTERS_SHARD_CACHE    absolute hostPath for the shard directory
+# Env overrides: ROUTERS_NAMESPACE, ROUTERS_VALUES, ROUTERS_SHARD_CACHE.
 namespace := env("ROUTERS_NAMESPACE", "routers")
 values := env("ROUTERS_VALUES", "values-local-dev.yaml")
 shard-cache := env("ROUTERS_SHARD_CACHE", `cd .. && cd .. && pwd` + "/target/shard_cache")
@@ -10,16 +6,14 @@ shard-cache := env("ROUTERS_SHARD_CACHE", `cd .. && cd .. && pwd` + "/target/sha
 install:
     @out=$(helm upgrade --install routers-realtime . -n {{ namespace }} --create-namespace 2>&1) || { echo "$out"; exit 1; }
 
-# Bring up a full install layered with an environment-specific values file.
-# Point at prod by exporting `ROUTERS_VALUES=values-prod.yaml` (or similar).
+# Full install layered with an environment-specific values file.
 bringup:
     helm upgrade --install routers-realtime . \
         -n {{ namespace }} --create-namespace \
         -f {{ values }} \
         --set shardCache.hostPath={{ shard-cache }}
 
-# Re-apply the chart against an existing release and roll workloads so any
-# configmap/env changes actually reach the pods. Assumes `bringup` has run.
+# Re-apply and roll workloads so configmap/env changes reach the pods.
 patch:
     helm upgrade routers-realtime . \
         -n {{ namespace }} \
@@ -27,8 +21,7 @@ patch:
         --set shardCache.hostPath={{ shard-cache }}
     kubectl rollout restart deployment,statefulset -n {{ namespace }}
 
-# Uninstall the release. Set ROUTERS_DELETE_NAMESPACE=1 to also drop the
-# namespace (only safe if nothing else lives in it).
+# Uninstall; set ROUTERS_DELETE_NAMESPACE=1 to also drop the namespace.
 teardown:
     helm uninstall routers-realtime -n {{ namespace }} --ignore-not-found
     @if [ "${ROUTERS_DELETE_NAMESPACE:-0}" = "1" ]; then \
@@ -36,16 +29,14 @@ teardown:
         kubectl delete namespace {{ namespace }} --ignore-not-found; \
     fi
 
-# Use a PersistentVolumeClaim for shard cache
+# Use a PersistentVolumeClaim for shard cache.
 use-pvc: install
     helm upgrade routers-realtime . \
         -n {{ namespace }} \
         --set shardCache.mode=pvc \
         --set shardCache.pvc.claimName=routers-shards
 
-# Render just the region catalog the chart would mount, so you can eyeball the
-# TOML before an install. Regions are a structured list, not a --set-able
-# scalar, so edit them in a values file rather than on the command line.
+# Render just the region catalog the chart would mount, to eyeball the TOML.
 show-catalog:
     helm template routers-realtime . -f {{ values }} -s templates/catalog-configmap.yaml
 
@@ -58,11 +49,7 @@ use-shard-cache cache-dir="": install
 lint:
     helm lint .
 
-# Package and push the chart to Artifact Registry as an OCI artifact, which is
-# where routers-org/infrastructure's realtime unit installs it from. The
-# release workflow does this for every `routers-v*` tag; this is for a manual
-# push. `registry` is the image registry prefix, e.g.
-# australia-southeast1-docker.pkg.dev/<project>/routers.
+# Package and push the chart to Artifact Registry as an OCI artifact.
 publish registry version:
     #!/usr/bin/env bash
     set -euo pipefail
