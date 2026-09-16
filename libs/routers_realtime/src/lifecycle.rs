@@ -22,16 +22,11 @@
 //! the two are wired together by the binary, not by this module, so tests can
 //! exercise each in isolation.
 
-// `alloc::sync::Arc` would satisfy `std_instead_of_alloc`, but this crate does
-// not `extern crate alloc` (that lives in `lib.rs`, which T22 may not edit), so
-// the `alloc` path is unreachable and `std` is the only one available here.
-#![allow(clippy::std_instead_of_alloc)]
-
+use alloc::sync::Arc;
 use core::fmt;
 use core::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 use core::time::Duration;
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use tokio::sync::{Notify, watch};
 use tokio::time::Instant;

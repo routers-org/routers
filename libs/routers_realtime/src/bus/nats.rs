@@ -1,5 +1,5 @@
-use std::pin::Pin;
-use std::task::{Context as Ctx, Poll, ready};
+use core::pin::Pin;
+use core::task::{Context as Ctx, Poll, ready};
 
 use futures::{Stream, StreamExt};
 
@@ -7,14 +7,14 @@ use super::Wire;
 
 pub struct NATSStream<T: Wire> {
     subscriber: Option<async_nats::Subscriber>,
-    _phantom: std::marker::PhantomData<T>,
+    _phantom: core::marker::PhantomData<T>,
 }
 
 impl<T: Wire> NATSStream<T> {
     pub fn new(subscriber: async_nats::Subscriber) -> Self {
         Self {
             subscriber: Some(subscriber),
-            _phantom: std::marker::PhantomData,
+            _phantom: core::marker::PhantomData,
         }
     }
 }

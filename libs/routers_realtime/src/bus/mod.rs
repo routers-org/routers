@@ -1,3 +1,27 @@
+//! The message bus: how bytes cross NATS, and the seams that make it testable.
+//!
+//! Everything the pipeline sends is framed here before it reaches a broker.
+//! [`Wire`] is the framing contract — Rust-internal control-plane messages
+//! encode as postcard through the `postcard_wire!` macro, boundary messages as
+//! protobuf — so the [`topology`](crate::topology) names and the payloads that
+//! ride under them stay separable.
+//!
+//! The delivery mechanics sit behind adapter traits so no business logic ever
+//! touches a live connection in a test:
+//!
+//! * [`adapter`] — the [`Publisher`](adapter::Publisher)/[`Source`](adapter::Source)/[`AckHandle`](adapter::AckHandle)
+//!   traits: publish-with-acknowledgement, pull-with-ack, and the ambiguous-vs-failed
+//!   publish outcome the dispatcher retries on.
+//! * [`memory`] — [`MemoryBus`](memory::MemoryBus) and its fakes: an in-process
+//!   broker with msg-id dedup, ack/nak bookkeeping, and crash knobs, since the
+//!   sandbox has no NATS.
+//! * [`jetstream`] — the production adapters that bind those traits to
+//!   `async_nats` JetStream consumers and publishers.
+//! * `trace` — the wall-clock trace headers ([`outbound`], [`inbound`]) that
+//!   let a span follow a message across planes.
+//! * [`NATSStream`] — a thin `Stream` over a core-NATS subscriber, decoding each
+//!   frame back through [`Wire`].
+
 pub mod adapter;
 pub mod jetstream;
 pub mod memory;

@@ -10,17 +10,17 @@
 //! * [`bootstrap`](routers_realtime::matcher::bootstrap) loads and verifies the
 //!   graph and publishes readiness; a failure exits non-zero so an unready
 //!   process never pulls.
-//! * [`Engine`](routers_realtime::matcher::engine::Engine) is the solve core,
-//!   [`ResultPublisher`](routers_realtime::matcher::publish::ResultPublisher)
+//! * [`routers_realtime::matcher::engine::Engine`] is the solve core,
+//!   [`routers_realtime::matcher::publish::ResultPublisher`]
 //!   sequences publish-then-ack, and
-//!   [`PullLoop`](routers_realtime::matcher::pull::PullLoop) is the
+//!   [`routers_realtime::matcher::pull::PullLoop`] is the
 //!   capacity-bound intake loop.
 //! * The [`JetStream`](routers_realtime::bus::jetstream) adapters are the
 //!   production transport under the loop's `Consumer`/`Publisher` seams.
 //!
-//! The legacy request/reply path (`queue_subscribe`, `MatchContext`,
-//! `MatchReply`) is gone: jobs arrive on a durable work-queue consumer and
-//! results are published to the partitioned result plane.
+//! The legacy synchronous request/reply path (`queue_subscribe`) is gone: jobs
+//! arrive on a durable work-queue consumer and results are published to the
+//! partitioned result plane.
 
 // `Arc` has no `alloc`-path form available here: a binary crate has no
 // `extern crate alloc`, so `std::sync::Arc` is the only spelling and the

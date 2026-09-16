@@ -33,7 +33,7 @@ use crate::region::catalog::{Catalog, Region};
 /// What a vehicle's checkpoint remembers about where it was last solved.
 ///
 /// The dispatcher reconstructs a `Pin` from the fields a
-/// [`VehicleCheckpoint`](crate::store) already carries (`region` + `graph`)
+/// [`VehicleCheckpoint`](crate::store::checkpoint::VehicleCheckpoint) already carries (`region` + `graph`)
 /// plus the `routing_version` that catalog was on, and hands it to
 /// [`Resolver::resolve`] so a border-straddling vehicle can be kept on its
 /// current region (see the module docs on hysteresis).

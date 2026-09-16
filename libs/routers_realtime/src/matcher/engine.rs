@@ -11,13 +11,13 @@
 //!
 //! The engine is generic over the [`Network`] rather than pinned to the OSM
 //! types the binary uses: the tests exercise it against
-//! [`routers_network::mock::MockNetwork`], and the binary specialises it to
+//! `routers_network::mock::MockNetwork`, and the binary specialises it to
 //! its sharded network in T32.
 //!
 //! # Outcomes, not replies
 //!
-//! Where the binary answered every request with a `MatchReply` (`Solved` or an
-//! opaque `NoMatch`), the engine returns a typed [`SolveOutcome`]: the nominal
+//! Where the binary answered every request with a single opaque reply (a match
+//! or a bare "no match"), the engine returns a typed [`SolveOutcome`]: the nominal
 //! terminals ([`SolveOutcome::Unanchored`], [`SolveOutcome::Disconnected`])
 //! and the faults ([`SolveOutcome::Internal`]) are distinct, so the owner can
 //! commit the right terminal reason instead of collapsing them into "nothing

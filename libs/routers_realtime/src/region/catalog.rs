@@ -33,7 +33,7 @@
 //!
 //! Every cell is written as its canonical base-32 string. That differs from
 //! [`Geohash`]'s derived serde form (`{ data, precision }`), which is opaque
-//! in a hand-edited file, so cells go through [`Display`]/[`FromStr`] instead
+//! in a hand-edited file, so cells go through [`Display`](core::fmt::Display)/[`FromStr`](core::str::FromStr) instead
 //! (see the private `cells` module).
 
 use core::time::Duration;
