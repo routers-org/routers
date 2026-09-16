@@ -1,10 +1,24 @@
-//! Resolves a vehicle to its serving region.
+//! Resolves a vehicle to its serving region. (T07)
 //!
-//! Resolution is a pure function of the observation's geohash cell, the mounted
-//! [`Catalog`], and the vehicle's [`Pin`] — never live infrastructure — so every
-//! replica resolves a given input identically. A vehicle on a regional border is
-//! held on its pinned region while its `overlap` padding still covers the cell
-//! (hysteresis), repinning only when it leaves that padding or the graph changes.
+//! Every observation must be pinned to exactly one solve region before a job
+//! can be addressed to it. Which region that is depends only on the
+//! observation's geohash cell, the mounted [`Catalog`], and what the vehicle's
+//! checkpoint remembers about where it was last solved (its [`Pin`]). It never
+//! depends on live infrastructure: the resolver reads the catalog that was
+//! mounted at start-up and nothing else, so routing a single event never costs
+//! a Kubernetes lookup and every replica resolves a given input identically.
+//!
+//! # Why hysteresis
+//!
+//! A vehicle sitting on a regional border would otherwise flap between two
+//! regions as consecutive fixes land on either side of the line, tearing its
+//! continuity apart and thrashing the two regions' matcher caches. Each region
+//! therefore certifies a ring of `overlap` cells it can also serve. While a
+//! pinned region still covers the current cell through its coverage *or* its
+//! overlap padding — and still runs the same graph the vehicle was solved
+//! against — the resolver keeps the vehicle there ([`ResolutionKind::Kept`]).
+//! Only when the vehicle leaves that padded region, or the region's graph is
+//! upgraded underneath it, does it repin.
 
 use core::time::Duration;
 
@@ -17,24 +31,39 @@ use crate::protocol::ids::{GraphVersion, Lane, RegionId};
 use crate::region::catalog::{Catalog, Region};
 
 /// What a vehicle's checkpoint remembers about where it was last solved.
+///
+/// The dispatcher reconstructs a `Pin` from the fields a
+/// [`VehicleCheckpoint`](crate::store::checkpoint::VehicleCheckpoint) already carries (`region` + `graph`)
+/// plus the `routing_version` that catalog was on, and hands it to
+/// [`Resolver::resolve`] so a border-straddling vehicle can be kept on its
+/// current region (see the module docs on hysteresis).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Pin {
     /// The region the vehicle was last solved in.
     pub region: RegionId,
-    /// The graph that solve ran against; a mismatch with the catalog breaks hysteresis and re-resolves.
+    /// The graph snapshot that solve ran against. Compared against the
+    /// catalog's current graph for the region: a mismatch breaks hysteresis so
+    /// the vehicle is re-resolved (and its continuity restarted downstream)
+    /// rather than kept on a stale network.
     pub graph: GraphVersion,
-    /// The catalog `routing_version` when pinned; only [`Resolver::routing_changed`] consults it.
+    /// The catalog `routing_version` in effect when the vehicle was pinned.
+    /// Only [`Resolver::routing_changed`] consults it; `resolve` deliberately
+    /// ignores it so the two concerns stay separable at the callsite.
     pub routing_version: u64,
 }
 
-/// How a [`Resolution`] was reached; a metric label via [`label`](Self::label).
+/// How a [`Resolution`] was reached. A bounded set, safe to use as a metric
+/// label via [`label`](Self::label).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ResolutionKind {
-    /// The pinned region still serves this cell on the same graph (hysteresis).
+    /// The pinned region still serves this cell on the same graph, so the
+    /// vehicle stayed put (boundary hysteresis).
     Kept,
-    /// The vehicle moved into a cell a different region owns.
+    /// The vehicle moved into a cell a different region owns, so it was repinned
+    /// to that owner.
     Repinned,
-    /// No region owns the cell; one certifies it as an `overlap` fallback.
+    /// No region owns the cell, but one certifies it as an `overlap` fallback,
+    /// so the vehicle was placed there.
     Fallback,
 }
 
@@ -57,17 +86,22 @@ pub struct Resolution {
     pub region: RegionId,
     /// The graph snapshot that region's matchers run.
     pub graph: GraphVersion,
-    /// The job lane this vehicle takes within the region.
+    /// The job lane this vehicle takes within the region (see
+    /// [`Resolver::resolve`] for how it is derived).
     pub lane: Lane,
-    /// The region's per-job freshness budget, source of the job's `deadline_us`.
+    /// The region's per-job freshness budget, from which the dispatcher derives
+    /// the job's absolute `deadline_us`.
     pub budget: Duration,
     /// How this resolution was reached.
     pub kind: ResolutionKind,
-    /// The catalog `routing_version` this resolution was computed against.
+    /// The catalog `routing_version` this resolution was computed against, so a
+    /// downstream consumer can refuse to mix results from different routings.
     pub routing_version: u64,
 }
 
-/// No region — owner or fallback — serves the observation's cell.
+/// No region — owner or fallback — serves the observation's cell. The
+/// dispatcher turns this into a `Terminal { UnsupportedCoverage }` outcome for
+/// the vehicle rather than dropping the event silently.
 #[derive(Clone, Debug, PartialEq, Eq, Error)]
 #[error("no region serves cell {cell}")]
 pub struct Unserved {
@@ -76,6 +110,11 @@ pub struct Unserved {
 }
 
 /// Resolves observations to serving regions against a borrowed [`Catalog`].
+///
+/// Holds only a shared reference: the catalog is mounted read-only and shared
+/// across every partition worker, and resolution is a pure function of the
+/// catalog plus the call's arguments, so a `Resolver` is cheap to construct per
+/// call and needs no state of its own.
 pub struct Resolver<'c> {
     catalog: &'c Catalog,
 }
@@ -86,11 +125,18 @@ impl<'c> Resolver<'c> {
         Self { catalog }
     }
 
-    /// Resolve `vehicle` at `point`, honouring its `pinned` region if it still applies.
+    /// Resolve `vehicle` at `point`, honouring its `pinned` region if one still
+    /// applies.
     ///
-    /// The region is chosen in order: keep the pinned region while its padded
-    /// coverage holds the cell on the same graph; else repin to the cell's
-    /// owner; else fall back to the lowest-id `overlap` region; else [`Unserved`].
+    /// The cell is `event::shard_of(point)`; the region is chosen by, in order:
+    ///
+    /// 1. **Keep** the pinned region if it still exists, runs the same graph the
+    ///    vehicle was pinned on, and covers the cell through its coverage *or*
+    ///    its overlap padding (border hysteresis).
+    /// 2. otherwise **repin** to the region that owns the cell;
+    /// 3. otherwise **fall back** to the certified `overlap` region with the
+    ///    smallest id (a deterministic tiebreak, so every replica agrees);
+    /// 4. otherwise the cell is [`Unserved`].
     pub fn resolve(
         &self,
         vehicle: VehicleId,
@@ -99,7 +145,11 @@ impl<'c> Resolver<'c> {
     ) -> Result<Resolution, Unserved> {
         let cell = shard_of(point);
 
-        // routing_version is intentionally ignored here; that is routing_changed's job.
+        // 1. Hysteresis: stay on the pinned region while its padded coverage
+        //    still holds the cell and its graph is unchanged. Routing version
+        //    is intentionally *not* consulted here — that is `routing_changed`'s
+        //    job, kept a separate query so the dispatcher can decide when a
+        //    routing bump should force a re-resolve.
         if let Some(pin) = pinned
             && let Some(region) = self.catalog.region(&pin.region)
             && region.graph == pin.graph
@@ -108,10 +158,14 @@ impl<'c> Resolver<'c> {
             return Ok(self.resolution(vehicle, region, ResolutionKind::Kept));
         }
 
+        // 2. The region that owns the cell.
         if let Some(region) = self.catalog.owner_of(&cell) {
             return Ok(self.resolution(vehicle, region, ResolutionKind::Repinned));
         }
 
+        // 3. The lowest-id region certifying the cell as an overlap fallback.
+        //    `fallbacks_for` yields candidates in catalog order; picking the
+        //    smallest id makes the choice independent of document ordering.
         if let Some(region) = self
             .catalog
             .fallbacks_for(&cell)
@@ -120,12 +174,19 @@ impl<'c> Resolver<'c> {
             return Ok(self.resolution(vehicle, region, ResolutionKind::Fallback));
         }
 
+        // 4. Nothing serves it.
         Err(Unserved {
             cell: cell.to_string(),
         })
     }
 
     /// Whether the vehicle's pin was made against a stale routing.
+    ///
+    /// Exposed as its own query rather than folded into [`resolve`](Self::resolve)'s
+    /// result: a routing bump must force a re-resolve even for a vehicle that
+    /// `resolve` would have `Kept`, and the dispatcher decides that at the
+    /// callsite. Keeping it separate also stops `resolve` from having to smuggle
+    /// an auxiliary flag alongside the region it chose.
     pub fn routing_changed(&self, pinned: &Pin) -> bool {
         pinned.routing_version != self.catalog.routing_version
     }
@@ -142,7 +203,13 @@ impl<'c> Resolver<'c> {
         }
     }
 
-    /// The job lane a vehicle takes within a region (stable per id, spread across lanes).
+    /// The job lane a vehicle takes within a region.
+    ///
+    /// `mix` is the same splitmix64 avalanche the partitioner uses, so a
+    /// vehicle's id spreads evenly over the region's `lanes` regardless of how
+    /// the upstream ids are structured, and the mapping is a pure function of
+    /// the id — the same vehicle always lands on the same lane (stable), while
+    /// the fleet as a whole is balanced across lanes (spread).
     fn lane_for(vehicle: VehicleId, region: &Region) -> Lane {
         Lane((mix(vehicle.0) % u64::from(region.lanes)) as u8)
     }
@@ -154,6 +221,10 @@ mod tests {
 
     use super::*;
 
+    // Four cities, far enough apart that their precision-4 geohash cells are
+    // guaranteed distinct (a cell is ~39 km wide). The catalog is built from
+    // whatever cells these actually hash to, so the tests never hard-code a
+    // geohash string.
     fn sydney() -> Point {
         Point::new(151.2093, -33.8688)
     }
@@ -179,9 +250,18 @@ mod tests {
         GraphVersion::new(s).unwrap()
     }
 
-    /// `west` owns Sydney, pads Melbourne/Brisbane (4 lanes); `east` owns
-    /// Melbourne, pads Brisbane (1 lane). `west` is listed first but sorts after
-    /// `east`, so a fallback tie proves the id-order tiebreak, not document order.
+    /// A two-region catalog:
+    ///
+    /// * `west` owns Sydney's cell and certifies Melbourne's and Brisbane's as
+    ///   overlap fallbacks; four lanes.
+    /// * `east` owns Melbourne's cell and certifies Brisbane's as an overlap;
+    ///   one lane.
+    ///
+    /// So Melbourne's cell exercises hysteresis (owned by `east`, padded by
+    /// `west`), Brisbane's exercises fallback (owned by nobody, offered by
+    /// both), and Perth's is unserved. `west` is listed first but sorts after
+    /// `east`, so a fallback tie proves the id-order tiebreak, not document
+    /// order.
     fn build_catalog(routing_version: u64) -> Catalog {
         let toml = format!(
             r#"
@@ -218,6 +298,8 @@ freshness_budget_ms = 45000
 
     #[test]
     fn fixture_cities_map_to_distinct_cells() {
+        // The whole fixture rests on these four cells being different; assert it
+        // rather than assume it.
         let cells: BTreeSet<String> = [sydney(), melbourne(), brisbane(), perth()]
             .into_iter()
             .map(cell)
@@ -244,6 +326,8 @@ freshness_budget_ms = 45000
         let catalog = build_catalog(1);
         let resolver = Resolver::new(&catalog);
 
+        // Melbourne's cell is owned by `east` but padded by `west`. A vehicle
+        // pinned to `west` on the current graph is kept there.
         let pin = Pin {
             region: rid("west"),
             graph: gv("g"),
@@ -255,6 +339,7 @@ freshness_budget_ms = 45000
 
         assert_eq!(res.region, rid("west"));
         assert_eq!(res.kind, ResolutionKind::Kept);
+        // Kept means it inherits west's budget, not the owning east's.
         assert_eq!(res.budget, Duration::from_millis(30_000));
     }
 
@@ -263,6 +348,8 @@ freshness_budget_ms = 45000
         let catalog = build_catalog(1);
         let resolver = Resolver::new(&catalog);
 
+        // Same cell, but the pin remembers an older graph than `west` now runs,
+        // so hysteresis cannot apply and the cell's owner (`east`) takes it.
         let pin = Pin {
             region: rid("west"),
             graph: gv("gold"),
@@ -282,6 +369,8 @@ freshness_budget_ms = 45000
         let catalog = build_catalog(1);
         let resolver = Resolver::new(&catalog);
 
+        // The pin names a region the catalog no longer has; resolution ignores
+        // it and repins by ownership.
         let pin = Pin {
             region: rid("ghost"),
             graph: gv("g"),
@@ -300,6 +389,9 @@ freshness_budget_ms = 45000
         let catalog = build_catalog(1);
         let resolver = Resolver::new(&catalog);
 
+        // Brisbane's cell is owned by nobody and offered by both regions. `west`
+        // is listed first, but `east` sorts lower, so the deterministic pick is
+        // `east`.
         let res = resolver.resolve(VehicleId(5), brisbane(), None).unwrap();
 
         assert_eq!(res.region, rid("east"));
@@ -321,15 +413,19 @@ freshness_budget_ms = 45000
         let catalog = build_catalog(1);
         let resolver = Resolver::new(&catalog);
 
+        // `west` (Sydney's owner) has four lanes.
         let mut seen = BTreeSet::new();
         for id in 0..1_000u64 {
             let res = resolver.resolve(VehicleId(id), sydney(), None).unwrap();
             assert!(res.lane.0 < 4, "lane {} outside 0..4", res.lane.0);
             seen.insert(res.lane.0);
 
+            // Resolving the same vehicle again yields the same lane.
             let again = resolver.resolve(VehicleId(id), sydney(), None).unwrap();
             assert_eq!(again.lane, res.lane);
         }
+        // The mix genuinely spreads the fleet rather than parking everyone on
+        // one lane.
         assert_eq!(seen, BTreeSet::from([0, 1, 2, 3]));
     }
 
@@ -338,6 +434,8 @@ freshness_budget_ms = 45000
         let catalog = build_catalog(1);
         let resolver = Resolver::new(&catalog);
 
+        // `east` (Melbourne's owner) has exactly one lane, so every vehicle maps
+        // to lane 0 regardless of its id.
         for id in [0u64, 1, 7, 42, u64::MAX] {
             let res = resolver.resolve(VehicleId(id), melbourne(), None).unwrap();
             assert_eq!(res.lane, Lane(0));
