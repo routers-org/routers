@@ -16,22 +16,24 @@
 //!
 //! # Metric export and the OTLP client
 //!
-//! Spans export through the async-runtime batch processor (`runtime::Tokio`).
-//! The metrics [`PeriodicReader`] drives its exporter on its own thread with a
-//! blocking `block_on`, which the async `reqwest` client (`reqwest-client`
-//! feature) cannot service off a Tokio reactor. Making the collector metric
-//! path robust therefore needs either the SDK's
-//! `experimental_metrics_periodicreader_with_async_runtime` feature or the
-//! `reqwest-blocking-client` on `opentelemetry-otlp` — Cargo changes outside
-//! this task's remit. The no-endpoint path (all tests, local runs) is
-//! unaffected: the global meter is a no-op and nothing exports.
+//! Both signals export off the Tokio reactor. Spans go through the async-runtime
+//! batch processor (`runtime::Tokio`); metrics go through the async-runtime
+//! [`PeriodicReader`] (the SDK's
+//! `experimental_metrics_periodicreader_with_async_runtime` feature). The
+//! thread-based reader would drive its exporter with a blocking `block_on`,
+//! which the async `reqwest` client (`reqwest-client` feature) cannot service
+//! off a Tokio reactor — a real collector export would stall. Scheduling the
+//! collect-and-export as Tokio tasks instead keeps the metric path robust. The
+//! no-endpoint path (all tests, local runs) is unaffected: the global meter is a
+//! no-op and nothing exports.
 
 use core::time::Duration;
 
 use opentelemetry::global;
 use opentelemetry::trace::TracerProvider as _;
 use opentelemetry_sdk::Resource;
-use opentelemetry_sdk::metrics::{PeriodicReader, SdkMeterProvider};
+use opentelemetry_sdk::metrics::SdkMeterProvider;
+use opentelemetry_sdk::metrics::periodic_reader_with_async_runtime::PeriodicReader;
 use opentelemetry_sdk::propagation::TraceContextPropagator;
 use opentelemetry_sdk::runtime;
 use opentelemetry_sdk::trace::span_processor_with_async_runtime::BatchSpanProcessor;
@@ -113,9 +115,9 @@ pub fn init(service: &'static str) -> Telemetry {
     // install a `PeriodicReader` that collects and exports every 10 s (metrics
     // are aggregates, so a coarse cadence is fine) and register it globally so
     // `Metrics::new` binds to it. Absent the endpoint the global meter stays a
-    // no-op and every `Metrics` instrument is free. The reader drives its
-    // exporter on a dedicated thread; see the module-level note on the OTLP
-    // client feature that path needs.
+    // no-op and every `Metrics` instrument is free. The reader schedules its
+    // collect-and-export as tokio tasks (see the module-level note), so it needs
+    // a running runtime — call `init` from within `#[tokio::main]`.
     let meter_provider = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
         .is_ok()
         .then(|| {
@@ -124,7 +126,12 @@ pub fn init(service: &'static str) -> Telemetry {
                 .build()
                 .expect("OTLP metric exporter builds from its environment");
 
-            let reader = PeriodicReader::builder(exporter)
+            // Drive the reader on the tokio runtime, mirroring the span side's
+            // async batch processor. The thread-based `PeriodicReader` collects
+            // and exports with a `block_on` off the reactor, which the async
+            // `reqwest-client` OTLP exporter cannot service; the async-runtime
+            // reader schedules its collect+export as tokio tasks instead.
+            let reader = PeriodicReader::builder(exporter, runtime::Tokio)
                 .with_interval(Duration::from_secs(10))
                 .build();
 
