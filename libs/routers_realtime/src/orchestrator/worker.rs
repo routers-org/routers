@@ -601,6 +601,15 @@ where
             self.tracker.outstanding() as u64,
         );
 
+        // The age of the oldest still-pending head across this partition's
+        // vehicles, or 0 when nothing is queued — the queue-age gauge that reads
+        // alongside the frontier lag.
+        self.metrics.oldest_pending_seconds(
+            self.scheduler
+                .oldest_pending(now)
+                .map_or(0.0, |age| age.as_secs_f64()),
+        );
+
         if let Some(frontier) = self.tracker.due(now)
             && self.store.set_frontier(frontier).await.is_ok()
         {
@@ -2073,5 +2082,112 @@ freshness_budget_ms = 30000
         assert!(prepared.is_none(), "nothing is left staged");
         assert_eq!(bus.acked_count(&raw_subject(u64::from(partition))), 1);
         assert_eq!(admission_probe.global().jobs, 0, "no job credit leaked");
+    }
+
+    /// The housekeeping tick records `oldest_pending_age_seconds`: while an
+    /// observation sits in a vehicle FIFO awaiting a durable answer, the gauge
+    /// tracks how long its head has been queued.
+    #[tokio::test(start_paused = true)]
+    async fn tick_records_the_oldest_pending_gauge() {
+        use opentelemetry::metrics::MeterProvider as _;
+        use opentelemetry_sdk::Resource;
+        use opentelemetry_sdk::error::OTelSdkResult;
+        use opentelemetry_sdk::metrics::data::{Gauge as GaugeData, ResourceMetrics};
+        use opentelemetry_sdk::metrics::exporter::PushMetricExporter;
+        use opentelemetry_sdk::metrics::reader::MetricReader as _;
+        use opentelemetry_sdk::metrics::{PeriodicReader, SdkMeterProvider, Temporality};
+
+        // A push exporter that does nothing: the test reads the gauge by calling
+        // the reader's `collect` directly, so the exporter only satisfies the
+        // reader's type (mirrors the metrics-module test rig).
+        #[derive(Debug, Default)]
+        struct NoopExporter;
+
+        impl PushMetricExporter for NoopExporter {
+            async fn export(&self, _metrics: &mut ResourceMetrics) -> OTelSdkResult {
+                Ok(())
+            }
+            fn force_flush(&self) -> OTelSdkResult {
+                Ok(())
+            }
+            fn shutdown(&self) -> OTelSdkResult {
+                Ok(())
+            }
+            fn temporality(&self) -> Temporality {
+                Temporality::Cumulative
+            }
+        }
+
+        /// The single f64-gauge value recorded under `name`, if any.
+        fn gauge_value(reader: &PeriodicReader<NoopExporter>, name: &str) -> Option<f64> {
+            let mut rm = ResourceMetrics {
+                resource: Resource::builder().build(),
+                scope_metrics: Vec::new(),
+            };
+            reader.collect(&mut rm).expect("collect");
+            for scope in &rm.scope_metrics {
+                for metric in &scope.metrics {
+                    if metric.name.as_ref() == name
+                        && let Some(gauge) = metric.data.as_any().downcast_ref::<GaugeData<f64>>()
+                    {
+                        return gauge.data_points.first().map(|dp| dp.value);
+                    }
+                }
+            }
+            None
+        }
+
+        let vehicle = 1u64;
+        let partition = partition_for(vehicle);
+        let bus = MemoryBus::new();
+        let store = MemoryCheckpointStore::new();
+        let shutdown = Shutdown::new();
+
+        // A meter whose reader the test collects on demand, bound into the worker.
+        let reader = PeriodicReader::builder(NoopExporter).build();
+        let provider = SdkMeterProvider::builder()
+            .with_reader(reader.clone())
+            .with_resource(Resource::builder().with_service_name("test").build())
+            .build();
+        let metrics = Metrics::from_meter(provider.meter("routers_realtime"));
+
+        publish_raw(&bus, partition, vehicle, 1_775_000_000_000_000).await;
+
+        // A long freshness budget so no deadline fires and pops the head during
+        // the test — the observation keeps ageing in the FIFO.
+        let mut worker = build_worker(
+            config(partition),
+            Arc::new(catalog(3_600_000)),
+            &bus,
+            &store,
+            shutdown.clone(),
+        )
+        .with_metrics(metrics);
+
+        // Draw and classify the observation; its job dispatches but no matcher
+        // answers it, so the head stays pending and its age grows.
+        let delivery = worker
+            .raw
+            .next()
+            .await
+            .expect("a raw delivery")
+            .expect("a well-formed delivery");
+        worker.on_raw(delivery).await;
+
+        // A tick with a still-empty clock records ~0; after time elapses it
+        // records the head's age.
+        worker.on_tick().await;
+        let fresh = gauge_value(&reader, "oldest_pending_age_seconds")
+            .expect("the tick records the gauge even when the queue just filled");
+        assert!(fresh < 1.0, "a just-queued head is near zero, got {fresh}");
+
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        worker.on_tick().await;
+        let aged =
+            gauge_value(&reader, "oldest_pending_age_seconds").expect("the tick records the gauge");
+        assert!(
+            aged >= 5.0,
+            "the gauge reflects the queued head's age, got {aged}",
+        );
     }
 }

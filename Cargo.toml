@@ -117,6 +117,10 @@ opentelemetry_sdk = { version = "0.29.0", features = [
     # Bounded-label OTLP metrics pipeline (T30): the meter provider, periodic
     # reader, and metric aggregations.
     "metrics",
+    # Drive the metrics `PeriodicReader` on the tokio runtime instead of a
+    # dedicated thread's `block_on`, which the async `reqwest-client` OTLP
+    # exporter cannot service off the reactor (T37).
+    "experimental_metrics_periodicreader_with_async_runtime",
 ] }
 opentelemetry-otlp = { version = "0.29.0", default-features = false, features = [
     "http-proto",
