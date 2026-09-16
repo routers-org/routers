@@ -4,7 +4,7 @@
 # --pod-name/--fleet). Scaling the fleet re-slices the space, so change
 # `orchestrator.replicas` with the fleet quiesced or accept a window of
 # double-ownership — which revisions make wasteful, not wrong.
-{{- include "routers.validate" . -}}
+{{- include "routers.validate" . }}
 apiVersion: v1
 kind: Service
 metadata:
@@ -33,6 +33,11 @@ spec:
       app: orchestrator
   template:
     metadata:
+      annotations:
+        # The orchestrator loads the catalog once at startup, so a mount change
+        # only reaches it on a restart. Rolling the pods on the catalog's
+        # checksum is what makes `helm upgrade` actually apply a new topology.
+        checksum/catalog: {{ include "routers.catalog.toml" . | sha256sum }}
       labels:
         {{- include "routers.labels" . | nindent 8 }}
         app: orchestrator
@@ -47,8 +52,12 @@ spec:
           env:
             - name: NATS
               value: {{ .Values.infra.nats.url | quote }}
-            - name: REDIS
+            - name: VALKEY
               value: {{ .Values.infra.valkey.url | quote }}
+            - name: CATALOG
+              value: "/etc/routers/catalog.toml"
+            # The StatefulSet ordinal in POD_NAME, paired with FLEET, is what the
+            # binary turns into this pod's disjoint partition slice.
             - name: POD_NAME
               valueFrom:
                 fieldRef:
@@ -59,16 +68,24 @@ spec:
               value: {{ .Values.streams | quote }}
             - name: RUST_LOG
               value: {{ .Values.orchestrator.rustLog | quote }}
+            {{- if .Values.infra.otlp.url }}
+            # Spans exported here become Prometheus series via the collector's
+            # spanmetrics pipeline; unset, telemetry degrades to plain logs.
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ .Values.infra.otlp.url | quote }}
+            {{- end }}
             {{- range $name, $value := .Values.orchestrator.env }}
             - name: {{ $name }}
               value: {{ $value | quote }}
             {{- end }}
-            {{- if .Values.infra.otlp.url }}
-            # Spans exported here become Prometheus series via the
-            # collector's spanmetrics pipeline; unset, telemetry degrades
-            # to plain structured logs.
-            - name: OTEL_EXPORTER_OTLP_ENDPOINT
-              value: {{ .Values.infra.otlp.url | quote }}
-            {{- end }}
+          volumeMounts:
+            - name: catalog
+              mountPath: /etc/routers/catalog.toml
+              subPath: catalog.toml
+              readOnly: true
           resources:
             {{- toYaml .Values.orchestrator.resources | nindent 12 }}
+      volumes:
+        - name: catalog
+          configMap:
+            name: {{ .Release.Name }}-catalog

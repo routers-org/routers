@@ -1,15 +1,27 @@
-routers-realtime installed in namespace {{ .Values.namespace }}.
+routers-realtime installed as {{ .Release.Name }} in namespace {{ .Release.Namespace }}.
 
-Rendered for {{ len .Values.shards }} shard(s): {{ join ", " .Values.shards }}
-
-What was deployed:
-  - Matcher services ({{ .Values.matcher.replicas }} replica(s) per shard{{ if .Values.matcher.autoscaling.enabled }}, HPA to {{ .Values.matcher.autoscaling.maxReplicas }}{{ end }})
-  - Orchestrator fleet ({{ .Values.orchestrator.replicas }} pods slicing 1024 vehicle partitions across {{ .Values.streams }} stream(s))
-{{- if .Values.grafanaDashboard.enabled }}
-  - Grafana Dashboard
+Regions ({{ len .Values.catalog.regions }}), from the catalog mounted at /etc/routers/catalog.toml:
+{{- range $region := .Values.catalog.regions }}
+  - {{ $region.id }} (graph {{ $region.graph }}): matcher-{{ $region.id }}, coverage {{ join ", " $region.coverage }}
 {{- end }}
 
-Pre-existing dependencies that this chart does NOT install:
+What was deployed:
+  - One matcher Deployment per region ({{ .Values.matcher.replicas }} replica(s) by default{{ if .Values.matcher.autoscaling.enabled }}, HPA to {{ .Values.matcher.autoscaling.maxReplicas }}{{ end }}), each pinned to its region's graph and shards.
+  - Orchestrator fleet ({{ .Values.orchestrator.replicas }} pod(s) slicing 1024 vehicle partitions across {{ .Values.streams }} raw stream(s)).
+{{- if .Values.materializer.enabled }}
+  - Materializer ({{ .Values.materializer.replicas }} replica(s) sharing the durable consumer "{{ .Values.materializer.consumerName }}"{{ if .Values.materializer.partitions }}, partitions {{ .Values.materializer.partitions }}{{ end }}).
+{{- end }}
+{{- if .Values.grafanaDashboard.enabled }}
+  - Grafana dashboard ConfigMap.
+{{- end }}
+
+The four JetStream planes the roles pass messages over (none call each other):
+  - events.raw.p.<p>                                     raw observations, ingress -> orchestrator
+  - solve.v1.g.<graph>.r.<region>.q.<lane>               solve jobs, orchestrator -> matcher
+  - solve-result.v1.p.<p>                                solve results, matcher -> orchestrator
+  - events.matched.v1.p.<p>                              committed output, orchestrator -> materializer
+
+Pre-existing dependencies this chart does NOT install:
   - NATS (JetStream enabled, server 2.10+) at {{ .Values.infra.nats.url }}
   - Valkey at {{ .Values.infra.valkey.url }}
 {{- if .Values.infra.otlp.url }}
