@@ -89,6 +89,8 @@ jobs:
             file: infrastructure/orchestrator/Dockerfile
           - name: matcher
             file: infrastructure/matcher/Dockerfile
+          - name: materializer
+            file: infrastructure/materializer/Dockerfile
           - name: timezone
             file: infrastructure/timezone/Dockerfile
       fail-fast: false
