@@ -1,40 +1,11 @@
 //! The versioned region catalog: the map from geohash cells to the solve
-//! regions that own them. (T06)
+//! regions that own them.
 //!
-//! A catalog is a TOML snapshot produced out-of-band by the infrastructure
-//! generator and mounted read-only into every orchestrator and matcher. A
-//! wrong snapshot would silently misroute traffic — send a vehicle's jobs to a
-//! region whose matchers do not hold the right shard — so the whole document
-//! is validated the moment it is parsed and never trusted piecemeal
-//! afterwards. Lookups are then pure reads against index maps built once at
-//! parse time.
-//!
-//! A **region serves one or more geohash cells** at [`SHARD_PRECISION`], with
-//! exactly one shard artifact per covered cell. `coverage` cells are owned and
-//! disjoint across the whole catalog; `overlap` cells are certified boundary
-//! fallbacks a region can also serve (and may be owned by a different region).
-//!
-//! # Format
-//!
-//! ```toml
-//! version = 3                  # catalog snapshot version, monotonic
-//! routing_version = 3          # bumps whenever point->region mapping changes
-//!
-//! [[regions]]
-//! id = "syd-east"
-//! graph = "sydney-2026-09-01"  # GraphVersion; the manifest maps it to files + sha256
-//! coverage = ["r3gq", "r3gr"]  # owned cells; disjoint across regions
-//! overlap  = ["r3gw"]          # certified fallback cells (may be owned by another region)
-//! lanes = 1                    # job lanes 0..lanes
-//! resource_class = "cpu-8"
-//! replicas = { min = 1, max = 8 }
-//! freshness_budget_ms = 30000  # job deadline budget for this region
-//! ```
-//!
-//! Every cell is written as its canonical base-32 string. That differs from
-//! [`Geohash`]'s derived serde form (`{ data, precision }`), which is opaque
-//! in a hand-edited file, so cells go through [`Display`](core::fmt::Display)/[`FromStr`](core::str::FromStr) instead
-//! (see the private `cells` module).
+//! A [`Catalog`] is a TOML snapshot mounted read-only into every orchestrator
+//! and matcher. It is fully validated at parse time and never trusted
+//! piecemeal; lookups are then pure O(1) reads against indices built once.
+//! `coverage` cells are owned and disjoint across the catalog; `overlap` cells
+//! are certified boundary fallbacks a region can also serve.
 
 use core::time::Duration;
 use std::collections::HashMap;
@@ -61,52 +32,42 @@ pub struct Replicas {
 /// envelope the orchestrator and autoscaler need to run it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Region {
-    /// The region's identity; also a NATS subject and stream token, so it must
-    /// be [`token_safe`].
+    /// The region's identity; also a NATS subject/stream token, so it must be [`token_safe`].
     pub id: RegionId,
     /// The road-network snapshot this region's matchers load and solve against.
     pub graph: GraphVersion,
     /// The owned cells. Disjoint across the catalog; one shard artifact each.
     #[serde(with = "cells")]
     pub coverage: Vec<Geohash>,
-    /// Certified fallback cells this region can also serve at a boundary. May
-    /// be owned (in `coverage`) by another region; never by this one.
+    /// Certified fallback cells this region can also serve; may be owned by another region, never this one.
     #[serde(default, with = "cells")]
     pub overlap: Vec<Geohash>,
-    /// How many priority lanes the region's job plane exposes: lanes `0..lanes`
-    /// are valid, so this is at least one.
+    /// Priority lanes the job plane exposes; lanes `0..lanes` are valid, so at least one.
     pub lanes: u8,
-    /// The compute profile the scheduler places matchers on (an opaque label
-    /// resolved by the infrastructure layer, e.g. `"cpu-8"`).
+    /// The compute profile the scheduler places matchers on (opaque label, e.g. `"cpu-8"`).
     pub resource_class: String,
     /// The replica scaling envelope.
     pub replicas: Replicas,
-    /// The per-job deadline budget for this region. Serialised as whole
-    /// milliseconds (`freshness_budget_ms`) because that is what a job's
-    /// `deadline_us` is derived from.
+    /// The per-job deadline budget, serialised as whole milliseconds (`freshness_budget_ms`).
     #[serde(rename = "freshness_budget_ms", with = "duration_ms")]
     pub freshness_budget: Duration,
 }
 
 /// A versioned snapshot of the whole region topology.
 ///
-/// Construct one with [`Catalog::parse`] or [`Catalog::load`]; both validate
-/// the document and build the private lookup indices. The data fields are
-/// public for inspection but the type cannot be assembled field-by-field, so a
-/// `Catalog` in hand is always a validated, indexed one.
+/// Built by [`Catalog::parse`] or [`Catalog::load`], which validate the
+/// document and index it, so a `Catalog` in hand is always validated.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Catalog {
     /// The snapshot's monotonic version. Lets a consumer detect a newer mount.
     pub version: u64,
-    /// Bumps whenever the point-to-region mapping changes, so an orchestrator
-    /// can refuse to mix results computed against different routings.
+    /// Bumps whenever point-to-region mapping changes, so consumers can refuse to mix routings.
     pub routing_version: u64,
     /// The regions, in the order the source document listed them.
     #[serde(default)]
     pub regions: Vec<Region>,
 
-    // Lookup indices, rebuilt from `regions` at parse time and never
-    // serialised. Kept private so they cannot drift from `regions`.
+    // Lookup indices rebuilt from `regions` at parse time; never serialised.
     /// Region id -> index into `regions`.
     #[serde(skip)]
     region_index: HashMap<RegionId, usize>,
@@ -125,13 +86,10 @@ pub enum CatalogError {
     /// The catalog file could not be read.
     #[error("failed to read catalog from {path:?}: {source}")]
     Io {
-        /// The path that could not be read.
         path: PathBuf,
-        /// The underlying I/O failure.
         source: std::io::Error,
     },
-    /// The bytes were not valid catalog TOML (syntax, a missing required key,
-    /// or a malformed geohash string).
+    /// The bytes were not valid catalog TOML.
     #[error("failed to parse catalog TOML: {0}")]
     Toml(#[from] toml::de::Error),
     /// The catalog defined no regions; nothing could be served.
@@ -143,34 +101,23 @@ pub enum CatalogError {
     /// An id or graph value held a character that is unsafe in a NATS subject.
     #[error("region {region:?} has an unsafe {field} token {value:?} (needs [A-Za-z0-9_-]+)")]
     UnsafeToken {
-        /// The region the offending token belongs to.
         region: String,
-        /// Which field held it: `"id"` or `"graph"`.
         field: &'static str,
-        /// The rejected value.
         value: String,
     },
     /// A cell was not at [`SHARD_PRECISION`], so it names no shard artifact.
     #[error("region {region:?} cell {cell:?} has precision {precision}, expected {expected}")]
     CellPrecision {
-        /// The region the cell was listed under.
         region: String,
-        /// The offending cell, as its base-32 string.
         cell: String,
-        /// The precision it was written at.
         precision: u8,
-        /// The precision every cell must use.
         expected: u8,
     },
-    /// One cell appeared in the `coverage` of two regions; ownership must be
-    /// unambiguous.
+    /// One cell appeared in the `coverage` of two regions; ownership must be unambiguous.
     #[error("cell {cell:?} is owned by both region {first:?} and region {second:?}")]
     CellConflict {
-        /// The doubly-owned cell.
         cell: String,
-        /// The region that claimed it first.
         first: String,
-        /// The region that claimed it again.
         second: String,
     },
     /// A region exposed no lanes, so no job could ever be addressed to it.
@@ -178,35 +125,21 @@ pub enum CatalogError {
     ZeroLanes(String),
     /// A region's replica envelope was empty or inverted.
     #[error("region {region:?} has invalid replicas (min={min}, max={max}); need 1 <= min <= max")]
-    BadReplicas {
-        /// The offending region.
-        region: String,
-        /// The configured minimum.
-        min: u32,
-        /// The configured maximum.
-        max: u32,
-    },
+    BadReplicas { region: String, min: u32, max: u32 },
     /// A region owned no cells, so it would serve nothing.
     #[error("region {0:?} has empty coverage")]
     EmptyCoverage(String),
-    /// A region listed one of its own owned cells as an overlap fallback, which
-    /// is contradictory.
+    /// A region listed one of its own owned cells as an overlap fallback.
     #[error("region {region:?} lists cell {cell:?} as both coverage and overlap")]
-    OverlapOwnCell {
-        /// The offending region.
-        region: String,
-        /// The cell listed twice.
-        cell: String,
-    },
+    OverlapOwnCell { region: String, cell: String },
     /// A region had a zero freshness budget, which cannot yield a job deadline.
     #[error("region {0:?} has a zero freshness budget")]
     ZeroFreshnessBudget(String),
 }
 
 impl Catalog {
-    /// Parse and fully validate a catalog from a TOML string, building the
-    /// lookup indices. Every failure the document can carry is reported as a
-    /// [`CatalogError`]; the first one found is returned.
+    /// Parse and fully validate a catalog from TOML, building the lookup
+    /// indices. The first [`CatalogError`] found is returned.
     pub fn parse(toml: &str) -> Result<Self, CatalogError> {
         let mut catalog: Catalog = toml::from_str(toml)?;
         catalog.validate_and_index()?;
@@ -234,9 +167,7 @@ impl Catalog {
         self.owner_index.get(cell).map(|&idx| &self.regions[idx])
     }
 
-    /// The regions offering `cell` as a certified `overlap` fallback, in
-    /// catalog order. Empty if none list it. O(1) to locate, then yields each
-    /// candidate.
+    /// The regions offering `cell` as an `overlap` fallback, in catalog order. Empty if none.
     pub fn fallbacks_for(&self, cell: &Geohash) -> impl Iterator<Item = &Region> {
         self.fallback_index
             .get(cell)
@@ -252,10 +183,7 @@ impl Catalog {
             .flat_map(|region| region.coverage.iter().map(move |cell| (cell, region)))
     }
 
-    /// Run the full validation pass and populate the private indices. Ordered
-    /// so a report points at one clear cause: per-region shape first (in
-    /// document order), then the cross-region invariants (unique ids, disjoint
-    /// ownership) as the indices are assembled.
+    /// Run the full validation pass and populate the private indices.
     fn validate_and_index(&mut self) -> Result<(), CatalogError> {
         if self.regions.is_empty() {
             return Err(CatalogError::EmptyRegions);
@@ -296,9 +224,7 @@ impl Catalog {
 }
 
 impl Region {
-    /// Validate everything that depends only on this region in isolation. The
-    /// cross-region invariants (unique id, disjoint coverage) are checked by
-    /// [`Catalog::validate_and_index`] while it builds the indices.
+    /// Validate everything that depends only on this region in isolation.
     fn validate_shape(&self) -> Result<(), CatalogError> {
         let id = self.id.as_str();
         if !token_safe(id) {
@@ -353,10 +279,7 @@ impl Region {
     }
 }
 
-/// (De)serialise a `Vec<Geohash>` as a list of canonical base-32 strings, so a
-/// catalog file reads `coverage = ["r3gq"]` rather than exposing the geohash's
-/// internal `{ data, precision }` representation. Precision is checked later,
-/// with the region's id to hand, by [`Region::validate_shape`].
+/// (De)serialise a `Vec<Geohash>` as canonical base-32 strings for a hand-editable file.
 mod cells {
     use core::str::FromStr;
 
@@ -384,8 +307,7 @@ mod cells {
     }
 }
 
-/// (De)serialise a [`Duration`] as whole milliseconds, matching the
-/// `freshness_budget_ms` key an operator edits by hand.
+/// (De)serialise a [`Duration`] as whole milliseconds (`freshness_budget_ms`).
 mod duration_ms {
     use core::time::Duration;
 
@@ -395,8 +317,7 @@ mod duration_ms {
         value: &Duration,
         serializer: S,
     ) -> Result<S::Ok, S::Error> {
-        // Budgets are seconds-scale, so this saturation is unreachable; it only
-        // keeps a pathological value from panicking on the cast.
+        // Budgets are seconds-scale, so this saturation is unreachable.
         let millis = u64::try_from(value.as_millis()).unwrap_or(u64::MAX);
         serializer.serialize_u64(millis)
     }
@@ -414,7 +335,6 @@ mod tests {
 
     use super::*;
 
-    /// The example from the module docs, kept in step with them.
     const EXAMPLE: &str = r#"
 version = 3
 routing_version = 3
@@ -477,9 +397,6 @@ freshness_budget_ms = 1000
 
     #[test]
     fn validation_errors_are_specific() {
-        // Each case is the smallest edit to a valid catalog that trips exactly
-        // one rule. The predicate pins the variant; several also assert the
-        // offending id/cell reaches the message.
         struct Case {
             label: &'static str,
             toml: &'static str,
@@ -720,8 +637,6 @@ freshness_budget_ms = 0
 
     #[test]
     fn overlap_precision_is_validated_too() {
-        // Coverage is well-formed; the mismatch is in overlap, proving the
-        // precision check spans both lists.
         let toml = r#"
 version = 1
 routing_version = 1
@@ -743,8 +658,6 @@ freshness_budget_ms = 1000
 
     #[test]
     fn malformed_geohash_is_a_toml_error() {
-        // 'a' and 'i' are not in the geohash base-32 alphabet, so this fails in
-        // deserialisation rather than the semantic pass.
         let toml = r#"
 version = 1
 routing_version = 1
@@ -786,14 +699,12 @@ freshness_budget_ms = 1000
 "#;
         let catalog = Catalog::parse(toml).unwrap();
 
-        // by id
         assert_eq!(
             catalog.region(&region_id("west")).map(|r| r.id.as_str()),
             Some("west")
         );
         assert!(catalog.region(&region_id("nowhere")).is_none());
 
-        // by owned cell
         assert_eq!(
             catalog.owner_of(&cell("r3gq")).map(|r| r.id.as_str()),
             Some("west")
@@ -804,13 +715,11 @@ freshness_budget_ms = 1000
         );
         assert!(catalog.owner_of(&cell("r3gz")).is_none());
 
-        // fallbacks: r3gw is owned by east but offered as a fallback by west
         let fallbacks: Vec<&str> = catalog
             .fallbacks_for(&cell("r3gw"))
             .map(|r| r.id.as_str())
             .collect();
         assert_eq!(fallbacks, vec!["west"]);
-        // r3gr is owned by west and offered as a fallback by east
         let fallbacks: Vec<&str> = catalog
             .fallbacks_for(&cell("r3gr"))
             .map(|r| r.id.as_str())
@@ -818,7 +727,6 @@ freshness_budget_ms = 1000
         assert_eq!(fallbacks, vec!["east"]);
         assert_eq!(catalog.fallbacks_for(&cell("r3gz")).count(), 0);
 
-        // every owned cell, in catalog order
         let owned: Vec<(String, &str)> = catalog
             .cells()
             .map(|(c, r)| (c.to_string(), r.id.as_str()))
@@ -841,9 +749,7 @@ freshness_budget_ms = 1000
         assert_eq!(catalog, reparsed);
     }
 
-    /// A unique path under the temp dir that does not yet exist. Namespaced by
-    /// process id and a per-call counter so parallel tests never collide,
-    /// without reaching for a wall clock.
+    /// A unique scratch path, namespaced by pid and a counter so parallel tests never collide.
     fn scratch_path(tag: &str) -> PathBuf {
         use core::sync::atomic::{AtomicU64, Ordering};
 
@@ -859,8 +765,6 @@ freshness_budget_ms = 1000
 
     #[test]
     fn load_reads_and_parses_a_file() {
-        // `load` is just `read_to_string` + `parse`, so a file written from the
-        // documented example must load to the same catalog `parse` produces.
         let path = scratch_path("load");
         std::fs::write(&path, EXAMPLE).expect("write scratch catalog");
         let loaded = Catalog::load(&path).expect("written catalog should load");
@@ -870,9 +774,6 @@ freshness_budget_ms = 1000
 
     #[test]
     fn load_missing_path_is_an_io_error() {
-        // A read failure is surfaced as `Io` (carrying the path), distinct from
-        // a content failure, so an operator can tell a missing mount from a bad
-        // one.
         let path = scratch_path("missing");
         let _ = std::fs::remove_file(&path);
         match Catalog::load(&path) {

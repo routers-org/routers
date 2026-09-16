@@ -1,18 +1,17 @@
 //! Deadlines, the deadline/commit race, contiguous frontier advance, and
-//! admission backpressure — the §8 scheduling rules and their §10 rows. (T31)
+//! admission backpressure — the §8 scheduling rules and their §10 rows.
 
 use core::time::Duration;
 
 use super::fixture::*;
 
-/// The concrete solve-jobs plane filter and result subject, fully qualified.
+/// The concrete solve-jobs plane filter.
 fn jobs_filter() -> &'static str {
     "solve.v1.g.>"
 }
 
-/// A vehicle whose job is never answered runs out its freshness budget and
-/// commits a `Terminal`; a straggling late answer for the decided observation is
-/// then rejected, not committed a second time.
+/// A never-answered job runs out its freshness budget and commits a `Terminal`;
+/// a straggling late answer is then rejected, not committed twice.
 #[tokio::test(start_paused = true)]
 async fn deadline_expiry_commits_terminal_and_rejects_late_result() {
     // A brisk 100 ms budget so the deadline fires quickly under paused time.
@@ -24,7 +23,6 @@ async fn deadline_expiry_commits_terminal_and_rejects_late_result() {
     let orchestrator = fleet.spawn_orchestrator(partition);
     let observation = fleet.ingest(vehicle, obs_ts(0), road_points()[0]).await;
 
-    // Let the deadline fire and commit its terminal.
     fleet.settle().await;
     assert_eq!(
         published_outputs(&fleet.bus, partition).len(),
@@ -32,7 +30,6 @@ async fn deadline_expiry_commits_terminal_and_rejects_late_result() {
         "the deadline committed one terminal",
     );
 
-    // A real answer straggles in for the already-decided observation.
     let identity = fleet.fresh_identity(vehicle, observation);
     fleet
         .publish_result(identity, SolveOutcome::Unanchored)
@@ -64,8 +61,7 @@ async fn deadline_expiry_commits_terminal_and_rejects_late_result() {
     );
 }
 
-/// An answer that lands just before the deadline wins: the commit is a match, no
-/// terminal is emitted.
+/// An answer landing just before the deadline wins: the commit is a match, no terminal.
 #[tokio::test(start_paused = true)]
 async fn prepared_commit_beats_deadline() {
     // A 40 ms answer under a 100 ms budget: the result commits first.
@@ -91,9 +87,8 @@ async fn prepared_commit_beats_deadline() {
     );
 }
 
-/// Two vehicles share a partition; the lower-sequence vehicle's answer lags. The
-/// completion frontier holds below the lagging vehicle's sequence until it
-/// completes, then jumps to cover both contiguously.
+/// Two vehicles share a partition; the lower-sequence one's answer lags. The
+/// frontier holds below its sequence until it completes, then covers both.
 #[tokio::test(start_paused = true)]
 async fn out_of_order_completion_advances_frontier_contiguously() {
     let a = 1u64;
@@ -111,8 +106,7 @@ async fn out_of_order_completion_advances_frontier_contiguously() {
     let matcher = fleet.spawn_matcher_with_slow(a, Duration::from_millis(60));
     let orchestrator = fleet.spawn_orchestrator(partition);
 
-    // A ingested first (sequence 1), then B (sequence 2), so A's completion gates
-    // the frontier over B's.
+    // A ingested first, so A's completion gates the frontier over B's.
     let a_obs = fleet.ingest(a, obs_ts(0), road_points()[0]).await;
     let b_obs = fleet.ingest(b, obs_ts(0), road_points()[0]).await;
     assert!(
@@ -120,7 +114,6 @@ async fn out_of_order_completion_advances_frontier_contiguously() {
         "A holds the lower sequence"
     );
 
-    // B completes first; while A still lags, the frontier cannot pass A.
     advance_until(|| !published_outputs(&fleet.bus, partition).is_empty()).await;
     let held = fleet.store.frontier(partition).await.unwrap();
     assert!(
@@ -149,8 +142,7 @@ async fn out_of_order_completion_advances_frontier_contiguously() {
 }
 
 /// With a per-region ceiling of one outstanding job, two vehicles sharing a
-/// partition cannot both have a job on the plane at once: the second is held
-/// outside the matcher queues until the first completes, and both finish.
+/// partition cannot both have a job on the plane: the second is held until the first finishes.
 #[tokio::test(start_paused = true)]
 async fn admission_caps_hold_work_outside_matcher_queues() {
     let a = 1u64;
@@ -161,14 +153,12 @@ async fn admission_caps_hold_work_outside_matcher_queues() {
     });
     let partition = fleet.partition_of(a);
 
-    // A 20 ms answer so the first job holds the single slot long enough for the
-    // second to be observed held.
+    // A 20 ms answer holds the single slot long enough to observe the second held.
     let matcher = fleet.spawn_matcher(MatcherBehaviour::delayed_layer(Duration::from_millis(20)));
     let orchestrator = fleet.spawn_orchestrator(partition);
     fleet.ingest(a, obs_ts(0), road_points()[0]).await;
     fleet.ingest(b, obs_ts(0), road_points()[0]).await;
 
-    // Only one job reaches the plane while the region ceiling is full.
     advance_until(|| !fleet.bus.published(jobs_filter()).is_empty()).await;
     assert_eq!(
         fleet.bus.published(jobs_filter()).len(),

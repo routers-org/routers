@@ -66,8 +66,7 @@ impl eframe::App for RealtimeApp {
         };
 
         for output in self.rx.try_iter().take(DRAIN_PER_FRAME) {
-            // Recentre once, on the first matched layer we see; other output
-            // kinds carry no geometry to centre on.
+            // Recentre once, on the first matched layer we see.
             if !self.centered
                 && let OutputKind::Matched { diff, .. } = &output.kind
                 && let Some(layer) = diff.layers.first()

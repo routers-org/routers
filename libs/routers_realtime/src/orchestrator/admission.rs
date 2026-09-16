@@ -366,14 +366,8 @@ impl Admission {
     }
 
     /// Register the admission observable gauges (`jobs_outstanding`,
-    /// `admission_waiting`) against `metrics`, reading live [`snapshot`]s.
-    ///
-    /// The gauges are *observable*: OpenTelemetry pulls the current outstanding
-    /// and waiting counts on every metrics collection through the closure
-    /// installed here, so nothing on the hot dispatch path ever pushes a gauge
-    /// value. The hook lives beside the controller because only it can read the
-    /// credit scopes. The returned [`AdmissionGauges`] must be kept alive for
-    /// the lifetime of the process (drop it to stop reporting).
+    /// `admission_waiting`) against `metrics`, read from live [`snapshot`]s. The
+    /// returned [`AdmissionGauges`] must be kept alive to keep reporting.
     ///
     /// [`snapshot`]: Self::snapshot
     pub fn register_gauges(&self, metrics: &Metrics) -> AdmissionGauges {

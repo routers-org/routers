@@ -1,33 +1,12 @@
-//! The deterministic, in-process fleet the load/failure scenarios drive. (T31)
+//! The deterministic, in-process fleet the load/failure scenarios drive.
 //!
-//! Everything the orchestrator, matcher and materialiser do is state and pure
-//! logic over the [`bus::adapter`](routers_realtime::bus::adapter) and
-//! [`CheckpointStore`](routers_realtime::store::checkpoint::CheckpointStore)
-//! seams, so the whole pipeline runs against the in-memory fakes with no NATS or
-//! Valkey in sight. This module assembles those fakes into a [`Fleet`]: a shared
-//! [`MemoryBus`] and [`MemoryCheckpointStore`], an inline-TOML [`Catalog`], an
-//! [`Admission`] controller, and spawners for the three long-lived services
-//! (orchestrator partition worker, matcher, materialiser).
-//!
-//! # Why the pieces are wired the way the binaries wire them
-//!
-//! [`Fleet::spawn_orchestrator`] mirrors `bin/orchestrator.rs`: it runs
-//! [`recover_partition`](routers_realtime::orchestrator::recovery::recover_partition)
-//! first, then a [`PartitionWorker`] built over the memory adapters, so recovery
-//! and the running loop are exercised exactly as production sequences them. The
-//! matcher and materialiser reuse
-//! [`materializer::consumer::run`](routers_realtime::materializer::consumer::run)
-//! and the real [`Engine`], so a scenario tests the shipped code rather than a
-//! stand-in.
-//!
-//! # Determinism under paused time
-//!
-//! Every scenario runs under `#[tokio::test(start_paused = true)]`. There are no
-//! wall-clock sleeps: [`Fleet::settle`] advances the paused clock in small steps
-//! until the observable bus state stops changing (a quiet window longer than any
-//! timer gap a scenario arms), and [`advance_until`] advances until a predicate
-//! holds. Both are bounded and panic with a diagnostic dump rather than hang, so
-//! a regression fails loudly instead of wedging the suite.
+//! The whole pipeline runs against in-memory fakes (no NATS or Valkey) assembled
+//! into a [`Fleet`]. The spawners mirror the binaries — [`Fleet::spawn_orchestrator`]
+//! runs [`recover_partition`](routers_realtime::orchestrator::recovery::recover_partition)
+//! then a [`PartitionWorker`] over the memory adapters — so scenarios test the
+//! shipped code, not stand-ins. Every scenario runs under paused time with no
+//! wall-clock sleeps: [`Fleet::settle`] and [`advance_until`] are bounded and
+//! panic rather than hang.
 
 #![allow(dead_code)]
 
@@ -68,8 +47,6 @@ use routers_realtime::region::catalog::Catalog;
 use routers_realtime::store::checkpoint::{CommitPhase, PreparedCommit};
 use routers_realtime::topology::{output_subject, raw_subject, result_subject};
 
-// Re-export the handful of crate types the scenario modules name, so a scenario
-// can `use super::fixture::*;` and reach them without a second import block.
 pub use routers_realtime::event::VehicleId;
 pub use routers_realtime::orchestrator::admission::AdmissionConfig;
 pub use routers_realtime::orchestrator::worker::WorkerStats;
@@ -80,12 +57,10 @@ pub use routers_realtime::protocol::output::{
 pub use routers_realtime::protocol::result::SolveOutcome;
 pub use routers_realtime::store::checkpoint::{CheckpointStore, MemoryCheckpointStore, Op};
 
-/// The network entry type the whole fleet solves against — the mock the crate's
-/// other tests use, so the harness needs no real OSM graph.
+/// The network entry type the fleet solves against — the crate's test mock.
 pub type E = MockEntryId;
 
-/// The fully-specialised worker the harness runs: memory bus, memory store, and
-/// the four publisher/source types spelt out so every scenario shares one alias.
+/// The fully-specialised [`PartitionWorker`] the harness runs, over memory adapters.
 pub type Worker = PartitionWorker<
     E,
     MemoryCheckpointStore,
@@ -97,17 +72,11 @@ pub type Worker = PartitionWorker<
 
 /// The first supplier stamp in a trace; later observations are spaced from it.
 pub const TRACE_START_US: i64 = 1_775_000_000_000_000;
-/// The spacing between consecutive observations (five seconds), well under the
-/// default 120 s continuity gap so a normal trace never resets.
+/// Spacing between observations (5 s), well under the 120 s continuity gap so a
+/// trace never resets.
 pub const OBS_SPACING_US: i64 = 5_000_000;
 
-// ---------------------------------------------------------------------------
-// The bent-road network and its served cell
-// ---------------------------------------------------------------------------
-
-/// A staircase road (west, south, west) — the same shape `tests/matched_diff.rs`
-/// and the engine's own tests match against, so a real solve produces real
-/// layers.
+/// A staircase road (west, south, west) — a shape a real solve matches to layers.
 #[must_use]
 pub fn bent_road() -> MockNetwork {
     MockNetworkBuilder::new()
@@ -123,8 +92,8 @@ pub fn bent_road() -> MockNetwork {
         .build()
 }
 
-/// Six observations tracing the bend, spaced five seconds apart with realistic
-/// supplier stamps. Index `i` is stamped [`TRACE_START_US`] + `i` × spacing.
+/// Six observations tracing the bend, five seconds apart. Index `i` is stamped
+/// [`TRACE_START_US`] + `i` × [`OBS_SPACING_US`].
 #[must_use]
 pub fn road_points() -> [Point; 6] {
     [
@@ -143,10 +112,8 @@ pub fn obs_ts(i: usize) -> i64 {
     TRACE_START_US + i as i64 * OBS_SPACING_US
 }
 
-/// The distinct precision-4 coverage cells the bent-road trace touches, computed
-/// (never hard-coded) from [`shard_of`]. In practice the whole staircase falls in
-/// one cell, but computing the set keeps the fixture correct even if a point
-/// straddles a geohash boundary.
+/// The distinct coverage cells the bent-road trace touches, computed from
+/// [`shard_of`] rather than hard-coded.
 #[must_use]
 pub fn road_cells() -> Vec<String> {
     cells_of(&road_points())
@@ -169,12 +136,7 @@ pub fn engine() -> Arc<Engine<MockNetwork>> {
     Arc::new(Engine::new(Arc::new(bent_road()), (), None))
 }
 
-// ---------------------------------------------------------------------------
-// Building committed outputs, results and layers for the scenarios
-// ---------------------------------------------------------------------------
-
-/// A single matched layer at `timestamp`, with placeholder geometry. Enough for
-/// the materialiser to key and merge it; the geometry is never asserted on.
+/// A single matched layer at `timestamp`, with placeholder geometry never asserted on.
 #[must_use]
 pub fn layer_at(timestamp: i64) -> MatchedLayer<E> {
     MatchedLayer {
@@ -190,8 +152,7 @@ pub fn layer_at(timestamp: i64) -> MatchedLayer<E> {
     }
 }
 
-/// A scripted `Solved` outcome carrying one layer at `timestamp`, so a commit
-/// materialises a real, addressable layer without a live network.
+/// A scripted `Solved` outcome carrying one layer at `timestamp`.
 #[must_use]
 pub fn solved_with_layer(timestamp: i64) -> SolveOutcome<E> {
     SolveOutcome::Solved {
@@ -205,8 +166,7 @@ pub fn solved_with_layer(timestamp: i64) -> SolveOutcome<E> {
     }
 }
 
-/// A scripted `Solved` outcome with an empty diff — a commit with no layers, for
-/// the flow tests that assert on counts rather than materialised geometry.
+/// A scripted `Solved` outcome with an empty diff — a commit with no layers.
 #[must_use]
 pub fn empty_solved() -> SolveOutcome<E> {
     SolveOutcome::Solved {
@@ -220,12 +180,7 @@ pub fn empty_solved() -> SolveOutcome<E> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// The matcher behaviour
-// ---------------------------------------------------------------------------
-
-/// A scripted answer function: given the job, produce its outcome, or `None` to
-/// stay silent (never answer — the deadline path's fuel).
+/// A scripted answer function: `None` never answers (the deadline path's fuel).
 pub type Answer = Box<dyn FnMut(&SolveJob<E>) -> Option<SolveOutcome<E>> + Send>;
 
 /// How a spawned matcher answers the jobs it pulls.
@@ -264,8 +219,7 @@ impl MatcherBehaviour {
         MatcherBehaviour::Scripted(Box::new(|_| None))
     }
 
-    /// A matcher that waits `by` before answering each job with one layer at its
-    /// head stamp — for the "the answer lands just before the deadline" race.
+    /// A matcher that waits `by` before answering each job with one layer.
     #[must_use]
     pub fn delayed_layer(by: Duration) -> Self {
         MatcherBehaviour::Delayed {
@@ -275,14 +229,8 @@ impl MatcherBehaviour {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Service handles
-// ---------------------------------------------------------------------------
-
-/// A running partition worker. [`stop`](Self::stop) drains it and returns its
-/// [`WorkerStats`]; [`crash`](Self::crash) aborts the task *without* draining —
-/// the crash-boundary primitive that leaves the durable store exactly as a hard
-/// kill would.
+/// A running partition worker. [`stop`](Self::stop) drains it; [`crash`](Self::crash)
+/// aborts without draining — the crash-boundary primitive.
 pub struct OrchestratorHandle {
     shutdown: Shutdown,
     join: JoinHandle<anyhow::Result<WorkerStats>>,
@@ -298,9 +246,8 @@ impl OrchestratorHandle {
             .expect("worker ran cleanly")
     }
 
-    /// Abort the worker mid-flight without draining — a simulated crash. Any
-    /// prepared commit, unacked raw, or un-advanced frontier is left as-is for a
-    /// later [`Fleet::spawn_orchestrator`] to recover.
+    /// Abort the worker mid-flight without draining — a simulated crash that
+    /// leaves any prepared commit, unacked raw, or un-advanced frontier to recover.
     pub fn crash(self) {
         self.join.abort();
     }
@@ -320,8 +267,7 @@ impl MatcherHandle {
     }
 }
 
-/// A running materialiser. [`stop`](Self::stop) ends its consume loop and returns
-/// its [`MaterializerStats`].
+/// A running materialiser. [`stop`](Self::stop) ends its consume loop.
 pub struct MaterializerHandle {
     shutdown: Shutdown,
     join: JoinHandle<anyhow::Result<MaterializerStats>>,
@@ -338,21 +284,13 @@ impl MaterializerHandle {
     }
 }
 
-// ---------------------------------------------------------------------------
-// The fleet
-// ---------------------------------------------------------------------------
-
 /// One in-process fleet: the shared bus and store, the region catalog, and the
-/// admission controller. Cheap to clone the pieces out of (`bus`/`store` are
-/// `Arc`-backed), so a scenario keeps its own handles for assertions.
+/// admission controller. The `bus`/`store` pieces are `Arc`-backed, so a scenario
+/// can clone its own handles for assertions.
 pub struct Fleet {
-    /// The shared in-memory bus every plane rides on.
     pub bus: MemoryBus,
-    /// The shared in-memory checkpoint store.
     pub store: MemoryCheckpointStore,
-    /// The region catalog resolved against.
     pub catalog: Arc<Catalog>,
-    /// The admission controller shared by the partition workers.
     pub admission: Admission,
     /// The per-region freshness budget baked into the catalog (the deadline).
     budget_ms: u64,
@@ -427,9 +365,8 @@ impl Fleet {
 
     // ----- ingress -----
 
-    /// Publish one raw observation on its partition's journal with the ingress
-    /// dedup key and a stamped schema header, returning its assigned
-    /// [`ObservationId`] (the stream sequence is its revision downstream).
+    /// Publish one raw observation on its partition's journal, returning its
+    /// [`ObservationId`] (whose sequence is the revision downstream).
     pub async fn ingest(&self, vehicle: u64, ts_us: i64, point: Point) -> ObservationId {
         let partition = self.partition_of(vehicle);
         let payload = Payload {
@@ -460,8 +397,7 @@ impl Fleet {
         }
     }
 
-    /// Redeliver every delivered-but-unacked raw on `partition` (a transport
-    /// redelivery / crash-recovery replay).
+    /// Redeliver every delivered-but-unacked raw on `partition` (a crash-recovery replay).
     pub fn redeliver_raw(&self, partition: u16) {
         self.bus
             .redeliver_unacked(&raw_subject(u64::from(partition)));
@@ -475,10 +411,8 @@ impl Fleet {
 
     // ----- building identities and results for the scenarios -----
 
-    /// The identity of the job a fresh vehicle's first observation dispatches:
-    /// no base, this fleet's region and graph. Its
-    /// [`job_id`](JobIdentity::job_id) is what a pre-published result must echo
-    /// to be accepted.
+    /// The identity of the job a fresh vehicle's first observation dispatches (no
+    /// base). A pre-published result must echo its `job_id` to be accepted.
     #[must_use]
     pub fn fresh_identity(&self, vehicle: u64, observation: ObservationId) -> JobIdentity {
         JobIdentity {
@@ -491,9 +425,7 @@ impl Fleet {
         }
     }
 
-    /// Publish a solve result for `identity` directly onto its partition's result
-    /// plane — the "a straggler answers late" and "an early answer beats the
-    /// dispatch" primitives.
+    /// Publish a solve result for `identity` directly onto its partition's result plane.
     pub async fn publish_result(&self, identity: JobIdentity, outcome: SolveOutcome<E>) {
         let result = SolveResult {
             job: identity.job_id(),
@@ -514,10 +446,8 @@ impl Fleet {
             .expect("result publish");
     }
 
-    /// Publish a *second* copy of a result for `identity` under a distinct dedup
-    /// key (`tag`), so the broker does not collapse it — a genuine duplicate
-    /// delivery of an answer the worker has already decided, which it must
-    /// reject or quarantine rather than re-commit.
+    /// Publish a second copy of a result under a distinct dedup key (`tag`) so the
+    /// broker does not collapse it — a genuine duplicate delivery to reject.
     pub async fn publish_result_dup(
         &self,
         identity: JobIdentity,
@@ -547,8 +477,7 @@ impl Fleet {
     // ----- spawning services -----
 
     /// Recover `partition` and run a [`PartitionWorker`] over it, exactly as
-    /// `bin/orchestrator.rs` sequences the two. Returns a handle that can drain
-    /// or crash the worker.
+    /// `bin/orchestrator.rs` sequences the two.
     pub fn spawn_orchestrator(&self, partition: u16) -> OrchestratorHandle {
         let cfg = self.worker_config(partition);
         let dispatcher = Dispatcher::new(self.bus.publisher::<SolveJob<E>>(), cfg.dispatch);
@@ -590,8 +519,7 @@ impl Fleet {
         OrchestratorHandle { shutdown, join }
     }
 
-    /// Spawn a matcher consuming the solve-jobs plane and answering per
-    /// `behaviour`.
+    /// Spawn a matcher consuming the solve-jobs plane and answering per `behaviour`.
     pub fn spawn_matcher(&self, behaviour: MatcherBehaviour) -> MatcherHandle {
         let bus = self.bus.clone();
         let shutdown = Shutdown::new();
@@ -600,9 +528,8 @@ impl Fleet {
         MatcherHandle { shutdown, join }
     }
 
-    /// Spawn a matcher that answers every job with one layer, but holds the
-    /// answers for `slow_vehicle` back by `delay` — the out-of-order completion
-    /// primitive, where one vehicle's answer lags another's.
+    /// Spawn a matcher that answers with one layer, holding `slow_vehicle`'s
+    /// answers back by `delay` — the out-of-order completion primitive.
     pub fn spawn_matcher_with_slow(&self, slow_vehicle: u64, delay: Duration) -> MatcherHandle {
         let bus = self.bus.clone();
         let shutdown = Shutdown::new();
@@ -612,7 +539,7 @@ impl Fleet {
     }
 
     /// Spawn a materialiser over the committed-output plane, returning its handle
-    /// and a handle to the sink it writes so a scenario can read the view back.
+    /// and the sink it writes so a scenario can read the view back.
     pub fn spawn_materializer(&self) -> (MaterializerHandle, MemorySink<E>) {
         let sink = MemorySink::<E>::new();
         let source = self
@@ -629,11 +556,9 @@ impl Fleet {
 
     // ----- staging crash-boundary store state -----
 
-    /// Directly install `bytes` as `vehicle`'s committed checkpoint at
-    /// `revision`/`segment`, by staging a self-contained prepared commit and
-    /// finishing it on a *throwaway* bus — so the seed's output never lands on
-    /// the fleet's own bus. The only way to seed arbitrary (including corrupt)
-    /// checkpoint bytes, mirroring the recovery unit tests.
+    /// Install `bytes` as `vehicle`'s committed checkpoint at `revision`, staging a
+    /// prepared commit and finishing it on a throwaway bus so the seed's output
+    /// never lands on the fleet's own bus — the only way to seed corrupt bytes.
     pub async fn seed_checkpoint_bytes(
         &self,
         vehicle: u64,
@@ -658,12 +583,8 @@ impl Fleet {
         .expect("seed installs the checkpoint bytes");
     }
 
-    /// Stage a prepared commit whose output publish *fails*, leaving an
-    /// unpublished prepared record on the store — the durable residue of a crash
-    /// between prepare and publish. Recovery must publish then promote it.
-    ///
-    /// Returns the observation the record commits and the output's dedup id, so
-    /// a scenario can assert exactly one output lands.
+    /// Stage a prepared commit whose output publish fails, leaving an unpublished
+    /// prepared record — the durable residue of a crash between prepare and publish.
     pub async fn stage_unpublished(
         &self,
         vehicle: u64,
@@ -677,8 +598,7 @@ impl Fleet {
             .prepare(VehicleId(vehicle), partition, prepared.clone())
             .await
             .expect("stage prepare");
-        // Finish on the fleet's own bus but with the next publish armed to fail,
-        // so nothing lands and the prepared record survives unpublished.
+        // Arm the next publish to fail, so nothing lands and the prepared record survives.
         self.bus
             .fail_next_publish(PublishError::Failed(anyhow::anyhow!("bus down")));
         let err = Committer::new(
@@ -698,11 +618,8 @@ impl Fleet {
         }
     }
 
-    /// Stage a prepared commit that was *published but never promoted* — the
-    /// residue of a crash between publish and promote. The output is already
-    /// durable on the fleet's bus and the prepared record is marked
-    /// [`CommitPhase::Published`]; recovery must republish (deduplicated) and
-    /// promote it.
+    /// Stage a prepared commit published but never promoted — the residue of a
+    /// crash between publish and promote, marked [`CommitPhase::Published`].
     pub async fn stage_published_unpromoted(
         &self,
         vehicle: u64,
@@ -716,8 +633,7 @@ impl Fleet {
             .prepare(VehicleId(vehicle), partition, prepared.clone())
             .await
             .expect("stage prepare");
-        // Publish and mark, but fail the promote: the output is durable and the
-        // record is Published, only promotion is missing.
+        // Fail the promote: the output is durable and Published, only promotion missing.
         self.store.fail_next(Op::Promote);
         let err = Committer::new(
             self.store.clone(),
@@ -735,15 +651,12 @@ impl Fleet {
 
     // ----- driving time -----
 
-    /// Advance the paused clock until the observable bus state (messages
-    /// published, acknowledgements landed) has been unchanged for a quiet window
-    /// wider than any timer gap the scenarios arm — i.e. the pipeline has
-    /// quiesced. Bounded; panics with a diagnostic dump rather than hang.
+    /// Advance the paused clock until the observable bus state has been unchanged
+    /// for a quiet window wider than any timer gap the scenarios arm — i.e.
+    /// quiesced. Bounded; panics rather than hang.
     pub async fn settle(&self) {
         const STEP: Duration = Duration::from_millis(5);
-        // 400 ms of simulated stillness: longer than a 250 ms tick, a 100 ms
-        // deadline budget, or any inter-service delay a scenario injects, so the
-        // detector never calls a pre-timer lull "quiescent".
+        // 400 ms of stillness: longer than any tick, deadline, or delay a scenario arms.
         const QUIET_STEPS: usize = 80;
         const MAX_STEPS: usize = 6_000; // 30 s of simulated time, a hard ceiling.
 
@@ -767,16 +680,14 @@ impl Fleet {
         );
     }
 
-    /// A cheap, order-free summary of everything observable on the bus: how many
-    /// messages have been published and how many acknowledgements have landed,
-    /// across every subject. Stable exactly when nothing is flowing.
+    /// A cheap, order-free summary of the bus (messages published, acks landed);
+    /// stable exactly when nothing is flowing.
     fn fingerprint(&self) -> (usize, usize) {
         (self.bus.published(">").len(), self.bus.acked_count(">"))
     }
 
-    /// The worker configuration the harness runs: brisk tick and blocked-retry so
-    /// timers resolve quickly under paused time, and a zero-backoff commit policy
-    /// so a retried publish does not itself add a delay.
+    /// The worker config the harness runs: brisk tick/retry and zero-backoff
+    /// commit so timers resolve quickly under paused time.
     fn worker_config(&self, partition: u16) -> WorkerConfig {
         WorkerConfig {
             tick: Duration::from_millis(20),
@@ -787,14 +698,9 @@ impl Fleet {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Free helpers
-// ---------------------------------------------------------------------------
-
 /// Advance the paused clock in 1 ms steps until `cond` holds, checking before the
-/// first sleep. Bounded; panics rather than hang. The small step keeps the
-/// caller ahead of the worker's 20 ms housekeeping tick, so a scenario can catch
-/// a transient state (e.g. a blocked, mid-commit vehicle) before it is retried.
+/// first sleep. The small step keeps the caller ahead of the worker's 20 ms tick,
+/// so a scenario can catch a transient state. Bounded; panics rather than hang.
 pub async fn advance_until(mut cond: impl FnMut() -> bool) {
     for _ in 0..10_000 {
         if cond() {
@@ -805,9 +711,7 @@ pub async fn advance_until(mut cond: impl FnMut() -> bool) {
     panic!("advance_until: condition never held");
 }
 
-/// The matcher's whole runtime: pull each job, answer per `behaviour`, ack the
-/// job. Mirrors the scripted matcher in the worker's own unit tests, extended
-/// with the engine and delayed behaviours.
+/// The matcher's runtime: pull each job, answer per `behaviour`, ack the job.
 async fn run_matcher(bus: MemoryBus, mut behaviour: MatcherBehaviour, shutdown: Shutdown) {
     let mut jobs = bus.source::<SolveJob<E>>("solve.v1.g.>");
     let publisher = bus.publisher::<SolveResult<E>>();
@@ -841,9 +745,8 @@ async fn run_matcher(bus: MemoryBus, mut behaviour: MatcherBehaviour, shutdown: 
     }
 }
 
-/// A matcher that answers every job with one layer, delaying `slow_vehicle`'s
-/// answers by `delay` — so a lower-sequence vehicle can complete *after* a
-/// higher-sequence one, exercising contiguous frontier advance.
+/// A matcher answering with one layer, delaying `slow_vehicle`'s answers by
+/// `delay` so a lower-sequence vehicle can complete after a higher-sequence one.
 async fn run_matcher_slow(bus: MemoryBus, slow_vehicle: u64, delay: Duration, shutdown: Shutdown) {
     let mut jobs = bus.source::<SolveJob<E>>("solve.v1.g.>");
     let publisher = bus.publisher::<SolveResult<E>>();
@@ -873,8 +776,7 @@ async fn run_matcher_slow(bus: MemoryBus, slow_vehicle: u64, delay: Duration, sh
     }
 }
 
-/// The zero-backoff commit policy the harness uses everywhere, so a retried
-/// publish adds no wall delay under paused time.
+/// The zero-backoff commit policy the harness uses, so a retried publish adds no delay.
 fn zero_backoff_commit_config() -> CommitConfig {
     CommitConfig {
         publish_attempts: 4,
@@ -883,8 +785,7 @@ fn zero_backoff_commit_config() -> CommitConfig {
 }
 
 /// Build a self-contained terminal prepared commit whose promotion installs
-/// `next_checkpoint` at `revision`. The output is a `Terminal` so it needs no
-/// network to be valid; its bytes are the exact publish payload recovery replays.
+/// `next_checkpoint` at `revision`; the output needs no network to be valid.
 fn terminal_prepared(
     vehicle: u64,
     partition: u16,
@@ -925,8 +826,7 @@ fn terminal_prepared(
     }
 }
 
-/// A minimal, decodable [`VehicleCheckpoint`] byte blob at `revision`, so a
-/// staged commit promotes to a checkpoint the store can hand back cleanly.
+/// A minimal, decodable [`VehicleCheckpoint`] byte blob at `revision`.
 fn valid_checkpoint_bytes(vehicle: u64, partition: u16, revision: u64) -> Vec<u8> {
     use routers_realtime::store::checkpoint::VehicleCheckpoint;
     let checkpoint = VehicleCheckpoint::<E> {
@@ -946,8 +846,7 @@ fn valid_checkpoint_bytes(vehicle: u64, partition: u16, revision: u64) -> Vec<u8
     checkpoint.encode().expect("checkpoint encodes")
 }
 
-/// Assemble an inline-TOML [`Catalog`] for `regions`, each `(id, cells)`, with a
-/// generated graph version and the given freshness budget.
+/// Assemble an inline-TOML [`Catalog`] for `regions`, each `(id, cells)`, with `budget_ms`.
 fn build_catalog(regions: &[(&str, &[&str])], budget_ms: u64) -> Catalog {
     let mut toml = String::from("version = 1\nrouting_version = 1\n");
     for (id, cells) in regions {
@@ -971,8 +870,7 @@ fn build_catalog(regions: &[(&str, &[&str])], budget_ms: u64) -> Catalog {
     Catalog::parse(&toml).expect("catalog parses")
 }
 
-/// A second vehicle id that hashes to the same partition as `vehicle` — for the
-/// two-vehicles-share-a-worker scenarios.
+/// A second vehicle id that hashes to the same partition as `vehicle`.
 #[must_use]
 pub fn same_partition_as(vehicle: u64) -> u64 {
     let want = partition_of(VehicleId(vehicle)) as u16;
@@ -981,8 +879,7 @@ pub fn same_partition_as(vehicle: u64) -> u64 {
         .expect("another vehicle in the partition")
 }
 
-/// Decode every committed output currently on `partition`'s output plane, in
-/// stream order — the assertion lens for what the pipeline emitted.
+/// Decode every committed output on `partition`'s output plane, in stream order.
 #[must_use]
 pub fn published_outputs(bus: &MemoryBus, partition: u16) -> Vec<CommittedOutput<E>> {
     bus.published(&output_subject(u64::from(partition)))

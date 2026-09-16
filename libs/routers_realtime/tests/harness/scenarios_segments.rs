@@ -1,21 +1,16 @@
 //! Segment continuity: state loss, teleport, regression suppression, and
-//! unserved coverage — the §8 segment rules and the §10 rows they own. (T31)
+//! unserved coverage — the §8 segment rules and the §10 rows they own.
 
 use super::fixture::*;
 
-/// The topology subjects, fully qualified so the scenarios stay terse.
+/// The concrete raw subject for a partition.
 fn raw_subject(partition: u16) -> String {
     routers_realtime::topology::raw_subject(u64::from(partition))
 }
 
-/// After a run leaves finalised history, corrupting the committed checkpoint
-/// makes the next observation open a fresh segment with a `Reset { StateLost }`;
-/// the old segment's layers are untouched.
-///
-/// State loss is modelled by an *undecodable surviving* checkpoint (a decode
-/// failure is what the merged `restore_vehicle` classifies as state loss); a
-/// fully-dropped checkpoint would read as a genuinely fresh vehicle and open a
-/// new segment without a reset.
+/// Corrupting the committed checkpoint makes the next observation open a fresh
+/// `Reset { StateLost }` segment, leaving the old layers untouched. State loss is
+/// modelled by an undecodable checkpoint (a dropped one would read as fresh, no reset).
 #[tokio::test(start_paused = true)]
 async fn checkpoint_loss_opens_new_segment_keeps_finalized_history() {
     let fleet = Fleet::bent_road();
@@ -26,7 +21,6 @@ async fn checkpoint_loss_opens_new_segment_keeps_finalized_history() {
     let matcher = fleet.spawn_matcher(MatcherBehaviour::engine());
     let (materializer, sink) = fleet.spawn_materializer();
 
-    // Build up four committed observations of real, layered history.
     let run = fleet.spawn_orchestrator(partition);
     for (i, &p) in points.iter().enumerate().take(4) {
         fleet.ingest(vehicle, obs_ts(i), p).await;
@@ -44,8 +38,7 @@ async fn checkpoint_loss_opens_new_segment_keeps_finalized_history() {
         .collect();
     assert_eq!(old_layers.len(), 4, "four layers of history so far");
 
-    // Corrupt the committed checkpoint: an undecodable blob at a superseding
-    // revision, installed via a throwaway bus so no stray output lands.
+    // Corrupt the checkpoint: an undecodable blob at a superseding revision.
     fleet
         .seed_checkpoint_bytes(
             vehicle,
@@ -56,7 +49,6 @@ async fn checkpoint_loss_opens_new_segment_keeps_finalized_history() {
         )
         .await;
 
-    // The next observation restores the corrupt state, resets, and re-matches.
     let restarted = fleet.spawn_orchestrator(partition);
     let lost_obs = fleet.ingest(vehicle, obs_ts(4), points[4]).await;
     fleet.settle().await;
@@ -69,7 +61,6 @@ async fn checkpoint_loss_opens_new_segment_keeps_finalized_history() {
         "state loss opened exactly one fresh segment"
     );
 
-    // A Reset { StateLost } then a Matched, in that order.
     let outputs = published_outputs(&fleet.bus, partition);
     assert!(
         outputs.iter().any(|o| matches!(
@@ -82,8 +73,6 @@ async fn checkpoint_loss_opens_new_segment_keeps_finalized_history() {
         "a StateLost reset was emitted",
     );
 
-    // The old segment's history survived, and a new segment carries the reset's
-    // fresh match.
     let after = sink.snapshot(VehicleId(vehicle)).expect("vehicle present");
     let new_segment = SegmentId(lost_obs.sequence);
     assert_ne!(new_segment, old_segment, "the reset opened a new segment");
@@ -106,8 +95,7 @@ async fn checkpoint_loss_opens_new_segment_keeps_finalized_history() {
     );
 }
 
-/// A point more than the jump threshold from the last committed origin resets
-/// the segment as a teleport, then matches in the new segment.
+/// A point beyond the jump threshold resets the segment as a teleport, then matches anew.
 #[tokio::test(start_paused = true)]
 async fn teleport_resets_segment() {
     let fleet = Fleet::bent_road();
@@ -115,9 +103,7 @@ async fn teleport_resets_segment() {
     let partition = fleet.partition_of(vehicle);
     let points = road_points();
 
-    // A real engine so the committed checkpoint carries the last origin the
-    // teleport is measured against; the two ends of the staircase are ~2.8 km
-    // apart, beyond the 2 km jump threshold.
+    // The staircase ends are ~2.8 km apart, beyond the 2 km jump threshold.
     let matcher = fleet.spawn_matcher(MatcherBehaviour::engine());
     let (materializer, sink) = fleet.spawn_materializer();
     let orchestrator = fleet.spawn_orchestrator(partition);
@@ -157,12 +143,8 @@ async fn teleport_resets_segment() {
     );
 }
 
-/// An observation whose sequence is behind the partition's completion frontier —
-/// a late, out-of-order delivery of something already moved past — is suppressed
-/// and acked without a job.
-///
-/// The merged reader suppresses regressions by the completion frontier
-/// (sequence), the durable "already decided" mark, rather than by comparing
+/// An observation behind the partition's completion frontier is suppressed and
+/// acked without a job. Regressions are suppressed by frontier sequence, not
 /// wall-clock stamps, so the scenario drives it through the frontier.
 #[tokio::test(start_paused = true)]
 async fn timestamp_regression_is_suppressed() {
@@ -181,7 +163,6 @@ async fn timestamp_regression_is_suppressed() {
         .unwrap();
 
     let orchestrator = fleet.spawn_orchestrator(partition);
-    // The first raw takes sequence 1 — behind the frontier, so a regression.
     let observation = fleet.ingest(vehicle, obs_ts(0), road_points()[0]).await;
     assert!(observation.sequence <= 5, "the raw is behind the frontier");
 
@@ -203,8 +184,7 @@ async fn timestamp_regression_is_suppressed() {
     );
 }
 
-/// A point outside every region's coverage is terminated as unsupported
-/// coverage, without a solve job.
+/// A point outside every region's coverage is terminated as unsupported coverage, no solve job.
 #[tokio::test(start_paused = true)]
 async fn unserved_cell_is_terminal_unsupported_coverage() {
     use geo::Point;

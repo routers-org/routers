@@ -238,8 +238,7 @@ fn admission_config(args: &Args) -> AdmissionConfig {
 #[tokio::main]
 async fn main() -> Result<()> {
     let _telemetry = routers_realtime::telemetry::init("routers-orchestrator");
-    // Built after telemetry so the instruments bind to the installed meter; a
-    // clone per partition worker (each instrument is a cheap Arc handle).
+    // Built after telemetry so instruments bind to the installed meter.
     let metrics = Metrics::new();
 
     let args = Args::parse();

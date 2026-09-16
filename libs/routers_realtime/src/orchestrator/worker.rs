@@ -218,9 +218,7 @@ where
     drain: Drain,
     last_evict: Instant,
     stats: WorkerStats,
-    /// Bounded-label metrics. [`Metrics::noop`] by default so existing
-    /// constructors and tests record nothing; the binary installs a real handle
-    /// via [`with_metrics`](PartitionWorker::with_metrics).
+    /// Bounded-label metrics; [`Metrics::noop`] by default until [`with_metrics`](PartitionWorker::with_metrics) installs a real handle.
     metrics: Metrics,
 }
 
@@ -291,17 +289,7 @@ where
         }
     }
 
-    /// Install a metrics handle, so the worker records bounded-label counters,
-    /// histograms, and gauges through its push instruments.
-    ///
-    /// The process-scoped admission observable gauges are registered once by the
-    /// binary (see `bin/orchestrator.rs`), not here: `Admission` is `Arc`-shared
-    /// and cloned into every partition worker, so registering them per worker
-    /// would duplicate the same global instrument N times.
-    ///
-    /// Without this the worker uses [`Metrics::noop`] and records nothing
-    /// measurable, which is why every existing constructor and test keeps
-    /// compiling unchanged.
+    /// Install a metrics handle so the worker records bounded-label instruments.
     #[must_use]
     pub fn with_metrics(mut self, metrics: Metrics) -> Self {
         self.metrics = metrics;
@@ -442,10 +430,6 @@ where
                 self.stats.parked += 1;
                 self.metrics.parked();
                 self.scheduler.park(vehicle, result, now);
-                // Ack the parked delivery immediately: the content is retained in
-                // memory, so a crash loses it, and redelivery / re-dispatch cover
-                // that. This trades durability of an *early* answer for a simpler
-                // ack model.
                 if let Some(handle) = handle {
                     let _ = handle.ack().await;
                 }
@@ -508,17 +492,11 @@ where
     async fn on_tick(&mut self) {
         let now = Instant::now();
 
-        // Publish the partition's completion-frontier lag: raw sequences seen
-        // but not yet completed. Bucketed to a partition class so the label
-        // alphabet stays bounded.
         self.metrics.frontier_lag(
             &Metrics::partition_class(self.cfg.partition),
             self.tracker.outstanding() as u64,
         );
 
-        // The age of the oldest still-pending head across this partition's
-        // vehicles, or 0 when nothing is queued — the queue-age gauge that reads
-        // alongside the frontier lag.
         self.metrics.oldest_pending_seconds(
             self.scheduler
                 .oldest_pending(now)
@@ -673,7 +651,6 @@ where
                 self.metrics
                     .job_bytes(resolution.region.as_str(), job_bytes);
 
-                // A just-dispatched job may already have a parked answer.
                 for result in self.scheduler.take_parked(vehicle) {
                     self.on_result_inner(result, None).await;
                 }
@@ -736,8 +713,6 @@ where
             "a commit must not change the segment without a reset",
         );
         let is_terminal = matches!(decision, Decision::Terminal { .. });
-        // Capture the bounded completion labels before `decision` is consumed by
-        // `plan`: the terminal reason (if any) and the reset reason (if any).
         let terminal_reason = match &decision {
             Decision::Terminal { reason, .. } => Some(reason.label()),
             _ => None,
@@ -779,8 +754,7 @@ where
                 let kind = if is_terminal { "terminal" } else { "matched" };
                 self.metrics
                     .commit_seconds(kind, commit_start.elapsed().as_secs_f64());
-                // A reset commit emits the reset before the matched/terminal
-                // output, so both completions are counted for the one commit.
+                // A reset commit emits the reset before the matched/terminal output.
                 if let Some(reason) = reset_reason {
                     self.metrics.completion("reset", reason);
                 }
@@ -1877,9 +1851,6 @@ freshness_budget_ms = 30000
         assert_eq!(admission_probe.global().jobs, 0, "no job credit leaked");
     }
 
-    /// The housekeeping tick records `oldest_pending_age_seconds`: while an
-    /// observation sits in a vehicle FIFO awaiting a durable answer, the gauge
-    /// tracks how long its head has been queued.
     #[tokio::test(start_paused = true)]
     async fn tick_records_the_oldest_pending_gauge() {
         use opentelemetry::metrics::MeterProvider as _;
@@ -1890,9 +1861,7 @@ freshness_budget_ms = 30000
         use opentelemetry_sdk::metrics::reader::MetricReader as _;
         use opentelemetry_sdk::metrics::{PeriodicReader, SdkMeterProvider, Temporality};
 
-        // A push exporter that does nothing: the test reads the gauge by calling
-        // the reader's `collect` directly, so the exporter only satisfies the
-        // reader's type (mirrors the metrics-module test rig).
+        // A push exporter that does nothing; the test reads the gauge via `collect` directly.
         #[derive(Debug, Default)]
         struct NoopExporter;
 
@@ -1911,7 +1880,6 @@ freshness_budget_ms = 30000
             }
         }
 
-        /// The single f64-gauge value recorded under `name`, if any.
         fn gauge_value(reader: &PeriodicReader<NoopExporter>, name: &str) -> Option<f64> {
             let mut rm = ResourceMetrics {
                 resource: Resource::builder().build(),
@@ -1936,7 +1904,6 @@ freshness_budget_ms = 30000
         let store = MemoryCheckpointStore::new();
         let shutdown = Shutdown::new();
 
-        // A meter whose reader the test collects on demand, bound into the worker.
         let reader = PeriodicReader::builder(NoopExporter).build();
         let provider = SdkMeterProvider::builder()
             .with_reader(reader.clone())
@@ -1946,8 +1913,7 @@ freshness_budget_ms = 30000
 
         publish_raw(&bus, partition, vehicle, 1_775_000_000_000_000).await;
 
-        // A long freshness budget so no deadline fires and pops the head during
-        // the test — the observation keeps ageing in the FIFO.
+        // A long freshness budget so no deadline pops the head; the observation keeps ageing.
         let mut worker = build_worker(
             config(partition),
             Arc::new(catalog(3_600_000)),
@@ -1957,8 +1923,6 @@ freshness_budget_ms = 30000
         )
         .with_metrics(metrics);
 
-        // Draw and classify the observation; its job dispatches but no matcher
-        // answers it, so the head stays pending and its age grows.
         let delivery = worker
             .raw
             .next()
@@ -1967,8 +1931,6 @@ freshness_budget_ms = 30000
             .expect("a well-formed delivery");
         worker.on_raw(delivery).await;
 
-        // A tick with a still-empty clock records ~0; after time elapses it
-        // records the head's age.
         worker.on_tick().await;
         let fresh = gauge_value(&reader, "oldest_pending_age_seconds")
             .expect("the tick records the gauge even when the queue just filled");

@@ -11,13 +11,10 @@ use routers_realtime::protocol::{CommittedOutput, OutputKind, Revision};
 use crate::E;
 
 /// A vehicle's matched history, merged from committed outputs: one geometry
-/// segment per observation timestamp. Overlapping emissions supersede per
-/// layer by revision — higher wins, equal-or-lower is a duplicate or stale
-/// re-delivery — so the trace heals as later solves refine earlier layers
-/// without a stale emission ever clobbering a newer one.
+/// segment per observation timestamp, kept by highest revision so a stale
+/// re-delivery never clobbers a newer layer.
 pub struct VehicleTrace {
-    /// Observation timestamp → `(revision that set it, geometry driven into
-    /// that observation)`. The revision gates every merge at that timestamp.
+    /// Observation timestamp → `(revision that set it, its geometry)`.
     layers: BTreeMap<i64, (Revision, Vec<Point>)>,
     pub last_seen: Instant,
 }
@@ -30,8 +27,7 @@ impl VehicleTrace {
         }
     }
 
-    /// Merge a matched diff, keeping the highest revision per timestamp. A
-    /// layer whose revision does not supersede the one already held is dropped.
+    /// Merge a diff, keeping the highest revision per timestamp.
     fn merge(&mut self, revision: Revision, diff: &MatchedDiff<E>, capacity: usize) {
         for layer in &diff.layers {
             let existing = self.layers.get(&layer.timestamp).map(|(rev, _)| *rev);
@@ -107,23 +103,18 @@ impl TraceStore {
         self.total_events += 1;
 
         match &output.kind {
-            // Layers merge by observation timestamp under revision gating, so
-            // the newest timestamp is the vehicle's current position, which the
-            // plugin marks with the head dot.
             OutputKind::Matched { diff, .. } => {
                 self.traces
                     .entry(output.vehicle_id)
                     .or_insert_with(VehicleTrace::new)
                     .merge(output.revision, diff, self.capacity);
             }
-            // A retraction only edits a vehicle we already know about.
             OutputKind::Retraction { timestamps } => {
                 if let Some(trace) = self.traces.get_mut(&output.vehicle_id) {
                     trace.retract(timestamps);
                 }
             }
-            // Resets and terminals leave the drawn geometry alone; they only
-            // keep a known vehicle alive against idle eviction.
+            // Resets and terminals only keep a known vehicle alive against idle eviction.
             OutputKind::Terminal { .. } | OutputKind::Reset { .. } => {
                 if let Some(trace) = self.traces.get_mut(&output.vehicle_id) {
                     trace.touch();

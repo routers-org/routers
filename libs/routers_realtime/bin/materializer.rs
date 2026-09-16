@@ -104,8 +104,7 @@ async fn build_consumer(
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let _telemetry = routers_realtime::telemetry::init("routers-materializer");
-    // Built after telemetry so the instruments bind to the installed meter (a
-    // no-op meter, and thus free, when no OTLP endpoint is configured).
+    // Built after telemetry so instruments bind to the installed meter.
     let metrics = Metrics::new();
 
     let args = Args::parse();

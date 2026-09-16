@@ -1,31 +1,5 @@
-//! Tracing for the realtime binaries: human-readable logs always, OTLP span
-//! export when configured.
-//!
-//! The only developer-facing surface is the `tracing` macros —
-//! `#[instrument]`, `info!`, `info_span!` — plus the bounded-label
-//! [`Metrics`](crate::metrics::Metrics) handle. Spans carry per-request detail
-//! (vehicle and job ids), while the meter this module installs carries the
-//! bounded-cardinality aggregates: the two are exported side by side over OTLP.
-//!
-//! Export is driven entirely by the standard OTLP environment:
-//!
-//! ```bash
-//! OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318   # omit to disable
-//! RUST_LOG=info                                            # filters logs AND exported spans
-//! ```
-//!
-//! # Metric export and the OTLP client
-//!
-//! Both signals export off the Tokio reactor. Spans go through the async-runtime
-//! batch processor (`runtime::Tokio`); metrics go through the async-runtime
-//! [`PeriodicReader`] (the SDK's
-//! `experimental_metrics_periodicreader_with_async_runtime` feature). The
-//! thread-based reader would drive its exporter with a blocking `block_on`,
-//! which the async `reqwest` client (`reqwest-client` feature) cannot service
-//! off a Tokio reactor — a real collector export would stall. Scheduling the
-//! collect-and-export as Tokio tasks instead keeps the metric path robust. The
-//! no-endpoint path (all tests, local runs) is unaffected: the global meter is a
-//! no-op and nothing exports.
+//! Tracing for the realtime binaries: compact logs always, OTLP span and metric
+//! export when `OTEL_EXPORTER_OTLP_ENDPOINT` is set. `RUST_LOG` filters both.
 
 use core::time::Duration;
 
@@ -42,9 +16,7 @@ use tracing_subscriber::EnvFilter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
-/// Keeps the OTLP pipeline alive; dropping it flushes any batched spans and the
-/// last metrics collection. Bind it in `main` —
-/// `let _telemetry = telemetry::init("matcher");`.
+/// Keeps the OTLP pipeline alive; dropping it flushes batched spans and metrics.
 pub struct Telemetry {
     provider: Option<SdkTracerProvider>,
     meter_provider: Option<SdkMeterProvider>,
@@ -57,7 +29,6 @@ impl Drop for Telemetry {
         {
             eprintln!("telemetry shutdown: {err}");
         }
-        // Flush the final metrics collection before the reader's thread stops.
         if let Some(provider) = self.meter_provider.take()
             && let Err(err) = provider.shutdown()
         {
@@ -66,14 +37,9 @@ impl Drop for Telemetry {
     }
 }
 
-/// Install the global subscriber: an `EnvFilter`ed compact log formatter,
-/// plus an OTLP span exporter when `OTEL_EXPORTER_OTLP_ENDPOINT` is set.
-/// Without the endpoint this degrades to plain structured logging, so local
-/// runs need no collector.
+/// Install the global subscriber; without an OTLP endpoint this is plain logging.
+/// Call from within a tokio runtime: the exporters run as spawned tasks.
 pub fn init(service: &'static str) -> Telemetry {
-    // The W3C `traceparent` propagator is what lets a trace continue across
-    // the NATS hop (see `bus::nats`). Global, so the bus layer never needs a
-    // handle threaded through to it.
     global::set_text_map_propagator(TraceContextPropagator::new());
 
     let provider = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
@@ -84,12 +50,7 @@ pub fn init(service: &'static str) -> Telemetry {
                 .build()
                 .expect("OTLP exporter builds from its environment");
 
-            // Fire & forget: exports run as spawned tokio tasks (async
-            // reqwest), never blocking the hot path — a full queue drops
-            // spans rather than applying backpressure. Flushed twice a
-            // second with headroom for ~10k spans/s bursts; metrics lag the
-            // pipeline, they must never throttle it. Requires a running
-            // tokio runtime, so call `init` from within `#[tokio::main]`.
+            // A full queue drops spans; export must never back-pressure the pipeline.
             let processor = BatchSpanProcessor::builder(exporter, runtime::Tokio)
                 .with_batch_config(
                     BatchConfigBuilder::default()
@@ -105,19 +66,10 @@ pub fn init(service: &'static str) -> Telemetry {
                 .with_resource(Resource::builder().with_service_name(service).build())
                 .build();
 
-            // Bus-level spans (queue-wait) are created through the global
-            // provider, not the tracing bridge.
             global::set_tracer_provider(provider.clone());
             provider
         });
 
-    // The bounded-label meter shares the same OTLP endpoint. When it is set we
-    // install a `PeriodicReader` that collects and exports every 10 s (metrics
-    // are aggregates, so a coarse cadence is fine) and register it globally so
-    // `Metrics::new` binds to it. Absent the endpoint the global meter stays a
-    // no-op and every `Metrics` instrument is free. The reader schedules its
-    // collect-and-export as tokio tasks (see the module-level note), so it needs
-    // a running runtime — call `init` from within `#[tokio::main]`.
     let meter_provider = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
         .is_ok()
         .then(|| {
@@ -126,11 +78,7 @@ pub fn init(service: &'static str) -> Telemetry {
                 .build()
                 .expect("OTLP metric exporter builds from its environment");
 
-            // Drive the reader on the tokio runtime, mirroring the span side's
-            // async batch processor. The thread-based `PeriodicReader` collects
-            // and exports with a `block_on` off the reactor, which the async
-            // `reqwest-client` OTLP exporter cannot service; the async-runtime
-            // reader schedules its collect+export as tokio tasks instead.
+            // The thread-based reader would `block_on` off the reactor and deadlock the async exporter.
             let reader = PeriodicReader::builder(exporter, runtime::Tokio)
                 .with_interval(Duration::from_secs(10))
                 .build();
@@ -144,15 +92,11 @@ pub fn init(service: &'static str) -> Telemetry {
             provider
         });
 
-    // `Option<Layer>` is itself a `Layer`, so one registry serves both modes.
     let export = provider
         .as_ref()
         .map(|provider| tracing_opentelemetry::layer().with_tracer(provider.tracer(service)));
 
-    // Quieten the export path's own chatter: at RUST_LOG=debug the exporter
-    // logs several lines per batch (hyper pools, reqwest sends), which at
-    // pipeline rates is itself a throughput tax. Explicit RUST_LOG
-    // directives for these targets still override.
+    // The exporter's own debug logging is a throughput tax; explicit RUST_LOG directives still win.
     let filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new("info"))
         .add_directive("opentelemetry=warn".parse().expect("static directive"))

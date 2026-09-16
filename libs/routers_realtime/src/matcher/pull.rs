@@ -143,9 +143,8 @@ impl<N: Network, C, P> PullLoop<N, C, P> {
         }
     }
 
-    /// Attach a metrics handle, so the loop records bounded-label solve, queue,
-    /// and publish latencies (and a `graph_ready` gauge while it runs). Without
-    /// this the loop uses [`Metrics::noop`] and records nothing measurable.
+    /// Attach a metrics handle so the loop records solve, queue, and publish
+    /// latencies and a `graph_ready` gauge. Without this it uses [`Metrics::noop`].
     #[must_use]
     pub fn with_metrics(mut self, metrics: Metrics) -> Self {
         self.metrics = metrics;
@@ -183,9 +182,6 @@ where
         let region = Arc::new(region);
         let cells = Arc::new(cells);
 
-        // This replica is serving a usable graph for as long as the loop runs
-        // (it is only constructed after bootstrap reached `Ready`); flip the
-        // gauge to 1 now and back to 0 when the loop returns.
         metrics.graph_ready(region.id.as_str(), 1);
 
         let mut stats = PullStats::default();
@@ -247,7 +243,6 @@ where
             }
         };
 
-        // The loop is exiting: this replica no longer serves the graph.
         metrics.graph_ready(region.id.as_str(), 0);
 
         stats
