@@ -1,43 +1,11 @@
-//! Valkey implementation of [`CheckpointStore`]. (T11)
+//! Valkey implementation of [`CheckpointStore`], backed by a fleet of
+//! independent primaries.
 //!
-//! The durable home of every vehicle's committed checkpoint and in-flight
-//! prepared commit, backed by a fleet of independent Valkey primaries. The
-//! atomicity the trait promises is realised with per-vehicle Lua scripts run
-//! over a single key group; the in-memory fake ([`super::checkpoint::
-//! MemoryCheckpointStore`]) realises the same guarantees with one mutex.
-//!
-//! ## Placement and key groups
-//!
-//! A vehicle's three keys — its checkpoint, its prepared record, and (via the
-//! partition index) its membership — must reach the same primary so a Lua
-//! script can touch them in one critical section, and must reach the *same*
-//! primary for the life of the vehicle so its history survives a fleet resize.
-//! Both fall out of one decision: place by vehicle, with rendezvous
-//! (highest-random-weight) hashing over the primaries' URLs, exactly as the
-//! legacy raw-tail store does. Reordering or growing the fleet then remaps only
-//! about `1/N` of vehicles rather than nearly all of them.
-//!
-//! The vehicle keys carry a `{vehicle:<id>}` hash tag so a future Valkey
-//! Cluster hashes all three to one slot. The partition index
-//! (`partition:<p>:prepared`) is deliberately *not* vehicle-tagged: it is placed
-//! by the rendezvous of the string `partition:<p>`, so it can live on a
-//! different primary than the vehicles it lists. That is safe because the index
-//! is only a recovery hint — [`list_prepared`](CheckpointStore::list_prepared)
-//! treats a listed-but-missing vehicle as stale and repairs it, and a leaked or
-//! lost index entry is reconciled by recovery, never trusted as truth.
-//!
-//! ## Atomicity
-//!
-//! Compare-and-stage ([`prepare`](CheckpointStore::prepare)), promotion, and the
-//! publish mark are single Lua scripts over the `{vehicle:<id>}` key group, so
-//! each is atomic against concurrent commits for the same vehicle. The
-//! `SADD`/`SREM` that maintain the partition index run as ordinary commands
-//! after the script — they touch a different key group, cannot join the script's
-//! atomic section, and are therefore best-effort by construction.
-//!
-//! No Valkey server exists in the build sandbox, so this module is
-//! compile-verified: the unit tests cover key derivation, placement, the
-//! stored-record hash encoding, and the Lua script argument layout.
+//! A vehicle's keys carry a `{vehicle:<id>}` hash tag and are placed by
+//! rendezvous hashing, so all reach one primary and a resize remaps only ~`1/N`.
+//! Per-vehicle atomicity comes from Lua scripts over that key group; the
+//! `SADD`/`SREM` partition-index writes run afterwards and are best-effort, a
+//! recovery hint that [`list_prepared`](CheckpointStore::list_prepared) repairs.
 
 use alloc::sync::Arc;
 use core::str::FromStr;
@@ -57,8 +25,7 @@ use crate::store::checkpoint::{
     StoredCheckpoint,
 };
 
-/// The default idle lifetime of a committed checkpoint: ten minutes without a
-/// commit and the vehicle's checkpoint may be reaped. Prepared records never
+/// The default idle lifetime of a committed checkpoint. Prepared records never
 /// expire.
 pub const DEFAULT_CHECKPOINT_TTL: Duration = Duration::from_secs(600);
 
@@ -71,19 +38,13 @@ pub enum ValkeyError {
     /// The backing Valkey command failed (connection, timeout, or server-side).
     #[error("valkey: {0}")]
     Redis(#[from] redis::RedisError),
-    /// [`ValkeyCheckpointStore::connect`] was handed an empty endpoint list; a
-    /// fleet must have at least one primary to place a vehicle on.
+    /// [`ValkeyCheckpointStore::connect`] was handed an empty endpoint list.
     #[error("no valkey endpoints were supplied")]
     NoEndpoints,
     /// A promote or publish mark named an output that disagreed with the staged
-    /// prepared record — a stale or crossed caller.
+    /// prepared record.
     #[error("prepared output mismatch: staged {staged}, got {got}")]
-    OutputMismatch {
-        /// The output the store has staged for the vehicle.
-        staged: OutputId,
-        /// The output the caller named.
-        got: OutputId,
-    },
+    OutputMismatch { staged: OutputId, got: OutputId },
     /// A stored hash held a field that was missing or could not be decoded back
     /// into its typed form.
     #[error("malformed stored record: {0}")]
@@ -93,14 +54,12 @@ pub enum ValkeyError {
     UnexpectedReply(Vec<String>),
 }
 
-/// Which primary owns a key. Held apart from the connections so the mapping —
-/// the part that has to stay stable for history to survive — is testable
-/// without a server. Copied from the legacy raw-tail store (`store/redis.rs`,
-/// deleted in T33) so this module carries no dependency on it.
+/// Which primary owns a key. Held apart from the connections so the mapping is
+/// testable without a server.
 #[derive(Clone)]
 struct Placement {
-    /// One hash per endpoint URL. A primary's identity is its URL rather than
-    /// its position, so reordering the fleet moves no vehicle.
+    /// One hash per endpoint URL, keyed by URL not position, so reordering the
+    /// fleet moves no vehicle.
     seeds: Vec<u64>,
 }
 
@@ -114,9 +73,8 @@ impl Placement {
         }
     }
 
-    /// Rendezvous (highest-random-weight) placement. Plain modulo would remap
-    /// nearly every vehicle when the fleet changes size, discarding the history
-    /// that keeps trips continuous; this remaps about `1/N` of them.
+    /// Rendezvous (highest-random-weight) placement; remaps ~`1/N` of vehicles
+    /// on a resize where modulo would remap nearly all.
     fn index_for(&self, key: &str) -> usize {
         let hash = fnv1a(key.as_bytes());
 
@@ -131,14 +89,12 @@ impl Placement {
 }
 
 /// The rendezvous key of a vehicle: the content of its `{vehicle:<id>}` hash
-/// tag, so all three of its keys place onto one primary (and, in a Cluster,
-/// hash to one slot).
+/// tag, so all its keys place onto one primary.
 fn vehicle_slot(vehicle: VehicleId) -> String {
     format!("vehicle:{}", vehicle.0)
 }
 
-/// The rendezvous key of a partition's index and frontier. Not vehicle-tagged,
-/// so the index may land on a different primary than the vehicles it lists.
+/// The rendezvous key of a partition's index and frontier; not vehicle-tagged.
 fn partition_slot(partition: u16) -> String {
     format!("partition:{partition}")
 }
@@ -171,15 +127,9 @@ fn phase_str(phase: CommitPhase) -> &'static str {
     }
 }
 
-/// The checkpoint hash's fields (`revision`, `segment`, `bytes`) in the order
-/// the store writes them. The revision and segment ride outside the opaque
-/// `bytes` so [`prepare`](CheckpointStore::prepare) can compare a base without
-/// decoding the sealed [`routers_network::Entry`] type.
-///
-/// The store never writes this hash from Rust — the `PROMOTE` script builds it
-/// from the prepared record inside the vehicle's key group — so this helper
-/// exists to mirror that layout and prove the [`stored_from_fields`] inverse
-/// round-trips; it is test-only.
+/// The checkpoint hash's fields in the order the store writes them. Test-only:
+/// the `PROMOTE` script writes this hash in production, and this mirror proves
+/// the [`stored_from_fields`] inverse round-trips.
 #[cfg(test)]
 fn stored_to_fields(checkpoint: &StoredCheckpoint) -> Vec<(&'static str, Vec<u8>)> {
     vec![
@@ -199,9 +149,8 @@ fn stored_from_fields(fields: &HashMap<String, Vec<u8>>) -> Result<StoredCheckpo
     })
 }
 
-/// The prepared-commit hash's fields in the order the store writes them. The
-/// [`prepare`](CheckpointStore::prepare) script reuses this order for its
-/// `ARGV`, so the two cannot drift.
+/// The prepared-commit hash's fields in the order the store writes them; the
+/// [`prepare`](CheckpointStore::prepare) script reuses this order for its `ARGV`.
 fn prepared_to_fields(prepared: &PreparedCommit) -> Vec<(&'static str, Vec<u8>)> {
     vec![
         ("output", prepared.output.to_string().into_bytes()),
@@ -303,11 +252,9 @@ fn take_u16(fields: &HashMap<String, Vec<u8>>, name: &str) -> Result<u16, Valkey
         .map_err(|_| ValkeyError::Malformed(format!("field {name} is not a u16")))
 }
 
-/// Compare-and-stage over a vehicle's `{vehicle:<id>}` key group.
-///
-/// `KEYS[1]` = checkpoint hash, `KEYS[2]` = prepared hash. `ARGV[1]` is the
-/// expected base (`''` = no checkpoint may exist); `ARGV[2..=11]` are the
-/// prepared record's fields in [`prepared_to_fields`] order.
+/// Compare-and-stage over a vehicle's key group. `KEYS[1]` = checkpoint hash,
+/// `KEYS[2]` = prepared hash; `ARGV[1]` = expected base (`''` = no checkpoint),
+/// `ARGV[2..=11]` = prepared fields in [`prepared_to_fields`] order.
 const PREPARE_LUA: &str = r#"
 local existing = redis.call('HGET', KEYS[2], 'output')
 if existing then
@@ -341,11 +288,9 @@ return {'prepared'}
 "#;
 
 /// Install the prepared record's checkpoint and drop the prepared record.
-///
-/// `KEYS[1]` = checkpoint hash, `KEYS[2]` = prepared hash. `ARGV[1]` = the
-/// output being promoted, `ARGV[2]` = the checkpoint TTL in milliseconds.
-/// Idempotent when the prepared record is gone (`{'noop'}`); refuses a prepared
-/// record for a different output (`{'mismatch', staged}`).
+/// `KEYS[1]` = checkpoint, `KEYS[2]` = prepared; `ARGV[1]` = output being
+/// promoted, `ARGV[2]` = checkpoint TTL in ms. `{'noop'}` when already gone,
+/// `{'mismatch', staged}` on a different output.
 const PROMOTE_LUA: &str = r#"
 local existing = redis.call('HGET', KEYS[2], 'output')
 if not existing then
@@ -363,12 +308,10 @@ redis.call('DEL', KEYS[2])
 return {'ok'}
 "#;
 
-/// Mark the prepared record [`CommitPhase::Published`].
-///
-/// `KEYS[1]` = checkpoint hash (unused; passed so the call stays in the
-/// vehicle's key group), `KEYS[2]` = prepared hash, `ARGV[1]` = the output.
-/// Idempotent when the prepared record is gone (`{'noop'}`); refuses a different
-/// output (`{'mismatch', staged}`).
+/// Mark the prepared record [`CommitPhase::Published`]. `KEYS[1]` = checkpoint
+/// (unused, keeps the call in the key group), `KEYS[2]` = prepared, `ARGV[1]` =
+/// output. `{'noop'}` when already gone, `{'mismatch', staged}` on a different
+/// output.
 const MARK_PUBLISHED_LUA: &str = r#"
 local existing = redis.call('HGET', KEYS[2], 'output')
 if not existing then
@@ -401,13 +344,11 @@ impl Scripts {
 /// How to reach the Valkey fleet and how long a committed checkpoint lives.
 #[derive(Clone, Debug)]
 pub struct ValkeyConfig {
-    /// The primaries, addressed by URL. A vehicle is placed onto exactly one of
-    /// these by rendezvous hashing; the set may be reordered without moving any
+    /// The primaries, addressed by URL; may be reordered without moving any
     /// vehicle.
     pub urls: Vec<Url>,
     /// How long a committed checkpoint survives without a fresh commit, applied
-    /// as a `PEXPIRE` on every promotion. Prepared records are never given a
-    /// TTL — they are the durable record of an in-flight commit.
+    /// as a `PEXPIRE` on every promotion. Prepared records never get a TTL.
     pub checkpoint_ttl: Duration,
     /// How long to wait for each primary's connection to establish.
     pub connect_timeout: Duration,
@@ -431,9 +372,7 @@ impl Default for ValkeyConfig {
 }
 
 /// A [`CheckpointStore`] backed by a fleet of independent Valkey primaries.
-///
-/// Cloning shares the underlying multiplexed sockets and the compiled scripts,
-/// so a partition-worker pool clones one store rather than opening its own.
+/// Cloning shares the multiplexed sockets and compiled scripts.
 #[derive(Clone)]
 pub struct ValkeyCheckpointStore {
     conns: Vec<MultiplexedConnection>,
@@ -444,9 +383,7 @@ pub struct ValkeyCheckpointStore {
 
 impl ValkeyCheckpointStore {
     /// Open a multiplexed connection to every primary in `cfg`, concurrently.
-    ///
-    /// Errors if the endpoint list is empty (a fleet needs at least one primary
-    /// to place a vehicle on) or if any connection cannot be established within
+    /// Errors on an empty endpoint list or a connection that exceeds
     /// [`ValkeyConfig::connect_timeout`].
     pub async fn connect(cfg: ValkeyConfig) -> Result<Self, ValkeyError> {
         if cfg.urls.is_empty() {
@@ -455,8 +392,6 @@ impl ValkeyCheckpointStore {
 
         let placement = Placement::new(&cfg.urls);
 
-        // Concurrently: awaiting each primary in turn would multiply startup
-        // latency by the size of the fleet.
         let conns = try_join_all(cfg.urls.iter().cloned().map(|url| {
             let connect_timeout = cfg.connect_timeout;
             async move {
@@ -479,16 +414,14 @@ impl ValkeyCheckpointStore {
         })
     }
 
-    /// A cheap clone of the connection to the primary that owns `vehicle`'s
-    /// keys. A multiplexed connection clones by sharing its socket, so this does
-    /// not open anything.
+    /// The connection to the primary that owns `vehicle`'s keys; a cheap clone
+    /// sharing the socket.
     fn vehicle_conn(&self, vehicle: VehicleId) -> MultiplexedConnection {
         self.conns[self.placement.index_for(&vehicle_slot(vehicle))].clone()
     }
 
-    /// A cheap clone of the connection to the primary that owns `partition`'s
-    /// index and frontier. May differ from the primary of a vehicle listed in
-    /// that index (see the module docs).
+    /// The connection to the primary that owns `partition`'s index and frontier;
+    /// may differ from a listed vehicle's primary.
     fn partition_conn(&self, partition: u16) -> MultiplexedConnection {
         self.conns[self.placement.index_for(&partition_slot(partition))].clone()
     }
@@ -548,8 +481,7 @@ impl CheckpointStore for ValkeyCheckpointStore {
     ) -> Result<(Option<StoredCheckpoint>, Option<PreparedCommit>), Self::Error> {
         let mut conn = self.vehicle_conn(vehicle);
 
-        // Both keys are in the one key group, so a pipeline reads them on the
-        // same connection round trip — a single point-in-time view.
+        // One key group, so a pipeline reads both in one round trip.
         let mut pipe = redis::pipe();
         pipe.cmd("HGETALL")
             .arg(checkpoint_key(vehicle))
@@ -597,10 +529,8 @@ impl CheckpointStore for ValkeyCheckpointStore {
         let reply: Vec<String> = invocation.invoke_async(&mut conn).await?;
         let outcome = parse_prepare_reply(&reply)?;
 
-        // Best-effort partition index. Add on both `Prepared` and
-        // `AlreadyPrepared` so a retry that finds the record already staged
-        // still repairs a missing index entry; `SADD` is idempotent. A failure
-        // here surfaces as an error the idempotent retry can safely re-drive.
+        // Best-effort index: add on `AlreadyPrepared` too so a retry repairs a
+        // missing entry (`SADD` is idempotent).
         if matches!(
             outcome,
             PrepareOutcome::Prepared | PrepareOutcome::AlreadyPrepared
@@ -636,8 +566,7 @@ impl CheckpointStore for ValkeyCheckpointStore {
         partition: u16,
         output: OutputId,
     ) -> Result<(), Self::Error> {
-        // `as_millis` is u128; a TTL past `u64::MAX` ms is not reachable, so
-        // saturate rather than wrap.
+        // Saturate rather than wrap the u128 millis into the script's u64 arg.
         let ttl_ms = u64::try_from(self.cfg.checkpoint_ttl.as_millis()).unwrap_or(u64::MAX);
 
         let mut conn = self.vehicle_conn(vehicle);
@@ -650,8 +579,7 @@ impl CheckpointStore for ValkeyCheckpointStore {
         let reply: Vec<String> = invocation.invoke_async(&mut conn).await?;
         parse_ok_or_mismatch(&reply, output)?;
 
-        // Best-effort index removal. A leaked entry is harmless: `list_prepared`
-        // finds the record gone and repairs it.
+        // Best-effort index removal; a leaked entry is repaired by `list_prepared`.
         let mut index_conn = self.partition_conn(partition);
         redis::cmd("SREM")
             .arg(partition_index_key(partition))
@@ -682,15 +610,13 @@ impl CheckpointStore for ValkeyCheckpointStore {
                 .query_async(&mut conn)
                 .await?;
             if fields.is_empty() {
-                // Promoted away since it was indexed: repair the stale hint.
                 stale.push(vehicle);
             } else {
                 prepared.push((vehicle, prepared_from_fields(&fields)?));
             }
         }
 
-        // Repair stale index entries best-effort; a failure here is
-        // reconciled on the next recovery pass and must not fail the listing.
+        // Best-effort repair; a failure is reconciled on the next recovery pass.
         for vehicle in stale {
             let _: Result<i64, redis::RedisError> = redis::cmd("SREM")
                 .arg(&index_key)
@@ -699,7 +625,7 @@ impl CheckpointStore for ValkeyCheckpointStore {
                 .await;
         }
 
-        // Deterministic order, independent of set iteration order.
+        // Deterministic order, independent of set iteration.
         prepared.sort_by_key(|(vehicle, _)| vehicle.0);
         Ok(prepared)
     }
@@ -727,8 +653,7 @@ impl CheckpointStore for ValkeyCheckpointStore {
     }
 
     async fn expire_idle(&self, vehicle: VehicleId) -> Result<(), Self::Error> {
-        // Only the committed checkpoint is idle-expired; a prepared record is
-        // the durable record of an in-flight commit and is never touched here.
+        // Never touch a prepared record: an in-flight commit must survive.
         let mut conn = self.vehicle_conn(vehicle);
         redis::cmd("DEL")
             .arg(checkpoint_key(vehicle))
@@ -759,8 +684,6 @@ mod tests {
         let vehicle = VehicleId(42);
         assert_eq!(checkpoint_key(vehicle), "{vehicle:42}:checkpoint");
         assert_eq!(prepared_key(vehicle), "{vehicle:42}:prepared");
-        // Both vehicle keys share one `{...}` tag, so a Cluster hashes them to
-        // one slot and this store places them on one primary.
         assert_eq!(vehicle_slot(vehicle), "vehicle:42");
     }
 
@@ -782,9 +705,6 @@ mod tests {
         }
     }
 
-    /// The fleet is a set, not a list. Two binaries handed the same primaries in
-    /// different orders must still agree on where a vehicle lives, or each would
-    /// see only part of its history.
     #[test]
     fn placement_ignores_url_order() {
         let urls = fleet(20);
@@ -798,9 +718,6 @@ mod tests {
         }
     }
 
-    /// Rendezvous hashing's reason for being. Modulo would move ~19/20 of the
-    /// keyspace here; anything near that would discard the history that keeps
-    /// trips continuous.
     #[test]
     fn growing_the_fleet_moves_about_one_nth_of_keys() {
         let before = Placement::new(&fleet(20));
@@ -832,13 +749,9 @@ mod tests {
 
     #[test]
     fn a_vehicles_keys_and_index_key_place_independently() {
-        // The vehicle keys place by `vehicle:<id>`; the partition index places
-        // by `partition:<p>`. They may or may not coincide — the point is that
-        // the vehicle placement never depends on the partition.
         let placement = Placement::new(&fleet(8));
         for id in 0..256u64 {
             let vehicle = VehicleId(id);
-            // Deterministic and in range.
             let node = placement.index_for(&vehicle_slot(vehicle));
             assert!(node < 8);
         }
@@ -875,8 +788,7 @@ mod tests {
         let checkpoint = StoredCheckpoint {
             revision: Revision(1_700_000),
             segment: SegmentId(42),
-            // Binary, including bytes that are not valid UTF-8, to prove the
-            // `bytes` field survives verbatim.
+            // Non-UTF-8 bytes, to prove `bytes` survives verbatim.
             bytes: vec![0x00, 0x01, 0xff, 0xfe, 0x80],
         };
         let decoded = stored_from_fields(&to_map(stored_to_fields(&checkpoint))).unwrap();
@@ -954,7 +866,7 @@ mod tests {
                 actual: Some(Revision(77)),
             }
         );
-        // An empty actual means no checkpoint existed.
+        // Empty actual means no checkpoint existed.
         assert_eq!(
             parse_prepare_reply(&strings(&["conflict", ""])).unwrap(),
             PrepareOutcome::Conflict { actual: None }
@@ -989,20 +901,16 @@ mod tests {
     fn prepare_lua_references_its_keys_and_argv() {
         assert!(PREPARE_LUA.contains("KEYS[1]"));
         assert!(PREPARE_LUA.contains("KEYS[2]"));
-        // ARGV[1] (expected base) through ARGV[11] (raw_sequence): one per
-        // prepared field, plus the compare arg.
         for n in 1..=11 {
             assert!(
                 PREPARE_LUA.contains(&format!("ARGV[{n}]")),
                 "PREPARE is missing ARGV[{n}]"
             );
         }
-        // ARGV[2..=11] line up with the prepared fields, in order.
         assert_eq!(
             prepared_to_fields(&sample_prepared(None, CommitPhase::Prepared)).len(),
             10
         );
-        // The stored field names must appear verbatim in the HSET.
         for (name, _) in prepared_to_fields(&sample_prepared(None, CommitPhase::Prepared)) {
             assert!(
                 PREPARE_LUA.contains(&format!("'{name}'")),
@@ -1017,7 +925,6 @@ mod tests {
         assert!(PROMOTE_LUA.contains("KEYS[2]"));
         assert!(PROMOTE_LUA.contains("ARGV[1]"));
         assert!(PROMOTE_LUA.contains("ARGV[2]"));
-        // It installs the checkpoint from the prepared record and expires it.
         assert!(PROMOTE_LUA.contains("PEXPIRE"));
         for field in ["next_revision", "next_segment", "next_checkpoint"] {
             assert!(PROMOTE_LUA.contains(&format!("'{field}'")));

@@ -1,41 +1,11 @@
-//! Bounded-label metrics. (T30)
+//! Bounded-label metrics.
 //!
 //! One [`Metrics`] handle carries every OpenTelemetry instrument the realtime
-//! services publish. It is [`Clone`] (each instrument is a cheap `Arc` handle),
-//! so the binaries build it once and hand a clone to each partition worker, the
-//! matcher pull loop, and the materialiser consume loop.
-//!
-//! # Why the label alphabet is closed
-//!
-//! Every metric attribute is drawn from a *bounded* alphabet — a `region`, a
-//! `lane`, an `outcome`/`reason` class string, or a `partition_class` bucket —
-//! so the exporter's time-series cardinality is capped no matter how much
-//! traffic flows. A vehicle id or a job id is unbounded (millions of vehicles,
-//! one job per observation), so it must never become a label: those identities
-//! live only in spans and structured logs (see [`telemetry`](crate::telemetry)).
-//! The method signatures here are the enforcement mechanism — none of them
-//! accepts a `VehicleId`, a `JobId`, or a raw partition number.
-//!
-//! Partition ids are not labels either: a fleet has [`PARTITIONS`] of them, far
-//! too many series. Where partition-level detail helps it is bucketed into a
-//! small [`partition_class`](Metrics::partition_class) (16 classes).
-//!
-//! # Completion ratio next to latency
-//!
-//! [`completion`](Metrics::completion) counts *finished work* by outcome and the
-//! `*_seconds` histograms measure how long it took. Both exist deliberately: a
-//! service that keeps its latency SLA healthy only by discarding work would show
-//! it in a collapsing completion count, so the two read together.
-//!
-//! # No-op by default
-//!
-//! [`Metrics::noop`] builds instruments from OpenTelemetry's global meter, which
-//! is a no-op provider until [`telemetry`](crate::telemetry) installs a real
-//! one. Recording against a no-op instrument is close to free (an inlined
-//! early-return), so tests and un-exported runs pay nothing and no call site
-//! needs an `Option<Metrics>`.
-//!
-//! [`PARTITIONS`]: crate::partition::PARTITIONS
+//! services publish. It is [`Clone`] (each instrument is a cheap `Arc`), so a
+//! binary builds it once and hands clones to its workers. Every attribute is
+//! drawn from a bounded alphabet — region, lane, outcome/reason, partition
+//! class — never an unbounded identity, so cardinality stays capped. Until
+//! [`telemetry`](crate::telemetry) installs a provider the meter is a no-op.
 
 use alloc::sync::Arc;
 
@@ -45,14 +15,11 @@ use opentelemetry::{KeyValue, global};
 /// The meter name every realtime instrument is registered under.
 const METER: &str = "routers_realtime";
 
-/// How many buckets [`Metrics::partition_class`] folds the partitions into. Kept
-/// small so `partition_class` stays a bounded label; 16 classes is enough to
-/// spot a hot corner of the keyspace without exploding cardinality.
+/// How many bounded classes [`Metrics::partition_class`] folds the partitions into.
 const PARTITION_CLASSES: u16 = 16;
 
-/// A single reading of one admission credit scope, yielded by the snapshot
-/// closure [`Metrics::register_admission`] polls on every collection. `region`
-/// is `None` for the process-wide scope.
+/// A single reading of one admission credit scope. `region` is `None` for the
+/// process-wide scope.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AdmissionRow {
     /// The region this reading is for, or `None` for the global aggregate.
@@ -63,52 +30,43 @@ pub struct AdmissionRow {
     pub waiting: u64,
 }
 
-/// The observable-gauge handles [`Metrics::register_admission`] returns. They
-/// must be kept alive for the gauges to keep reporting — drop them to stop.
+/// Handles for the admission gauges; keep them alive or the gauges stop reporting.
 #[must_use = "the admission gauges stop reporting when these handles are dropped"]
 pub struct AdmissionGauges {
     _jobs_outstanding: ObservableGauge<u64>,
     _admission_waiting: ObservableGauge<u64>,
 }
 
-/// Every bounded-label instrument the realtime services publish, behind one
-/// cheaply-cloned handle.
+/// Every bounded-label instrument the realtime services publish.
 #[derive(Clone)]
 pub struct Metrics {
     meter: Meter,
 
-    // Orchestrator intake and scheduling.
     offered_observations: Counter<u64>,
     queued_observations: Counter<u64>,
     suppressed_observations: Counter<u64>,
     poison_observations: Counter<u64>,
 
-    // Dispatch and admission.
     dispatch_held: Counter<u64>,
     jobs_claimed: Counter<u64>,
     job_bytes: Histogram<u64>,
 
-    // Results and their disposition.
     results_received: Counter<u64>,
     parked_results: Counter<u64>,
     quarantined_results: Counter<u64>,
     rejected_results: Counter<u64>,
 
-    // Commit and completion.
     checkpoint_commit_seconds: Histogram<f64>,
     completions: Counter<u64>,
 
-    // Frontier and queue age (orchestrator gauges).
     frontier_lag: Gauge<u64>,
     oldest_pending_age_seconds: Gauge<f64>,
 
-    // Matcher.
     solve_seconds: Histogram<f64>,
     queue_wait_seconds: Histogram<f64>,
     result_publish_seconds: Histogram<f64>,
     graph_ready: Gauge<u64>,
 
-    // Materialiser.
     materialized_outputs: Counter<u64>,
 }
 
@@ -120,30 +78,18 @@ impl core::fmt::Debug for Metrics {
 
 impl Metrics {
     /// Build the instruments from the process's global meter.
-    ///
-    /// Call this in `main` *after* [`telemetry::init`](crate::telemetry::init)
-    /// has installed the meter provider, so the instruments bind to the OTLP
-    /// pipeline. Before a provider is installed the global meter is a no-op and
-    /// the instruments are free — see [`noop`](Self::noop).
     #[must_use]
     pub fn new() -> Self {
         Self::from_meter(global::meter(METER))
     }
 
-    /// A handle whose instruments record nothing measurable.
-    ///
-    /// It is built from the same global meter as [`new`](Self::new); until a
-    /// real provider is installed OpenTelemetry's global meter is a no-op
-    /// provider, so recording is an inlined early return. Use it as the default
-    /// for constructors and tests that do not wire an exporter.
+    /// A handle whose instruments record nothing measurable until a provider is installed.
     #[must_use]
     pub fn noop() -> Self {
         Self::from_meter(global::meter(METER))
     }
 
-    /// Build the instruments from an explicit meter. Used by [`new`](Self::new)
-    /// and [`noop`](Self::noop), and directly by tests that assert against an
-    /// SDK meter provider.
+    /// Build the instruments from an explicit meter.
     #[must_use]
     pub fn from_meter(meter: Meter) -> Self {
         let offered_observations = meter
@@ -258,8 +204,7 @@ impl Metrics {
         }
     }
 
-    /// Bucket a partition into one of [`PARTITION_CLASSES`] bounded classes, so
-    /// partition-level detail can be a label without one series per partition.
+    /// Bucket a partition into one of [`PARTITION_CLASSES`] bounded classes.
     #[must_use]
     pub fn partition_class(partition: u16) -> String {
         format!("c{}", partition % PARTITION_CLASSES)
@@ -302,8 +247,7 @@ impl Metrics {
         self.job_bytes.record(bytes, &[region_attr(region)]);
     }
 
-    /// One solve result was accepted as an active job's answer, by region and
-    /// outcome kind.
+    /// One solve result accepted as an active job's answer, by region and outcome.
     pub fn result(&self, region: &str, outcome_kind: &str) {
         self.results_received
             .add(1, &[region_attr(region), outcome_attr(outcome_kind)]);
@@ -330,9 +274,7 @@ impl Metrics {
             .record(secs, &[kind_attr(kind)]);
     }
 
-    /// One committed decision, by outcome (`matched`|`terminal`|`reset`) and
-    /// reason. This is the completion-ratio numerator that reads alongside the
-    /// latency histograms.
+    /// One committed decision, by outcome (`matched`|`terminal`|`reset`) and reason.
     pub fn completion(&self, outcome: &str, reason: &str) {
         self.completions
             .add(1, &[outcome_attr(outcome), reason_attr(reason)]);
@@ -374,18 +316,9 @@ impl Metrics {
         self.materialized_outputs.add(1, &[kind_attr(applied_kind)]);
     }
 
-    /// Register the two admission observable gauges — `jobs_outstanding` and
-    /// `admission_waiting` — pulled from `snapshot` on every metrics collection.
-    ///
-    /// `snapshot` yields one [`AdmissionRow`] per credit scope (region, plus the
-    /// process-wide scope as `region: None`); the gauges observe its `jobs` and
-    /// `waiting` counts under a bounded `region` label. Because they are
-    /// *observable*, the current value is read at collection time — the worker
-    /// never pushes it, which is why the admission hook lives beside the
-    /// controller ([`Admission`](crate::orchestrator::admission::Admission)).
-    ///
-    /// The returned [`AdmissionGauges`] must be kept alive; dropping it
-    /// unregisters the callbacks. Under a no-op meter this registers nothing.
+    /// Register the two admission observable gauges (`jobs_outstanding`,
+    /// `admission_waiting`), pulled from `snapshot` on every collection. The
+    /// returned [`AdmissionGauges`] must be kept alive or the callbacks unregister.
     pub fn register_admission<F>(&self, snapshot: F) -> AdmissionGauges
     where
         F: Fn() -> Vec<AdmissionRow> + Send + Sync + 'static,
@@ -476,11 +409,7 @@ mod tests {
     use opentelemetry_sdk::metrics::reader::MetricReader as _;
     use opentelemetry_sdk::metrics::{PeriodicReader, SdkMeterProvider, Temporality};
 
-    /// A push exporter that does nothing: the tests read metrics by calling
-    /// [`PeriodicReader::collect`] directly rather than through an export, so the
-    /// exporter only exists to satisfy the reader's type. The `testing`-feature
-    /// `InMemoryMetricExporter` would need a Cargo feature this crate does not
-    /// enable, so a hand-rolled no-op keeps the test self-contained.
+    /// A push exporter that does nothing; tests collect directly rather than export.
     #[derive(Debug, Default)]
     struct NoopExporter;
 
@@ -502,8 +431,7 @@ mod tests {
         }
     }
 
-    /// A test rig: an SDK meter provider whose reader can be collected on demand,
-    /// plus the [`Metrics`] built from its meter.
+    /// A test rig: an SDK meter provider plus the [`Metrics`] built from its meter.
     struct Rig {
         reader: PeriodicReader<NoopExporter>,
         metrics: Metrics,
@@ -520,8 +448,7 @@ mod tests {
             Self { reader, metrics }
         }
 
-        /// Collect once and return every recorded metric as
-        /// `name -> set of (attribute key, attribute value) pairs`.
+        /// Collect once, returning each metric name mapped to its attribute pairs.
         fn collect(&self) -> HashMap<String, BTreeSet<(String, String)>> {
             let mut rm = ResourceMetrics {
                 resource: Resource::builder().build(),
@@ -542,8 +469,7 @@ mod tests {
         }
     }
 
-    /// Pull every data point's attributes out of one aggregation, downcasting
-    /// through the concrete shapes the instruments in this module produce.
+    /// Pull every data point's attributes out of one aggregation.
     fn attribute_pairs(
         data: &dyn opentelemetry_sdk::metrics::data::Aggregation,
     ) -> Vec<(String, String)> {
@@ -661,8 +587,6 @@ mod tests {
         let rig = Rig::new();
         let m = &rig.metrics;
 
-        // Exercise every method, including with values that look like identities,
-        // to prove the *keys* stay bounded regardless of the values passed.
         m.observed("c9");
         m.queued();
         m.suppressed("x");
@@ -720,8 +644,6 @@ mod tests {
 
         let outstanding = &collected["jobs_outstanding"];
         assert!(outstanding.contains(&("region".to_owned(), "syd".to_owned())));
-        // The process-wide scope (`region: None`) is labelled `all`, never a bare
-        // partition or vehicle identity.
         assert!(outstanding.contains(&("region".to_owned(), "all".to_owned())));
     }
 
@@ -736,8 +658,6 @@ mod tests {
 
     #[test]
     fn noop_metrics_record_without_a_provider() {
-        // No panic and no measurable output: the global meter is a no-op until a
-        // provider is installed, so this is exercising the free path.
         let m = Metrics::noop();
         m.observed("c0");
         m.completion("matched", "solved");

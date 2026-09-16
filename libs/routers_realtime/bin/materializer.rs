@@ -1,13 +1,9 @@
-//! The materialiser service. (T28)
+//! The materialiser service.
 //!
-//! Tails the committed-output plane (`events.matched.v1.p.>`) with a durable
-//! pull consumer and applies every output to a [`ValkeySink`], persisting each
-//! before acknowledging so its consumption recovers independently. It owns none
-//! of the orchestrator's state: the output plane alone defines the served view.
-//!
-//! The consume loop drives the shared JetStream `Source` adapter in
-//! [`bus::jetstream`](routers_realtime::bus::jetstream), the same one the matcher
-//! and orchestrator use, so poison handling and trace plumbing stay in one place.
+//! Tails the committed-output plane with a durable pull consumer and applies
+//! every output to a [`ValkeySink`], persisting each before acknowledging. It
+//! owns none of the orchestrator's state: the output plane alone defines the
+//! served view.
 
 use core::ops::RangeInclusive;
 
@@ -59,15 +55,13 @@ struct Args {
     #[arg(short, env, long)]
     nats: Url,
 
-    /// Valkey primaries, comma-separated. Vehicles are spread across them by
-    /// rendezvous hash, so the order carries no meaning, but every process that
-    /// touches the served view must be given the same set.
+    /// Valkey primaries, comma-separated. Order is irrelevant (rendezvous hash),
+    /// but every process touching the served view must be given the same set.
     #[arg(short, env, long, value_delimiter = ',')]
     valkey: Vec<Url>,
 
-    /// The partitions to materialise, as an inclusive range ("0-255"). Omitted,
-    /// the consumer tails the whole output plane. A range narrows the filter so
-    /// a shard of materialisers can divide the plane between them.
+    /// The partitions to materialise, as an inclusive range ("0-255"); omitted,
+    /// the consumer tails the whole output plane.
     #[arg(short, env, long, value_parser = parse_partitions)]
     partitions: Option<RangeInclusive<u64>>,
 
@@ -85,11 +79,9 @@ async fn build_consumer(
     partitions: Option<RangeInclusive<u64>>,
 ) -> anyhow::Result<PullConsumer> {
     match partitions {
-        // The whole plane: the blessed consumer with the plane-wide filter.
         None => topology::output::output_consumer(stream, name)
             .await
             .context("could not create output consumer"),
-        // A slice of the plane: one filter subject per partition in range.
         Some(range) => {
             let filter_subjects: Vec<String> =
                 range.map(topology::output::output_subject).collect();
@@ -112,14 +104,12 @@ async fn build_consumer(
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let _telemetry = routers_realtime::telemetry::init("routers-materializer");
-    // Built after telemetry so the instruments bind to the installed meter (a
-    // no-op meter, and thus free, when no OTLP endpoint is configured).
+    // Built after telemetry so instruments bind to the installed meter.
     let metrics = Metrics::new();
 
     let args = Args::parse();
     info!("materializer started: {args:?}");
 
-    // Stop intake on the first signal; the consume loop watches this.
     let shutdown = Shutdown::from_signals();
 
     let nats_url = ServerAddr::from_url(args.nats).context("could not create NATS url")?;
@@ -149,8 +139,7 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Drive the consume loop for the concrete entry type. Separated so the generic
-/// wiring is named once and the `main` body stays about connection setup.
+/// Drive the consume loop for the concrete entry type.
 async fn run_materializer<Src, S>(
     source: Src,
     sink: S,

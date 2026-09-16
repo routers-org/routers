@@ -1,22 +1,9 @@
-//! The materialiser consume loop: apply then acknowledge. (T28)
+//! The materialiser consume loop: apply then acknowledge.
 //!
-//! [`run`] is the materialiser's whole runtime: pull committed output off a
-//! [`Source`], apply each to the [`Sink`], and only *then* acknowledge it. That
-//! order is the durability contract — an output is never acked before it is
-//! persisted, so a crash between apply and ack redelivers it and the idempotent
-//! merge (see [`sink`](super::sink)) absorbs the replay. The loop owns nothing
-//! of the orchestrator's state; it rebuilds the served view purely from the
-//! output plane, and so recovers its own consumption independently.
-//!
-//! Three outcomes, three responses:
-//!
-//! * **Applied.** The output persisted; acknowledge it and move on.
-//! * **Sink error.** Persisting failed; negatively acknowledge with a short
-//!   backoff so the broker redelivers it — never ack work that did not land.
-//! * **Poison.** The source could not produce a decoded output (an undecodable
-//!   message, or a transient pull error). A durable source retires an
-//!   undecodable message itself before surfacing the error, so redriving it
-//!   would only re-fail; the loop logs it, counts it, and carries on.
+//! [`run`] pulls committed output off a [`Source`], applies each to the [`Sink`],
+//! and only *then* acknowledges it. That order is the durability contract: an
+//! output is never acked before it is persisted, so a crash between apply and ack
+//! redelivers it and the idempotent merge absorbs the replay.
 
 use core::time::Duration;
 
@@ -30,18 +17,15 @@ use crate::materializer::sink::{Applied, Sink};
 use crate::metrics::Metrics;
 use crate::protocol::output::CommittedOutput;
 
-/// How long to hold back a redelivery after a sink error. Short: a failing sink
-/// is usually a transient store hiccup, and the output must land promptly.
+/// How long to hold back a redelivery after a sink error.
 const NAK_BACKOFF: Duration = Duration::from_secs(1);
 
-/// A tally of what one consumer run did, for logs and tests. Every
-/// acknowledged output increments exactly one of `applied`, `duplicates`, or
-/// `retracted`; `errors` and `poison` count the messages that were not applied.
+/// A tally of what one consumer run did, for logs and tests.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Stats {
     /// Outputs that changed the view (an insert, supersede, reset, or terminal).
     pub applied: u64,
-    /// Outputs that were an equal or lower revision — a replay or losing race.
+    /// Outputs that were an equal or lower revision.
     pub duplicates: u64,
     /// Outputs that dropped non-final layers.
     pub retracted: u64,
@@ -52,7 +36,6 @@ pub struct Stats {
 }
 
 impl Stats {
-    /// Fold one apply result into the tally.
     fn record(&mut self, applied: Applied) {
         match applied {
             Applied::Duplicate => self.duplicates += 1,
@@ -79,8 +62,7 @@ fn applied_kind(applied: &Applied) -> &'static str {
 
 /// Run the materialiser consume loop until shutdown or the source drains.
 ///
-/// Equivalent to [`run_with_metrics`] with a [`Metrics::noop`] handle; existing
-/// callers and tests that do not wire metrics use this.
+/// Equivalent to [`run_with_metrics`] with a [`Metrics::noop`] handle.
 pub async fn run<E, S, Src>(source: Src, sink: S, shutdown: Shutdown) -> anyhow::Result<Stats>
 where
     E: Entry + DeserializeOwned,
@@ -93,11 +75,8 @@ where
 /// Run the materialiser consume loop until shutdown or the source drains,
 /// recording bounded-label metrics through `metrics`.
 ///
-/// Each iteration races the shutdown signal against the next delivery
-/// ([`Source::next`] is cancellation-safe, so losing that race drops the future
-/// without consuming a message). Returns the run's [`Stats`]; an error is only
-/// returned if acknowledging fails irrecoverably, which the caller treats as
-/// fatal.
+/// Returns the run's [`Stats`]; an error is returned only if acknowledging fails
+/// irrecoverably, which the caller treats as fatal.
 pub async fn run_with_metrics<E, S, Src>(
     mut source: Src,
     sink: S,
@@ -113,18 +92,14 @@ where
 
     loop {
         tokio::select! {
-            // Bias to shutdown: once triggered the loop stops before pulling
-            // more work, even under a hot redelivery stream.
+            // Bias to shutdown: stop before pulling more work once triggered.
             biased;
             () = shutdown.triggered() => break,
             next = source.next() => {
                 let delivery = match next {
-                    // Source drained and closed: nothing more will arrive.
                     None => break,
                     Some(Ok(delivery)) => delivery,
                     Some(Err(err)) => {
-                        // Poison: the durable source has already retired an
-                        // undecodable message, so there is nothing to ack here.
                         warn!(error = %err, "skipping undecodable committed output");
                         stats.poison += 1;
                         continue;
@@ -142,8 +117,7 @@ where
                         }
                     }
                     Err(err) => {
-                        // Persisting failed: never ack unpersisted work. Ask for
-                        // a backoff redelivery and carry on.
+                        // Never ack unpersisted work; nak for backoff redelivery.
                         warn!(error = %err, "sink failed to apply output; naking");
                         stats.errors += 1;
                         if let Err(nak_err) =
@@ -239,11 +213,9 @@ mod tests {
         let sink = MemorySink::<E>::new();
 
         for vehicle in 1..=3 {
-            // Distinct jobs per vehicle, so their output ids (and thus msg ids)
-            // differ and the bus does not dedup them on the shared stream group.
+            // Distinct jobs per vehicle so msg ids differ and the bus does not dedup.
             publish(&bus, &matched_job(u128::from(vehicle), vehicle, 5, 100)).await;
         }
-        // Close so the source drains the three and then returns `None`.
         bus.close();
 
         let stats = run::<E, _, _>(source, sink.clone(), Shutdown::new())
@@ -262,9 +234,7 @@ mod tests {
         let source = bus.source::<CommittedOutput<E>>(FILTER);
         let sink = MemorySink::<E>::new();
 
-        // Two outputs for the same (vehicle, timestamp) at the same revision but
-        // from different jobs: distinct msg ids, so both are delivered, yet the
-        // second merges to a duplicate.
+        // Same (vehicle, timestamp, revision) from different jobs: both delivered.
         publish(&bus, &matched_job(1, 1, 5, 100)).await;
         publish(&bus, &matched_job(2, 1, 5, 100)).await;
         bus.close();
@@ -278,8 +248,7 @@ mod tests {
         assert_eq!(bus.acked_count(FILTER), 2, "both were acked");
     }
 
-    /// A sink that always fails; it trips the shared shutdown on its first apply
-    /// so the loop stops right after the nak instead of spinning on redelivery.
+    /// A sink that always fails and trips the shared shutdown on its first apply.
     #[derive(Clone)]
     struct FailingSink {
         shutdown: Shutdown,
@@ -359,7 +328,6 @@ mod tests {
             )
             .await
             .expect("publish bytes");
-        // A valid output behind it, so the loop keeps going past the poison.
         publish(&bus, &matched(1, 5, 100)).await;
         bus.close();
 

@@ -1,14 +1,11 @@
-// `core::io::ErrorKind` is unstable (feature `core_io`), so `std::io::ErrorKind`
-// is the only stable path and the `std_instead_of_core` suggestion cannot be
-// followed here.
+// `core::io::ErrorKind` is unstable, so `std::io::ErrorKind` is the only stable
+// path and `clippy::std_instead_of_core` cannot be followed here.
 #![allow(clippy::std_instead_of_core)]
 
 use clap::{Args as ClapArgs, Parser};
 use geo::Point;
 use log::{debug, error, info};
 use std::path::{Path, PathBuf};
-// `web_time::SystemTime` is the workspace-mandated clock (a `std` drop-in on
-// native targets); `std::time::SystemTime::now` is a disallowed method.
 use web_time::{SystemTime, UNIX_EPOCH};
 
 extern crate alloc;
@@ -21,8 +18,7 @@ use routers_codec::osm::{OsmEdgeMetadata, OsmEntryId, OsmNetwork};
 use routers_network::edge::Weight;
 use routers_shard::{GeohashStrategy, ShardSource, ShardedNetwork};
 
-/// The JSON artifact manifest's file name, written beside the `.shard.rt`
-/// bundles. Read and verified by `routers_realtime::region::Manifest`.
+/// The JSON artifact manifest's file name, written beside the `.shard.rt` bundles.
 const JSON_MANIFEST_FILENAME: &str = "manifest.json";
 
 #[derive(Parser, Debug)]
@@ -36,10 +32,9 @@ struct Args {
     #[arg(short, long, env, default_value = "4")]
     precision: u8,
 
-    /// The graph snapshot version these shards are built for (a NATS-safe
-    /// token, e.g. `sydney-2026-09-01`). Recorded in `manifest.json` so a
-    /// matcher can pin the exact artifact its region's catalog names, and
-    /// reject a bundle built for a different graph. Required.
+    /// The graph snapshot version these shards are built for (a NATS-safe token,
+    /// e.g. `sydney-2026-09-01`). Recorded in `manifest.json` so a matcher rejects
+    /// a bundle built for a different graph.
     #[arg(long, env = "GRAPH_VERSION")]
     graph_version: String,
 
@@ -139,8 +134,6 @@ fn main() {
     let total = partition.len();
     info!("writing {total} shards to {out_dir:?}");
 
-    // A single build timestamp for every shard in this run, so a whole batch
-    // shares one `built_at` in the manifest.
     let built_at = rfc3339_utc(now());
     let mut built = Vec::with_capacity(total);
     let mut artifacts: BTreeMap<String, ArtifactDoc> = BTreeMap::new();
@@ -155,10 +148,7 @@ fn main() {
             failed.push((name, e));
             continue;
         }
-        // Legacy `manifest.txt` lists every shard that saved; that behaviour is
-        // left untouched. The JSON manifest additionally records the checksum,
-        // size, and version — a checksum failure on a just-written file is
-        // surfaced but does not remove the shard from the `.txt` list.
+        // A checksum failure is surfaced but still keeps the shard in the `.txt` list.
         built.push(name.clone());
         match artifact_metadata(&path) {
             Ok((sha256, bytes)) => {
@@ -204,12 +194,7 @@ fn main() {
         names.len() - before
     );
 
-    // Write the JSON artifact manifest (`manifest.json`), which records each
-    // bundle's checksum, size, and graph version for the matcher to verify at
-    // load. It is independent of the legacy `manifest.txt` list above. The
-    // output directory is shared across regions, so freshly built entries are
-    // merged into any existing manifest (they are the newest, so they win per
-    // cell) and the file is replaced atomically via a temp file + rename.
+    // Merge fresh entries into the JSON manifest (newest wins per cell); replaced atomically.
     let json_path = out_dir.join(JSON_MANIFEST_FILENAME);
     let mut doc = match std::fs::read_to_string(&json_path) {
         Ok(text) => serde_json::from_str::<ManifestDoc>(&text).unwrap_or_else(|e| {
@@ -234,9 +219,8 @@ fn main() {
     );
 }
 
-/// A local mirror of `routers_realtime::region::Manifest`. `routers_shard` must
-/// not depend on `routers_realtime`, so the JSON schema is duplicated here;
-/// that type is the source of truth for the format.
+/// A local mirror of `routers_realtime::region::Manifest` (its source of truth),
+/// duplicated because `routers_shard` must not depend on `routers_realtime`.
 #[derive(Serialize, Deserialize)]
 struct ManifestDoc {
     version: u32,
@@ -266,9 +250,8 @@ struct ArtifactDoc {
     built_at: String,
 }
 
-/// Serialise `doc` and replace `path` atomically: write to a sibling temp file
-/// (so it lands on the same filesystem, keeping the rename atomic) then rename
-/// over the target. A crashed run leaves the previous manifest intact.
+/// Serialise `doc` and replace `path` atomically (sibling temp file + rename), so
+/// a crashed run leaves the previous manifest intact.
 fn write_manifest_atomically(path: &Path, doc: &ManifestDoc) {
     let json = serde_json::to_string_pretty(doc).expect("serialise manifest");
     let tmp = path.with_file_name(format!(
@@ -279,10 +262,8 @@ fn write_manifest_atomically(path: &Path, doc: &ManifestDoc) {
     std::fs::rename(&tmp, path).unwrap_or_else(|e| panic!("rename {tmp:?} -> {path:?}: {e}"));
 }
 
-/// The streaming lowercase-hex SHA-256 and byte length of a file, hashed
-/// through a 1 MiB buffer so a large bundle is never resident in memory. This
-/// duplicates `routers_realtime::region::sha256_hex` (source of truth) because
-/// `routers_shard` must not depend on `routers_realtime`.
+/// The streaming lowercase-hex SHA-256 and byte length of a file (buffered, so a
+/// large bundle never sits in memory).
 fn artifact_metadata(path: &Path) -> std::io::Result<(String, u64)> {
     use std::io::Read;
 
@@ -309,27 +290,23 @@ fn artifact_metadata(path: &Path) -> std::io::Result<(String, u64)> {
     Ok((sha256, bytes))
 }
 
-/// The NATS-token-safe rule, duplicated from
-/// `routers_realtime::protocol::ids::token_safe` (source of truth) because
-/// `routers_shard` must not depend on `routers_realtime`.
+/// The NATS-token-safe rule (`[A-Za-z0-9_-]+`), duplicated from
+/// `routers_realtime::protocol::ids::token_safe`.
 fn token_safe(s: &str) -> bool {
     !s.is_empty()
         && s.bytes()
             .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
-/// The current wall-clock time. Isolated here so the single disallowed-method
-/// allow (the workspace bans `SystemTime::now` to keep WASM builds honest, but
-/// `web_time` re-exports `std` on this native target) sits on one line rather
-/// than the whole of `main`. Mirrors `routers_realtime::bus::trace::now`.
+/// The current wall-clock time, isolated so the `disallowed_methods` allow (the
+/// workspace bans `SystemTime::now`, but `web_time` re-exports `std` here) is scoped.
 #[allow(clippy::disallowed_methods)]
 fn now() -> SystemTime {
     SystemTime::now()
 }
 
-/// Format a `SystemTime` as an RFC 3339 UTC timestamp (`YYYY-MM-DDTHH:MM:SSZ`)
-/// without a date-library dependency. A time before the Unix epoch (not
-/// reachable here) formats as the epoch.
+/// Format a `SystemTime` as an RFC 3339 UTC timestamp (`YYYY-MM-DDTHH:MM:SSZ`);
+/// a pre-epoch time (not reachable here) formats as the epoch.
 fn rfc3339_utc(time: SystemTime) -> String {
     let secs = time
         .duration_since(UNIX_EPOCH)
@@ -344,9 +321,8 @@ fn rfc3339_utc(time: SystemTime) -> String {
     format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z")
 }
 
-/// Convert days since 1970-01-01 into a proleptic-Gregorian `(year, month,
-/// day)`. Howard Hinnant's `civil_from_days`, valid across the full `i64`
-/// range.
+/// Convert days since 1970-01-01 to a proleptic-Gregorian `(year, month, day)`
+/// (Howard Hinnant's `civil_from_days`).
 fn civil_from_days(days: i64) -> (i64, u32, u32) {
     let z = days + 719_468;
     let era = if z >= 0 { z } else { z - 146_096 } / 146_097;

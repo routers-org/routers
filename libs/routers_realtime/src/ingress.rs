@@ -1,38 +1,11 @@
-//! Internal ingress: validation, idempotent publication, and isolated replay. (T29)
+//! Internal ingress: validation, idempotent publication, and isolated replay.
 //!
-//! Ingress is the seam where raw observations — from the live feed or a
-//! historical replay — enter the raw journal. Everything a producer must get
-//! right lives here so no upstream re-implements it:
-//!
-//! - **Validation.** [`validate`] rejects the observations a solve could never
-//!   use — a zero vehicle id, a non-finite or out-of-range coordinate, a
-//!   timestamp implausibly far in the past or future — before they cost a
-//!   partition, a stream sequence, and a solve. Limits are passed in
-//!   ([`IngressLimits`]) rather than baked in, because a live feed and a
-//!   ten-year CSV backfill want very different age windows.
-//! - **Idempotent publication.** Every observation carries a deterministic
-//!   `Nats-Msg-Id` ([`msg_id`], `<vehicle>:<ts_us>`). A producer that retries
-//!   an ambiguous send republishes byte-identical bytes under the same id, and
-//!   the broker's duplicate window collapses it — so a retry of one
-//!   observation stays one observation, one stream sequence, one revision.
-//! - **Isolated replay.** [`Ingress::isolated`] prefixes every subject with
-//!   `replay.<run>.` and provisions its own streams, so rematching history
-//!   never injects historical jobs into the live deadline path (spec §6). The
-//!   live and isolated paths are the same code with a different subject prefix.
-//!
-//! ## Ordering
-//!
-//! Per-vehicle order is the pipeline's job to preserve, and it is preserved by
-//! the *caller* publishing a vehicle's observations in order on one
-//! connection: JetStream assigns stream sequences (and therefore revisions) in
-//! per-connection publish order. [`Ingress::publish`] issues one send and
-//! awaits its acknowledgement before returning, so a caller that awaits in loop
-//! order — like the replay binary — sends in loop order and cannot transpose
-//! two observations of the same vehicle. A caller may overlap the acks of
-//! *distinct* sends (an ack window) only if it still issues the sends
-//! themselves in order; the dedup key keeps an accidental re-send harmless, but
-//! it does *not* reorder two different observations of one vehicle, so their
-//! sends must not race.
+//! Ingress is the seam where raw observations enter the raw journal.
+//! [`validate`] rejects observations a solve could never use; every publish
+//! carries a deterministic `Nats-Msg-Id` ([`msg_id`]) so a retried send is
+//! deduped. [`Ingress::isolated`] prefixes subjects with `replay.<run>.` onto
+//! their own streams so replay never touches the live path. Per-vehicle order
+//! holds only if a caller publishes one vehicle's observations in order.
 
 use core::future::IntoFuture;
 use core::time::Duration;
@@ -67,16 +40,12 @@ const INITIAL_BACKOFF: Duration = Duration::from_millis(50);
 /// The ceiling on the exponential publish backoff.
 const MAX_BACKOFF: Duration = Duration::from_secs(5);
 
-/// How stale or how early an observation may be to still be admitted. Passed
-/// explicitly so a live feed (minutes) and a historical backfill (years) can
-/// share one code path with different windows.
+/// How stale or how early an observation may be to still be admitted.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct IngressLimits {
-    /// The oldest an observation may be, measured from now back to its
-    /// timestamp. Older observations are rejected as [`IngressError::TooOld`].
+    /// The oldest an observation may be; older is [`IngressError::TooOld`].
     pub max_age: Duration,
-    /// How far into the future an observation's timestamp may sit before it is
-    /// rejected as [`IngressError::InFuture`] — clock skew, not history.
+    /// How far into the future a timestamp may sit before [`IngressError::InFuture`].
     pub max_ahead: Duration,
 }
 
@@ -89,13 +58,11 @@ impl Default for IngressLimits {
     }
 }
 
-/// Why an observation was not admitted. The validation variants are data
-/// faults (one bad row); [`IngressError::Publish`] is an infrastructure fault
-/// (the broker) surfaced after every retry was exhausted.
+/// Why an observation was not admitted. Validation variants are data faults;
+/// [`IngressError::Publish`] is an infrastructure fault after retries.
 #[derive(Debug, Error)]
 pub enum IngressError {
-    /// The vehicle id was zero, which no real vehicle hashes to and which the
-    /// partitioner cannot address.
+    /// The vehicle id was zero, which no real vehicle hashes to.
     #[error("vehicle id is zero")]
     ZeroVehicle,
     /// A coordinate was `NaN` or infinite, so it cannot be placed on the map.
@@ -113,23 +80,19 @@ pub enum IngressError {
         /// How far in the past the observation's timestamp was.
         age: Duration,
     },
-    /// The observation's timestamp was more than [`IngressLimits::max_ahead`]
-    /// into the future.
+    /// The timestamp was more than [`IngressLimits::max_ahead`] into the future.
     #[error("observation timestamp is {ahead:?} in the future, past the skew limit")]
     InFuture {
         /// How far in the future the observation's timestamp was.
         ahead: Duration,
     },
-    /// The broker never acknowledged the publish, after every retry. Carries
-    /// the last underlying error.
+    /// The broker never acknowledged the publish, after every retry.
     #[error("publish was not acknowledged after retries")]
     Publish(#[source] anyhow::Error),
 }
 
 impl IngressError {
-    /// A bounded, stable label for this error, for tallying rejections by
-    /// variant without leaking a coordinate or timestamp into a metric or log
-    /// dimension.
+    /// A bounded, stable label for this error, for tallying rejections by variant.
     pub fn kind(&self) -> &'static str {
         match self {
             IngressError::ZeroVehicle => "zero_vehicle",
@@ -142,9 +105,7 @@ impl IngressError {
         }
     }
 
-    /// Whether this rejection is a single bad observation (a data fault) rather
-    /// than a broker failure. A batch producer skips-and-counts these; a
-    /// [`IngressError::Publish`] is infrastructure and should stop the run.
+    /// Whether this rejection is a single bad observation rather than a broker failure.
     pub fn is_data_fault(&self) -> bool {
         !matches!(self, IngressError::Publish(_))
     }
@@ -152,11 +113,6 @@ impl IngressError {
 
 /// Check one observation against the admission rules, using `now` as the
 /// reference clock and `limits` as the age/skew window.
-///
-/// Checks run cheapest-first and short-circuit: identity, then finiteness (so a
-/// `NaN` never reaches a range comparison, which would silently pass), then the
-/// coordinate ranges, then the time window. A valid observation returns
-/// `Ok(())`.
 pub fn validate(
     payload: &Payload,
     now: DateTime<Utc>,
@@ -178,8 +134,7 @@ pub fn validate(
         return Err(IngressError::LongitudeOutOfRange(longitude));
     }
 
-    // A saturating conversion: a limit larger than `TimeDelta` can hold means
-    // "never reject on time", which is exactly what a large backfill window is.
+    // A limit too large for `TimeDelta` saturates to "never reject on time".
     let max_age = TimeDelta::from_std(limits.max_age).unwrap_or(TimeDelta::MAX);
     let max_ahead = TimeDelta::from_std(limits.max_ahead).unwrap_or(TimeDelta::MAX);
     let delta = now - payload.timestamp; // positive => in the past
@@ -197,12 +152,7 @@ pub fn validate(
     Ok(())
 }
 
-/// The raw-journal dedup key for an observation: `<vehicle_id>:<ts_us>`.
-///
-/// This is the `Nats-Msg-Id` a raw publish carries. Two publishes of the *same*
-/// observation (a producer retry) share it and the broker dedups; two
-/// *different* observations — even of the same vehicle at different times —
-/// differ in it and are both kept, so revisions stay distinct.
+/// The raw-journal dedup key (`Nats-Msg-Id`) for an observation: `<vehicle_id>:<ts_us>`.
 pub fn msg_id(payload: &Payload) -> String {
     format!(
         "{}:{}",
@@ -211,13 +161,10 @@ pub fn msg_id(payload: &Payload) -> String {
     )
 }
 
-/// The successful outcome of a publish: where the observation landed on its
-/// stream and whether the broker recognised it as a duplicate of an earlier
-/// send under the same [`msg_id`].
+/// The successful outcome of a publish: where the observation landed and whether it was a duplicate.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PublishAck {
-    /// The stream sequence assigned to the message — the observation's
-    /// revision downstream.
+    /// The stream sequence assigned — the observation's revision downstream.
     pub sequence: u64,
     /// `true` if the broker collapsed this into an earlier identical publish.
     pub duplicate: bool,
@@ -225,23 +172,14 @@ pub struct PublishAck {
 
 /// A publisher of raw observations onto the journal, live or isolated.
 ///
-/// One `Ingress` targets one journal: a live one on the canonical subjects, or
-/// an isolated replay one whose subjects and streams are prefixed `replay.<run>.`
-/// so its traffic never reaches the live orchestrators. Construct with
-/// [`Ingress::live`] or [`Ingress::isolated`], provision streams once with
-/// [`Ingress::ensure_streams`], then [`Ingress::publish`] each observation.
-///
-/// It is `Clone`: the JetStream context underneath is an `Arc`-backed handle, so
-/// a clone shares one connection while carrying the same run token and limits.
-/// A batch producer hands each publish lane its own clone, so the lanes overlap
-/// their broker round-trips without sharing any per-observation state.
+/// Construct with [`Ingress::live`] or [`Ingress::isolated`], provision streams
+/// once with [`Ingress::ensure_streams`], then [`Ingress::publish`] each
+/// observation. It is `Clone` (an `Arc`-backed JetStream handle), so a batch
+/// producer can hand each publish lane its own clone.
 #[derive(Clone)]
 pub struct Ingress {
     js: jetstream::Context,
-    /// The isolated run token, or `None` for the live journal. The subject
-    /// prefix (`replay.<run>.`) and stream names (`REPLAY-<run>-RAW-<i>`) are
-    /// both derived from it, so it — not the rendered prefix — is what is
-    /// stored (a stream name cannot contain the prefix's `.` separators).
+    /// The isolated run token, or `None` for the live journal.
     run: Option<String>,
     limits: IngressLimits,
     publish_timeout: Duration,
@@ -262,10 +200,7 @@ impl Ingress {
 
     /// An ingress onto an isolated replay journal named `run`.
     ///
-    /// `run` becomes a subject token (`replay.<run>.…`) and a stream-name
-    /// component, so it must be NATS-safe; a token with `.`, `*`, `>`, or
-    /// whitespace — or an empty one — is rejected rather than silently
-    /// aliasing another subject.
+    /// `run` must be NATS-safe; an unsafe or empty token is rejected.
     pub fn isolated(
         js: jetstream::Context,
         run: &str,
@@ -303,18 +238,12 @@ impl Ingress {
         &self.limits
     }
 
-    /// The subject one partition's observations publish to, prefixed for an
-    /// isolated run.
+    /// The subject one partition's observations publish to, prefixed for an isolated run.
     pub fn subject(&self, partition: u64) -> String {
         prefixed_raw_subject(self.run.as_deref(), partition)
     }
 
     /// Provision the raw streams this ingress publishes onto, idempotently.
-    ///
-    /// Live ⇒ reconcile the canonical `EVENTS-RAW-<i>` streams (shared with the
-    /// orchestrators). Isolated ⇒ create the run's own `REPLAY-<run>-RAW-<i>`
-    /// streams over the prefixed subjects, with the same `Limits` retention, so
-    /// a replay is fully self-contained and ages out on its own.
     pub async fn ensure_streams(&self, streams: u64, cfg: &RawConfig) -> anyhow::Result<()> {
         match &self.run {
             None => {
@@ -332,10 +261,7 @@ impl Ingress {
         Ok(())
     }
 
-    /// Create (or reuse) one isolated replay stream over the prefixed subjects
-    /// of stream `index`. The subject blocks mirror [`ensure_raw_stream`]'s
-    /// contiguous layout so an isolated run partitions exactly like the live
-    /// journal.
+    /// Create (or reuse) one isolated replay stream over the prefixed subjects of stream `index`.
     async fn ensure_isolated_stream(
         &self,
         run: &str,
@@ -364,23 +290,16 @@ impl Ingress {
             .map_err(|error| anyhow!("could not create replay stream {run}/{index}: {error}"))
     }
 
-    /// Validate, stamp, and publish one observation, returning its
-    /// acknowledgement.
+    /// Validate, stamp, and publish one observation, returning its acknowledgement.
     ///
-    /// The message carries the outbound trace context, the schema version, the
-    /// ingress receipt time (`received_at`), and the [`msg_id`] dedup key. An
-    /// ambiguous send — one whose acknowledgement times out, so it may or may
-    /// not have landed — is retried with byte-identical bytes and the same
-    /// `msg_id`, up to `attempts` with exponential backoff; the broker dedups a
-    /// send that actually did land. Validation failures return immediately, and
-    /// exhausting the retries returns [`IngressError::Publish`].
+    /// An ambiguous send is retried under the same `msg_id`; a validation failure
+    /// returns immediately and exhausted retries return [`IngressError::Publish`].
     pub async fn publish(
         &self,
         payload: &Payload,
         received_at: SystemTime,
     ) -> Result<PublishAck, IngressError> {
-        // The receipt time is this observation's "now"; validate against it
-        // rather than re-reading the clock, so the check is deterministic.
+        // The receipt time is this observation's clock; validate against it.
         validate(payload, DateTime::<Utc>::from(received_at), &self.limits)?;
 
         let subject = self.subject(partition::partition_of(payload.vehicle_id));
@@ -410,9 +329,7 @@ impl Ingress {
         ))
     }
 
-    /// One publish send-and-await: initiate the publish, then wait for the
-    /// acknowledgement under [`Ingress::publish_timeout`]. A timeout is treated
-    /// as ambiguous — the caller retries the same bytes and the broker dedups.
+    /// One publish send-and-await under [`Ingress::publish_timeout`]; a timeout is ambiguous.
     async fn send(
         &self,
         subject: &str,
@@ -443,10 +360,6 @@ impl Ingress {
 }
 
 /// The raw subject for `partition`, prefixed `replay.<run>.` when `run` is set.
-///
-/// Free of the broker so it is unit-testable; [`Ingress::subject`] delegates
-/// here and the isolated stream builder shares it, keeping the live and replay
-/// subject spaces one derivation apart.
 fn prefixed_raw_subject(run: Option<&str>, partition: u64) -> String {
     match run {
         Some(run) => format!("replay.{run}.{}", raw_subject(partition)),
@@ -462,7 +375,6 @@ mod tests {
     use super::*;
     use crate::event::VehicleId;
 
-    /// A reference clock the age/skew cases are built around.
     fn now() -> DateTime<Utc> {
         Utc.timestamp_micros(1_775_000_000_000_000).unwrap()
     }
@@ -475,7 +387,6 @@ mod tests {
         }
     }
 
-    /// A payload that passes every rule, as the table's baseline.
     fn valid() -> Payload {
         payload(42, 151.2093, -33.8688, now())
     }
@@ -486,7 +397,6 @@ mod tests {
         let old = now() - TimeDelta::days(8); // past max_age (7d)
         let future = now() + TimeDelta::minutes(6); // past max_ahead (5m)
 
-        // (label, payload, expected error kind or None for accept)
         let cases: [(&str, Payload, Option<&str>); 9] = [
             ("valid", valid(), None),
             (
@@ -545,7 +455,6 @@ mod tests {
 
     #[test]
     fn validation_carries_the_offending_value() {
-        // The out-of-range variants report the value that failed.
         match validate(
             &payload(42, 151.2093, 90.5, now()),
             now(),
@@ -615,9 +524,7 @@ mod tests {
     #[test]
     fn msg_id_distinguishes_observations_but_not_retries() {
         let event = valid();
-        // A retry of the same observation is the same key.
         assert_eq!(msg_id(&event), msg_id(&valid()));
-        // A different timestamp for the same vehicle is a different key.
         let later = payload(42, 151.2093, -33.8688, now() + TimeDelta::seconds(1));
         assert_ne!(msg_id(&event), msg_id(&later));
     }
@@ -639,8 +546,6 @@ mod tests {
             prefixed_raw_subject(Some("run-7"), 485),
             "replay.run-7.events.raw.p.485",
         );
-        // A prefixed subject still round-trips through the partition parser, so
-        // an isolated envelope validates against where it landed.
         assert_eq!(
             crate::topology::partition_of_subject(&prefixed_raw_subject(Some("run-7"), 485)),
             Some(485),
@@ -649,8 +554,6 @@ mod tests {
 
     #[test]
     fn isolated_rejects_unsafe_run_tokens() {
-        // `Ingress::isolated` gates on exactly this before it touches the
-        // broker; the token rule is what makes an isolated run un-spoofable.
         assert!(token_safe("run-7"));
         assert!(token_safe("backfill_2026"));
         for bad in ["", "run 7", "run.7", "run*", "run>", "réplay"] {

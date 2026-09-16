@@ -1,17 +1,9 @@
-//! Partitioned solve-result plane. (T05)
+//! Partitioned solve-result plane.
 //!
 //! A matcher publishes each [`SolveResult`](crate::protocol::result::SolveResult)
-//! back on the partition of the vehicle it solved, so the one orchestrator that
-//! owns that partition — and only it — reads the outcome. Subjects are
-//! `solve-result.v1.p.<partition>`, versioned in their second-to-last token and
-//! keyed by partition exactly like the raw journal, so
-//! [`partition_of_subject`](super::partition_of_subject) validates that a
-//! result landed where its declared identity says it should.
-//!
-//! One [`Limits`](async_nats::jetstream::stream::RetentionPolicy::Limits) stream
-//! (`SOLVE-RESULTS`) holds every partition's results: an orchestrator may lag,
-//! and a result is not destroyed on ack (ack only advances the reader), so
-//! `max_age` bounds how long an unread outcome survives.
+//! back on the partition of the vehicle it solved, subject
+//! `solve-result.v1.p.<partition>`, so the orchestrator that owns that partition
+//! reads it. A result is not destroyed on ack, so `max_age` bounds its lifetime.
 
 use core::time::Duration;
 
@@ -33,10 +25,9 @@ pub const RESULT_STREAM: &str = "SOLVE-RESULTS";
 /// Retention and delivery knobs for the result plane.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ResultsConfig {
-    /// How long an unread result survives. Ack advances the reader rather than
-    /// deleting, so this bounds how far an orchestrator may lag.
+    /// How long an unread result survives; bounds how far an orchestrator may lag.
     pub max_age: Duration,
-    /// Unacknowledged results a partition's consumer may hold — the backlog knob.
+    /// Unacknowledged results a partition's consumer may hold.
     pub max_ack_pending: i64,
     /// How long the broker waits for an ack before redelivering.
     pub ack_wait: Duration,
@@ -58,12 +49,6 @@ pub fn result_subject(partition: u64) -> String {
 }
 
 /// Idempotently reconcile the result stream.
-///
-/// `Limits` retention on
-/// [`File`](async_nats::jetstream::stream::StorageType::File) storage: results
-/// age out by time, not by consumption. The `duplicate_window` collapses an
-/// ambiguous re-publish carrying the same
-/// [`Nats-Msg-Id`](crate::protocol::ids::headers::MSG_ID).
 pub async fn ensure_result_stream(
     context: &jetstream::Context,
     config: &ResultsConfig,
@@ -84,8 +69,7 @@ pub async fn ensure_result_stream(
     .context("could not reconcile result stream")
 }
 
-/// The durable consumer through which one partition's owner reads its results,
-/// filtered to that partition's subject alone.
+/// The durable consumer through which one partition's owner reads its results.
 pub async fn result_consumer(
     stream: &jetstream::stream::Stream,
     partition: u64,

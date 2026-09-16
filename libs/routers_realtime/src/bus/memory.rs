@@ -1,27 +1,9 @@
-//! In-memory bus for tests. (T12)
+//! In-memory bus for tests: a faithful fake of the JetStream mechanics the
+//! adapter traits in [`super::adapter`] describe.
 //!
-//! [`MemoryBus`] is a faithful fake of the JetStream mechanics the adapter
-//! traits in [`super::adapter`] describe, so orchestrator, matcher, and
-//! materializer logic — and the failure harness (T31) — can run their full
-//! state machines without a broker. "Faithful" means it reproduces the
-//! behaviours those state machines actually lean on:
-//!
-//! * **`Nats-Msg-Id` dedup.** A repeat message id inside a stream returns
-//!   `Acked { duplicate: true }` and stores nothing, so idempotent re-publish
-//!   is testable.
-//! * **Independent consumers.** Every source/consumer keeps its own cursor and
-//!   ack bookkeeping, exactly as separate durable consumers do — two consumers
-//!   each see every matching message.
-//! * **Redelivery.** `nak` (and the crash knob [`MemoryBus::redeliver_unacked`])
-//!   put an unacked message back in front of the same consumer, with
-//!   `redelivered = true` and a climbing delivery count.
-//! * **Ambiguous publish.** [`MemoryBus::fail_next_publish`] with
-//!   [`PublishError::Ambiguous`] stores the message *and* reports the error —
-//!   the crash-between-publish-and-ack case a retry must dedup through.
-//!
-//! It is intentionally not a network: ordering is total, there is no partition
-//! flush, and delivery is immediate. Anything a test needs to assert about the
-//! bus (what was published, how many acks landed) is exposed as a plain query.
+//! [`MemoryBus`] reproduces `Nats-Msg-Id` dedup, independent per-consumer
+//! cursors, redelivery of unacked messages, and ambiguous publish. It is not a
+//! network: ordering is total and delivery is immediate.
 
 use alloc::collections::VecDeque;
 use alloc::sync::Arc;
@@ -70,8 +52,7 @@ struct ConsumerState {
     delivered: HashMap<u64, u32>,
     /// Sequences this consumer has acknowledged.
     acked: HashSet<u64>,
-    /// Sequences queued for redelivery (nak'd or crash-redelivered), served
-    /// ahead of new messages.
+    /// Sequences queued for redelivery, served ahead of new messages.
     redeliver: VecDeque<u64>,
 }
 
@@ -91,8 +72,7 @@ struct Inner {
     closed: bool,
     /// A one-shot publish failure armed by [`MemoryBus::fail_next_publish`].
     fail_next: Option<PublishError>,
-    /// Every nak backoff hint seen, in order — delivery is immediate, so the
-    /// delay is only recorded, never honoured.
+    /// Every nak backoff hint seen, in order; recorded but never honoured.
     nak_delays: Vec<Option<Duration>>,
     /// Wakes parked sources/consumers when new work becomes available.
     notify: Arc<Notify>,
@@ -165,13 +145,11 @@ impl Inner {
     ) -> Result<PublishOutcome, PublishError> {
         if let Some(err) = self.fail_next.take() {
             return match err {
-                // The broker stored the message before the ack was lost, so a
-                // retry with the same msg_id must dedup against this copy.
+                // Ambiguous stores the message so a retry dedups; Failed stores nothing.
                 PublishError::Ambiguous(cause) => {
                     self.store(subject, msg_id, headers, bytes);
                     Err(PublishError::Ambiguous(cause))
                 }
-                // A clean failure: nothing was stored.
                 PublishError::Failed(cause) => Err(PublishError::Failed(cause)),
             };
         }
@@ -332,8 +310,7 @@ impl MemoryBus {
     }
 
     /// Mark every delivered-but-unacked message matching `filter` for
-    /// redelivery — the crash-recovery case where in-flight work is redelivered
-    /// with `redelivered = true`. Acked messages are untouched.
+    /// redelivery with `redelivered = true`. Acked messages are untouched.
     pub fn redeliver_unacked(&self, filter: &str) {
         let notify = {
             let mut inner = self.0.lock().unwrap();
@@ -379,8 +356,7 @@ impl MemoryBus {
             .count()
     }
 
-    /// The nak backoff hints recorded so far, in order. Redelivery is immediate;
-    /// the delay is only recorded, so this reflects what callers asked for.
+    /// The nak backoff hints recorded so far, in order.
     #[must_use]
     pub fn nak_delays(&self) -> Vec<Option<Duration>> {
         self.0.lock().unwrap().nak_delays.clone()
@@ -531,9 +507,7 @@ impl<T: Wire> Source<T> for MemorySource<T> {
     async fn next(&mut self) -> Option<anyhow::Result<Delivery<T, MemoryAck>>> {
         let notify = self.bus.notifier();
         loop {
-            // Arm the waiter *before* checking, so a publish that races the
-            // check still wakes us — this is what makes `next` cancellation-safe
-            // and free of lost wakeups.
+            // Arm the waiter before checking, so a racing publish still wakes us.
             let notified = notify.notified();
             tokio::pin!(notified);
             notified.as_mut().enable();
@@ -613,10 +587,8 @@ impl<T: Wire> Consumer<T> for MemoryConsumer<T> {
     }
 }
 
-/// The dedup namespace of a subject: everything up to (not including) its final
-/// token. Two subjects in the same stream (e.g. `solve-result.v1.p.5` and
-/// `.p.6`) share a group, so a repeated `Nats-Msg-Id` dedups across them, as it
-/// would inside one JetStream stream.
+/// The dedup namespace of a subject: everything up to its final token, so
+/// sibling subjects in one stream dedup a repeated `Nats-Msg-Id` across them.
 fn subject_group(subject: &str) -> String {
     match subject.rfind('.') {
         Some(dot) => subject[..dot].to_owned(),
@@ -639,10 +611,7 @@ fn subject_matches(filter: &str, subject: &str) -> bool {
 
     for (index, token) in filter_tokens.iter().enumerate() {
         match *token {
-            // `>` is only a wildcard as the final token and needs at least one
-            // subject token to consume.
             ">" => return index + 1 == filter_tokens.len() && subject_tokens.len() > index,
-            // `*` matches exactly one present token.
             "*" => {
                 if index >= subject_tokens.len() {
                     return false;
@@ -655,8 +624,6 @@ fn subject_matches(filter: &str, subject: &str) -> bool {
             }
         }
     }
-    // No trailing `>`: the subject must have exactly as many tokens as the
-    // filter.
     subject_tokens.len() == filter_tokens.len()
 }
 
@@ -792,7 +759,6 @@ mod tests {
                 duplicate: false
             }
         );
-        // Same sequence as the original; nothing new stored.
         assert_eq!(
             second,
             PublishOutcome::Acked {
@@ -802,7 +768,6 @@ mod tests {
         );
         assert_eq!(bus.published("s").len(), 1);
 
-        // Only the first payload is ever delivered.
         let delivery = source.next().await.expect("some").expect("ok");
         assert_eq!(delivery.item, msg(1));
     }
@@ -851,7 +816,6 @@ mod tests {
         assert!(again.redelivered);
         assert_eq!(again.handle.deliveries(), 2);
         assert_eq!(again.handle.sequence(), 1);
-        // The delay was recorded even though redelivery is immediate.
         assert_eq!(bus.nak_delays(), vec![Some(Duration::from_millis(250))]);
     }
 
@@ -867,7 +831,6 @@ mod tests {
             .expect_err("ambiguous");
         assert!(err.is_ambiguous());
 
-        // The message is stored, so the retry with the same id dedups.
         let retry = publisher
             .publish("s", "id-1", HeaderMap::new(), &msg(1))
             .await
@@ -895,7 +858,6 @@ mod tests {
         assert!(!err.is_ambiguous());
         assert!(bus.published("s").is_empty());
 
-        // Only the next publish was affected; this one succeeds.
         publisher
             .publish("s", "id-1", HeaderMap::new(), &msg(1))
             .await
@@ -988,7 +950,6 @@ mod tests {
             .expect("fetch");
         assert_eq!(second.len(), 2);
 
-        // Nothing left: fetch waits for `wait` and returns empty.
         let empty = consumer
             .fetch(1, Duration::from_millis(10))
             .await
@@ -1035,7 +996,6 @@ mod tests {
         bus.clear();
         assert!(bus.published("s").is_empty());
 
-        // Sequences restart from 1 and the reset cursor sees the new message.
         let out = publisher
             .publish("s", "id-1", HeaderMap::new(), &msg(9))
             .await

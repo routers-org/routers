@@ -1,64 +1,10 @@
-//! Ordered raw reader: envelope validation and duplicate suppression. (T20)
+//! Ordered raw reader: envelope validation and duplicate suppression.
 //!
-//! A partition worker owns one filtered view of the raw journal (spec §3): the
-//! stream carries every partition's observations interleaved and the consumer
-//! delivers only this partition's subject, in stream-sequence order. This
-//! module is the thin, *pure* seam between that delivery and the scheduler: it
-//! decides, for one raw message, whether it is a genuine new observation to
-//! queue, a poison message to ack-and-forget, or a redelivery/already-decided
-//! duplicate to suppress. It performs no I/O and does not acknowledge anything
-//! itself — acknowledgement is the worker's move, made only once the frontier
-//! has been told the message is done (see [`RawDisposition::is_terminal`]).
-//!
-//! # What "envelope validation" checks, and why here
-//!
-//! A raw message's *identity* is asserted in three independent places that must
-//! agree, and a disagreement is a producer bug or a misrouted/spoofed message
-//! that must never be solved under the wrong owner:
-//!
-//! 1. the **subject** it was delivered on (`events.raw.p.<p>`), read back with
-//!    [`topology::partition_of_subject`];
-//! 2. the **partition of the vehicle id** inside the payload
-//!    ([`partition::partition_of`]) — the cross-language producer contract;
-//! 3. the reader's own [`partition`](RawReader::partition).
-//!
-//! All three must be equal. On top of identity the reader enforces the wire
-//! [`schema`](crate::protocol::ids::SCHEMA_VERSION) (when a peer stamped one)
-//! and basic payload sanity, so a corrupt row never costs a solve.
-//!
-//! ## Why the reader does *not* re-apply the ingress age window
-//!
-//! [`ingress::validate`] also rejects observations outside an age/skew window,
-//! but that is an *ingress admission* policy, not a reader invariant: a raw
-//! message may legitimately sit in the journal for the whole retention window
-//! before the orchestrator reads it, so re-applying the age window here would
-//! poison correctly-journaled observations. The reader therefore reuses
-//! [`ingress::validate`] for its *structural* checks (identity, finite and
-//! in-range coordinates) with a deliberately unbounded time window
-//! ([`SANITY_LIMITS`]), keeping one definition of "a sane payload" without
-//! importing an admission decision that does not belong to it.
-//!
-//! # Suppression and the completion frontier
-//!
-//! Two frontier facts and the scheduler between them decide suppression:
-//!
-//! * [`FrontierTracker::observe`] reports a sequence at or below the frontier as
-//!   [`Observed::BehindFrontier`] — already terminal, a bare redelivery — and a
-//!   sequence still in flight as [`Observed::Duplicate`]. Only an
-//!   [`Observed::New`] sequence reaches the scheduler.
-//! * [`Scheduler::enqueue`] then coalesces a duplicate observation id, suppresses
-//!   one already covered by the loaded checkpoint ([`Enqueue::Committed`]), or
-//!   refuses one past the per-vehicle backlog ([`Enqueue::Overflow`]).
-//!
-//! The crucial asymmetry is *who completes the frontier*. A message the reader
-//! suppresses because it is decided (behind the frontier, already committed, or
-//! refused) is terminal: the worker acks it **and** completes its sequence so
-//! the frontier can advance over it. A message suppressed because it *coalesced*
-//! with work still in flight is **not** terminal: the in-flight original owns
-//! that sequence's completion, and completing it here would advance the frontier
-//! past an uncommitted message — exactly the "frontier must never lead commits"
-//! violation the tracker exists to prevent. [`RawDisposition::is_terminal`]
-//! encodes precisely this distinction.
+//! Classifies one raw partition delivery as a new observation to queue, poison
+//! to ack-and-forget, or a duplicate to suppress. It performs no I/O and acks
+//! nothing — the worker acks and completes a sequence on the frontier only once
+//! the message is done. Identity must agree across the delivery subject, the
+//! vehicle id's partition, and the reader's own; a mismatch is poison.
 
 use core::time::Duration;
 
@@ -77,10 +23,8 @@ use crate::partition;
 use crate::protocol::ids::{ObservationId, SCHEMA_VERSION, SchemaVersion, headers};
 use crate::topology::partition_of_subject;
 
-/// A time window wide enough that [`ingress::validate`] applies only its
-/// structural checks (identity, finiteness, coordinate range) and never its
-/// age/skew window. See the module docs for why the reader must not re-apply the
-/// ingress age window.
+/// A window wide enough that [`ingress::validate`] applies only its structural
+/// checks (identity, finiteness, coordinate range), never its age window.
 const SANITY_LIMITS: IngressLimits = IngressLimits {
     max_age: Duration::from_secs(u64::MAX),
     max_ahead: Duration::from_secs(u64::MAX),
@@ -88,15 +32,14 @@ const SANITY_LIMITS: IngressLimits = IngressLimits {
 
 /// Why a raw message can never become an observation and is acked-and-forgotten.
 ///
-/// Every variant is a permanent fault of *this* message: re-delivering it would
-/// fail identically, so the worker acks it (retiring the delivery) and completes
-/// its sequence rather than looping. The labels are bounded for metrics.
+/// Every variant is a permanent fault of this message, so the worker acks and
+/// completes its sequence rather than looping. Labels are bounded for metrics.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PoisonReason {
     /// The payload bytes did not decode as a protobuf [`Payload`].
     Decode,
-    /// The delivery subject's partition token disagreed with the reader's
-    /// partition (or was absent/malformed), so the message was misrouted.
+    /// The delivery subject's partition disagreed with the reader's (or was
+    /// absent), so the message was misrouted.
     SubjectPartition {
         /// The partition the reader owns.
         expected: u16,
@@ -117,9 +60,8 @@ pub enum PoisonReason {
         /// The version a peer stamped, if one was present and well-formed.
         got: Option<u32>,
     },
-    /// The payload failed a basic sanity check (a zero vehicle id, a non-finite
-    /// or out-of-range coordinate). The label is the offending
-    /// [`ingress::IngressError`] kind.
+    /// The payload failed a basic sanity check (zero vehicle id, non-finite or
+    /// out-of-range coordinate).
     Invalid {
         /// The bounded [`ingress::IngressError::kind`] of the failing check.
         kind: &'static str,
@@ -143,18 +85,17 @@ impl PoisonReason {
 
 /// Why a valid raw message was suppressed rather than queued.
 ///
-/// Unlike a [`PoisonReason`] the message was well-formed; it is simply already
-/// decided or a duplicate. [`SuppressReason::Coalesced`] is the one reason that
-/// is *not* terminal — see [`RawDisposition::is_terminal`].
+/// [`SuppressReason::Coalesced`] is the one reason that is *not* terminal — see
+/// [`RawDisposition::is_terminal`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SuppressReason {
-    /// The sequence is at or below the completion frontier — a redelivery of
-    /// something already terminal.
+    /// The sequence is at or below the completion frontier — an already-terminal
+    /// redelivery.
     BehindFrontier,
     /// The loaded checkpoint already covers this observation's input.
     Committed,
-    /// The same observation id is already pending or in flight; a duplicate
-    /// transport delivery. The in-flight original owns its completion.
+    /// The same observation id is already pending or in flight; the in-flight
+    /// original owns its completion.
     Coalesced,
     /// The vehicle's pending backlog is full; the observation was refused.
     Overflow,
@@ -175,16 +116,13 @@ impl SuppressReason {
 
 /// The verdict on one raw delivery.
 ///
-/// [`Queued`](RawDisposition::Queued) means the scheduler has *taken ownership*
-/// of the observation (and its ack handle): the worker will acknowledge it only
-/// after the work it drives commits, so no handle rides along here. The other
-/// two variants hand the ack handle back, because the message will never occupy
-/// a FIFO slot and the worker acks it straight away.
+/// [`Queued`](RawDisposition::Queued) hands no ack handle back — the scheduler
+/// owns it; the other variants return the handle for the worker to ack.
 #[derive(Debug)]
 #[must_use = "a disposition may carry an ack handle that must be acknowledged"]
 pub enum RawDisposition<H: AckHandle> {
-    /// The observation was appended to its vehicle's FIFO; `depth` is the new
-    /// pending depth. The scheduler holds the handle.
+    /// The observation was appended to its vehicle's FIFO; the scheduler holds
+    /// the handle.
     Queued {
         /// The vehicle's pending depth after the append.
         depth: usize,
@@ -208,16 +146,12 @@ pub enum RawDisposition<H: AckHandle> {
 }
 
 impl<H: AckHandle> RawDisposition<H> {
-    /// Whether the worker should mark this message's sequence *complete* on the
+    /// Whether the worker should mark this message's sequence complete on the
     /// frontier after acking it.
     ///
-    /// A poison or already-decided message is terminal: nothing else will ever
-    /// complete its sequence, so the frontier must advance over it. A
-    /// [`SuppressReason::Coalesced`] message is **not** terminal — the still
-    /// in-flight original owns that sequence's completion, and completing it
-    /// here would let the frontier lead an uncommitted message. A
-    /// [`Queued`](RawDisposition::Queued) message is not terminal either: its
-    /// completion comes later, when its commit is promoted.
+    /// A [`SuppressReason::Coalesced`] or [`Queued`](RawDisposition::Queued)
+    /// message is *not* terminal — its sequence is completed by the in-flight
+    /// original or the later commit; everything else is terminal.
     #[must_use]
     pub fn is_terminal(&self) -> bool {
         match self {
@@ -231,11 +165,6 @@ impl<H: AckHandle> RawDisposition<H> {
 }
 
 /// A raw message still in its wire form, for the path where decoding may fail.
-///
-/// The worker cannot decode raw bytes inside a [`Source`](crate::bus::adapter::Source)
-/// without losing the ack handle on a decode error (poison must still be
-/// acked), so it hands the reader the undecoded envelope and lets
-/// [`RawReader::admit_bytes`] own the decode.
 pub struct RawEnvelope<'a, H: AckHandle> {
     /// The concrete subject the message was delivered on.
     pub subject: &'a str,
@@ -249,9 +178,8 @@ pub struct RawEnvelope<'a, H: AckHandle> {
 
 /// The per-partition raw reader.
 ///
-/// It holds only the partition it owns; all the mutable state it drives — the
-/// scheduler and the frontier tracker — is passed in per call, so the reader is
-/// trivially shareable and every decision is a pure function of its inputs.
+/// It holds only its partition; the scheduler and frontier tracker are passed
+/// in per call, so it is trivially shareable and every decision is pure.
 #[derive(Clone, Copy, Debug)]
 pub struct RawReader {
     partition: u16,
@@ -270,14 +198,10 @@ impl RawReader {
         self.partition
     }
 
-    /// Classify an already-decoded delivery (the transport decoded the
-    /// [`Payload`] at the seam).
+    /// Classify an already-decoded delivery.
     ///
-    /// A [`Delivery`] carries no headers, so no schema header is available to
-    /// check here; a decoded delivery has already proven wire compatibility, and
-    /// the schema check is treated as "absent header" (which is a pass, since
-    /// the header is optional). Use [`RawReader::admit_bytes`] on the raw path
-    /// where the header is present and a decode may fail.
+    /// A [`Delivery`] carries no headers, so the schema check is skipped as an
+    /// absent (optional) header. Use [`RawReader::admit_bytes`] on the raw path.
     pub fn admit<E, H>(
         &self,
         scheduler: &mut Scheduler<E, H>,
@@ -311,10 +235,6 @@ impl RawReader {
 
     /// Classify a raw, still-encoded delivery, decoding it here so a decode
     /// failure poisons cleanly with the ack handle intact.
-    ///
-    /// The subject is validated before the decode (a misrouted message is not
-    /// worth decoding), then the payload is decoded, then the shared envelope
-    /// and suppression checks run.
     pub fn admit_bytes<E, H>(
         &self,
         scheduler: &mut Scheduler<E, H>,
@@ -358,9 +278,8 @@ impl RawReader {
         self.admit_payload(scheduler, tracker, schema, payload, handle, now)
     }
 
-    /// The shared tail: vehicle-partition and schema identity, payload sanity,
-    /// then the frontier and scheduler suppression steps. The subject has
-    /// already been validated by the caller.
+    /// The shared tail: identity, schema, and sanity, then frontier and
+    /// scheduler suppression (the subject is already validated).
     fn admit_payload<E, H>(
         &self,
         scheduler: &mut Scheduler<E, H>,
@@ -374,7 +293,6 @@ impl RawReader {
         E: Entry,
         H: AckHandle,
     {
-        // Identity: the vehicle id must hash to the partition it arrived on.
         let vehicle_partition = partition::partition_of(payload.vehicle_id) as u16;
         if vehicle_partition != self.partition {
             return RawDisposition::Poison {
@@ -386,7 +304,6 @@ impl RawReader {
             };
         }
 
-        // Schema: optional, but a stamped mismatch is poison.
         if let Some(version) = schema
             && version != SCHEMA_VERSION
         {
@@ -398,7 +315,6 @@ impl RawReader {
             };
         }
 
-        // Sanity: structural checks only (see `SANITY_LIMITS`).
         if let Err(error) = ingress::validate(&payload, sanity_reference(), &SANITY_LIMITS) {
             return RawDisposition::Poison {
                 handle,
@@ -406,8 +322,6 @@ impl RawReader {
             };
         }
 
-        // Frontier: a redelivery of something terminal or still in flight never
-        // reaches the scheduler.
         let sequence = handle.sequence();
         match tracker.observe(sequence) {
             Observed::BehindFrontier => {
@@ -425,8 +339,6 @@ impl RawReader {
             Observed::New => {}
         }
 
-        // Scheduler: it takes ownership of a queued observation (and its handle);
-        // otherwise it hands the handle back with the reason it declined.
         let observation = PendingObservation {
             id: ObservationId {
                 partition: self.partition,
@@ -454,9 +366,8 @@ impl RawReader {
     }
 }
 
-/// The fixed reference instant [`ingress::validate`] is called against. With
-/// [`SANITY_LIMITS`]'s unbounded window the reference never affects the outcome,
-/// so a constant epoch keeps the sanity check deterministic and clock-free.
+/// The fixed reference instant [`ingress::validate`] is called against; with
+/// [`SANITY_LIMITS`]'s unbounded window it never affects the outcome.
 fn sanity_reference() -> DateTime<Utc> {
     DateTime::from_timestamp(0, 0).expect("the unix epoch is a valid timestamp")
 }
@@ -478,15 +389,12 @@ mod tests {
 
     use routers_transition::matcher::Trip;
 
-    /// A recorded acknowledgement.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     enum AckOp {
         Ack(u64),
         Nak(u64),
     }
 
-    /// A minimal [`AckHandle`] that records its ack/nak so a test can prove the
-    /// right handle came back and could be retired.
     #[derive(Clone, Debug)]
     struct TestAck {
         seq: u64,
@@ -513,8 +421,8 @@ mod tests {
         }
     }
 
-    /// Vehicle 1 hashes to partition 485 (pinned in `partition.rs`); the tests
-    /// use that pairing so subject, vehicle, and reader agree.
+    /// Vehicle 1 hashes to partition 485 (pinned in `partition.rs`); tests rely
+    /// on that pairing.
     const PARTITION: u16 = 485;
     const VEHICLE: u64 = 1;
 
@@ -548,7 +456,6 @@ mod tests {
             }
         }
 
-        /// A well-formed payload for the pinned vehicle.
         fn good(&self) -> Payload {
             self.payload(VEHICLE, 151.2093, -33.8688)
         }
@@ -593,7 +500,6 @@ mod tests {
         FrontierTracker::new(PARTITION, None, fx.now)
     }
 
-    /// The canonical subject for the pinned partition.
     fn subject() -> String {
         crate::topology::raw_subject(u64::from(PARTITION))
     }
@@ -616,9 +522,7 @@ mod tests {
 
         assert!(matches!(disposition, RawDisposition::Queued { depth: 1 }));
         assert!(!disposition.is_terminal());
-        // The scheduler owns the observation and its handle.
         assert_eq!(sched.stats().pending, 1);
-        // The frontier is now tracking the sequence, held just below it.
         assert_eq!(frontier.outstanding(), 1);
         assert_eq!(frontier.oldest_outstanding(), Some(10));
     }
@@ -652,7 +556,6 @@ mod tests {
         let mut sched = scheduler();
         let mut frontier = tracker(&fx);
         let bytes = fx.good().encode().unwrap();
-        // A subject for a different partition than the reader owns.
         let subject = crate::topology::raw_subject(486);
 
         let disposition = reader.admit_bytes(
@@ -673,7 +576,6 @@ mod tests {
             }
             other => panic!("expected SubjectPartition poison, got {other:?}"),
         }
-        // A bad subject never reaches the frontier or scheduler.
         assert_eq!(frontier.outstanding(), 0);
         assert_eq!(sched.stats().pending, 0);
     }
@@ -872,7 +774,6 @@ mod tests {
         let bytes = fx.good().encode().unwrap();
         let subject = subject();
 
-        // A redelivery at sequence 50 is below the frontier.
         let disposition = reader.admit_bytes(
             &mut sched,
             &mut frontier,
@@ -887,7 +788,6 @@ mod tests {
             } => assert_eq!(handle.sequence(), 50),
             other => panic!("expected BehindFrontier suppression, got {other:?}"),
         }
-        // It was never tracked, so nothing became outstanding.
         assert_eq!(frontier.outstanding(), 0);
         assert_eq!(sched.stats().pending, 0);
     }
@@ -901,7 +801,6 @@ mod tests {
         let bytes = fx.good().encode().unwrap();
         let subject = subject();
 
-        // First delivery queues and observes.
         let first = reader.admit_bytes(
             &mut sched,
             &mut frontier,
@@ -910,8 +809,7 @@ mod tests {
         );
         assert!(matches!(first, RawDisposition::Queued { .. }));
 
-        // A redelivery of the same sequence coalesces; the in-flight original
-        // owns its completion, so this is *not* terminal.
+        // A coalesced redelivery is not terminal: the in-flight original owns it.
         let again = reader.admit_bytes(
             &mut sched,
             &mut frontier,
@@ -926,7 +824,6 @@ mod tests {
             other => panic!("expected Coalesced suppression, got {other:?}"),
         }
         assert!(!again.is_terminal());
-        // Still exactly one queued observation and one outstanding sequence.
         assert_eq!(sched.stats().pending, 1);
         assert_eq!(frontier.outstanding(), 1);
     }
@@ -940,8 +837,7 @@ mod tests {
         let bytes = fx.good().encode().unwrap();
         let subject = subject();
 
-        // Track the vehicle with a low observation (keeping the frontier low),
-        // then load a checkpoint whose last committed input is sequence 100.
+        // Track at a low observation, then load a checkpoint committed to seq 100.
         let seed = reader.admit_bytes(
             &mut sched,
             &mut frontier,
@@ -951,8 +847,7 @@ mod tests {
         assert!(matches!(seed, RawDisposition::Queued { .. }));
         sched.set_checkpoint(VehicleId(VEHICLE), fx.present_checkpoint(100));
 
-        // A fresh delivery at sequence 50 is new to the frontier (above it) but
-        // already covered by the checkpoint's last committed input.
+        // Seq 50 is above the frontier but already covered by the checkpoint.
         let disposition = reader.admit_bytes(
             &mut sched,
             &mut frontier,
@@ -981,7 +876,6 @@ mod tests {
         let bytes = fx.good().encode().unwrap();
         let subject = subject();
 
-        // Fill the single pending slot.
         let first = reader.admit_bytes(
             &mut sched,
             &mut frontier,
@@ -990,7 +884,6 @@ mod tests {
         );
         assert!(matches!(first, RawDisposition::Queued { depth: 1 }));
 
-        // A different sequence for the same vehicle overflows the FIFO.
         let disposition = reader.admit_bytes(
             &mut sched,
             &mut frontier,

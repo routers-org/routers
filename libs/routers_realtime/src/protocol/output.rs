@@ -1,18 +1,10 @@
-//! `CommittedOutput`: the authoritative matched-output message. (T04)
+//! `CommittedOutput`: the authoritative matched-output message. This is the one
+//! message the outside world reads to learn what a vehicle's history is.
 //!
-//! This is the one message the outside world (materialisers, the realtime
-//! viewer, any observer) reads to learn what a vehicle's history *is*. Solve
-//! jobs and solve results are the orchestrator's private conversation with the
-//! matchers; a [`CommittedOutput`] is the decision that survived commit and now
-//! defines the record.
-//!
-//! A single triggering observation may commit *several* outputs, in order —
-//! for example a [`OutputKind::Reset`] that opens a new segment followed by the
-//! [`OutputKind::Matched`] layers for the same revision, or a
-//! [`OutputKind::Retraction`] that drops stale layers before the fresh match.
-//! Each carries its own [`OutputId`] so the broker dedups them independently
-//! while a retried commit still republishes byte-identical output (see
-//! [`CommittedOutput::new_indexed`]).
+//! A single triggering observation may commit several outputs, in order (a reset
+//! then the matched layers, or a retraction before a fresh match). Each carries
+//! its own [`OutputId`] so the broker dedups them independently while a retried
+//! commit republishes byte-identical output.
 
 use serde::{Deserialize, Serialize};
 
@@ -24,8 +16,7 @@ use crate::partition::partition_of;
 use crate::protocol::ids::{self, JobId, ObservationId, OutputId, Revision, SegmentId};
 
 /// Why a job produced no match. Terminal outcomes never rewrite finalised
-/// layers; whether they also *close* the vehicle's segment is carried
-/// separately by [`OutputKind::Terminal::closes_segment`].
+/// layers; whether they close the segment is carried by `Terminal::closes_segment`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum TerminalReason {
     /// The job's deadline passed before a result committed.
@@ -45,8 +36,7 @@ pub enum TerminalReason {
 }
 
 impl TerminalReason {
-    /// A stable snake_case label for bounded metric dimensions. Exhaustive by
-    /// `match`, so a new variant forces this to be updated.
+    /// A stable snake_case label for bounded metric dimensions.
     pub fn label(&self) -> &'static str {
         match self {
             TerminalReason::DeadlineExpired => "deadline_expired",
@@ -67,7 +57,7 @@ impl core::fmt::Display for TerminalReason {
 }
 
 /// Why continuity was broken and a new segment opened. Prior finalised layers
-/// are never disturbed by a reset — the vehicle simply starts a fresh segment.
+/// are never disturbed by a reset.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ResetReason {
     /// The committed checkpoint was missing or undecodable, so state was lost.
@@ -81,8 +71,7 @@ pub enum ResetReason {
 }
 
 impl ResetReason {
-    /// A stable snake_case label for bounded metric dimensions. Exhaustive by
-    /// `match`, so a new variant forces this to be updated.
+    /// A stable snake_case label for bounded metric dimensions.
     pub fn label(&self) -> &'static str {
         match self {
             ResetReason::StateLost => "state_lost",
@@ -104,8 +93,8 @@ impl core::fmt::Display for ResetReason {
 #[serde(bound(serialize = "E: Serialize", deserialize = "E: Deserialize<'de>"))]
 pub enum OutputKind<E: Entry> {
     /// The authoritative layers for this revision. Layers with
-    /// `timestamp <= finalized_through` are final and must never be rewritten
-    /// by a later revision; layers above it may still be refined.
+    /// `timestamp <= finalized_through` are final and must never be rewritten;
+    /// layers above it may still be refined.
     Matched {
         diff: MatchedDiff<E>,
         finalized_through: Option<i64>,
@@ -143,9 +132,8 @@ impl<E: Entry> OutputKind<E> {
 }
 
 /// One committed decision about a vehicle, addressed to the matched-output
-/// plane. The `(vehicle_id, observation)` pair says *which* input produced it
-/// and `revision` orders competing decisions for the same vehicle; `segment`
-/// scopes finality so a reset can start afresh without touching the old tail.
+/// plane. `revision` orders competing decisions for the same vehicle and
+/// `segment` scopes finality so a reset can start afresh.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(bound(serialize = "E: Serialize", deserialize = "E: Deserialize<'de>"))]
 pub struct CommittedOutput<E: Entry> {
@@ -162,10 +150,8 @@ pub struct CommittedOutput<E: Entry> {
 }
 
 impl<E: Entry> CommittedOutput<E> {
-    /// Build the sole output of a job.
-    ///
-    /// Equivalent to [`new_indexed`](Self::new_indexed) at index `0`; use the
-    /// indexed form when one job commits an ordered burst of outputs.
+    /// Build the sole output of a job; equivalent to
+    /// [`new_indexed`](Self::new_indexed) at index `0`.
     pub fn new(
         job: JobId,
         vehicle_id: VehicleId,
@@ -177,18 +163,9 @@ impl<E: Entry> CommittedOutput<E> {
         Self::new_indexed(job, 0, vehicle_id, observation, revision, segment, kind)
     }
 
-    /// Build the `index`-th output of a job.
-    ///
-    /// The identity is `digest128("routers.output.v1" ∥ job_be_bytes ∥ index)`,
-    /// so a job that emits several ordered outputs (a reset then a match, a
-    /// retraction then a match) gives each a distinct, deterministic id: a
-    /// retried commit republishes the same bytes and the broker dedups them,
-    /// while the several outputs of one job never collide.
-    ///
-    /// This derives the id directly with [`ids::digest128`] rather than
-    /// [`OutputId::for_job`]: `for_job` folds a fixed `"output"` suffix and so
-    /// cannot vary by index. The two schemes therefore differ, and `for_job`
-    /// is intentionally unused here.
+    /// Build the `index`-th output of a job. The identity is
+    /// `digest128("routers.output.v1" ∥ job_be_bytes ∥ index)`, so a job's
+    /// several ordered outputs each get a distinct, deterministic id.
     pub fn new_indexed(
         job: JobId,
         index: u8,
@@ -233,10 +210,8 @@ impl<E: Entry> CommittedOutput<E> {
 postcard_wire!(CommittedOutput<E: Entry>);
 
 /// Whether an `incoming` revision should replace an `existing` one for the same
-/// (vehicle, timestamp). Strictly greater wins; equal is a duplicate (a retried
-/// or re-delivered commit), and lower is stale. `None` means nothing is held
-/// yet, so anything supersedes it. Shared by the materialiser and the viewer so
-/// every consumer resolves overlapping emissions identically.
+/// (vehicle, timestamp). Strictly greater wins; equal is a duplicate and lower
+/// is stale. `None` means nothing is held yet, so anything supersedes it.
 pub fn supersedes(incoming: Revision, existing: Option<Revision>) -> bool {
     match existing {
         None => true,
@@ -328,8 +303,7 @@ mod tests {
             let bytes = out.encode().expect("encode");
             let decoded = CommittedOutput::<E>::decode(&bytes).expect("decode");
 
-            // Re-encoding the decoded value reproduces the bytes exactly, so the
-            // whole structure survived (the payload types lack `PartialEq`).
+            // Re-encode compares bytes since the payload types lack `PartialEq`.
             assert_eq!(decoded.encode().expect("re-encode"), bytes, "{label}");
             assert_eq!(decoded.id, out.id, "{label}");
             assert_eq!(decoded.vehicle_id, out.vehicle_id, "{label}");
@@ -375,7 +349,6 @@ mod tests {
             .id
         };
 
-        // `new` is exactly the index-0 output.
         assert_eq!(
             output_with(OutputKind::Terminal {
                 reason: TerminalReason::JobExhausted,
@@ -400,7 +373,6 @@ mod tests {
             .id
         );
 
-        // Distinct indices give distinct, non-colliding ids.
         let ids: Vec<OutputId> = [0u8, 1, 2, 3, 255].into_iter().map(mk).collect();
         for (i, a) in ids.iter().enumerate() {
             for b in ids.iter().skip(i + 1) {
@@ -408,7 +380,6 @@ mod tests {
             }
         }
 
-        // Deterministic: the same job+index always yields the same id.
         assert_eq!(mk(1), mk(1));
     }
 
@@ -426,8 +397,8 @@ mod tests {
         let cases = [
             (Revision(5), None, true),
             (Revision(5), Some(Revision(4)), true),
-            (Revision(5), Some(Revision(5)), false), // equal is a duplicate
-            (Revision(5), Some(Revision(6)), false), // lower is stale
+            (Revision(5), Some(Revision(5)), false),
+            (Revision(5), Some(Revision(6)), false),
             (Revision(0), None, true),
         ];
         for (incoming, existing, expected) in cases {
@@ -442,12 +413,12 @@ mod tests {
     #[test]
     fn is_final_table() {
         let cases = [
-            (10, None, false),          // no watermark: never final
-            (10, Some(20), true),       // below watermark
-            (20, Some(20), true),       // at watermark
-            (21, Some(20), false),      // above watermark
-            (i64::MIN, Some(0), true),  // extreme below
-            (i64::MAX, Some(0), false), // extreme above
+            (10, None, false),
+            (10, Some(20), true),
+            (20, Some(20), true),
+            (21, Some(20), false),
+            (i64::MIN, Some(0), true),
+            (i64::MAX, Some(0), false),
         ];
         for (timestamp, finalized_through, expected) in cases {
             assert_eq!(
@@ -470,7 +441,6 @@ mod tests {
             TerminalReason::Internal,
         ];
         for reason in all {
-            // Exhaustive `match` pins each label and forces new variants here.
             let expected = match reason {
                 TerminalReason::DeadlineExpired => "deadline_expired",
                 TerminalReason::JobExhausted => "job_exhausted",

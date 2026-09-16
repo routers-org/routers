@@ -1,30 +1,9 @@
 //! Matcher job validator: classify one pulled [`SolveJob`] into solve, refuse,
-//! or poison, so a matcher never solves work it cannot answer correctly. (T25)
+//! or poison, so a matcher never solves work it cannot answer correctly.
 //!
-//! A matcher pulls jobs off a work queue shared by every replica of its region,
-//! and some of what it pulls it must not solve: a job cut against a graph this
-//! replica does not hold, addressed to another region, over a cell outside the
-//! loaded coverage, or already past its deadline. Solving such a job would
-//! either produce an answer against the wrong network or burn the CPU the queue
-//! is short of on a result nobody can use. The spec's rule (§4 "Job validator",
-//! §8) is that an invalid job yields a *typed unsuccessful result*, never
-//! silence — the orchestrator that dispatched it learns why instead of waiting
-//! the deadline out. This module is the pure decision that sorts a job into
-//! exactly one of:
-//!
-//! * [`Checked::Solve`] — hand it to the engine.
-//! * [`Checked::Refuse`] — do not solve it; publish the carried [`SolveOutcome`]
-//!   as the job's result so the owner sees a definite, typed answer.
-//! * [`Checked::Poison`] — the bytes could not even be turned into a job we
-//!   could address a result to (undecodable, a forged id, the wrong schema, or
-//!   too large to trust before decoding); acknowledge and drop it, because
-//!   there is no identity to publish a result against.
-//!
-//! The wire-level checks ([`check_bytes`], which owns the decode) are split from
-//! the semantic checks ([`check`], which reasons about an already-decoded job)
-//! so that [`check`] stays a pure, network-free function: it takes the region
-//! and its served cell set directly rather than a live `Loaded` graph, and a
-//! test drives it with a hand-built [`Region`] and [`HashSet`] of cells.
+//! An invalid job yields a typed unsuccessful result, never silence. Wire-level
+//! decode ([`check_bytes`]) is split from the semantic checks ([`check`]) so
+//! [`check`] stays a pure, network-free function.
 
 use core::time::Duration;
 use std::collections::HashSet;
@@ -48,23 +27,16 @@ use self::VehicleId as _KeepVehicleIdDocLink;
 /// correctness.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ValidateConfig {
-    /// The largest wire buffer the matcher will decode. Enforced *before*
-    /// decoding, so a hostile or corrupt length prefix can never make the
-    /// process allocate an unbounded job (see [`check_bytes`]).
+    /// The largest wire buffer the matcher will decode, enforced before decoding.
     pub max_decoded_bytes: usize,
-    /// The least time that must remain before the deadline for a solve to be
-    /// worth starting. A solve that cannot finish before its result is useless
-    /// only spends the CPU the queue is already short of, so a job with less
-    /// than this left is refused as expired rather than begun.
+    /// The least time that must remain before the deadline for a solve to be worth starting.
     pub min_remaining: Duration,
 }
 
 impl ValidateConfig {
-    /// The default decode bound: 4 MiB, matching the matcher's job-size cap in
-    /// the design brief (§9).
+    /// The default decode bound: 4 MiB.
     pub const DEFAULT_MAX_DECODED_BYTES: usize = 4 << 20;
-    /// The default deadline floor: 250 ms. Below this a solve is not worth
-    /// starting.
+    /// The default deadline floor: 250 ms.
     pub const DEFAULT_MIN_REMAINING: Duration = Duration::from_millis(250);
 }
 
@@ -79,41 +51,22 @@ impl Default for ValidateConfig {
 
 /// Why a job's bytes could not be turned into a result-bearing job at all.
 ///
-/// A poison job is acknowledged and dropped rather than answered: unlike a
-/// [`Checked::Refuse`], there is no trustworthy [`JobId`](crate::protocol::ids::JobId)
-/// / identity to address a [`SolveResult`](crate::protocol::result::SolveResult)
-/// to, so publishing one would be guessing. Every variant here is a fault of
-/// the bytes on the wire, not of the vehicle being solved.
+/// A poison job is acknowledged and dropped, never answered: there is no
+/// trustworthy identity to address a result to.
 #[derive(Clone, Debug, PartialEq, Eq, Error)]
 pub enum PoisonReason {
-    /// The buffer did not decode into a [`SolveJob`] at all (truncated or
-    /// corrupt). The text is the underlying decode error, for logs only.
+    /// The buffer did not decode into a [`SolveJob`] (truncated or corrupt).
     #[error("could not decode solve job: {0}")]
     Decode(String),
-    /// The envelope decoded, but its `id` was not the digest of its identity:
-    /// the job was corrupted or forged in flight and cannot be trusted.
+    /// The envelope's `id` was not the digest of its identity — forged in flight.
     #[error("job id does not match its identity")]
     IdMismatch,
-    /// The job was produced against a wire schema this build does not speak, so
-    /// its fields cannot be interpreted safely.
+    /// The job was produced against a wire schema this build does not speak.
     #[error("job was produced against schema {got}, which this build does not speak")]
-    Schema {
-        /// The schema the job carried.
-        got: SchemaVersion,
-    },
-    /// The raw buffer exceeded [`ValidateConfig::max_decoded_bytes`] and was
-    /// rejected *before* decoding. Because it was never decoded there is no
-    /// identity to answer, so oversize-before-decode is poison; an over-limit
-    /// job we *had* decoded would instead be a
-    /// [`Refuse`](Checked::Refuse)`(`[`SolveOutcome::Oversized`]`)` that the
-    /// owner can see.
+    Schema { got: SchemaVersion },
+    /// The raw buffer exceeded [`ValidateConfig::max_decoded_bytes`], rejected before decoding.
     #[error("job envelope is {bytes} bytes, over the {limit}-byte decode bound")]
-    Oversized {
-        /// The size of the buffer that was refused.
-        bytes: usize,
-        /// The bound it broke.
-        limit: usize,
-    },
+    Oversized { bytes: usize, limit: usize },
 }
 
 impl From<JobError> for PoisonReason {
@@ -127,12 +80,7 @@ impl From<JobError> for PoisonReason {
 }
 
 /// The verdict on one pulled job. Borrows the job for the [`Solve`](Self::Solve)
-/// case so the caller keeps ownership and hands the very same value to the
-/// engine.
-///
-/// [`check`] only ever yields [`Solve`](Self::Solve) or [`Refuse`](Self::Refuse);
-/// [`Poison`](Self::Poison) is produced by [`check_bytes`] (as its `Err`) and is
-/// carried here so a caller can fold both stages into one vocabulary.
+/// case so the caller hands the very same value to the engine.
 #[derive(Debug)]
 pub enum Checked<'j, E: Entry> {
     /// The job passed every check: solve it.
@@ -143,20 +91,9 @@ pub enum Checked<'j, E: Entry> {
     Poison(PoisonReason),
 }
 
-/// Decode `bytes` into a verified [`SolveJob`], enforcing the size bound first.
-///
-/// The size gate runs *before* [`decode`](crate::bus::Wire::decode): a buffer
-/// larger than [`ValidateConfig::max_decoded_bytes`] is refused as
-/// [`PoisonReason::Oversized`] without ever being handed to the decoder, so a
-/// corrupt or hostile length prefix cannot drive an unbounded allocation. A
-/// buffer that passes the gate is decoded and self-verified by
-/// [`SolveJob::decode_verified`], whose failures (undecodable bytes, a forged
-/// id, a foreign schema) map onto the matching [`PoisonReason`].
-///
-/// # Errors
-///
-/// Returns a [`PoisonReason`] when the buffer is over the bound, does not
-/// decode, or decodes to an envelope that fails self-verification.
+/// Decode `bytes` into a verified [`SolveJob`], rejecting a buffer over
+/// [`ValidateConfig::max_decoded_bytes`] before decoding so a hostile length
+/// prefix cannot drive an unbounded allocation.
 pub fn check_bytes<E>(bytes: &[u8], cfg: &ValidateConfig) -> Result<SolveJob<E>, PoisonReason>
 where
     E: Entry + serde::de::DeserializeOwned,
@@ -170,40 +107,10 @@ where
     Ok(SolveJob::decode_verified(bytes)?)
 }
 
-/// Decide whether an already-decoded `job` should be solved, refused with a
-/// typed outcome, or (never here) poisoned.
-///
-/// `region` and `cells` are the two pieces of the matcher's loaded graph this
-/// decision needs — the region the replica serves and the set of cells it can
-/// solve over — passed directly (the caller hands `&loaded.region` and
-/// `&loaded.cells`) so the function stays pure and needs no live network.
-///
-/// The checks run in a fixed order, each short-circuiting to a
-/// [`Refuse`](Checked::Refuse):
-///
-/// 1. **Graph.** A job cut against a different graph than this region serves
-///    would solve against the wrong network. Refused as
-///    [`SolveOutcome::VersionMismatch`] (`expected` = this region's graph).
-/// 2. **Region.** A job addressed to another region reaching this consumer is a
-///    topology bug — a mis-provisioned stream or consumer filter — not a normal
-///    outcome. It is refused as [`SolveOutcome::Internal`] rather than dropped
-///    silently so the owner is told its routing is wrong, and rather than
-///    [`SolveOutcome::VersionMismatch`] which would misattribute a routing fault
-///    to a graph skew.
-/// 3. **Coverage.** The head observation's cell must be one this region serves,
-///    or the solve has no network under it; refused as
-///    [`SolveOutcome::UnsupportedCoverage`]. A job with no head observation
-///    cannot be solved or coverage-checked and is refused as
-///    [`SolveOutcome::Internal`].
-/// 4. **Resume coverage (note only).** For a [`Continuation::Resume`], a trip
-///    origin whose cell this region does not serve would be dropped by the
-///    solver's own downgrade anyway, so it is *not* a refusal — the job still
-///    solves — but it is noted, because a resume that keeps straying outside
-///    coverage points at a mis-sized region.
-/// 5. **Deadline.** A job with no time left, or less than
-///    [`ValidateConfig::min_remaining`], is refused as
-///    [`SolveOutcome::DeadlineExpired`]: starting a solve that cannot finish
-///    before its answer is useless only wastes the CPU the queue is short of.
+/// Decide whether an already-decoded `job` should be solved or refused with a
+/// typed outcome. `region` and `cells` are passed directly so the function stays
+/// pure and network-free; the checks short-circuit in the order graph → region →
+/// coverage → deadline.
 #[must_use]
 pub fn check<'j, E>(
     job: &'j SolveJob<E>,
@@ -215,7 +122,6 @@ pub fn check<'j, E>(
 where
     E: Entry,
 {
-    // 1. Graph: solving against the wrong network is never acceptable.
     if job.identity.graph != region.graph {
         return Checked::Refuse(SolveOutcome::VersionMismatch {
             expected: region.graph.clone(),
@@ -223,8 +129,6 @@ where
         });
     }
 
-    // 2. Region: a foreign-region job here is a routing/topology fault, surfaced
-    //    to the owner as Internal rather than silently dropped.
     if job.identity.region != region.id {
         return Checked::Refuse(SolveOutcome::Internal {
             reason: format!(
@@ -234,7 +138,6 @@ where
         });
     }
 
-    // 3. Coverage of the head observation — the position this job is solving for.
     let Some(head) = job.head() else {
         return Checked::Refuse(SolveOutcome::Internal {
             reason: "job has no head observation to solve".to_owned(),
@@ -247,9 +150,7 @@ where
         });
     }
 
-    // 4. Resume history that strays outside coverage: note it, but still solve —
-    //    the solver downgrades those layers itself, so refusing here would drop
-    //    a job the engine would have made partial progress on.
+    // Strayed resume origins are noted, not refused: the solver downgrades them itself.
     if let Continuation::Resume { trip, .. } = &job.context {
         let strayed = unserved_origins(trip.origins(), cells);
         if strayed > 0 {
@@ -262,7 +163,6 @@ where
         }
     }
 
-    // 5. Deadline: refuse anything that cannot finish in time to be useful.
     match job.remaining(now_us) {
         None => Checked::Refuse(SolveOutcome::DeadlineExpired),
         Some(remaining) if remaining < cfg.min_remaining => {
@@ -272,9 +172,7 @@ where
     }
 }
 
-/// How many of `origins` fall on a cell that `cells` does not serve. Used for
-/// the resume-coverage note in [`check`]; factored out so the (network-free)
-/// counting can be tested directly against a hand-built origin slice.
+/// How many of `origins` fall on a cell that `cells` does not serve.
 fn unserved_origins(origins: &[Origin], cells: &HashSet<Geohash>) -> usize {
     origins
         .iter()
@@ -300,8 +198,7 @@ mod tests {
     const GRAPH: &str = "test-graph";
     const REGION: &str = "test-region";
 
-    /// A point far enough inland to sit squarely inside one shard cell, plus the
-    /// cell `shard_of` maps it to, so a test can serve (or withhold) exactly it.
+    /// A point far inland, squarely inside one shard cell.
     fn head_point() -> Point {
         Point::new(151.2093, -33.8688)
     }
@@ -324,9 +221,6 @@ mod tests {
         }
     }
 
-    /// A region serving `GRAPH`/`REGION`. Its `coverage` is irrelevant to
-    /// [`check`] (which reads only `graph` and `id`); the served-cell set is
-    /// passed separately.
     fn region() -> Region {
         Region {
             id: RegionId::new(REGION).unwrap(),
@@ -340,7 +234,6 @@ mod tests {
         }
     }
 
-    /// A cell set containing exactly the head's served cell.
     fn serving_cells() -> HashSet<Geohash> {
         HashSet::from([served_cell()])
     }
@@ -351,7 +244,6 @@ mod tests {
         }
     }
 
-    /// A well-formed restart job over `head`, deadline `deadline_us`.
     fn job(graph: &str, region_id: &str, head: Point, deadline_us: i64) -> SolveJob<MockEntryId> {
         SolveJob::new(
             identity(graph, region_id),
@@ -361,8 +253,6 @@ mod tests {
         )
     }
 
-    /// A job comfortably inside every bound: right graph/region, served head,
-    /// a full second of deadline left at `now = 0`.
     fn good_job() -> SolveJob<MockEntryId> {
         job(GRAPH, REGION, head_point(), 1_000_000)
     }
@@ -371,8 +261,6 @@ mod tests {
 
     #[test]
     fn check_bytes_refuses_oversize_before_decoding() {
-        // An 8-byte bound with a 9-byte buffer: the gate fires without ever
-        // touching the decoder, so even nonsense bytes are reported as Oversized.
         let cfg = ValidateConfig {
             max_decoded_bytes: 8,
             ..ValidateConfig::default()
@@ -411,8 +299,7 @@ mod tests {
     #[test]
     fn check_bytes_reports_a_foreign_schema() {
         let cfg = ValidateConfig::default();
-        // Built with schema 2: `id` matches its identity (so it is not an id
-        // mismatch), but the schema check inside `verify` fails.
+        // Schema 2 so `id` still matches its identity; only the schema check fails.
         let mut ident = identity(GRAPH, REGION);
         ident.schema = SchemaVersion(2);
         let job =
@@ -460,7 +347,6 @@ mod tests {
 
     #[test]
     fn check_refuses_a_foreign_region_as_internal() {
-        // The job is addressed to a different region than this matcher serves.
         let job = job(GRAPH, "other-region", head_point(), 1_000_000);
         match check(
             &job,
@@ -478,7 +364,6 @@ mod tests {
 
     #[test]
     fn check_refuses_an_unserved_head_cell() {
-        // The head is served nowhere in the (empty) cell set.
         let job = good_job();
         let empty = HashSet::new();
         match check(&job, &region(), &empty, 0, &ValidateConfig::default()) {
@@ -491,7 +376,6 @@ mod tests {
 
     #[test]
     fn check_refuses_a_headless_job_as_internal() {
-        // A restart with no fresh origins has no head to solve or locate.
         let job = SolveJob::<MockEntryId>::new(
             identity(GRAPH, REGION),
             Lane::DEFAULT,
@@ -514,7 +398,6 @@ mod tests {
 
     #[test]
     fn check_refuses_an_expired_deadline() {
-        // Deadline exactly at `now`: nothing remains.
         let job = job(GRAPH, REGION, head_point(), 0);
         assert!(matches!(
             check(
@@ -530,7 +413,6 @@ mod tests {
 
     #[test]
     fn check_refuses_a_deadline_too_close_to_start() {
-        // 100 ms left, but the floor is 250 ms: not worth starting.
         let cfg = ValidateConfig::default();
         let job = job(GRAPH, REGION, head_point(), 100_000);
         assert!(matches!(
@@ -558,7 +440,6 @@ mod tests {
 
     #[test]
     fn check_solves_a_resume_with_an_empty_trip() {
-        // A resume whose history is empty passes coverage on the head alone.
         let context = Continuation::<MockEntryId>::Resume {
             trip: Trip::new(),
             fresh: vec![Origin::new(head_point(), 1_000)],
@@ -578,8 +459,7 @@ mod tests {
 
     #[test]
     fn check_prefers_the_graph_refusal_over_a_later_failure() {
-        // A job that is *also* expired and *also* out of coverage still reports
-        // the graph mismatch, proving the checks run in the documented order.
+        // Also expired and out of coverage, yet still reports the graph mismatch.
         let job = job("other-graph", REGION, head_point(), 0);
         let empty = HashSet::new();
         assert!(matches!(
@@ -590,7 +470,6 @@ mod tests {
 
     #[test]
     fn check_prefers_coverage_over_the_deadline() {
-        // Out-of-coverage *and* expired: coverage is checked first (§ order).
         let job = job(GRAPH, REGION, head_point(), 0);
         let empty = HashSet::new();
         assert!(matches!(
@@ -605,7 +484,6 @@ mod tests {
     fn unserved_origins_counts_only_the_strays() {
         let served = served_cell();
         let cells = HashSet::from([served]);
-        // Two origins on the served cell, one far away on another cell.
         let elsewhere = Point::new(2.3522, 48.8566); // Paris: a different shard
         assert_ne!(event::shard_of(elsewhere), served, "fixture points differ");
         let origins = [

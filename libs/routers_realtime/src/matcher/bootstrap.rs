@@ -1,40 +1,10 @@
-//! Matcher graph bootstrap: turn a catalog entry into a solvable network. (T09)
+//! Matcher graph bootstrap: turn a catalog entry into a solvable network.
 //!
-//! A matcher serves exactly one [`Region`] and, before it may pull a single
-//! job, it has to hold that region's road network in memory and prove the
-//! bytes it loaded are the exact, intact artifact the catalog names. Loading a
-//! truncated or wrong-version graph would make the process solve silently
-//! against a broken network, so bootstrap does the whole dance up front, once,
-//! and only reports [`ReadyState::Ready`] when the graph is actually usable:
-//!
-//! 1. Publish [`ReadyState::Starting`] so a readiness probe steers traffic away
-//!    while we load.
-//! 2. Load and validate the [`Catalog`] and pick out `--region`.
-//! 3. Load the artifact [`Manifest`] beside the shard bundles and **verify
-//!    every coverage cell before loading any of them** — a bad checksum on the
-//!    last cell must fail the whole boot, not after we have already spent the
-//!    time and memory decoding the earlier ones.
-//! 4. Decode each verified `.shard.rt` on the blocking pool (decoding a
-//!    multi-hundred-megabyte bundle is CPU- and IO-bound, never something to do
-//!    on the async reactor) and compose them.
-//! 5. Publish [`ReadyState::Ready`] on success or [`ReadyState::Failed`] on any
-//!    error, so the failure is visible to the health endpoint rather than a
-//!    silent half-loaded process.
-//!
-//! # The composed network type
-//!
-//! A region owns one or more geohash cells, one shard bundle each. The fleet's
-//! graph type is [`ShardedNetwork<OsmEntryId, OsmEdgeMetadata, Geohash>`]
-//! ([`Shard`]), and [`routers_shard::MultiShardNetwork`] aggregates several of
-//! them behind the same [`routers_network`] traits (`DataPlane + Scan + Route +
-//! Debug + Send + Sync`), which is exactly `routers_network::Network` — so a
-//! `Matcher` can solve on it. Rather than carry two network types (a bare
-//! [`Shard`] for one cell, a composite for many) behind an enum whose only job
-//! would be to hand-delegate every trait method, [`Net`] is *uniformly* the
-//! composite: a single-cell region is a one-shard [`MultiShardNetwork`]. That
-//! keeps one concrete `Net` for every region at the cost of one graph-copy at
-//! startup, which is paid once and never on the hot path. See the module's
-//! deviation note in the task report.
+//! A matcher serves one [`Region`] and loads its verified graph once at
+//! startup. Every coverage cell is verified before any is decoded, so a bad
+//! checksum fails the whole boot rather than after paying to load the rest.
+//! [`Net`] is always a [`MultiShardNetwork`], even for a single-cell region, so
+//! every region yields one concrete network type.
 
 use alloc::sync::Arc;
 use std::collections::HashSet;
@@ -51,14 +21,11 @@ use crate::lifecycle::{ReadinessSetter, ReadyState};
 use crate::protocol::ids::RegionId;
 use crate::region::{ArtifactError, Catalog, CatalogError, Manifest, Region};
 
-/// One verified shard bundle, decoded from its `.shard.rt` file. This is the
-/// fleet's graph type today: OSM node ids, OSM edge metadata, sharded by
-/// geohash cell.
+/// One verified shard bundle, decoded from its `.shard.rt` file.
 pub type Shard = ShardedNetwork<OsmEntryId, OsmEdgeMetadata, Geohash>;
 
 /// The composed network a [`Matcher`](routers_transition::Matcher) solves
-/// against. Always a [`MultiShardNetwork`], even for a single-cell region (see
-/// the module docs), so every region yields one concrete network type.
+/// against. Always a [`MultiShardNetwork`], even for a single-cell region.
 pub type Net = MultiShardNetwork<OsmEntryId, OsmEdgeMetadata, Geohash>;
 
 /// Where to find the pieces a matcher needs at startup.
@@ -78,33 +45,26 @@ pub struct BootstrapConfig {
 pub struct Loaded {
     /// The region this matcher serves, as validated in the catalog.
     pub region: Region,
-    /// The catalog snapshot version the graph was loaded against, so a stale
-    /// mount can be detected downstream.
+    /// The catalog snapshot version the graph was loaded against.
     pub catalog_version: u64,
-    /// The catalog's routing version, so results computed here are never mixed
-    /// with results from a different point-to-region mapping.
+    /// The catalog's routing version.
     pub routing_version: u64,
-    /// The composed, solvable network. Shared (`Arc`) across the whole pool of
-    /// blocking solves.
+    /// The composed, solvable network, shared across the pool of blocking solves.
     pub network: Arc<Net>,
-    /// Every cell this region can serve: its owned `coverage` cells plus its
-    /// certified `overlap` fallbacks. Used by [`serves`](Self::serves).
+    /// Every cell this region serves: owned `coverage` plus certified `overlap`.
     pub cells: HashSet<Geohash>,
 }
 
 impl Loaded {
-    /// Whether this region will serve solves for `cell` — true for an owned
-    /// coverage cell or a certified overlap fallback. Membership only; a served
-    /// overlap cell need not have its own loaded bundle, because the coverage
-    /// shards already cover the boundary.
+    /// Whether this region will serve solves for `cell` — an owned coverage cell
+    /// or a certified overlap fallback.
     #[must_use]
     pub fn serves(&self, cell: &Geohash) -> bool {
         self.cells.contains(cell)
     }
 }
 
-/// Everything graph bootstrap can fail on. Each variant carries enough to point
-/// an operator at the offending catalog entry, cell, or bundle.
+/// Everything graph bootstrap can fail on.
 #[derive(Debug, Error)]
 pub enum BootstrapError {
     /// The catalog could not be read or was invalid.
@@ -114,15 +74,10 @@ pub enum BootstrapError {
     #[error("catalog has no region {0:?}")]
     UnknownRegion(RegionId),
     /// The manifest was missing/invalid, or a coverage cell's artifact failed
-    /// verification (wrong graph, wrong size, bad checksum, ...).
+    /// verification.
     #[error("artifact: {0}")]
     Artifact(#[from] ArtifactError),
-    /// A verified bundle could not be decoded into a network (corrupt bytes, or
-    /// a shard-format version this build does not understand).
-    ///
-    /// The cause is a plain `String` (that is all `routers_shard` returns) held
-    /// in `reason` rather than a `source` field, because `thiserror` reserves a
-    /// field named `source` for a nested [`std::error::Error`].
+    /// A verified bundle could not be decoded into a network.
     #[error("failed to load shard for cell {cell:?}: {reason}")]
     Load {
         /// The coverage cell whose bundle failed to decode.
@@ -130,11 +85,9 @@ pub enum BootstrapError {
         /// The underlying decode error, rendered as text.
         reason: String,
     },
-    /// The region owns more than one cell and the composite network could not
-    /// be used as a solvable [`Network`](routers_network::Network). Not reachable
-    /// today — [`MultiShardNetwork`] *is* a `Network`, so multi-cell regions
-    /// compose fine — but kept as the contract for a future composite that is
-    /// not directly solvable.
+    /// The region owns multiple cells that cannot be composed into a solvable
+    /// [`Network`](routers_network::Network). Not reachable today, but kept as
+    /// the contract for a future composite that is not directly solvable.
     #[error(
         "region {region:?} owns multiple cells {cells:?} that cannot be composed into a solvable network"
     )]
@@ -152,16 +105,13 @@ pub enum BootstrapError {
 /// Load and verify the region graph named by `cfg`, publishing readiness
 /// transitions to `readiness` as it goes.
 ///
-/// Sets [`ReadyState::Starting`] on entry, [`ReadyState::Ready`] once the graph
-/// is composed and usable, and [`ReadyState::Failed`] on any error (the error
-/// is both published as `Failed` and returned). Graph loading happens here,
-/// once, at startup — never per observation.
+/// Sets [`ReadyState::Starting`] on entry, [`ReadyState::Ready`] on success, and
+/// [`ReadyState::Failed`] on any error (also returned).
 ///
 /// # Errors
 ///
-/// Returns a [`BootstrapError`] if the catalog is missing/invalid, the region
-/// is unknown, the manifest or any coverage artifact fails verification, or a
-/// bundle cannot be decoded.
+/// Returns a [`BootstrapError`] if the catalog, region, manifest, an artifact,
+/// or a bundle decode fails.
 pub async fn bootstrap(
     cfg: &BootstrapConfig,
     readiness: &ReadinessSetter,
@@ -173,16 +123,13 @@ pub async fn bootstrap(
             Ok(loaded)
         }
         Err(err) => {
-            // Publish the failure before returning so a health endpoint sees a
-            // `Failed` process rather than one stuck in `Starting`.
             readiness.set(ReadyState::Failed);
             Err(err)
         }
     }
 }
 
-/// The load itself, split out so [`bootstrap`] owns the single readiness
-/// state-machine and every early return here funnels through one `Failed`.
+/// The load itself, split out so [`bootstrap`] owns the readiness state-machine.
 async fn load(cfg: &BootstrapConfig) -> Result<Loaded, BootstrapError> {
     let started = Instant::now();
 
@@ -194,15 +141,14 @@ async fn load(cfg: &BootstrapConfig) -> Result<Loaded, BootstrapError> {
 
     let manifest = Manifest::load(&cfg.shard_dir)?;
 
-    // Verify every coverage cell BEFORE decoding any of them: a bad checksum on
-    // the last cell should fail fast, not after we have paid to load the rest.
+    // Verify every coverage cell before decoding any, so a bad checksum fails
+    // fast rather than after paying to load the rest.
     let mut verified = Vec::with_capacity(region.coverage.len());
     for cell in &region.coverage {
         let artifact = manifest.verify(&cfg.shard_dir, cell, &region.graph)?;
         verified.push((*cell, artifact));
     }
 
-    // Now decode each verified bundle on the blocking pool.
     let mut shards: Vec<Arc<Shard>> = Vec::with_capacity(verified.len());
     for (cell, artifact) in &verified {
         let path = artifact.path.clone();
@@ -223,8 +169,6 @@ async fn load(cfg: &BootstrapConfig) -> Result<Loaded, BootstrapError> {
         shards.push(Arc::new(shard));
     }
 
-    // A single-cell region is a one-shard composite; a multi-cell region
-    // composes them all. Either way `Net` is one concrete `MultiShardNetwork`.
     let network = MultiShardNetwork::new(shards);
 
     let mut cells: HashSet<Geohash> = region.coverage.iter().copied().collect();
@@ -269,10 +213,8 @@ mod tests {
 
     const GRAPH: &str = "test-graph";
 
-    /// A shard source with no nodes and no edges. Building an empty
-    /// [`ShardedNetwork`] from it needs no `OsmEntryId`/`OsmEdgeMetadata`
-    /// values, so a test can produce a genuine, loadable `.shard.rt` bundle
-    /// without any OSM fixture data.
+    /// A shard source with no nodes and no edges, so a test can build a genuine
+    /// loadable `.shard.rt` bundle without any OSM fixture data.
     struct EmptySource;
 
     impl ShardSource<OsmEntryId, OsmEdgeMetadata> for EmptySource {
@@ -288,9 +230,8 @@ mod tests {
         }
     }
 
-    /// A unique directory under the temp dir that does not yet exist,
-    /// namespaced by process id and a per-call counter so parallel tests never
-    /// collide without reaching for a wall clock.
+    /// A unique scratch directory, namespaced by process id and a per-call
+    /// counter so parallel tests never collide.
     fn scratch_dir(tag: &str) -> PathBuf {
         static COUNTER: AtomicU64 = AtomicU64::new(0);
         let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -307,9 +248,9 @@ mod tests {
         Geohash::from_str(s).unwrap()
     }
 
-    /// Write a real, loadable empty shard bundle for `cell` into `dir` and
-    /// return the manifest [`Artifact`] describing it (checksum and size taken
-    /// from the bytes actually written, so `verify` passes).
+    /// Write a loadable empty shard bundle for `cell` and return the manifest
+    /// [`Artifact`] describing it, with checksum and size taken from the bytes
+    /// written so `verify` passes.
     fn write_shard(dir: &std::path::Path, cell: &str) -> Artifact {
         let file = format!("{cell}.shard.rt");
         let path = dir.join(&file);
@@ -366,8 +307,8 @@ mod tests {
         path
     }
 
-    /// A fully valid environment: shard bundles for `coverage`, a manifest over
-    /// them, and a catalog naming `coverage`/`overlap` for `test-region`.
+    /// A valid environment: shard bundles for `coverage`, a manifest over them,
+    /// and a catalog naming `coverage`/`overlap` for `test-region`.
     fn valid_fixture(tag: &str, coverage: &[&str], overlap: &[&str]) -> (PathBuf, BootstrapConfig) {
         let dir = scratch_dir(tag);
         let mut artifacts = BTreeMap::new();
@@ -384,9 +325,6 @@ mod tests {
         (dir, cfg)
     }
 
-    /// The static type-level guarantee the whole module exists to uphold: the
-    /// composed `Net` is a `routers_network::Network`, so a `Matcher` can solve
-    /// on it.
     #[test]
     fn composed_net_is_a_routing_network() {
         fn assert_network<N: routers_network::Network>() {}
@@ -414,8 +352,6 @@ mod tests {
 
     #[tokio::test]
     async fn multi_cell_region_composes_and_serves_overlap() {
-        // Two owned cells (two bundles, one composite) plus a certified overlap
-        // fallback that has no bundle of its own but is still "served".
         let (dir, cfg) = valid_fixture("multi", &["r3gq", "r3gr"], &["r3gw"]);
         let (setter, watcher) = Readiness::new();
 
@@ -469,7 +405,6 @@ mod tests {
 
     #[tokio::test]
     async fn missing_manifest_is_an_artifact_error() {
-        // Valid catalog, but the shard directory holds no manifest.
         let dir = scratch_dir("nomanifest");
         let catalog = write_catalog(&dir, &["r3gq"], &[]);
         let cfg = BootstrapConfig {
@@ -491,8 +426,6 @@ mod tests {
 
     #[tokio::test]
     async fn tampered_bundle_fails_the_checksum() {
-        // Build a valid fixture, then flip a byte of the bundle so its recomputed
-        // hash no longer matches the manifest the checksum was taken over.
         let (dir, cfg) = valid_fixture("tamper", &["r3gq"], &[]);
         let bundle = dir.join("r3gq.shard.rt");
         let mut bytes = std::fs::read(&bundle).unwrap();
@@ -512,9 +445,8 @@ mod tests {
 
     #[tokio::test]
     async fn a_bad_cell_fails_before_any_bundle_is_loaded() {
-        // Two coverage cells: the first bundle is intact, the second's manifest
-        // entry names a graph the catalog does not expect. Because every cell is
-        // verified before any is decoded, the whole boot fails on the mismatch.
+        // The second cell's manifest entry names an unexpected graph; because
+        // every cell is verified before any is decoded, the whole boot fails.
         let dir = scratch_dir("failfast");
         let good = write_shard(&dir, "r3gq");
         let mut bad = write_shard(&dir, "r3gr");
@@ -541,18 +473,13 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Readiness must walk `Starting` then `Failed` on a load that fails after
-    /// the graph starts decoding. The manifest checksum is taken over a garbage
-    /// bundle so verification passes but the decode fails, which suspends the
-    /// future on the blocking pool — that suspension is the window in which
-    /// `Starting` is observable before the eventual `Failed`.
     #[tokio::test]
     async fn readiness_goes_starting_then_failed() {
         let dir = scratch_dir("transition");
         let file = "r3gq.shard.rt";
         let path = dir.join(file);
-        // Large enough that the blocking read is still running at the first poll,
-        // and not a valid shard header, so `from_cached` returns an error.
+        // Large and not a valid shard header, so the blocking decode is still
+        // running at the first poll and eventually errors.
         let garbage = vec![0xAB_u8; 2 << 20];
         std::fs::write(&path, &garbage).unwrap();
         let mut artifacts = BTreeMap::new();
@@ -581,9 +508,8 @@ mod tests {
         let fut = bootstrap(&cfg, &setter);
         tokio::pin!(fut);
 
-        // First poll runs synchronously up to the blocking decode, publishing
-        // `Starting` and suspending — verifying `Starting` is set before the
-        // outcome is known.
+        // First poll runs up to the blocking decode and suspends, so `Starting`
+        // is observable before the outcome is known.
         match futures::poll!(fut.as_mut()) {
             Poll::Pending => assert_eq!(watcher.current(), ReadyState::Starting),
             Poll::Ready(_) => panic!("decode should suspend so Starting is observable"),

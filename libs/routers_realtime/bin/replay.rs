@@ -1,21 +1,9 @@
 /// Loads and sorts the full dataset, then walks events in chronological
-/// order. Each event is validated and published, broker-acknowledged, through
-/// [`Ingress`] — the reference producer for the ingest contract
-/// (`routers_realtime::ingress` + `topology`). By default it feeds the live
-/// raw journal; with `--isolated <run>` it provisions and feeds a private
-/// `replay.<run>.` journal instead, so rematching history never injects
-/// historical work into the live deadline path.
-///
-/// # Throughput
-///
-/// A single chronological walker keeps the pacing (`--speed`) and the progress
-/// bar authoritative, but publishing itself fans out across `--lanes` tasks so
-/// flood mode is not one broker round-trip per row. Each row is routed to a
-/// lane by `partition_of(vehicle) % lanes`, so a vehicle's observations always
-/// land on one lane and stay strictly ordered (revisions are stream sequences,
-/// so per-vehicle send order is load-bearing); distinct lanes overlap their
-/// round-trips. The walker hands rows to lanes over bounded channels, so a slow
-/// broker back-pressures the walk instead of buffering without bound.
+/// order, validating and publishing each through [`Ingress`]. By default it
+/// feeds the live raw journal; `--isolated <run>` feeds a private
+/// `replay.<run>.` journal instead. Publishing fans out across `--lanes` tasks,
+/// each vehicle pinned to one lane so its send order (load-bearing: revisions
+/// are stream sequences) is preserved, while lanes overlap their round-trips.
 extern crate alloc;
 
 use alloc::collections::BTreeMap;
@@ -44,9 +32,7 @@ use tokio::task::{JoinError, JoinSet};
 use tokio::time::Instant;
 use url::Url;
 
-/// Bounded depth of each lane's hand-off channel. Deep enough that a lane never
-/// starves between rows, shallow enough that a stalled broker back-pressures the
-/// walker (and so the pacing/progress bar) instead of buffering the whole file.
+/// Bounded depth of each lane's hand-off channel, so a stalled broker back-pressures the walker rather than buffering the whole file.
 const LANE_CHANNEL_CAPACITY: usize = 1024;
 
 #[derive(Parser, Debug)]
@@ -70,11 +56,7 @@ struct Args {
     #[arg(short, env, long, default_value_t = 1)]
     loops: usize,
 
-    /// How many publish lanes to fan sends across. Each vehicle is pinned to one
-    /// lane by `partition_of(vehicle) % lanes`, so its observations stay in send
-    /// order while distinct lanes overlap their broker round-trips — the flood
-    /// mode's throughput knob. `1` reproduces the fully-serial behaviour; `0` is
-    /// treated as `1`.
+    /// How many publish lanes to fan sends across; each vehicle is pinned to one lane. `0` is treated as `1`.
     #[arg(long, env, default_value_t = 64)]
     lanes: usize,
 
@@ -84,23 +66,15 @@ struct Args {
     #[arg(long, env, default_value_t = 4)]
     streams: u64,
 
-    /// Replay into an isolated processing run instead of the live journal.
-    /// Subjects and streams are prefixed `replay.<run>.`, so the historical
-    /// events never enter the live deadline path and age out on their own.
-    /// `<run>` must be NATS-safe (`[A-Za-z0-9_-]+`).
+    /// Replay into an isolated run (subjects/streams prefixed `replay.<run>.`); `<run>` must be NATS-safe (`[A-Za-z0-9_-]+`).
     #[arg(long, env = "REPLAY_ISOLATED")]
     isolated: Option<String>,
 
-    /// Reject observations older than this before publishing (a humantime
-    /// duration, e.g. `7days`, `36h`). A historical backfill should pass a
-    /// large value — e.g. `--max-age 3650days` — so old rows are admitted
-    /// rather than dropped. Defaults to `IngressLimits::default()` (7 days).
+    /// Reject observations older than this before publishing (humantime, e.g. `7days`). Defaults to `IngressLimits::default()` (7 days).
     #[arg(long, env, value_parser = humantime::parse_duration)]
     max_age: Option<Duration>,
 
-    /// Reject observations whose timestamp is more than this far in the future
-    /// (a humantime duration, e.g. `5min`). Guards against clock skew, not
-    /// history. Defaults to `IngressLimits::default()` (5 minutes).
+    /// Reject observations more than this far in the future (humantime, e.g. `5min`); guards clock skew. Defaults to 5 minutes.
     #[arg(long, env, value_parser = humantime::parse_duration)]
     max_ahead: Option<Duration>,
 }
@@ -150,8 +124,6 @@ async fn main() -> anyhow::Result<()> {
 
     let context = jetstream::new(client);
 
-    // Age/skew limits: whatever the caller passed, otherwise the shared
-    // ingress defaults.
     let defaults = IngressLimits::default();
     let limits = IngressLimits {
         max_age: args.max_age.unwrap_or(defaults.max_age),
@@ -227,11 +199,7 @@ async fn main() -> anyhow::Result<()> {
     // At least one lane; `--lanes 0` is a no-op knob, not an empty run.
     let lanes = args.lanes.max(1);
 
-    // Spin up the publish lanes. Each owns a clone of `Ingress` (one shared
-    // connection) and drains a bounded channel; a vehicle is pinned to one lane
-    // so its sends stay ordered, while distinct lanes overlap their round-trips.
-    // A broker publish failure surfaces as a lane returning `Err`, propagated
-    // through the `JoinSet`; validation faults are tallied per lane instead.
+    // Each lane owns an `Ingress` clone and drains a bounded channel; a broker failure surfaces as the lane returning `Err`.
     let mut senders: Vec<mpsc::Sender<Payload>> = Vec::with_capacity(lanes);
     let mut set: JoinSet<anyhow::Result<LaneReport>> = JoinSet::new();
     for _ in 0..lanes {
@@ -239,12 +207,10 @@ async fn main() -> anyhow::Result<()> {
         senders.push(tx);
         set.spawn(run_lane(ingress.clone(), rx));
     }
-    // The walker no longer publishes, so its own clone is redundant; keep the
-    // lanes' clones the only live handles.
+    // The walker no longer publishes; drop its redundant clone.
     drop(ingress);
 
-    // A lane that exits early (a broker failure) is captured here so the walk
-    // can stop feeding and the run can fail with its error.
+    // A lane that exits early (broker failure) is captured here.
     let mut early: Option<Result<anyhow::Result<LaneReport>, JoinError>> = None;
 
     'walk: for iteration in 0..args.loops {
@@ -260,19 +226,14 @@ async fn main() -> anyhow::Result<()> {
             let offset = Duration::from_micros(time - min).div_f64(speed);
             tokio::time::sleep_until(start + offset).await;
 
-            // Route by vehicle so a vehicle's observations always take one lane
-            // and cannot transpose; the lane awaits each send in order, exactly
-            // as the serial walk used to.
+            // Route by vehicle so its observations stay on one lane and cannot transpose.
             let lane = lane_of(payload.vehicle_id, lanes);
             if senders[lane].send(payload).await.is_err() {
-                // The receiver is gone: this lane exited early on a broker
-                // failure. Stop feeding; the error is collected below.
+                // Receiver gone: this lane exited early; stop feeding.
                 break 'walk;
             }
 
-            // Cheap early-abort: a healthy lane never finishes while its channel
-            // is open, so a ready join means a lane failed. Stop promptly rather
-            // than pushing the rest of the file at a dying broker.
+            // A healthy lane never finishes while its channel is open, so a ready join means a lane failed.
             if let Some(joined) = set.try_join_next() {
                 early = Some(joined);
                 break 'walk;
@@ -281,8 +242,7 @@ async fn main() -> anyhow::Result<()> {
         pg.finish();
     }
 
-    // Close the channels so every healthy lane drains its buffer and returns its
-    // tally; then fold the lanes together, surfacing the first broker failure.
+    // Close the channels so every lane drains and returns its tally.
     drop(senders);
 
     let mut totals = LaneReport::default();
@@ -305,24 +265,18 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// The lane a vehicle's observations are routed to: `partition_of(vehicle) %
-/// lanes`. Deterministic in the vehicle, so every observation of one vehicle
-/// hashes to the same lane and their sends never race. `lanes` must be at least
-/// one (the caller clamps it).
+/// The lane a vehicle's observations are routed to: `partition_of(vehicle) % lanes`.
+/// Deterministic in the vehicle, so one vehicle's sends never race across lanes.
 fn lane_of(vehicle: VehicleId, lanes: usize) -> usize {
     (partition::partition_of(vehicle) % lanes as u64) as usize
 }
 
 /// One publish lane: drain the channel, publishing each observation in receive
-/// order through this lane's [`Ingress`] clone. Validation faults are tallied
-/// (one bad row is skipped, never fatal); a broker publish failure returns
-/// `Err`, which the `JoinSet` propagates so the whole run aborts.
+/// order. A validation fault is tallied and skipped; a broker failure returns `Err`.
 async fn run_lane(ingress: Ingress, mut rx: mpsc::Receiver<Payload>) -> anyhow::Result<LaneReport> {
     let mut report = LaneReport::default();
     while let Some(payload) = rx.recv().await {
-        // Await each publish before the next: JetStream assigns revisions in
-        // per-connection send order, so awaiting in receive order is what keeps
-        // this lane's (single) vehicles ordered downstream.
+        // Await each publish before the next: revisions are assigned in send order, so receive order must be preserved.
         match ingress.publish(&payload, bus::wallclock()).await {
             Ok(ack) => {
                 report.published += 1;
@@ -341,10 +295,7 @@ async fn run_lane(ingress: Ingress, mut rx: mpsc::Receiver<Payload>) -> anyhow::
     Ok(report)
 }
 
-/// The running tally one lane reports back: how many observations it published,
-/// how many the broker recognised as duplicates of an earlier send, and the
-/// per-variant count of rows validation rejected. All bounded labels — no
-/// vehicle id or coordinate ever enters it.
+/// The running tally one lane reports back. All bounded labels — no vehicle id or coordinate ever enters it.
 #[derive(Debug, Default)]
 struct LaneReport {
     /// Observations the broker acknowledged (duplicates included).
@@ -384,9 +335,7 @@ fn absorb(
     }
 }
 
-/// Log the aggregate outcome of a run: how much was published, and the
-/// per-variant tally of rows validation rejected (or a note that none were).
-/// Bounded to fixed labels, so it never prints a vehicle id or coordinate.
+/// Log the aggregate outcome of a run; bounded to fixed labels, never a vehicle id or coordinate.
 fn report_totals(totals: &LaneReport) {
     if totals.duplicates == 0 {
         info!(
@@ -450,23 +399,18 @@ mod tests {
 
     use super::*;
 
-    /// Every observation of one vehicle must take the same lane, whatever the
-    /// lane count — that pin is what keeps its sends strictly ordered.
     #[test]
     fn lane_is_stable_per_vehicle() {
         for lanes in [1usize, 2, 7, 64, 1000] {
             for raw in [0u64, 1, 7, 42, 1_000, u64::MAX, 0x9E37_79B9_7F4A_7C15] {
                 let vehicle = VehicleId(raw);
                 let first = lane_of(vehicle, lanes);
-                // Recomputing (as each of a vehicle's rows does) is identical.
                 assert_eq!(first, lane_of(vehicle, lanes), "raw={raw} lanes={lanes}");
                 assert!(first < lanes, "lane {first} out of range for {lanes} lanes");
             }
         }
     }
 
-    /// A single lane collapses every vehicle onto lane 0 — the fully-serial
-    /// fallback that reproduces the pre-lane behaviour.
     #[test]
     fn one_lane_pins_everything_to_zero() {
         for raw in [1u64, 2, 3, 99, u64::MAX] {
@@ -474,16 +418,13 @@ mod tests {
         }
     }
 
-    /// Across many vehicles the assignment spreads: with 64 lanes and a few
-    /// thousand distinct ids, sends are not funnelled through one task.
     #[test]
     fn lanes_spread_across_many_vehicles() {
         let lanes = 64;
         let used: HashSet<usize> = (1..=4096u64)
             .map(|raw| lane_of(VehicleId(raw), lanes))
             .collect();
-        // The partitioner mixes its input, so thousands of ids should touch the
-        // large majority of lanes; assert a generous floor to stay non-flaky.
+        // Assert a generous floor (mixing spreads ids) to stay non-flaky.
         assert!(
             used.len() >= lanes / 2,
             "only {} of {lanes} lanes used",
@@ -491,7 +432,6 @@ mod tests {
         );
     }
 
-    /// The lane knob defaults to 64 when the caller does not pass `--lanes`.
     #[test]
     fn lanes_default_is_sixty_four() {
         let args = Args::try_parse_from([
@@ -505,7 +445,6 @@ mod tests {
         assert_eq!(args.lanes, 64);
     }
 
-    /// An explicit `--lanes` overrides the default.
     #[test]
     fn lanes_arg_is_honoured() {
         let args = Args::try_parse_from([
@@ -521,7 +460,6 @@ mod tests {
         assert_eq!(args.lanes, 8);
     }
 
-    /// Aggregation sums published/duplicate counts and unions rejection tallies.
     #[test]
     fn lane_report_merge_folds_tallies() {
         let mut totals = LaneReport::default();
@@ -548,8 +486,6 @@ mod tests {
         assert_eq!(totals.rejected.get("zero_vehicle"), Some(&1));
     }
 
-    /// A lane's broker failure is the first recorded, and does not discard the
-    /// tallies of lanes that succeeded.
     #[test]
     fn absorb_records_first_failure_and_keeps_tallies() {
         let mut totals = LaneReport::default();

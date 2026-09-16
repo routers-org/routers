@@ -1,27 +1,11 @@
-//! The partition orchestrator. (spec A2, T35)
+//! The partition orchestrator.
 //!
 //! One orchestrator process owns a disjoint slice of the vehicle partition
-//! space. For every partition it owns it runs a single
+//! space and runs one
 //! [`PartitionWorker`](routers_realtime::orchestrator::worker::PartitionWorker)
-//! task: the worker reads that partition's raw journal and solve-result stream,
-//! writes solve jobs and committed output, and reads and writes the vehicle
-//! checkpoints in Valkey. There is no cross-partition sharing — each worker owns
-//! its own maps, scheduler, frontier and deadline heap — so this binary is only
-//! *wiring*: parse configuration, connect NATS and Valkey, reconcile the four
-//! streams, recover each partition, and spawn one worker per partition.
-//!
-//! The state machine lives entirely in the `orchestrator` module tree; nothing
-//! here decides *what* to publish. That split is what lets the whole pipeline be
-//! unit-tested against the in-memory bus and store while this binary is exercised
-//! by compile only — there is no broker or Valkey in the sandbox.
-//!
-//! Startup is ordered so a worker never reads before its plumbing exists: the
-//! raw streams, the result stream, the output stream and every region's job
-//! stream are reconciled first; then, per owned partition, recovery replays any
-//! surviving prepared commit and reports the completion frontier, the raw
-//! consumer is (re)created to resume from `frontier + 1`, and the worker is
-//! spawned. On shutdown every worker drains, and the process exits non-zero if
-//! any worker returned an error.
+//! per owned partition, with no cross-partition sharing. This binary is only
+//! wiring: connect NATS and Valkey, reconcile every plane before any worker
+//! reads, recover each partition, and spawn the workers.
 
 extern crate alloc;
 
@@ -87,47 +71,35 @@ struct Args {
     #[arg(short, env, long)]
     nats: Url,
 
-    /// Valkey primaries, comma-separated. Vehicles are spread across them by
-    /// rendezvous hash, so the order carries no meaning, but every process that
-    /// touches the checkpoints must be given the same set.
+    /// Valkey primaries, comma-separated; every process touching the checkpoints must be given the same set.
     #[arg(short, env, long, value_delimiter = ',')]
     valkey: Vec<Url>,
 
-    /// Path to the region catalog (TOML): the regions this fleet serves, their
-    /// graph versions, and their cell coverage.
+    /// Path to the region catalog (TOML): regions, graph versions, and cell coverage.
     #[arg(short, env, long)]
     catalog: std::path::PathBuf,
 
-    /// The vehicle partitions this pod owns, as an inclusive range ("0-255").
-    /// Assignment is static: give every pod a disjoint slice and cover 0-1023
-    /// between them. Alternatively, derive the slice from a StatefulSet identity
-    /// via --pod-name and --fleet.
+    /// The vehicle partitions this pod owns, as an inclusive range ("0-255"); or derive from --pod-name and --fleet.
     #[arg(short, env, long, value_parser = parse_partitions, conflicts_with_all = ["pod_name", "fleet"])]
     partitions: Option<RangeInclusive<u64>>,
 
-    /// This pod's StatefulSet name (e.g. `orchestrator-3`): the trailing ordinal
-    /// picks its slice of the partition space. Pair with --fleet.
+    /// This pod's StatefulSet name (e.g. `orchestrator-3`); the trailing ordinal picks its slice. Pair with --fleet.
     #[arg(long, env = "POD_NAME", requires = "fleet")]
     pod_name: Option<String>,
 
-    /// Total pods in the StatefulSet. Every pod must be given the same value, or
-    /// their slices overlap or leave gaps.
+    /// Total pods in the StatefulSet; every pod must be given the same value.
     #[arg(long, env, requires = "pod_name")]
     fleet: Option<u64>,
 
-    /// How many raw streams the partition space divides across, fleet-wide.
-    /// Fixed config: revisions are stream sequences, so remapping partitions to
-    /// different streams is a migration, not a tuning knob.
+    /// How many raw streams the partition space divides across, fleet-wide (fixed config, not a tuning knob).
     #[arg(long, env, default_value_t = 4)]
     streams: u64,
 
-    /// How long the raw journal retains an event before it ages out — the bound
-    /// on how far recovery can rewind.
+    /// How long the raw journal retains an event — the bound on how far recovery can rewind.
     #[arg(long, env, value_parser = humantime::parse_duration, default_value = "15m")]
     raw_retention: Duration,
 
-    /// Unacknowledged raw events each partition's consumer may hold — the
-    /// backlog knob. Under saturation the stream buffers; nothing is dropped.
+    /// Unacknowledged raw events each partition's consumer may hold; the stream buffers, nothing is dropped.
     #[arg(long, env, default_value_t = 2048)]
     raw_max_ack_pending: i64,
 
@@ -139,13 +111,11 @@ struct Args {
     #[arg(long, env, value_parser = humantime::parse_duration, default_value = "10m")]
     results_retention: Duration,
 
-    /// How long committed matched output is retained for materialisers and
-    /// observers to catch up on.
+    /// How long committed matched output is retained for materialisers and observers to catch up.
     #[arg(long, env, value_parser = humantime::parse_duration, default_value = "15m")]
     output_retention: Duration,
 
-    /// How long an unclaimed solve job lives on the work queue before it ages
-    /// out (its deadline should expire first).
+    /// How long an unclaimed solve job lives on the work queue (its deadline should expire first).
     #[arg(long, env, value_parser = humantime::parse_duration, default_value = "60s")]
     jobs_ttl: Duration,
 
@@ -169,41 +139,33 @@ struct Args {
     #[arg(long, env, default_value_t = 128 * 1024 * 1024)]
     admit_region_bytes: u64,
 
-    /// The largest gap between a vehicle's last committed observation and a new
-    /// one that still continues the same journey; a larger gap resets the
-    /// segment.
+    /// The largest time gap between committed observations that still continues one journey; a larger gap resets the segment.
     #[arg(long, env, value_parser = humantime::parse_duration, default_value = "120s")]
     gap: Duration,
 
-    /// The largest straight-line jump (metres) between the last committed
-    /// observation and a new one that is not treated as a teleport.
+    /// The largest straight-line jump (metres) not treated as a teleport.
     #[arg(long, env, default_value_t = 2_000.0)]
     jump_distance: f64,
 
-    /// Most early solve results parked per vehicle before further ones are
-    /// dropped.
+    /// Most early solve results parked per vehicle before further ones are dropped.
     #[arg(long, env, default_value_t = 4)]
     parked_limit: usize,
 
-    /// How long a vehicle may sit idle before its checkpoint is evicted from the
-    /// worker's local map.
+    /// How long a vehicle may sit idle before its checkpoint is evicted from the worker's local map.
     #[arg(long, env, value_parser = humantime::parse_duration, default_value = "10m")]
     idle_ttl: Duration,
 
-    /// How long shutdown waits for in-flight commits to quiesce before the
-    /// worker returns.
+    /// How long shutdown waits for in-flight commits to quiesce before the worker returns.
     #[arg(long, env, value_parser = humantime::parse_duration, default_value = "20s")]
     grace: Duration,
 
-    /// How long a publish (of a job or an output) waits for the broker's ack
-    /// before the outcome is treated as ambiguous and retried byte-identically.
+    /// How long a publish waits for the broker's ack before being retried byte-identically.
     #[arg(long, env, value_parser = humantime::parse_duration, default_value = "5s")]
     ack_timeout: Duration,
 }
 
-/// The slice of the partition space this pod owns: explicit, or derived from its
-/// StatefulSet identity — contiguous ordinal blocks, the last pod taking the
-/// remainder.
+/// The slice of the partition space this pod owns; explicit, or derived from its
+/// StatefulSet identity (contiguous ordinal blocks, last pod takes the remainder).
 fn owned_partitions(args: &Args) -> Result<RangeInclusive<u64>> {
     if let Some(partitions) = &args.partitions {
         return Ok(partitions.clone());
@@ -239,11 +201,6 @@ fn owned_partitions(args: &Args) -> Result<RangeInclusive<u64>> {
 }
 
 /// The static per-worker configuration derived from the CLI args.
-///
-/// The dispatch and commit knobs are built once and shared two ways: the
-/// [`Dispatcher`]/[`Committer`] are constructed with them, and the
-/// [`WorkerConfig`] carries a mirror copy (the worker documents that its
-/// `dispatch`/`commit` fields must match the objects it is handed).
 fn worker_config(args: &Args, partition: u16) -> WorkerConfig {
     WorkerConfig {
         scheduler: SchedulerConfig {
@@ -281,18 +238,15 @@ fn admission_config(args: &Args) -> AdmissionConfig {
 #[tokio::main]
 async fn main() -> Result<()> {
     let _telemetry = routers_realtime::telemetry::init("routers-orchestrator");
-    // Built after telemetry so the instruments bind to the installed meter; a
-    // clone per partition worker (each instrument is a cheap Arc handle).
+    // Built after telemetry so instruments bind to the installed meter.
     let metrics = Metrics::new();
 
     let args = Args::parse();
     info!("orchestrator started: {args:?}");
 
-    // Stop reading on the first signal; every worker watches this.
     let shutdown = Shutdown::from_signals();
 
-    // Connect NATS and open a JetStream context. The context is cloned per
-    // publisher; each clone shares the one multiplexed connection.
+    // The context is cloned per publisher, sharing one multiplexed connection.
     let nats_url = ServerAddr::from_url(args.nats.clone()).context("could not create NATS url")?;
     let client = ConnectOptions::new()
         .name("OrchestratorService")
@@ -306,9 +260,7 @@ async fn main() -> Result<()> {
             .with_context(|| format!("could not load catalog from {}", args.catalog.display()))?,
     );
 
-    // Reconcile every plane before any worker reads. The raw journal is split
-    // across `streams` streams; the result and output planes are one stream
-    // each; the job plane is one stream per catalog region.
+    // Reconcile every plane before any worker reads.
     let raw_cfg = RawConfig {
         streams: args.streams,
         max_age: args.raw_retention,
@@ -339,8 +291,6 @@ async fn main() -> Result<()> {
         ensure_job_stream(&context, &region.id, &jobs_cfg).await?;
     }
 
-    // Connect the checkpoint store and build the admission controller once; both
-    // are cheaply shared (an `Arc` inside) across the partition workers.
     let store = ValkeyCheckpointStore::connect(ValkeyConfig {
         checkpoint_ttl: args.checkpoint_ttl,
         ..ValkeyConfig::new(args.valkey.clone())
@@ -352,16 +302,9 @@ async fn main() -> Result<()> {
         catalog.regions.iter().map(|r| &r.id),
     );
 
-    // Register the process-scoped admission observable gauges exactly once.
-    // `Admission` is `Arc`-shared and cloned into every partition worker, so this
-    // must not live inside the worker loop or each owned partition would register
-    // the same global instrument again. Held for the process lifetime (until the
-    // workers are joined) so the gauges keep reporting.
+    // Register the process-scoped admission gauges exactly once (not per worker).
     let _admission_gauges = admission.register_gauges(&metrics);
 
-    // The two publishers are shared by every partition: `SolveJob`s onto the
-    // regional work queues, `CommittedOutput`s onto the partitioned output
-    // plane. Both retry an ambiguous publish under `ack_timeout`.
     let job_publisher = JetStreamPublisher::<SolveJob<E>>::new(context.clone(), args.ack_timeout);
     let output_publisher =
         JetStreamPublisher::<CommittedOutput<E>>::new(context.clone(), args.ack_timeout);
@@ -376,8 +319,7 @@ async fn main() -> Result<()> {
     for partition in owned.clone() {
         let partition = partition as u16;
 
-        // Recover before creating the raw consumer: replaying prepared commits
-        // reports the completion frontier the consumer must resume just past.
+        // Recover before creating the raw consumer: it reports the frontier to resume just past.
         let committer = Committer::new(
             store.clone(),
             output_publisher.clone(),
@@ -395,10 +337,7 @@ async fn main() -> Result<()> {
             "partition recovered"
         );
 
-        // Resume the raw journal at `frontier + 1` (or the stream head when the
-        // partition has never committed). `raw_consumer` verifies the broker's
-        // deliver policy matches, so a stale consumer cannot silently replay
-        // from the wrong point.
+        // Resume at `frontier + 1` (or stream head); `raw_consumer` verifies the deliver policy matches.
         let raw_stream =
             &raw_streams[raw_stream_index(u64::from(partition), args.streams) as usize];
         let raw = raw_consumer(
@@ -434,9 +373,7 @@ async fn main() -> Result<()> {
         handles.push((partition, tokio::spawn(worker.run())));
     }
 
-    // Join every worker, logging its run summary. A worker that panicked or
-    // returned an error makes the process exit non-zero, after every peer has
-    // been given the chance to drain.
+    // A failed worker exits the process non-zero, but only after every peer drains.
     let mut failed = false;
     for (partition, handle) in handles {
         match handle.await {

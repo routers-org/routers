@@ -1,11 +1,8 @@
-//! An in-memory [`Sink`]: the materialised view held in a map. (T28)
+//! An in-memory [`Sink`]: the materialised view held in a map.
 //!
-//! [`MemorySink`] is the sink the unit tests and viewer-like observers use —
-//! the whole served view lives in a `HashMap<VehicleId, VehicleMaterialized>`
-//! behind a mutex, so a test can drive the real consumer and merge logic and
-//! then read back exactly what a downstream reader would see, without a store.
-//! It is cheap to [`Clone`] (every clone shares the same map through an `Arc`),
-//! so a consumer and its assertions hold separate handles to one view.
+//! [`MemorySink`] lets a test drive the real consumer and merge logic and read
+//! back what a downstream reader would see, without a store. Cheap to [`Clone`]:
+//! every clone shares the same map through an `Arc`.
 
 use alloc::sync::Arc;
 use core::convert::Infallible;
@@ -49,7 +46,7 @@ impl<E: Entry> MemorySink<E> {
     }
 
     /// A snapshot of one vehicle's materialised history, or `None` if it has no
-    /// output yet. A clone, so a reader inspects it without holding the lock.
+    /// output yet.
     #[must_use]
     pub fn snapshot(&self, vehicle: VehicleId) -> Option<VehicleMaterialized<E>> {
         self.vehicles.lock().unwrap().get(&vehicle).cloned()
@@ -72,8 +69,7 @@ impl<E: Entry> Sink<E> for MemorySink<E> {
     type Error = Infallible;
 
     async fn apply(&self, output: &CommittedOutput<E>) -> Result<Applied, Infallible> {
-        // The critical section is synchronous — no await is held across the
-        // lock — so the guard never crosses a suspend point.
+        // Synchronous critical section: the guard never crosses a suspend point.
         let mut vehicles = self.vehicles.lock().unwrap();
         let vehicle = vehicles
             .entry(output.vehicle_id)
@@ -82,8 +78,7 @@ impl<E: Entry> Sink<E> for MemorySink<E> {
     }
 }
 
-// `VehicleMaterialized` needs `Clone` for `snapshot`; every entry type is
-// `Clone` (an `Entry` bound), so the derives on the state types apply.
+// Manual `Clone` for `snapshot`, avoiding an `E: Clone` bound.
 impl<E: Entry> Clone for VehicleMaterialized<E> {
     fn clone(&self) -> Self {
         Self {
@@ -172,7 +167,6 @@ mod tests {
             Revision(5)
         );
 
-        // An unseen vehicle has no snapshot.
         assert!(sink.snapshot(VehicleId(99)).is_none());
     }
 

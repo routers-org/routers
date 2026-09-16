@@ -1,22 +1,8 @@
-//! JetStream implementations of the bus adapters. (T32, T35)
+//! JetStream implementations of the bus adapters in [`super::adapter`].
 //!
-//! These are the production wiring of the transport-only traits in
-//! [`super::adapter`]: they turn `async_nats::jetstream` primitives into the
-//! same `publish`/`fetch`/`next`/`ack` vocabulary the control-plane logic
-//! already drives against the in-memory fake in [`super::memory`]. Nothing here
-//! holds business state — every type is a thin shim over a broker handle — so
-//! the matcher (T27/T32), orchestrator (T35) and materializer (T28) keep one
-//! code path and only swap the adapter between a unit test and production.
-//!
-//! There is no broker in this sandbox, so this module is *compile-verified*
-//! only; the pure header/identity plumbing it does around each hop lives in the
-//! shared helpers ([`super::trace`], [`crate::protocol::ids::headers`]) that are
-//! tested in their own modules. The behaviour these adapters must reproduce —
-//! `Nats-Msg-Id` dedup, ambiguous-publish retries, poison-message handling,
-//! bounded pulls — is exercised end to end against the memory bus.
-//!
-//! Native `async fn` in traits, like the adapter definitions; see the note on
-//! [`super::adapter`].
+//! Each type is a thin shim over a broker handle. There is no broker in this
+//! sandbox, so the module is compile-verified only; the behaviour it mirrors is
+//! exercised end to end against the memory bus in [`super::memory`].
 #![allow(async_fn_in_trait)]
 
 use core::future::IntoFuture;
@@ -38,14 +24,9 @@ use crate::protocol::ids::headers::{msg_id_of, stamp_msg_id};
 /// The continuous pull-consumer message stream a [`JetStreamSource`] drives.
 type PullMessages = jetstream::consumer::pull::Stream;
 
-/// The acknowledgement handle for one JetStream delivery.
-///
-/// It owns the [`jetstream::Message`] so the ack travels with the message it
-/// belongs to, exactly as the trait requires. The stream sequence and delivery
-/// count are read once from [`jetstream::Message::info`] at construction — the
-/// [`AckHandle::sequence`]/[`AckHandle::deliveries`] accessors are infallible,
-/// so the fallible parse cannot live behind them — and cached, while `ack`/`nak`
-/// consume the message to make double-acking a compile error.
+/// The acknowledgement handle for one JetStream delivery. Sequence and delivery
+/// count are read once from [`jetstream::Message::info`] and cached, since the
+/// [`AckHandle`] accessors are infallible.
 pub struct JetStreamAck {
     message: jetstream::Message,
     sequence: u64,
@@ -78,21 +59,13 @@ impl AckHandle for JetStreamAck {
 
 /// Turn one delivered [`jetstream::Message`] into a decoded [`Delivery`].
 ///
-/// Returns `None` — after acking and warning — when the message cannot be made
-/// into an answerable delivery: its JetStream ack metadata is unreadable, or its
-/// payload does not decode as a `T`. Acking such a message is deliberate poison
-/// handling: it has no identity to answer against and must not loop forever
-/// under redelivery (this mirrors `bin/matcher.rs`'s legacy skip, and the
-/// `RawBytes` path never decode-fails, so the matcher size-gates the bytes
-/// itself). It also stamps the inbound trace/queue-wait span so a producer's
-/// send time closes the loop.
+/// Returns `None` — after acking and warning — when the message has unreadable
+/// ack metadata or an undecodable payload; acking it is deliberate poison
+/// handling so it does not loop forever under redelivery.
 async fn build_delivery<T: Wire>(message: jetstream::Message) -> Option<Delivery<T, JetStreamAck>> {
     let subject = message.subject.to_string();
     let headers = message.headers.clone();
 
-    // Continue the producer's trace and record the queue-wait span; the send
-    // time comes straight back rather than through a shared global, so
-    // concurrent partition readers never cross-contaminate stamps.
     let sent_at = inbound(&subject, headers.as_ref());
     let msg_id = headers
         .as_ref()
@@ -131,14 +104,9 @@ async fn build_delivery<T: Wire>(message: jetstream::Message) -> Option<Delivery
     })
 }
 
-/// A [`Publisher`] over a JetStream [`Context`](jetstream::Context).
-///
-/// Each publish sets the `Nats-Msg-Id` header to the caller's `msg_id`, so the
-/// broker deduplicates a retried ambiguous send within the stream's duplicate
-/// window. The publish ack is awaited under [`ack_timeout`](Self::ack_timeout):
-/// a timeout is [`PublishError::Ambiguous`] (the message may already be stored,
-/// so the caller must retry byte-identically), any other error is
-/// [`PublishError::Failed`] (nothing landed).
+/// A [`Publisher`] over a JetStream [`Context`](jetstream::Context). Each
+/// publish stamps `Nats-Msg-Id` for dedup; an ack timeout is
+/// [`PublishError::Ambiguous`], any other error [`PublishError::Failed`].
 pub struct JetStreamPublisher<T> {
     context: jetstream::Context,
     ack_timeout: Duration,
@@ -158,8 +126,7 @@ impl<T> JetStreamPublisher<T> {
     }
 }
 
-// Manual `Clone` so `T` need not be `Clone`: the marker is a function pointer,
-// and `jetstream::Context` is cheap to clone (it shares the connection).
+// Manual `Clone` so `T` need not be `Clone` (the marker is a function pointer).
 impl<T> Clone for JetStreamPublisher<T> {
     fn clone(&self) -> Self {
         Self {
@@ -178,12 +145,8 @@ impl<T: Wire + Send + Sync + 'static> Publisher<T> for JetStreamPublisher<T> {
         mut headers: HeaderMap,
         bytes: &[u8],
     ) -> Result<PublishOutcome, PublishError> {
-        // The broker dedup key. A retried ambiguous publish carries the same id
-        // over identical bytes, so a landed copy collapses instead of doubling.
         stamp_msg_id(&mut headers, msg_id);
 
-        // `Vec<u8>` converts into the broker's `Bytes` payload; the target type
-        // is inferred from the parameter, so no `bytes` dependency is named.
         let pending = self
             .context
             .publish_with_headers(subject.to_owned(), headers, bytes.to_vec().into())
@@ -191,8 +154,6 @@ impl<T: Wire + Send + Sync + 'static> Publisher<T> for JetStreamPublisher<T> {
             .map_err(|err| PublishError::Failed(anyhow!("jetstream publish failed: {err}")))?;
 
         match tokio::time::timeout(self.ack_timeout, pending.into_future()).await {
-            // The ack did not arrive in time: the send may or may not have
-            // landed, so the caller must retry idempotently.
             Err(_elapsed) => Err(PublishError::Ambiguous(anyhow!(
                 "publish ack timed out after {:?}",
                 self.ack_timeout
@@ -211,10 +172,7 @@ impl<T: Wire + Send + Sync + 'static> Publisher<T> for JetStreamPublisher<T> {
 /// A capacity-bounded [`Consumer`] over a JetStream [`PullConsumer`].
 ///
 /// [`fetch`](Consumer::fetch) claims at most `max` messages, waiting up to
-/// `wait` for the batch to fill — exactly the shape the matcher's pull loop
-/// wants, where `max` is the number of free solve slots. Undecodable messages
-/// are acked and dropped inside [`build_delivery`], so the returned batch holds
-/// only answerable deliveries and may be shorter than `max`.
+/// `wait`. Undecodable messages are dropped, so the batch may be shorter.
 pub struct JetStreamConsumer<T> {
     consumer: PullConsumer,
     _marker: PhantomData<fn() -> T>,
@@ -243,8 +201,6 @@ impl<T: Wire + Send> Consumer<T> for JetStreamConsumer<T> {
             return Ok(Vec::new());
         }
 
-        // A fetch returns as soon as `max` messages are gathered or `wait`
-        // elapses; a shorter batch (or none) is the normal low-load case.
         let mut batch = self
             .consumer
             .fetch()
@@ -261,8 +217,7 @@ impl<T: Wire + Send> Consumer<T> for JetStreamConsumer<T> {
                         deliveries.push(delivery);
                     }
                 }
-                // A pull error ends this batch, not the loop: the caller fetches
-                // again next turn. Anything already gathered is still returned.
+                // A pull error ends this batch, not the loop; what is gathered is returned.
                 Err(err) => {
                     warn!("jetstream fetch batch error: {err}");
                     break;
@@ -275,12 +230,7 @@ impl<T: Wire + Send> Consumer<T> for JetStreamConsumer<T> {
 }
 
 /// A push-style [`Source`] over a JetStream pull consumer's message stream.
-///
-/// This is the shape the orchestrator's per-partition reader (T35) and the
-/// materializer's consumer (T28) want: `select!` over the next delivery.
-/// Undecodable messages are acked and skipped, so [`next`](Source::next) only
-/// yields answerable deliveries; a stream error is surfaced so the caller can
-/// decide whether to rebuild the stream.
+/// Undecodable messages are acked and skipped; a stream error is surfaced.
 pub struct JetStreamSource<T> {
     messages: PullMessages,
     _marker: PhantomData<fn() -> T>,
@@ -314,8 +264,6 @@ impl<T: Wire + Send> Source<T> for JetStreamSource<T> {
         loop {
             match self.messages.next().await {
                 Some(Ok(message)) => match build_delivery::<T>(message).await {
-                    // Undecodable: it was acked inside `build_delivery`; skip to
-                    // the next message rather than ending the stream.
                     None => continue,
                     Some(delivery) => return Some(Ok(delivery)),
                 },

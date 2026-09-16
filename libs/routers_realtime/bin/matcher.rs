@@ -1,30 +1,12 @@
-//! The regional matcher worker binary. (T32)
+//! The regional matcher worker binary.
 //!
-//! One matcher serves exactly one region (spec A3): it loads that region's
-//! pinned graph before pulling a single job, then pulls solve jobs only as fast
-//! as it has CPU slots to answer them, solves each, and publishes the result
-//! *before* acknowledging the job so a crash never loses work. This binary is
-//! only the wiring — argument parsing, telemetry, the broker connection, and
-//! the lifecycle dance — around the reusable pieces it composes:
-//!
-//! * [`bootstrap`](routers_realtime::matcher::bootstrap) loads and verifies the
-//!   graph and publishes readiness; a failure exits non-zero so an unready
-//!   process never pulls.
-//! * [`routers_realtime::matcher::engine::Engine`] is the solve core,
-//!   [`routers_realtime::matcher::publish::ResultPublisher`]
-//!   sequences publish-then-ack, and
-//!   [`routers_realtime::matcher::pull::PullLoop`] is the
-//!   capacity-bound intake loop.
-//! * The [`JetStream`](routers_realtime::bus::jetstream) adapters are the
-//!   production transport under the loop's `Consumer`/`Publisher` seams.
-//!
-//! The legacy synchronous request/reply path (`queue_subscribe`) is gone: jobs
-//! arrive on a durable work-queue consumer and results are published to the
-//! partitioned result plane.
+//! One matcher serves exactly one region: it loads that region's pinned graph
+//! before pulling any job, then pulls solve jobs only as fast as it has CPU
+//! slots, solves each, and publishes the result before acknowledging the job so
+//! a crash never loses work. This binary is only the wiring around the reusable
+//! pieces in [`routers_realtime::matcher`].
 
-// `Arc` has no `alloc`-path form available here: a binary crate has no
-// `extern crate alloc`, so `std::sync::Arc` is the only spelling and the
-// `alloc`-preference lint does not apply.
+// A binary crate has no `extern crate alloc`, so `std::sync::Arc` is the only spelling.
 #![allow(clippy::std_instead_of_alloc)]
 
 use core::time::Duration;
@@ -54,8 +36,7 @@ use routers_realtime::topology::jobs::{JobsConfig, ensure_job_stream, job_consum
 /// The network entry type this region's graph is keyed by.
 type E = OsmEntryId;
 
-/// How long a result publish waits for the broker's ack before the publish is
-/// treated as ambiguous and retried idempotently.
+/// How long a result publish waits for the broker's ack before being retried idempotently.
 const PUBLISH_ACK_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// How long one fetch waits for a batch to fill before returning what it has.
@@ -93,9 +74,8 @@ struct Args {
     #[arg(long)]
     shard_dir: PathBuf,
 
-    /// The most solves to run concurrently and, therefore, the most jobs ever
-    /// claimed-but-unanswered on this replica. Defaults to the available
-    /// parallelism.
+    /// The most solves to run concurrently (and jobs claimed-but-unanswered).
+    /// Defaults to the available parallelism.
     #[arg(long, default_value_t = default_slots())]
     slots: usize,
 
@@ -129,20 +109,15 @@ async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     info!(?args, "matcher starting");
 
-    // Stop-intake signal shared with the pull loop; a SIGTERM/SIGINT triggers
-    // the drain.
     let shutdown = Shutdown::from_signals();
 
-    // Readiness starts `Starting`; bootstrap drives it to `Ready` (or `Failed`).
     let (readiness, _watcher) = Readiness::new();
     let readiness = match args.ready_file.clone() {
         Some(path) => readiness.with_ready_file(path),
         None => readiness,
     };
 
-    // Load and verify the pinned graph before pulling any work. On failure
-    // bootstrap has already published `Failed`; returning the error exits
-    // non-zero so an unready process never pulls a job.
+    // On failure bootstrap has already published `Failed`; the `?` exits non-zero so an unready process never pulls.
     let boot = BootstrapConfig {
         catalog: args.catalog.clone(),
         region: args.region.clone(),
@@ -152,9 +127,7 @@ async fn main() -> anyhow::Result<()> {
         .await
         .context("graph bootstrap failed")?;
 
-    // Now that we are `Ready`, flip readiness to `Draining` the instant a
-    // shutdown begins, so a probe steers traffic away while in-flight solves
-    // finish. The setter is owned by this task for the rest of the process.
+    // Flip readiness to `Draining` as soon as shutdown begins, so a probe steers traffic away.
     let drain_signal = shutdown.clone();
     tokio::spawn(async move {
         drain_signal.triggered().await;
@@ -166,9 +139,7 @@ async fn main() -> anyhow::Result<()> {
         .with_context(|| format!("could not connect to NATS at {}", args.nats))?;
     let context = async_nats::jetstream::new(client);
 
-    // Reconcile the region's job stream and the shared durable pull consumer
-    // (idempotent get-or-create), then read raw job bytes so the loop can
-    // size-gate them before decode.
+    // Read raw job bytes so the loop can size-gate them before decode.
     let jobs = JobsConfig::default();
     let stream = ensure_job_stream(&context, &loaded.region.id, &jobs)
         .await
@@ -219,8 +190,6 @@ async fn main() -> anyhow::Result<()> {
     )
     .with_metrics(metrics);
 
-    // `run` pulls, solves, and answers until shutdown, then drains in-flight
-    // solves within the grace budget and returns the run's tally.
     let stats = pull.run().await;
     info!(?stats, "matcher drained; exiting");
 
@@ -231,7 +200,6 @@ async fn main() -> anyhow::Result<()> {
 mod tests {
     use super::*;
 
-    /// The minimal required argument set every test starts from.
     fn base() -> Vec<&'static str> {
         vec![
             "matcher",
@@ -255,7 +223,6 @@ mod tests {
         assert_eq!(args.region, RegionId::new("syd").unwrap());
         assert_eq!(args.shard_dir, PathBuf::from("/var/lib/routers/shards"));
 
-        // Defaults for everything optional.
         assert_eq!(args.slots, default_slots());
         assert_eq!(args.grace, Duration::from_secs(20));
         assert_eq!(
@@ -294,7 +261,6 @@ mod tests {
     #[test]
     fn rejects_a_non_token_safe_region() {
         let mut argv = base();
-        // Replace the region value with one holding a subject separator.
         let region_index = argv.iter().position(|arg| *arg == "syd").unwrap();
         argv[region_index] = "not/a/token";
 
@@ -303,7 +269,6 @@ mod tests {
 
     #[test]
     fn requires_the_mandatory_arguments() {
-        // Missing every required flag: parsing must fail rather than default.
         assert!(Args::try_parse_from(["matcher"]).is_err());
     }
 

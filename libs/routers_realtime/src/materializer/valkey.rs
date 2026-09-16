@@ -1,26 +1,11 @@
-//! A Valkey-backed [`Sink`]: the served view as hashes. (T28)
+//! A Valkey-backed [`Sink`]: the served view as hashes.
 //!
-//! [`ValkeySink`] is the production materialiser backend: one vehicle's history
-//! is a small set of Valkey hashes, and applying an output loads the affected
-//! segment, folds the output in with the shared [`merge`], and writes back only
-//! what changed. There is no broker or store in this sandbox, so this sink is
-//! verified by compilation; its behaviour is the pure merge it delegates to.
-//!
-//! Layout (keys hash-tagged on the vehicle so a future Valkey Cluster keeps a
-//! vehicle's keys on one slot):
-//!
-//! * `matched:{<vehicle>}:<segment>` — a HASH, field = layer timestamp, value =
-//!   postcard-encoded [`StoredLayer`].
-//! * `matched:{<vehicle>}:meta` — a HASH, `current_segment` plus one
-//!   `finalized_through:<segment>` per segment.
-//!
-//! A whole apply is *not* one atomic transaction against concurrent readers: a
-//! reader can observe the layer writes before the `meta` update. That is
-//! acceptable because the merge is idempotent — a replayed output rewrites the
-//! same fields to the same values — and a reader resolves layers by revision
-//! itself, exactly as the merge does. Placement across independent primaries
-//! reuses the rendezvous hashing the raw store uses, so a vehicle always lands
-//! on the same primary.
+//! [`ValkeySink`] is the production backend: one vehicle's history is a set of
+//! Valkey hashes (keys hash-tagged on the vehicle so a future Cluster keeps them
+//! on one slot), and applying an output loads the affected segment, folds it in
+//! with the shared [`merge`], and writes back only what changed. An apply is not
+//! atomic against readers, which is safe because the merge is idempotent and a
+//! reader resolves layers by revision itself.
 
 use alloc::collections::BTreeMap;
 
@@ -50,14 +35,11 @@ pub enum ValkeyError {
     NoEndpoints,
 }
 
-/// Which primary owns a vehicle. Held apart from the connections so the mapping
-/// — the part that must stay stable for a vehicle's history to survive a fleet
-/// change — is a pure, testable function. This is the rendezvous placement the
-/// raw store uses (copied per the design brief; the raw store is retired later).
+/// Which primary owns a vehicle: rendezvous placement over the fleet, kept as a
+/// pure function so the mapping stays stable across a fleet change.
 #[derive(Clone)]
 struct Placement {
-    /// One hash per endpoint URL, so a primary's identity is its URL rather than
-    /// its position and reordering the fleet moves no vehicle.
+    /// One hash per endpoint URL, so identity is the URL, not the list position.
     seeds: Vec<u64>,
 }
 
@@ -72,7 +54,7 @@ impl Placement {
     }
 
     /// Rendezvous (highest-random-weight) placement: growing the fleet remaps
-    /// about `1/N` of vehicles rather than nearly all of them.
+    /// about `1/N` of vehicles.
     fn index_for(&self, key: &str) -> usize {
         let hash = fnv1a(key.as_bytes());
         self.seeds
@@ -109,9 +91,9 @@ pub struct ValkeySink {
 }
 
 impl ValkeySink {
-    /// Connect to every primary in `urls`. The set is unordered — placement is
-    /// by rendezvous hash — but every process that touches the view must be
-    /// handed the same set, or a vehicle's history would split across primaries.
+    /// Connect to every primary in `urls`. The set is unordered, but every
+    /// process that touches the view must be handed the same set, or a vehicle's
+    /// history splits across primaries.
     pub async fn connect(urls: &[Url]) -> Result<Self, ValkeyError> {
         if urls.is_empty() {
             return Err(ValkeyError::NoEndpoints);
@@ -129,8 +111,7 @@ impl ValkeySink {
         })
     }
 
-    /// The connection for a vehicle: rendezvous over the fleet, so every one of
-    /// a vehicle's keys lands on one primary.
+    /// The connection for a vehicle, so all its keys land on one primary.
     fn connection(&self, vehicle: VehicleId) -> MultiplexedConnection {
         let node = self.placement.index_for(&vehicle.0.to_string());
         self.conns[node].clone()
@@ -150,7 +131,7 @@ async fn load_layers<E: Entry + DeserializeOwned>(
 
     let mut layers = BTreeMap::new();
     for (field, bytes) in raw {
-        // A field that is not a timestamp is not ours; skip it rather than fail.
+        // Skip fields that are not timestamps rather than fail.
         let Ok(timestamp) = field.parse::<i64>() else {
             continue;
         };
@@ -159,8 +140,7 @@ async fn load_layers<E: Entry + DeserializeOwned>(
     Ok(layers)
 }
 
-/// The vehicle's metadata HASH: `current_segment` and each segment's
-/// `finalized_through`, read as plain strings.
+/// The vehicle's metadata HASH, read as plain strings.
 async fn read_meta(
     conn: &mut MultiplexedConnection,
     vehicle: VehicleId,
@@ -187,7 +167,6 @@ impl<E: Entry + DeserializeOwned> Sink<E> for ValkeySink {
         let segment = target_segment(output);
         let mut conn = self.connection(vehicle);
 
-        // Load the affected segment and the vehicle's metadata (one read each).
         let layers = load_layers::<E>(&mut conn, vehicle, segment).await?;
         let meta = read_meta(&mut conn, vehicle).await?;
         let had_current = meta.contains_key("current_segment");
@@ -199,7 +178,7 @@ impl<E: Entry + DeserializeOwned> Sink<E> for ValkeySink {
             layers,
         };
 
-        // Snapshot what is stored so the write-back touches only what changed.
+        // Snapshot the stored revisions so the write-back touches only changes.
         let before: BTreeMap<i64, Revision> = state
             .layers
             .iter()
@@ -214,7 +193,6 @@ impl<E: Entry + DeserializeOwned> Sink<E> for ValkeySink {
         let mut pipe = redis::pipe();
         let mut dirty = false;
 
-        // HSET the layers whose revision changed (new or superseded).
         for (timestamp, stored) in &state.layers {
             if before.get(timestamp) != Some(&stored.revision) {
                 let bytes = postcard::to_allocvec(stored)?;
@@ -226,14 +204,12 @@ impl<E: Entry + DeserializeOwned> Sink<E> for ValkeySink {
                 dirty = true;
             }
         }
-        // HDEL the layers a retraction removed.
         for timestamp in before.keys() {
             if !state.layers.contains_key(timestamp) {
                 pipe.cmd("HDEL").arg(&layer_key).arg(*timestamp).ignore();
                 dirty = true;
             }
         }
-        // Persist a raised watermark.
         if state.finalized_through != before_finalized
             && let Some(through) = state.finalized_through
         {
@@ -244,8 +220,7 @@ impl<E: Entry + DeserializeOwned> Sink<E> for ValkeySink {
                 .ignore();
             dirty = true;
         }
-        // Establish or advance the current segment: a reset moves it, and a
-        // vehicle's first output establishes it.
+        // A reset moves the current segment; a vehicle's first output sets it.
         if matches!(output.kind, OutputKind::Reset { .. }) || !had_current {
             pipe.cmd("HSET")
                 .arg(&meta_key)
@@ -287,7 +262,6 @@ mod tests {
 
         for vehicle in 0..1000u64 {
             let key = vehicle.to_string();
-            // Same primary URL regardless of the order the fleet was listed in.
             assert_eq!(
                 urls[direct.index_for(&key)],
                 reversed[flipped.index_for(&key)]

@@ -1,16 +1,10 @@
 //! Steady-state pipeline behaviour: the happy path end to end, transport
-//! duplicate coalescing, result idempotency, and early-result parking. (T31)
-//!
-//! These pin the §10 rows the orchestrator owns for *nominal* traffic: a clean
-//! trace materialises into a monotone history, a redelivered raw is coalesced
-//! rather than re-solved, a duplicate answer never doubles an output, and an
-//! answer that outruns its dispatch is parked and then accepted exactly once.
+//! duplicate coalescing, result idempotency, and early-result parking.
 
 use super::fixture::*;
 
-/// Six clustered observations on the bent road solve to six matched outputs with
-/// strictly climbing revisions; the materialised trace carries a layer at each
-/// observation's stamp, and the frontier ends at the last raw sequence.
+/// Six observations solve to six matched outputs with climbing revisions, one
+/// materialised layer per stamp, and the frontier at the last raw sequence.
 #[tokio::test(start_paused = true)]
 async fn happy_path_matches_and_finalizes() {
     let fleet = Fleet::bent_road();
@@ -42,7 +36,6 @@ async fn happy_path_matches_and_finalizes() {
         "frontier at the last raw sequence"
     );
 
-    // Exactly six Matched outputs, revisions strictly increasing.
     let outputs = published_outputs(&fleet.bus, partition);
     let matched: Vec<&CommittedOutput<E>> = outputs
         .iter()
@@ -58,7 +51,6 @@ async fn happy_path_matches_and_finalizes() {
         );
     }
 
-    // The materialised trace holds one layer per observation stamp.
     let view = sink
         .snapshot(VehicleId(vehicle))
         .expect("vehicle materialised");
@@ -69,16 +61,15 @@ async fn happy_path_matches_and_finalizes() {
     assert_eq!(segment.last_revision, Some(Revision(last_seq)));
 }
 
-/// A raw message redelivered while its original is still in flight coalesces:
-/// no second job, no second output.
+/// A raw redelivered while its original is still in flight coalesces: no second
+/// job or output.
 #[tokio::test(start_paused = true)]
 async fn duplicate_raw_delivery_is_coalesced_not_reprocessed() {
     let fleet = Fleet::bent_road();
     let vehicle = 1u64;
     let partition = fleet.partition_of(vehicle);
 
-    // No matcher: the observation dispatches and stays in flight, so a
-    // redelivery coalesces against the still-outstanding original.
+    // No matcher: the observation dispatches and stays in flight.
     let orchestrator = fleet.spawn_orchestrator(partition);
     fleet.ingest(vehicle, obs_ts(0), road_points()[0]).await;
 
@@ -97,8 +88,7 @@ async fn duplicate_raw_delivery_is_coalesced_not_reprocessed() {
     );
 }
 
-/// A duplicate delivery of an already-decided result is rejected (or
-/// quarantined) out of the commit path; the committed output is unchanged.
+/// A duplicate delivery of an already-decided result is rejected out of the commit path.
 #[tokio::test(start_paused = true)]
 async fn duplicate_result_delivery_is_idempotent() {
     let fleet = Fleet::bent_road();
@@ -112,8 +102,6 @@ async fn duplicate_result_delivery_is_idempotent() {
     advance_until(|| !fleet.bus.published("solve.v1.g.>").is_empty()).await;
 
     let identity = fleet.fresh_identity(vehicle, observation);
-    // The real answer, then a duplicate of it under a distinct dedup key so the
-    // broker delivers it a second time.
     fleet.publish_result(identity.clone(), empty_solved()).await;
     fleet
         .publish_result_dup(identity, empty_solved(), "dup")
@@ -139,15 +127,7 @@ async fn duplicate_result_delivery_is_idempotent() {
 }
 
 /// A result that reaches the worker before its job is dispatched is parked, then
-/// replayed and accepted when the dispatch lands — one output, no duplicate.
-///
-/// A result only parks (rather than dropping) once its vehicle is *tracked*, so
-/// the scenario tracks the vehicle and holds its first dispatch: a one-shot
-/// job-publish failure leaves the vehicle enqueued but undispatched, the answer
-/// parks against it, and the housekeeping retry then dispatches and drains the
-/// park. Every set-up call runs while the worker task is still parked (the
-/// cooperative single-thread runtime only advances it when the test awaits), so
-/// the ordering is deterministic.
+/// accepted when the dispatch lands — one output, no duplicate.
 #[tokio::test(start_paused = true)]
 async fn early_result_is_parked_then_accepted() {
     use routers_realtime::bus::adapter::PublishError;
@@ -158,9 +138,7 @@ async fn early_result_is_parked_then_accepted() {
 
     let orchestrator = fleet.spawn_orchestrator(partition);
 
-    // Publish the raw and its answer while the worker is still parked, then arm a
-    // one-shot job-publish failure so the worker's *first* publish — the solve
-    // job — fails and the vehicle is held, tracked but undispatched.
+    // Arm a one-shot job-publish failure so the vehicle is held tracked-but-undispatched, and the answer parks.
     let observation = fleet.ingest(vehicle, obs_ts(0), road_points()[0]).await;
     let identity = fleet.fresh_identity(vehicle, observation);
     fleet.publish_result(identity, empty_solved()).await;
@@ -181,8 +159,7 @@ async fn early_result_is_parked_then_accepted() {
     );
 }
 
-/// The concrete raw subject for a partition — a tiny shim so the scenarios read
-/// cleanly without importing the topology functions directly.
+/// The concrete raw subject for a partition.
 fn raw_subject_of(partition: u16) -> String {
     routers_realtime::topology::raw_subject(u64::from(partition))
 }

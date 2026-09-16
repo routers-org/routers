@@ -1,20 +1,11 @@
-//! `SolveJob`: the regional solve-job message. (T02)
+//! `SolveJob`: the regional solve-job message, one unit of work handed to the
+//! regional matchers. Its identity is a deterministic hash of its
+//! [`JobIdentity`], so two orchestrators that build the same context mint the
+//! same [`JobId`] and the broker's `Nats-Msg-Id` dedup collapses the duplicate.
 //!
-//! A [`SolveJob`] is one unit of work handed to the regional matchers: solve
-//! this vehicle's next observation against a named graph, resuming (or
-//! restarting) from the state the orchestrator committed. Its identity is not
-//! a random id but a deterministic hash of its [`JobIdentity`] — everything
-//! that makes the job's context unique. Two orchestrators (or the same one
-//! retrying an ambiguous publish) that build the same context therefore mint
-//! byte-identical bytes and the *same* [`JobId`], so the broker's `Nats-Msg-Id`
-//! dedup collapses the duplicate rather than solving it twice.
-//!
-//! That determinism rests on postcard's encoding being stable for a fixed
-//! field order. The order of the fields in [`JobIdentity`] (and of the
-//! variants it reaches) is therefore **wire law**: reordering them silently
-//! changes every job id in the fleet and breaks dedup across a rolling
-//! deploy. Do not reorder, insert, or retype a field without bumping the
-//! schema and the domain tag below.
+//! Field order in [`JobIdentity`] is wire law: postcard hashes it, so reordering
+//! silently changes every job id in the fleet. Do not reorder without bumping
+//! the schema and the domain tag below.
 
 use core::time::Duration;
 
@@ -30,9 +21,8 @@ use crate::protocol::ids::{
     SchemaVersion, SegmentId,
 };
 
-/// The committed state a job resumes from: which revision last decided this
-/// vehicle and the continuity segment that revision belonged to. Absent
-/// (`JobIdentity::base == None`) for a fresh vehicle with no checkpoint yet.
+/// The committed state a job resumes from: the last committed revision and its
+/// segment. `None` for a fresh vehicle with no checkpoint yet.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct BaseState {
     /// The revision (raw sequence) of the last committed decision resumed from.
@@ -42,13 +32,8 @@ pub struct BaseState {
 }
 
 /// Everything that makes a solve job's context unique. The job's [`JobId`] is
-/// the digest of this record, so any two jobs that would compute a different
-/// answer differ here in at least one field — and any two that would compute
-/// the *same* answer share an id and dedup.
-///
-/// Field order is wire law (see the module docs): the postcard encoding hashed
-/// by [`JobIdentity::job_id`] depends on it, and changing the order re-hashes
-/// every job in flight.
+/// the digest of this record, so two jobs that would compute a different answer
+/// differ here in at least one field. Field order is wire law (see module docs).
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct JobIdentity {
     /// The wire contract this job was produced against; a peer on a different
@@ -66,24 +51,15 @@ pub struct JobIdentity {
     pub region: RegionId,
 }
 
-/// The domain-separation tag mixed into every job digest. Bumping the wire
-/// contract that this hash protects means bumping this tag as well, so a job
-/// id can never collide across contract versions.
+/// The domain-separation tag mixed into every job digest; bump it whenever the
+/// wire contract bumps.
 const JOB_ID_DOMAIN: &[u8] = b"routers.solve-job.v1";
 
 impl JobIdentity {
     /// The deterministic 128-bit identity of a job with this context: the
     /// leading 16 bytes of `sha256(domain-tag ∥ postcard(self))`.
-    ///
-    /// Deterministic because postcard encodes a fixed-order struct the same
-    /// way every time, so the same context always yields the same id (and
-    /// hence the same `Nats-Msg-Id`). Reordering the fields of [`JobIdentity`]
-    /// would change this value for every job — that is why the field order is
-    /// wire law.
     #[must_use]
     pub fn job_id(&self) -> JobId {
-        // Serialising an in-memory value of these types cannot fail; postcard
-        // only errors on custom `Serialize` impls or unsupported shapes.
         let bytes = postcard::to_allocvec(self).expect("JobIdentity is infallibly serialisable");
         JobId(ids::digest128(&[JOB_ID_DOMAIN, bytes.as_slice()]))
     }
@@ -91,11 +67,6 @@ impl JobIdentity {
 
 /// One regional solve job: solve `identity.observation` for `identity.vehicle`
 /// against `identity.graph`, resuming from `context`, before `deadline_us`.
-///
-/// The `id` is redundant with `identity` on purpose — it travels as the broker
-/// dedup key so peers need not re-hash to route, and every receiver
-/// [`verify`](SolveJob::verify)s it back against `identity` on decode so a
-/// forged or corrupted envelope cannot masquerade as a different job.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(bound(serialize = "E: Serialize", deserialize = "E: Deserialize<'de>"))]
 pub struct SolveJob<E: Entry> {
@@ -112,8 +83,7 @@ pub struct SolveJob<E: Entry> {
 }
 
 impl<E: Entry> SolveJob<E> {
-    /// Build a job for `identity`, computing its [`JobId`] from that identity
-    /// so `id` and `identity` can never disagree at the source.
+    /// Build a job for `identity`, computing its [`JobId`] so the two agree.
     pub fn new(
         identity: JobIdentity,
         lane: Lane,
@@ -131,9 +101,7 @@ impl<E: Entry> SolveJob<E> {
     }
 
     /// Check that this envelope is self-consistent: its `id` is the digest of
-    /// its `identity`, and its `identity.schema` is the schema this build
-    /// speaks. Receivers call this on every decode so a tampered id or a
-    /// cross-version job is caught before it is solved.
+    /// its `identity`, and its `identity.schema` is the schema this build speaks.
     pub fn verify(&self) -> Result<(), JobError> {
         let expected = self.identity.job_id();
         if self.id != expected {
@@ -177,9 +145,7 @@ impl<E: Entry> SolveJob<E> {
 
 impl<E: Entry + serde::de::DeserializeOwned> SolveJob<E> {
     /// Decode a job from the wire and [`verify`](SolveJob::verify) it in one
-    /// step, so a caller never handles an unverified envelope. Bounded by
-    /// [`DeserializeOwned`](serde::de::DeserializeOwned) — exactly what the
-    /// [`Wire`] decode it delegates to needs.
+    /// step, so a caller never handles an unverified envelope.
     pub fn decode_verified(bytes: &[u8]) -> Result<Self, JobError> {
         let job = <Self as Wire>::decode(bytes).map_err(JobError::Decode)?;
         job.verify()?;
@@ -192,8 +158,7 @@ postcard_wire!(SolveJob<E: Entry>);
 /// Why a [`SolveJob`] failed to verify or decode.
 #[derive(Debug, Error)]
 pub enum JobError {
-    /// The envelope's `id` is not the digest of its `identity`: the job was
-    /// corrupted or forged.
+    /// The envelope's `id` is not the digest of its `identity`.
     #[error("job id mismatch: expected {expected}, got {got}")]
     IdMismatch {
         /// The id recomputed from the envelope's identity.
@@ -222,7 +187,6 @@ mod tests {
 
     use super::*;
 
-    /// A canonical identity the field-mutation and known-answer tests vary from.
     fn sample_identity() -> JobIdentity {
         JobIdentity {
             schema: SCHEMA_VERSION,
@@ -247,8 +211,6 @@ mod tests {
 
     #[test]
     fn same_identity_yields_same_id() {
-        // Two independent constructions of the same context must agree, or the
-        // broker could never dedup a retried publish.
         let a = SolveJob::new(
             sample_identity(),
             Lane::DEFAULT,
@@ -273,7 +235,6 @@ mod tests {
         let base = sample_identity();
         let base_id = base.job_id();
 
-        // One mutation per field; each must move the digest.
         let mutations: Vec<(&str, JobIdentity)> = vec![
             (
                 "schema",
@@ -349,7 +310,6 @@ mod tests {
 
     #[test]
     fn base_state_variation_changes_the_id() {
-        // The two BaseState fields must each be hashed independently.
         let with_base = |revision, segment| JobIdentity {
             base: Some(BaseState {
                 revision: Revision(revision),
@@ -397,8 +357,6 @@ mod tests {
 
     #[test]
     fn verify_catches_a_wrong_schema() {
-        // Built with schema 2, so `id` matches `identity` but the schema does
-        // not match this build — the second check must fire.
         let identity = JobIdentity {
             schema: SchemaVersion(2),
             ..sample_identity()
@@ -463,7 +421,6 @@ mod tests {
 
     #[test]
     fn decode_verified_rejects_garbage() {
-        // A truncated/garbage buffer fails at the decode step, not verify.
         assert!(matches!(
             SolveJob::<MockEntryId>::decode_verified(&[0xff, 0xff, 0xff, 0xff]),
             Err(JobError::Decode(_))
@@ -519,11 +476,7 @@ mod tests {
 
     #[test]
     fn job_id_is_wire_law() {
-        // KNOWN-ANSWER TEST. This hex is WIRE LAW: it is the job id every peer
-        // in the fleet must compute for this exact identity. It was pinned the
-        // first time this test ran; if it ever changes, the encoding or field
-        // order of JobIdentity changed and every in-flight job id moved with
-        // it. Do not "fix" this constant — fix the change that moved it.
+        // Wire law: if this pinned id changes, the encoding or field order moved; fix that, not the constant.
         let identity = JobIdentity {
             schema: SchemaVersion(1),
             vehicle_id: VehicleId(1),
