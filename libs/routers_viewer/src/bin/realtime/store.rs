@@ -1,34 +1,52 @@
-use alloc::collections::{BTreeMap, VecDeque};
+use alloc::collections::{BTreeMap, BTreeSet, VecDeque};
 use core::time::Duration;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use web_time::Instant;
 
 use geo::Point;
 use routers_realtime::event::{MatchedDiff, VehicleId};
+use routers_realtime::protocol::ids::SegmentId;
 use routers_realtime::protocol::output::supersedes;
 use routers_realtime::protocol::{CommittedOutput, OutputKind, Revision};
 
 use crate::E;
 
-/// A vehicle's matched history, merged from committed outputs: one geometry
-/// segment per observation timestamp, kept by highest revision so a stale
-/// re-delivery never clobbers a newer layer.
-pub struct VehicleTrace {
+/// One segment of a vehicle's matched history, as the orchestrator currently
+/// resolves it: a finalized prefix plus the live window of the latest commit.
+pub struct SegmentTrace {
     /// Observation timestamp → `(revision that set it, its geometry)`.
     layers: BTreeMap<i64, (Revision, Vec<Point>)>,
+    finalized_through: Option<i64>,
     pub last_seen: Instant,
 }
 
-impl VehicleTrace {
+fn is_final(timestamp: i64, finalized_through: Option<i64>) -> bool {
+    finalized_through.is_some_and(|watermark| timestamp <= watermark)
+}
+
+impl SegmentTrace {
     fn new() -> Self {
         Self {
             layers: BTreeMap::new(),
+            finalized_through: None,
             last_seen: Instant::now(),
         }
     }
 
-    /// Merge a diff, keeping the highest revision per timestamp.
-    fn merge(&mut self, revision: Revision, diff: &MatchedDiff<E>, capacity: usize) {
+    /// Replace the live window with this commit's diff. A live layer the diff no
+    /// longer covers was re-matched away, so it goes; final layers stay.
+    fn resolve(
+        &mut self,
+        revision: Revision,
+        diff: &MatchedDiff<E>,
+        finalized_through: Option<i64>,
+        capacity: usize,
+    ) {
+        let watermark = self.finalized_through;
+        let covered: BTreeSet<i64> = diff.layers.iter().map(|layer| layer.timestamp).collect();
+        self.layers
+            .retain(|timestamp, _| is_final(*timestamp, watermark) || covered.contains(timestamp));
+
         for layer in &diff.layers {
             let existing = self.layers.get(&layer.timestamp).map(|(rev, _)| *rev);
             if supersedes(revision, existing) {
@@ -38,7 +56,11 @@ impl VehicleTrace {
             }
         }
 
-        // Bound by observation count, trimming the oldest.
+        self.finalized_through = match (self.finalized_through, finalized_through) {
+            (Some(a), Some(b)) => Some(a.max(b)),
+            (a, b) => a.or(b),
+        };
+
         while self.layers.len() > capacity {
             self.layers.pop_first();
         }
@@ -46,7 +68,6 @@ impl VehicleTrace {
         self.touch();
     }
 
-    /// Drop the retracted (non-final) timestamps.
     fn retract(&mut self, timestamps: &[i64]) {
         for timestamp in timestamps {
             self.layers.remove(timestamp);
@@ -58,7 +79,7 @@ impl VehicleTrace {
         self.last_seen = Instant::now();
     }
 
-    /// The full tail as one point sequence, oldest observation first.
+    /// The segment as one point sequence, oldest observation first.
     pub fn flattened(&self) -> Vec<Point> {
         self.layers
             .values()
@@ -74,13 +95,14 @@ pub struct StoreStats {
     pub total_events: u64,
 }
 
-/// Merged matched history per vehicle. Memory is bounded on both axes:
-/// each vehicle retains at most `capacity` observations, and vehicles that
-/// go quiet for longer than `idle_ttl` are evicted entirely.
+/// Resolved traces per `(vehicle, segment)`. A reset opens a new segment, so
+/// the line breaks instead of jumping. Memory is bounded on both axes: each
+/// segment keeps at most `capacity` observations, and segments quiet for
+/// longer than `idle_ttl` are evicted.
 pub struct TraceStore {
     capacity: usize,
     idle_ttl: Duration,
-    pub traces: HashMap<VehicleId, VehicleTrace>,
+    pub traces: HashMap<(VehicleId, SegmentId), SegmentTrace>,
     event_bucket: VecDeque<Instant>,
     total_events: u64,
 }
@@ -102,21 +124,24 @@ impl TraceStore {
         self.event_bucket.push_back(now);
         self.total_events += 1;
 
+        let key = (output.vehicle_id, output.segment);
         match &output.kind {
-            OutputKind::Matched { diff, .. } => {
+            OutputKind::Matched {
+                diff,
+                finalized_through,
+            } => {
                 self.traces
-                    .entry(output.vehicle_id)
-                    .or_insert_with(VehicleTrace::new)
-                    .merge(output.revision, diff, self.capacity);
+                    .entry(key)
+                    .or_insert_with(SegmentTrace::new)
+                    .resolve(output.revision, diff, *finalized_through, self.capacity);
             }
             OutputKind::Retraction { timestamps } => {
-                if let Some(trace) = self.traces.get_mut(&output.vehicle_id) {
+                if let Some(trace) = self.traces.get_mut(&key) {
                     trace.retract(timestamps);
                 }
             }
-            // Resets and terminals only keep a known vehicle alive against idle eviction.
             OutputKind::Terminal { .. } | OutputKind::Reset { .. } => {
-                if let Some(trace) = self.traces.get_mut(&output.vehicle_id) {
+                if let Some(trace) = self.traces.get_mut(&key) {
                     trace.touch();
                 }
             }
@@ -145,9 +170,11 @@ impl TraceStore {
             .iter()
             .filter(|t| now.duration_since(**t) < Duration::from_secs(1))
             .count();
+        let vehicles: HashSet<VehicleId> =
+            self.traces.keys().map(|(vehicle, _)| *vehicle).collect();
 
         StoreStats {
-            vehicle_count: self.traces.len(),
+            vehicle_count: vehicles.len(),
             events_per_sec: recent,
             total_events: self.total_events,
         }
