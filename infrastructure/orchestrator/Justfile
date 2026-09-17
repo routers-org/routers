@@ -1,2 +1,2 @@
 build:
-    docker build -f Dockerfile -t routers-orchestrator:latest ../..
+    docker build --target orchestrator -f ../Dockerfile -t routers-orchestrator:latest ../..

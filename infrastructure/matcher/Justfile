@@ -1,2 +1,2 @@
 build:
-    docker build -f Dockerfile -t routers-matcher:latest ../..
+    docker build --target matcher -f ../Dockerfile -t routers-matcher:latest ../..
