@@ -609,8 +609,8 @@
     },
     {
       "id": 11,
-      "title": "Job size",
-      "description": "Encoded solve job bytes. The red line is the 8 MiB broker payload limit.",
+      "title": "Message sizes",
+      "description": "Encoded bytes of jobs, results and committed outputs. All three carry the trip; growth here is the trip not converging. Red line: 8 MiB broker limit.",
       "type": "timeseries",
       "gridPos": {
         "x": 16,
@@ -656,24 +656,32 @@
       },
       "targets": [
         {
-          "expr": "histogram_quantile(0.50, sum by (le) (rate(job_bytes_bucket[$__rate_interval])))",
-          "legendFormat": "p50",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          }
-        },
-        {
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(job_bytes_bucket[$__rate_interval])))",
-          "legendFormat": "p95",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          }
-        },
-        {
           "expr": "histogram_quantile(0.99, sum by (le) (rate(job_bytes_bucket[$__rate_interval])))",
-          "legendFormat": "p99",
+          "legendFormat": "job p99",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(result_bytes_bucket[$__rate_interval])))",
+          "legendFormat": "result p99",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(output_bytes_bucket[$__rate_interval])))",
+          "legendFormat": "output p99",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(result_bytes_bucket[$__rate_interval])))",
+          "legendFormat": "result p50",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -1239,13 +1247,332 @@
       }
     },
     {
+      "id": 27,
+      "title": "Storage",
+      "type": "row",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 49,
+        "w": 24,
+        "h": 1
+      },
+      "panels": []
+    },
+    {
+      "id": 28,
+      "title": "File store used",
+      "description": "JetStream bytes on disk against the server limit. Publishes fail with \"insufficient resources\" at 100%.",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 0,
+        "y": 50,
+        "w": 8,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "thresholdsStyle": {
+              "mode": "line"
+            }
+          },
+          "min": 0,
+          "max": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 0.6
+              },
+              {
+                "color": "red",
+                "value": 0.85
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum(jetstream_server_total_message_bytes) / sum(jetstream_server_max_storage)",
+          "legendFormat": "used",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
+      ],
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      }
+    },
+    {
+      "id": 29,
+      "title": "Bytes per stream",
+      "description": "What each plane holds. Retention bounds raw and matched by age; results and jobs should drain, so a climb there is a stall.",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 8,
+        "y": 50,
+        "w": 8,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum by (stream_name) (jetstream_stream_total_bytes)",
+          "legendFormat": "{{stream_name}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
+      ],
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      }
+    },
+    {
+      "id": 30,
+      "title": "Growth per stream",
+      "description": "Bytes per second added net of retention. Positive over a full retention window means the store will fill.",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 16,
+        "y": 50,
+        "w": 8,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "Bps",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 0
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum by (stream_name) (deriv(jetstream_stream_total_bytes[5m]))",
+          "legendFormat": "{{stream_name}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
+      ],
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      }
+    },
+    {
+      "id": 31,
+      "title": "Average message size per stream",
+      "description": "Stored bytes over stored messages. Compare with the model: raw 256 B, jobs, results and matched 2 KiB.",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 0,
+        "y": 58,
+        "w": 8,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 0
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum by (stream_name) (jetstream_stream_total_bytes) / sum by (stream_name) (jetstream_stream_total_messages)",
+          "legendFormat": "{{stream_name}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
+      ],
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      }
+    },
+    {
+      "id": 32,
+      "title": "Consumer backlog",
+      "description": "Messages delivered but not yet acknowledged, and not yet delivered, summed per stream.",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 8,
+        "y": 58,
+        "w": 8,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 0
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum by (stream_name) (jetstream_consumer_num_pending)",
+          "legendFormat": "{{stream_name}} pending",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "expr": "sum by (stream_name) (jetstream_consumer_num_ack_pending)",
+          "legendFormat": "{{stream_name}} unacked",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
+      ],
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      }
+    },
+    {
+      "id": 33,
+      "title": "Redeliveries",
+      "description": "Messages JetStream had to deliver again because the first delivery was not acknowledged in time.",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 16,
+        "y": 58,
+        "w": 8,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 0
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum by (stream_name) (jetstream_consumer_num_redelivered)",
+          "legendFormat": "{{stream_name}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
+      ],
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      }
+    },
+    {
       "id": 22,
       "title": "Infrastructure",
       "type": "row",
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 49,
+        "y": 66,
         "w": 24,
         "h": 1
       },
@@ -1258,7 +1585,7 @@
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 50,
+        "y": 67,
         "w": 8,
         "h": 8
       },
@@ -1312,7 +1639,7 @@
       "type": "timeseries",
       "gridPos": {
         "x": 8,
-        "y": 50,
+        "y": 67,
         "w": 8,
         "h": 8
       },
@@ -1383,7 +1710,7 @@
       "type": "timeseries",
       "gridPos": {
         "x": 16,
-        "y": 50,
+        "y": 67,
         "w": 8,
         "h": 8
       },

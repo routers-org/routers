@@ -751,7 +751,7 @@ where
             .commit(vehicle, self.cfg.partition, plan, meta.expected_base, raw)
             .await
         {
-            Ok(_committed) => {
+            Ok(committed) => {
                 self.scheduler
                     .set_checkpoint(vehicle, CheckpointState::Present(next));
                 if let Ok(finished) = self.scheduler.finish(vehicle, now) {
@@ -770,6 +770,7 @@ where
                 let kind = if is_terminal { "terminal" } else { "matched" };
                 self.metrics
                     .commit_seconds(kind, commit_start.elapsed().as_secs_f64());
+                self.metrics.output_bytes(committed.bytes as u64);
                 // A reset commit emits the reset before the matched/terminal output.
                 if let Some(reason) = reset_reason {
                     self.metrics.completion("reset", reason);

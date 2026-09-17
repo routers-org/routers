@@ -379,6 +379,8 @@ pub struct Committed {
     /// `true` when this completion re-drove an already-published record (crash
     /// recovery).
     pub republished: bool,
+    /// Encoded output bytes published by this commit.
+    pub bytes: usize,
 }
 
 /// Why a commit could not complete. In every failure the prepared record is
@@ -539,6 +541,7 @@ where
             raw: prepared.raw,
             outputs: entries.len(),
             republished,
+            bytes: entries.iter().map(|(_, _, bytes)| bytes.len()).sum(),
         })
     }
 
