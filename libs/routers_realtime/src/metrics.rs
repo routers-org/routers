@@ -18,6 +18,17 @@ const METER: &str = "routers_realtime";
 /// How many bounded classes [`Metrics::partition_class`] folds the partitions into.
 const PARTITION_CLASSES: u16 = 16;
 
+/// Latency buckets in seconds, 1 ms to 2 min; the SDK default is scaled for milliseconds.
+const SECONDS_BUCKETS: [f64; 16] = [
+    0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0, 120.0,
+];
+
+/// Payload buckets in bytes, 1 KiB to 16 MiB.
+const BYTES_BUCKETS: [f64; 11] = [
+    1024.0, 4096.0, 16384.0, 65536.0, 262144.0, 1048576.0, 2097152.0, 4194304.0, 8388608.0,
+    12582912.0, 16777216.0,
+];
+
 /// A single reading of one admission credit scope. `region` is `None` for the
 /// process-wide scope.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -120,6 +131,7 @@ impl Metrics {
             .u64_histogram("job_bytes")
             .with_description("Encoded size of a dispatched solve job.")
             .with_unit("By")
+            .with_boundaries(BYTES_BUCKETS.to_vec())
             .build();
         let results_received = meter
             .u64_counter("results_received")
@@ -141,6 +153,7 @@ impl Metrics {
             .f64_histogram("checkpoint_commit_seconds")
             .with_description("Wall time to prepare, publish, and promote one commit.")
             .with_unit("s")
+            .with_boundaries(SECONDS_BUCKETS.to_vec())
             .build();
         let completions = meter
             .u64_counter("completions")
@@ -159,16 +172,19 @@ impl Metrics {
             .f64_histogram("solve_seconds")
             .with_description("CPU time a matcher spent solving one job, by outcome.")
             .with_unit("s")
+            .with_boundaries(SECONDS_BUCKETS.to_vec())
             .build();
         let queue_wait_seconds = meter
             .f64_histogram("queue_wait_seconds")
             .with_description("Time a job waited on the solve plane before a matcher claimed it.")
             .with_unit("s")
+            .with_boundaries(SECONDS_BUCKETS.to_vec())
             .build();
         let result_publish_seconds = meter
             .f64_histogram("result_publish_seconds")
             .with_description("Time to publish a solve result and have the broker acknowledge it.")
             .with_unit("s")
+            .with_boundaries(SECONDS_BUCKETS.to_vec())
             .build();
         let graph_ready = meter
             .u64_gauge("graph_ready")
@@ -296,9 +312,13 @@ impl Metrics {
             .record(secs, &[region_attr(region), outcome_attr(outcome)]);
     }
 
-    /// How long a job waited on the solve plane before it was claimed, by region.
-    pub fn queue_wait_seconds(&self, region: &str, secs: f64) {
-        self.queue_wait_seconds.record(secs, &[region_attr(region)]);
+    /// How long a job waited on the solve plane before it was claimed, by region and delivery attempt.
+    pub fn queue_wait_seconds(&self, region: &str, redelivered: bool, secs: f64) {
+        let delivery = if redelivered { "redelivered" } else { "first" };
+        self.queue_wait_seconds.record(
+            secs,
+            &[region_attr(region), KeyValue::new("delivery", delivery)],
+        );
     }
 
     /// How long publishing one result took, end to broker acknowledgement.
@@ -526,7 +546,7 @@ mod tests {
         m.frontier_lag("c0", 3);
         m.oldest_pending_seconds(2.5);
         m.solve_seconds("syd", "solved", 0.02);
-        m.queue_wait_seconds("syd", 0.005);
+        m.queue_wait_seconds("syd", false, 0.005);
         m.result_publish_seconds(0.003);
         m.graph_ready("syd", 1);
         m.materialized("inserted");
@@ -603,7 +623,7 @@ mod tests {
         m.frontier_lag("c1", 1);
         m.oldest_pending_seconds(1.0);
         m.solve_seconds("r", "solved", 0.1);
-        m.queue_wait_seconds("r", 0.1);
+        m.queue_wait_seconds("r", true, 0.1);
         m.result_publish_seconds(0.1);
         m.graph_ready("r", 0);
         m.materialized("terminal");
