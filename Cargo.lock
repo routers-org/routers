@@ -7712,6 +7712,7 @@ version = "0.2.1"
 dependencies = [
  "codspeed-criterion-compat",
  "log",
+ "postcard",
  "routers_fixtures",
  "serde",
  "serde_json",

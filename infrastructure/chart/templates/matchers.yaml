@@ -59,6 +59,10 @@ spec:
             - "--slots"
             - {{ $.Values.matcher.slots | quote }}
             {{- end }}
+            - "--max-candidates"
+            - {{ $.Values.matcher.maxCandidates | quote }}
+            - "--window-layers"
+            - {{ $.Values.matcher.windowLayers | quote }}
             {{- range $arg := $.Values.matcher.extraArgs }}
             - {{ $arg | quote }}
             {{- end }}
