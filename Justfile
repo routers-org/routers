@@ -56,3 +56,13 @@ wasm-e2e-wasmtime: wasm-build wasm-shards
 
 # Full E2E across both consumers.
 wasm-e2e: wasm-e2e-node wasm-e2e-wasmtime
+
+# === Service images (infrastructure/Dockerfile) ===
+
+# Regenerate the protobuf schema code the crates compile against.
+schema:
+    buf generate
+
+# Build the realtime images from one shared builder stage; a warm cache rebuilds only changed crates.
+build target="orchestrator matcher materializer": schema
+    for t in {{ target }}; do docker build --target "$t" -t "routers-$t:latest" -f infrastructure/Dockerfile .; done
