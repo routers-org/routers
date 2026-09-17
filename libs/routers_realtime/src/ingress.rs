@@ -24,7 +24,7 @@ use crate::bus::{self, Wire};
 use crate::event::Payload;
 use crate::partition::{self, PARTITIONS};
 use crate::protocol::ids::{IdError, headers, token_safe};
-use crate::topology::{DUPLICATE_WINDOW, RawConfig, ensure_raw_stream, raw_subject};
+use crate::topology::{RawConfig, duplicate_window, ensure_raw_stream, raw_subject};
 
 /// The inclusive latitude bound in degrees; anything outside is off the globe.
 const LATITUDE_LIMIT: f64 = 90.0;
@@ -283,7 +283,7 @@ impl Ingress {
                 storage: StorageType::File,
                 max_age: cfg.max_age,
                 discard: DiscardPolicy::Old,
-                duplicate_window: DUPLICATE_WINDOW,
+                duplicate_window: duplicate_window(cfg.max_age),
                 ..Default::default()
             })
             .await

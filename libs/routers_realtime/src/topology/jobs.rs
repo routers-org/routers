@@ -16,7 +16,7 @@ use async_nats::jetstream::{
     stream::{Config, RetentionPolicy, StorageType},
 };
 
-use super::{DUPLICATE_WINDOW, create_or_update_stream};
+use super::{create_or_update_stream, duplicate_window};
 use crate::protocol::ids::{GraphVersion, Lane, RegionId};
 
 /// The versioned subject prefix every solve job shares.
@@ -89,26 +89,41 @@ pub fn parse_job_subject(subject: &str) -> Option<(GraphVersion, RegionId, Lane)
     }
 }
 
+/// The stream every process derives identically for a region.
+fn job_stream_config(region: &RegionId, config: &JobsConfig) -> Config {
+    Config {
+        name: job_stream_name(region),
+        subjects: vec![job_stream_subjects(region)],
+        retention: RetentionPolicy::WorkQueue,
+        storage: StorageType::File,
+        max_age: config.max_age,
+        duplicate_window: duplicate_window(config.max_age),
+        ..Default::default()
+    }
+}
+
 /// Idempotently reconcile a region's job stream.
 pub async fn ensure_job_stream(
     context: &jetstream::Context,
     region: &RegionId,
     config: &JobsConfig,
 ) -> anyhow::Result<jetstream::stream::Stream> {
-    create_or_update_stream(
-        context,
-        Config {
-            name: job_stream_name(region),
-            subjects: vec![job_stream_subjects(region)],
-            retention: RetentionPolicy::WorkQueue,
-            storage: StorageType::File,
-            max_age: config.max_age,
-            duplicate_window: DUPLICATE_WINDOW,
-            ..Default::default()
-        },
-    )
-    .await
-    .with_context(|| format!("could not reconcile job stream for region {region}"))
+    create_or_update_stream(context, job_stream_config(region, config))
+        .await
+        .with_context(|| format!("could not reconcile job stream for region {region}"))
+}
+
+/// Open a region's job stream, creating it from `config` only if it is missing.
+/// Matchers use this so the orchestrator's tunables stay the stream's configuration.
+pub async fn open_job_stream(
+    context: &jetstream::Context,
+    region: &RegionId,
+    config: &JobsConfig,
+) -> anyhow::Result<jetstream::stream::Stream> {
+    context
+        .get_or_create_stream(job_stream_config(region, config))
+        .await
+        .with_context(|| format!("could not open job stream for region {region}"))
 }
 
 /// The shared durable pull consumer for the matchers of one `(graph, region)`.

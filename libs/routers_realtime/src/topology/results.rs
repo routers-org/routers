@@ -14,7 +14,7 @@ use async_nats::jetstream::{
     stream::{Config, RetentionPolicy, StorageType},
 };
 
-use super::{DUPLICATE_WINDOW, create_or_update_stream};
+use super::{create_or_update_stream, duplicate_window};
 
 /// Subject prefix for partitioned solve results.
 pub const RESULT_PREFIX: &str = "solve-result.v1.p";
@@ -61,7 +61,7 @@ pub async fn ensure_result_stream(
             retention: RetentionPolicy::Limits,
             storage: StorageType::File,
             max_age: config.max_age,
-            duplicate_window: DUPLICATE_WINDOW,
+            duplicate_window: duplicate_window(config.max_age),
             ..Default::default()
         },
     )
