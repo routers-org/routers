@@ -19,6 +19,7 @@ serde = ["dep:serde"]
 tracing = ["dep:tracing"]
 
 [dev-dependencies]
+postcard = { workspace = true }
 criterion = { workspace = true }
 routers_fixtures = { workspace = true }
 serde_json = { workspace = true }

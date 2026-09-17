@@ -32,6 +32,8 @@ pub struct Engine<N: Network> {
     costing: CostingStrategies<DefaultEmissionCost, DefaultTransitionCost, N::Entry>,
     cache: Arc<PredicateCache<N>>,
     search_distance: Option<f64>,
+    max_candidates: Option<usize>,
+    window_layers: Option<usize>,
 }
 
 impl<N: Network> Engine<N> {
@@ -47,7 +49,23 @@ impl<N: Network> Engine<N> {
             costing: CostingStrategies::default(),
             cache: Arc::new(PredicateCache::default()),
             search_distance,
+            max_candidates: None,
+            window_layers: None,
         }
+    }
+
+    /// Keep only the best `max_candidates` per observation; `None` keeps every edge in range.
+    #[must_use]
+    pub fn with_max_candidates(mut self, max_candidates: Option<usize>) -> Self {
+        self.max_candidates = max_candidates;
+        self
+    }
+
+    /// Carry at most `window_layers` between solves; older layers are finalised at the cut.
+    #[must_use]
+    pub fn with_window_layers(mut self, window_layers: Option<usize>) -> Self {
+        self.window_layers = window_layers;
+        self
     }
 
     /// Solve one job, returning the typed outcome the owner commits against.
@@ -63,6 +81,7 @@ impl<N: Network> Engine<N> {
         if let Some(distance) = self.search_distance {
             generator = generator.with_search_distance(distance);
         }
+        generator = generator.with_max_candidates(self.max_candidates);
 
         let weigher = AllCompute::default().use_cache(self.cache.clone());
         let matcher = Matcher::new(
@@ -79,6 +98,7 @@ impl<N: Network> Engine<N> {
             severity = field::Empty,
             continuation = field::Empty,
             converged = field::Empty,
+            window_cut = field::Empty,
             emitted = field::Empty,
         );
         let _entered = span.enter();
@@ -171,6 +191,17 @@ impl<N: Network> Engine<N> {
                 error!("{vehicle_id}: convergence query failed: {err}");
                 None
             }
+        };
+
+        // The window cap finalises what convergence did not.
+        let converged_through = match self.window_layers {
+            Some(window) if trip.layers() > window => {
+                let cut = trip.origins()[trip.layers() - window - 1].timestamp;
+                trip.tail(window);
+                span.record("window_cut", true);
+                Some(converged_through.map_or(cut, |c| c.max(cut)))
+            }
+            _ => converged_through,
         };
 
         span.record("outcome", "success");

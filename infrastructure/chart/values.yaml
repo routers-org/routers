@@ -75,6 +75,9 @@ matcher:
   rustLog: info
   # Empty keeps the binary default (one slot per core); else rendered as --slots.
   slots: ""
+  # Bounds on the carried match state; 0 disables either cap.
+  maxCandidates: 16
+  windowLayers: 32
   extraArgs: []
   env: {}
   nodeSelector: {}

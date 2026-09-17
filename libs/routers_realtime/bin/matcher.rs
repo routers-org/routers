@@ -98,6 +98,14 @@ struct Args {
     /// generator's own default.
     #[arg(long)]
     search_distance: Option<f64>,
+
+    /// Candidates kept per observation, best emission first; bounds job and result size. 0 keeps all.
+    #[arg(long, default_value_t = 16)]
+    max_candidates: usize,
+
+    /// Layers carried between solves; older layers are finalised at the cut. 0 carries all.
+    #[arg(long, default_value_t = 32)]
+    window_layers: usize,
 }
 
 #[tokio::main]
@@ -149,11 +157,15 @@ async fn main() -> anyhow::Result<()> {
         .context("could not create the job consumer")?;
     let consumer = JetStreamConsumer::<RawBytes>::new(consumer);
 
-    let engine = Arc::new(Engine::new(
-        Arc::clone(&loaded.network),
-        OsmEdgeMetadata::runtime(None),
-        args.search_distance,
-    ));
+    let engine = Arc::new(
+        Engine::new(
+            Arc::clone(&loaded.network),
+            OsmEdgeMetadata::runtime(None),
+            args.search_distance,
+        )
+        .with_max_candidates(Some(args.max_candidates).filter(|k| *k > 0))
+        .with_window_layers(Some(args.window_layers).filter(|w| *w > 0)),
+    );
 
     let publisher = ResultPublisher::new(
         JetStreamPublisher::<SolveResult<E>>::new(context.clone(), PUBLISH_ACK_TIMEOUT),
