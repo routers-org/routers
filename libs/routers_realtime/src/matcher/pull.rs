@@ -293,6 +293,7 @@ where
     P: Publisher<SolveResult<N::Entry>>,
 {
     let sent_at = delivery.sent_at;
+    let redelivered = delivery.redelivered;
     let handle = delivery.handle;
     let RawBytes(bytes) = delivery.item;
 
@@ -310,7 +311,7 @@ where
         let now = bus::wallclock();
         bus::span_between("queue_wait", sent, now);
         if let Ok(waited) = now.duration_since(sent) {
-            metrics.queue_wait_seconds(region.id.as_str(), waited.as_secs_f64());
+            metrics.queue_wait_seconds(region.id.as_str(), redelivered, waited.as_secs_f64());
         }
     }
 
