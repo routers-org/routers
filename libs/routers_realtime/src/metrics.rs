@@ -61,6 +61,8 @@ pub struct Metrics {
     dispatch_held: Counter<u64>,
     jobs_claimed: Counter<u64>,
     job_bytes: Histogram<u64>,
+    result_bytes: Histogram<u64>,
+    output_bytes: Histogram<u64>,
 
     results_received: Counter<u64>,
     parked_results: Counter<u64>,
@@ -134,6 +136,18 @@ impl Metrics {
         let job_bytes = meter
             .u64_histogram("job_bytes")
             .with_description("Encoded size of a dispatched solve job.")
+            .with_unit("By")
+            .with_boundaries(BYTES_BUCKETS.to_vec())
+            .build();
+        let result_bytes = meter
+            .u64_histogram("result_bytes")
+            .with_description("Encoded size of a published solve result.")
+            .with_unit("By")
+            .with_boundaries(BYTES_BUCKETS.to_vec())
+            .build();
+        let output_bytes = meter
+            .u64_histogram("output_bytes")
+            .with_description("Encoded size of the committed outputs of one decision.")
             .with_unit("By")
             .with_boundaries(BYTES_BUCKETS.to_vec())
             .build();
@@ -226,6 +240,8 @@ impl Metrics {
             dispatch_held,
             jobs_claimed,
             job_bytes,
+            result_bytes,
+            output_bytes,
             results_received,
             parked_results,
             quarantined_results,
@@ -287,6 +303,16 @@ impl Metrics {
     /// The encoded size of a dispatched job, by region.
     pub fn job_bytes(&self, region: &str, bytes: u64) {
         self.job_bytes.record(bytes, &[region_attr(region)]);
+    }
+
+    /// Encoded size of one published solve result, by region.
+    pub fn result_bytes(&self, region: &str, bytes: u64) {
+        self.result_bytes.record(bytes, &[region_attr(region)]);
+    }
+
+    /// Encoded size of one decision's committed outputs.
+    pub fn output_bytes(&self, bytes: u64) {
+        self.output_bytes.record(bytes, &[]);
     }
 
     /// One solve result accepted as an active job's answer, by region and outcome.
@@ -577,6 +603,8 @@ mod tests {
         m.held("syd");
         m.dispatched("syd", 0);
         m.job_bytes("syd", 1_234);
+        m.result_bytes("syd", 80_000);
+        m.output_bytes(512);
         m.result("syd", "solved");
         m.parked();
         m.quarantined("duplicate");
@@ -602,6 +630,8 @@ mod tests {
             "dispatch_held",
             "jobs_claimed",
             "job_bytes",
+            "result_bytes",
+            "output_bytes",
             "results_received",
             "parked_results",
             "quarantined_results",

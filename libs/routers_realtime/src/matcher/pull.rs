@@ -320,7 +320,10 @@ where
         Checked::Refuse(outcome) => {
             let result = SolveResult::new(&job, outcome, now_us);
             match publisher.publish_then_ack(&result, handle).await {
-                Ok(_) => Handled::Refused,
+                Ok(published) => {
+                    metrics.result_bytes(region.id.as_str(), published.bytes as u64);
+                    Handled::Refused
+                }
                 Err(error) => {
                     warn!(%error, job = %job.id, "failed to publish refusal");
                     Handled::PublishFailed
@@ -352,7 +355,10 @@ where
                 metrics.result_publish_seconds(elapsed.as_secs_f64());
             }
             match published {
-                Ok(_) => Handled::Solved,
+                Ok(published) => {
+                    metrics.result_bytes(region.id.as_str(), published.bytes as u64);
+                    Handled::Solved
+                }
                 Err(error) => {
                     warn!(%error, job = %job_id, "failed to publish solve result");
                     Handled::PublishFailed

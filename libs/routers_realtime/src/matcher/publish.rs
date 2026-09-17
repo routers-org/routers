@@ -55,6 +55,8 @@ pub struct Published {
     /// `true` when the broker recognised the result as a duplicate it already
     /// held, rather than a fresh store.
     pub duplicate: bool,
+    /// Encoded result size on the wire.
+    pub bytes: usize,
 }
 
 /// Why a result could not be published-then-acked. In every case the job is left
@@ -147,6 +149,7 @@ impl<P> ResultPublisher<P> {
                         Ok(()) => Ok(Published {
                             attempts: attempt,
                             duplicate,
+                            bytes: bytes.len(),
                         }),
                         Err(error) => Err(PublishFailure::AckFailed(error)),
                     };
@@ -280,13 +283,9 @@ mod tests {
             .publish_then_ack(&result, handle)
             .await
             .expect("first publish lands");
-        assert_eq!(
-            published,
-            Published {
-                attempts: 1,
-                duplicate: false,
-            }
-        );
+        assert_eq!(published.attempts, 1);
+        assert!(!published.duplicate);
+        assert!(published.bytes > 0);
 
         let stored = bus.published(RESULTS);
         assert_eq!(stored.len(), 1);
