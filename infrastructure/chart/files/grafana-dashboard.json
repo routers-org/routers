@@ -524,7 +524,7 @@
     {
       "id": 10,
       "title": "Queue wait",
-      "description": "Time a job sat on the solve plane before a matcher claimed it.",
+      "description": "Time a job sat on the solve plane before a matcher claimed it. Redelivered claims are JetStream retries after ack_wait.",
       "type": "timeseries",
       "gridPos": {
         "x": 8,
@@ -554,24 +554,24 @@
       },
       "targets": [
         {
-          "expr": "histogram_quantile(0.50, sum by (le, region) (rate(queue_wait_seconds_bucket[$__rate_interval])))",
-          "legendFormat": "{{region}} p50",
+          "expr": "histogram_quantile(0.5, sum by (le, delivery) (rate(queue_wait_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "{{delivery}} p50",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
           }
         },
         {
-          "expr": "histogram_quantile(0.95, sum by (le, region) (rate(queue_wait_seconds_bucket[$__rate_interval])))",
-          "legendFormat": "{{region}} p95",
+          "expr": "histogram_quantile(0.95, sum by (le, delivery) (rate(queue_wait_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "{{delivery}} p95",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
           }
         },
         {
-          "expr": "histogram_quantile(0.99, sum by (le, region) (rate(queue_wait_seconds_bucket[$__rate_interval])))",
-          "legendFormat": "{{region}} p99",
+          "expr": "histogram_quantile(0.99, sum by (le, delivery) (rate(queue_wait_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "{{delivery}} p99",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
