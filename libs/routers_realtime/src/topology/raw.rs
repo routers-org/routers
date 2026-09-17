@@ -14,7 +14,7 @@ use async_nats::jetstream::{
     stream::{Config, ConsumerErrorKind, DiscardPolicy, RetentionPolicy, StorageType},
 };
 
-use super::{DUPLICATE_WINDOW, create_or_update_stream};
+use super::{create_or_update_stream, duplicate_window};
 use crate::partition::PARTITIONS;
 
 /// Subject prefix for partitioned raw events: `events.raw.p.<partition>`.
@@ -78,7 +78,7 @@ pub async fn ensure_raw_stream(
             storage: StorageType::File,
             max_age: config.max_age,
             discard: DiscardPolicy::Old,
-            duplicate_window: DUPLICATE_WINDOW,
+            duplicate_window: duplicate_window(config.max_age),
             ..Default::default()
         },
     )

@@ -31,7 +31,7 @@ use routers_realtime::matcher::validate::ValidateConfig;
 use routers_realtime::metrics::Metrics;
 use routers_realtime::protocol::ids::{IdError, RegionId};
 use routers_realtime::protocol::result::SolveResult;
-use routers_realtime::topology::jobs::{JobsConfig, ensure_job_stream, job_consumer};
+use routers_realtime::topology::jobs::{JobsConfig, job_consumer, open_job_stream};
 
 /// The network entry type this region's graph is keyed by.
 type E = OsmEntryId;
@@ -141,9 +141,9 @@ async fn main() -> anyhow::Result<()> {
 
     // Read raw job bytes so the loop can size-gate them before decode.
     let jobs = JobsConfig::default();
-    let stream = ensure_job_stream(&context, &loaded.region.id, &jobs)
+    let stream = open_job_stream(&context, &loaded.region.id, &jobs)
         .await
-        .context("could not ensure the region job stream")?;
+        .context("could not open the region job stream")?;
     let consumer = job_consumer(&stream, &loaded.region.graph, &loaded.region.id, &jobs)
         .await
         .context("could not create the job consumer")?;

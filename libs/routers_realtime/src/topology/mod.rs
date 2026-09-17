@@ -27,6 +27,15 @@ pub use results::*;
 /// The broker-side `Nats-Msg-Id` deduplication window on every stream.
 pub const DUPLICATE_WINDOW: Duration = Duration::from_secs(2 * 60);
 
+/// The window a stream can carry: JetStream rejects one longer than its `max_age`.
+pub fn duplicate_window(max_age: Duration) -> Duration {
+    if max_age.is_zero() {
+        DUPLICATE_WINDOW
+    } else {
+        DUPLICATE_WINDOW.min(max_age)
+    }
+}
+
 /// The partition a `.p.<partition>`-suffixed subject addresses, if it is
 /// well-formed and in range. Job-plane subjects key by lane and return [`None`].
 pub fn partition_of_subject(subject: &str) -> Option<u16> {
@@ -60,6 +69,16 @@ async fn create_or_update_stream(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn duplicate_window_fits_inside_max_age() {
+        assert_eq!(
+            duplicate_window(Duration::from_secs(60)),
+            Duration::from_secs(60)
+        );
+        assert_eq!(duplicate_window(Duration::from_secs(600)), DUPLICATE_WINDOW);
+        assert_eq!(duplicate_window(Duration::ZERO), DUPLICATE_WINDOW);
+    }
 
     #[test]
     fn partition_of_subject_reads_every_partitioned_plane() {
