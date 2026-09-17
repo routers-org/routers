@@ -76,7 +76,11 @@ pub struct Metrics {
     solve_seconds: Histogram<f64>,
     queue_wait_seconds: Histogram<f64>,
     result_publish_seconds: Histogram<f64>,
+    job_round_trip_seconds: Histogram<f64>,
     graph_ready: Gauge<u64>,
+    vehicles_tracked: Gauge<u64>,
+    pending_observations: Gauge<u64>,
+    active_jobs: Gauge<u64>,
 
     materialized_outputs: Counter<u64>,
 }
@@ -190,6 +194,24 @@ impl Metrics {
             .u64_gauge("graph_ready")
             .with_description("1 while a matcher replica serves a usable graph, else 0.")
             .build();
+        let job_round_trip_seconds = meter
+            .f64_histogram("job_round_trip_seconds")
+            .with_description("Dispatch to accepted result for one job, by region and outcome.")
+            .with_unit("s")
+            .with_boundaries(SECONDS_BUCKETS.to_vec())
+            .build();
+        let vehicles_tracked = meter
+            .u64_gauge("vehicles_tracked")
+            .with_description("Vehicles the scheduler currently holds state for.")
+            .build();
+        let pending_observations = meter
+            .u64_gauge("pending_observations")
+            .with_description("Observations queued across all vehicle FIFOs.")
+            .build();
+        let active_jobs = meter
+            .u64_gauge("active_jobs")
+            .with_description("Vehicles with a solve job in flight.")
+            .build();
         let materialized_outputs = meter
             .u64_counter("materialized_outputs")
             .with_description("Committed outputs applied to the served view, by applied kind.")
@@ -215,7 +237,11 @@ impl Metrics {
             solve_seconds,
             queue_wait_seconds,
             result_publish_seconds,
+            job_round_trip_seconds,
             graph_ready,
+            vehicles_tracked,
+            pending_observations,
+            active_jobs,
             materialized_outputs,
         }
     }
@@ -324,6 +350,20 @@ impl Metrics {
     /// How long publishing one result took, end to broker acknowledgement.
     pub fn result_publish_seconds(&self, secs: f64) {
         self.result_publish_seconds.record(secs, &[]);
+    }
+
+    /// Dispatch to accepted result for one job, by region and outcome.
+    pub fn round_trip_seconds(&self, region: &str, outcome: &str, secs: f64) {
+        self.job_round_trip_seconds
+            .record(secs, &[region_attr(region), outcome_attr(outcome)]);
+    }
+
+    /// One partition's scheduler depth: tracked vehicles, queued observations, jobs in flight.
+    pub fn depth(&self, partition_class: &str, vehicles: u64, pending: u64, active: u64) {
+        let class = [class_attr(partition_class)];
+        self.vehicles_tracked.record(vehicles, &class);
+        self.pending_observations.record(pending, &class);
+        self.active_jobs.record(active, &class);
     }
 
     /// A matcher replica's graph readiness, by region: `1` ready, `0` not.
@@ -547,6 +587,8 @@ mod tests {
         m.oldest_pending_seconds(2.5);
         m.solve_seconds("syd", "solved", 0.02);
         m.queue_wait_seconds("syd", false, 0.005);
+        m.round_trip_seconds("syd", "solved", 0.2);
+        m.depth("c0", 1, 2, 3);
         m.result_publish_seconds(0.003);
         m.graph_ready("syd", 1);
         m.materialized("inserted");
@@ -571,7 +613,11 @@ mod tests {
             "solve_seconds",
             "queue_wait_seconds",
             "result_publish_seconds",
+            "job_round_trip_seconds",
             "graph_ready",
+            "vehicles_tracked",
+            "pending_observations",
+            "active_jobs",
             "materialized_outputs",
         ] {
             assert!(collected.contains_key(name), "missing instrument {name}");

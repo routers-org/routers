@@ -39,8 +39,8 @@ type E = OsmEntryId;
 /// How long a result publish waits for the broker's ack before being retried idempotently.
 const PUBLISH_ACK_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// How long one fetch waits for a batch to fill before returning what it has.
-const FETCH_WAIT: Duration = Duration::from_secs(1);
+/// How long one fetch waits for a batch to fill; short, so a lone job is not held back.
+const FETCH_WAIT: Duration = Duration::from_millis(100);
 
 /// The default solve-slot count: one per available core, since a solve is
 /// CPU-bound. Falls back to a single slot when parallelism is unknown.
