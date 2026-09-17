@@ -89,7 +89,7 @@ impl eframe::App for RealtimeApp {
             .store
             .traces
             .iter()
-            .map(|(vehicle_id, trace)| TraceLine {
+            .map(|((vehicle_id, _), trace)| TraceLine {
                 colour: vehicle_colour(*vehicle_id),
                 points: trace.flattened(),
             })
