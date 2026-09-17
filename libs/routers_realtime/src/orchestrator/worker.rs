@@ -405,6 +405,14 @@ where
                 };
                 self.metrics
                     .result(meta.region.as_str(), result.outcome.kind());
+                if let Some(active) = self.scheduler.active(vehicle) {
+                    self.metrics.round_trip_seconds(
+                        meta.region.as_str(),
+                        result.outcome.kind(),
+                        now.saturating_duration_since(active.dispatched)
+                            .as_secs_f64(),
+                    );
+                }
                 let decision = if matches!(result.outcome, SolveOutcome::Solved { .. }) {
                     Decision::Solved {
                         result,
@@ -501,6 +509,14 @@ where
             self.scheduler
                 .oldest_pending(now)
                 .map_or(0.0, |age| age.as_secs_f64()),
+        );
+
+        let depth = self.scheduler.depth();
+        self.metrics.depth(
+            &Metrics::partition_class(self.cfg.partition),
+            depth.vehicles as u64,
+            depth.pending as u64,
+            depth.active as u64,
         );
 
         if let Some(frontier) = self.tracker.due(now)

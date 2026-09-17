@@ -96,6 +96,14 @@ pub struct ActiveJob {
 }
 
 /// Everything a partition worker remembers about one vehicle.
+/// A point-in-time count of what one partition's scheduler is holding.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Depth {
+    pub vehicles: usize,
+    pub pending: usize,
+    pub active: usize,
+}
+
 pub struct VehicleState<E: Entry, H: AckHandle> {
     /// The loaded (or not-yet-loaded) committed checkpoint.
     pub checkpoint: CheckpointState<E>,
@@ -535,6 +543,19 @@ impl<E: Entry, H: AckHandle> Scheduler<E, H> {
             .map(|p| p.received)
             .min()
             .map(|oldest| now.saturating_duration_since(oldest))
+    }
+
+    #[must_use]
+    pub fn depth(&self) -> Depth {
+        Depth {
+            vehicles: self.vehicles.len(),
+            pending: self.vehicles.values().map(|s| s.pending.len()).sum(),
+            active: self
+                .vehicles
+                .values()
+                .filter(|s| s.active.is_some())
+                .count(),
+        }
     }
 }
 
