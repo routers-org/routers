@@ -86,13 +86,9 @@ jobs:
       matrix:
         include:
           - name: orchestrator
-            file: infrastructure/orchestrator/Dockerfile
           - name: matcher
-            file: infrastructure/matcher/Dockerfile
           - name: materializer
-            file: infrastructure/materializer/Dockerfile
           - name: timezone
-            file: infrastructure/timezone/Dockerfile
       fail-fast: false
     env:
       IMAGE: ${{ vars.GAR_LOCATION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.GAR_REPOSITORY }}/routers-${{ matrix.name }}
@@ -154,8 +150,11 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: ${{ matrix.file }}
+          file: infrastructure/Dockerfile
+          target: ${{ matrix.name }}
           push: true
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,scope=${{ matrix.name }},mode=max
           tags: |
             ${{ env.IMAGE }}:latest
             ${{ env.IMAGE }}:${{ env.TAG }}
