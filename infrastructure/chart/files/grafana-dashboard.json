@@ -1,7 +1,7 @@
 {
   "title": "Routers Realtime",
   "uid": "routers-realtime",
-  "version": 7,
+  "version": 8,
   "refresh": "5s",
   "time": {
     "from": "now-15m",
@@ -11,91 +11,98 @@
   "tags": [
     "routers"
   ],
+  "templating": {
+    "list": []
+  },
   "panels": [
     {
       "id": 1,
-      "title": "Pipeline Throughput (events/s)",
-      "description": "One line per stage, aggregated across shards. Every series is a spanmetrics call counter \u2014 gaps between lines are work queued (or dropped) between stages.",
-      "type": "timeseries",
+      "title": "Flow",
+      "type": "row",
+      "collapsed": false,
       "gridPos": {
         "x": 0,
         "y": 0,
-        "w": 12,
-        "h": 8
+        "w": 24,
+        "h": 1
       },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "reqps",
-          "custom": {
-            "lineWidth": 2
-          }
-        }
-      },
-      "options": {
-        "tooltip": {
-          "mode": "multi"
-        }
-      },
-      "targets": [
-        {
-          "expr": "sum(rate(routers_calls_total{span_name=\"orchestrate\"}[15s]))",
-          "legendFormat": "\u2460 orchestrated (raw events)",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          }
-        },
-        {
-          "expr": "sum(rate(routers_calls_total{span_name=\"match_event\"}[15s]))",
-          "legendFormat": "\u2461 matched",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          }
-        },
-        {
-          "expr": "sum(rate(routers_calls_total{span_name=\"commit_result\"}[15s]))",
-          "legendFormat": "\u2462 results committed",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          }
-        }
-      ],
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      }
+      "panels": []
     },
     {
       "id": 2,
-      "title": "Resume vs Restart (events/s)",
-      "description": "Whether the matcher could continue the vehicle's prior trellis. A high restart share means the streaming handoff isn't paying off (cold vehicles, diverging history, or lost state).",
+      "title": "Throughput (per second)",
+      "description": "Each stage of the pipeline as a rate. Offered is the replay rate; gaps between lines are backlog or drops.",
       "type": "timeseries",
       "gridPos": {
-        "x": 12,
-        "y": 0,
+        "x": 0,
+        "y": 1,
         "w": 12,
-        "h": 8
+        "h": 9
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "reqps",
+          "unit": "short",
           "custom": {
             "lineWidth": 2,
-            "fillOpacity": 12
+            "fillOpacity": 0
           }
-        }
+        },
+        "overrides": []
       },
       "options": {
         "tooltip": {
-          "mode": "multi"
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
         }
       },
       "targets": [
         {
-          "expr": "sum by (continuation) (rate(routers_calls_total{span_name=\"match_event\"}[15s]))",
-          "legendFormat": "{{continuation}}",
+          "expr": "sum(rate(offered_observations_total[$__rate_interval]))",
+          "legendFormat": "offered (raw read)",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "expr": "sum(rate(queued_observations_total[$__rate_interval]))",
+          "legendFormat": "queued",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "expr": "sum(rate(jobs_claimed_total[$__rate_interval]))",
+          "legendFormat": "jobs dispatched",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "expr": "sum(rate(results_received_total[$__rate_interval]))",
+          "legendFormat": "results received",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "expr": "sum(rate(completions_total[$__rate_interval]))",
+          "legendFormat": "committed",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "expr": "sum(rate(materialized_outputs_total[$__rate_interval]))",
+          "legendFormat": "materialized",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -109,40 +116,80 @@
     },
     {
       "id": 3,
-      "title": "Match Outcomes (total)",
-      "description": "success = published result. unanchored / disconnected / no_anchor are nominal \u2014 the trace itself is unmatchable, not a pipeline fault. internal is ours.",
-      "type": "stat",
+      "title": "Backlog",
+      "description": "How far behind the pipeline is. Oldest pending is wall-clock lag; outstanding and waiting are admission counts.",
+      "type": "timeseries",
       "gridPos": {
-        "x": 0,
-        "y": 8,
-        "w": 8,
-        "h": 5
-      },
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ]
-        },
-        "colorMode": "background"
+        "x": 12,
+        "y": 1,
+        "w": 12,
+        "h": 9
       },
       "fieldConfig": {
         "defaults": {
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
+          "unit": "short",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 0
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "oldest pending (s)"
+            },
+            "properties": [
               {
-                "value": null,
-                "color": "green"
+                "id": "unit",
+                "value": "s"
+              },
+              {
+                "id": "custom.axisPlacement",
+                "value": "right"
               }
             ]
           }
+        ]
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
         }
       },
       "targets": [
         {
-          "expr": "sum by (outcome) (routers_calls_total{span_name=\"match_event\"})",
-          "legendFormat": "{{outcome}}",
+          "expr": "max(oldest_pending_age_seconds)",
+          "legendFormat": "oldest pending (s)",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "expr": "sum(jobs_outstanding)",
+          "legendFormat": "jobs outstanding",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "expr": "sum(admission_waiting)",
+          "legendFormat": "waiting for admission",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "expr": "max(frontier_lag)",
+          "legendFormat": "frontier lag (raw seqs)",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -156,22 +203,58 @@
     },
     {
       "id": 4,
-      "title": "Success Rate",
-      "description": "Share of match attempts that published a result. Nominal failures count against this but not against health \u2014 see the fatal panel for that.",
+      "title": "Committed by outcome",
+      "description": "Totals over the selected range.",
       "type": "stat",
       "gridPos": {
-        "x": 8,
-        "y": 8,
+        "x": 0,
+        "y": 10,
         "w": 8,
         "h": 5
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
       },
       "options": {
         "reduceOptions": {
           "calcs": [
             "lastNotNull"
-          ]
+          ],
+          "fields": "",
+          "values": false
         },
-        "colorMode": "background"
+        "colorMode": "background",
+        "graphMode": "area",
+        "textMode": "value_and_name"
+      },
+      "targets": [
+        {
+          "expr": "sum by (outcome) (increase(completions_total[$__range]))",
+          "legendFormat": "{{outcome}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
+      ],
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      }
+    },
+    {
+      "id": 5,
+      "title": "Match success",
+      "description": "Matched commits over all commits in range.",
+      "type": "stat",
+      "gridPos": {
+        "x": 8,
+        "y": 10,
+        "w": 4,
+        "h": 5
       },
       "fieldConfig": {
         "defaults": {
@@ -192,12 +275,27 @@
                 "value": 0.95
               }
             ]
-          }
-        }
+          },
+          "min": 0,
+          "max": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "area",
+        "textMode": "value_and_name"
       },
       "targets": [
         {
-          "expr": "sum(routers_calls_total{span_name=\"match_event\",severity=\"ok\"}) / sum(routers_calls_total{span_name=\"match_event\"})",
+          "expr": "sum(increase(completions_total{outcome=\"matched\"}[$__range])) / sum(increase(completions_total[$__range]))",
           "legendFormat": "success",
           "datasource": {
             "type": "prometheus",
@@ -211,23 +309,15 @@
       }
     },
     {
-      "id": 5,
-      "title": "Fatal Failures",
-      "description": "Errors that are the pipeline's fault (trellis/solver internals). Anything above zero deserves a look.",
+      "id": 6,
+      "title": "Dropped",
+      "description": "Raw messages, results and observations discarded in range.",
       "type": "stat",
       "gridPos": {
-        "x": 16,
-        "y": 8,
+        "x": 12,
+        "y": 10,
         "w": 8,
         "h": 5
-      },
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ]
-        },
-        "colorMode": "background"
       },
       "fieldConfig": {
         "defaults": {
@@ -236,135 +326,58 @@
             "mode": "absolute",
             "steps": [
               {
-                "value": null,
-                "color": "green"
+                "color": "green",
+                "value": null
               },
               {
-                "value": 1,
-                "color": "red"
+                "color": "yellow",
+                "value": 1
               }
             ]
           }
-        }
-      },
-      "targets": [
-        {
-          "expr": "sum(routers_calls_total{span_name=\"match_event\",severity=\"fatal\"}) or vector(0)",
-          "legendFormat": "fatal",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          }
-        }
-      ],
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      }
-    },
-    {
-      "id": 100,
-      "title": "Latency",
-      "type": "row",
-      "gridPos": {
-        "x": 0,
-        "y": 13,
-        "w": 24,
-        "h": 1
-      },
-      "collapsed": false
-    },
-    {
-      "id": 6,
-      "title": "Stage Latency (avg ms per event)",
-      "description": "Where an event's wall-clock goes, one line per span. queue_wait is the time a message sat in NATS between services (send-stamp \u2192 delivery); everything else is measured in-process.",
-      "type": "timeseries",
-      "gridPos": {
-        "x": 0,
-        "y": 14,
-        "w": 24,
-        "h": 8
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "ms",
-          "custom": {
-            "lineWidth": 2
-          }
-        }
+        },
+        "overrides": []
       },
       "options": {
-        "tooltip": {
-          "mode": "multi"
-        }
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "area",
+        "textMode": "value_and_name"
       },
       "targets": [
         {
-          "expr": "sum by (span_name) (rate(routers_duration_milliseconds_sum{span_name=~\"orchestrate|context_fetch|reconcile|publish_context|queue_wait|match_event|push|solve|snapshot|publish_result\"}[15s])) / sum by (span_name) (rate(routers_duration_milliseconds_count[15s]))",
-          "legendFormat": "{{span_name}}",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          }
-        }
-      ],
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      }
-    },
-    {
-      "id": 13,
-      "title": "End-to-End Wait (ms) \u2014 raw event sent \u2192 match published",
-      "description": "Walltime from replay publishing a raw event to the matcher publishing its result, measured purely from message wire-stamps and correlated per vehicle in the orchestrator. The headline pipeline number.",
-      "type": "timeseries",
-      "gridPos": {
-        "x": 0,
-        "y": 22,
-        "w": 24,
-        "h": 8
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "ms",
-          "custom": {
-            "lineWidth": 2
-          }
-        }
-      },
-      "options": {
-        "tooltip": {
-          "mode": "multi"
-        }
-      },
-      "targets": [
-        {
-          "expr": "sum(rate(routers_duration_milliseconds_sum{span_name=\"event_to_match\"}[15s])) / sum(rate(routers_duration_milliseconds_count{span_name=\"event_to_match\"}[15s]))",
-          "legendFormat": "avg",
+          "expr": "sum(increase(poison_observations_total[$__range]))",
+          "legendFormat": "poison raw",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
           }
         },
         {
-          "expr": "histogram_quantile(0.50, sum by (le) (rate(routers_duration_milliseconds_bucket{span_name=\"event_to_match\"}[15s])))",
-          "legendFormat": "p50",
+          "expr": "sum(increase(suppressed_observations_total[$__range]))",
+          "legendFormat": "suppressed",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
           }
         },
         {
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(routers_duration_milliseconds_bucket{span_name=\"event_to_match\"}[15s])))",
-          "legendFormat": "p95",
+          "expr": "sum(increase(rejected_results_total[$__range]))",
+          "legendFormat": "rejected results",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
           }
         },
         {
-          "expr": "histogram_quantile(0.99, sum by (le) (rate(routers_duration_milliseconds_bucket{span_name=\"event_to_match\"}[15s])))",
-          "legendFormat": "p99",
+          "expr": "sum(increase(quarantined_results_total[$__range]))",
+          "legendFormat": "quarantined",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -378,48 +391,50 @@
     },
     {
       "id": 7,
-      "title": "Queue Wait (ms)",
-      "description": "Time messages spend in NATS before pickup, per subject family. Rising percentiles mean a consumer is saturating.",
-      "type": "timeseries",
+      "title": "Matchers ready",
+      "description": "Replicas serving a usable graph, by region.",
+      "type": "stat",
       "gridPos": {
-        "x": 0,
-        "y": 30,
-        "w": 12,
-        "h": 8
+        "x": 20,
+        "y": 10,
+        "w": 4,
+        "h": 5
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "ms",
-          "custom": {
-            "lineWidth": 2
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
           }
-        }
+        },
+        "overrides": []
       },
       "options": {
-        "tooltip": {
-          "mode": "multi"
-        }
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value_and_name"
       },
       "targets": [
         {
-          "expr": "histogram_quantile(0.50, sum by (le) (rate(routers_duration_milliseconds_bucket{span_name=\"queue_wait\"}[15s])))",
-          "legendFormat": "p50",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          }
-        },
-        {
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(routers_duration_milliseconds_bucket{span_name=\"queue_wait\"}[15s])))",
-          "legendFormat": "p95",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          }
-        },
-        {
-          "expr": "histogram_quantile(0.99, sum by (le) (rate(routers_duration_milliseconds_bucket{span_name=\"queue_wait\"}[15s])))",
-          "legendFormat": "p99",
+          "expr": "sum by (region) (graph_ready)",
+          "legendFormat": "{{region}}",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -433,100 +448,68 @@
     },
     {
       "id": 8,
-      "title": "Match Latency (ms)",
-      "description": "The matcher's whole per-event span: reconcile handoff \u2192 push \u2192 solve \u2192 snapshot \u2192 publish. Split by resume/restart to see what the trellis handoff buys.",
-      "type": "timeseries",
-      "gridPos": {
-        "x": 12,
-        "y": 30,
-        "w": 12,
-        "h": 8
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "ms",
-          "custom": {
-            "lineWidth": 2
-          }
-        }
-      },
-      "options": {
-        "tooltip": {
-          "mode": "multi"
-        }
-      },
-      "targets": [
-        {
-          "expr": "sum by (continuation) (rate(routers_duration_milliseconds_sum{span_name=\"match_event\"}[15s])) / sum by (continuation) (rate(routers_duration_milliseconds_count{span_name=\"match_event\"}[15s]))",
-          "legendFormat": "avg ({{continuation}})",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          }
-        },
-        {
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(routers_duration_milliseconds_bucket{span_name=\"match_event\"}[15s])))",
-          "legendFormat": "p95 (all)",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          }
-        }
-      ],
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      }
-    },
-    {
-      "id": 101,
-      "title": "Backlog & Drops",
+      "title": "Solve",
       "type": "row",
+      "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 38,
+        "y": 15,
         "w": 24,
         "h": 1
       },
-      "collapsed": false
+      "panels": []
     },
     {
       "id": 9,
-      "title": "Stage Backlogs (accumulated events)",
-      "description": "Counter gaps between stages: contexts published but not yet matched, and results published but not yet committed. Healthy load keeps both near zero; a growing line is a saturated consumer.",
+      "title": "Solve time",
+      "description": "Matcher CPU time per job. Rising with a flat event rate means the carried trip is growing.",
       "type": "timeseries",
       "gridPos": {
         "x": 0,
-        "y": 39,
-        "w": 12,
+        "y": 16,
+        "w": 8,
         "h": 8
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "short",
+          "unit": "s",
           "custom": {
             "lineWidth": 2,
-            "fillOpacity": 12
+            "fillOpacity": 0
           }
-        }
+        },
+        "overrides": []
       },
       "options": {
         "tooltip": {
-          "mode": "multi"
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
         }
       },
       "targets": [
         {
-          "expr": "sum(routers_calls_total{span_name=\"orchestrate\"}) - sum(routers_calls_total{span_name=\"match_event\"})",
-          "legendFormat": "contexts awaiting matcher",
+          "expr": "histogram_quantile(0.50, sum by (le, region) (rate(solve_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "{{region}} p50",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
           }
         },
         {
-          "expr": "sum(routers_calls_total{span_name=\"publish_result\"}) - sum(routers_calls_total{span_name=\"commit_result\"})",
-          "legendFormat": "results awaiting commit",
+          "expr": "histogram_quantile(0.95, sum by (le, region) (rate(solve_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "{{region}} p95",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le, region) (rate(solve_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "{{region}} p99",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -540,33 +523,55 @@
     },
     {
       "id": 10,
-      "title": "Drops & Cuts (per second)",
-      "description": "point_drop: individual GPS points the matcher rejected (unanchored = off-network, nominal). history_cut: a gap/teleport discarded committed history. bus_drop: undecodable NATS messages.",
+      "title": "Queue wait",
+      "description": "Time a job sat on the solve plane before a matcher claimed it.",
       "type": "timeseries",
       "gridPos": {
-        "x": 12,
-        "y": 39,
-        "w": 12,
+        "x": 8,
+        "y": 16,
+        "w": 8,
         "h": 8
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "reqps",
+          "unit": "s",
           "custom": {
             "lineWidth": 2,
-            "fillOpacity": 12
+            "fillOpacity": 0
           }
-        }
+        },
+        "overrides": []
       },
       "options": {
         "tooltip": {
-          "mode": "multi"
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
         }
       },
       "targets": [
         {
-          "expr": "sum by (span_name, reason) (rate(routers_calls_total{span_name=~\"point_drop|history_cut|bus_drop\"}[15s]))",
-          "legendFormat": "{{span_name}} ({{reason}})",
+          "expr": "histogram_quantile(0.50, sum by (le, region) (rate(queue_wait_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "{{region}} p50",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, region) (rate(queue_wait_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "{{region}} p95",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le, region) (rate(queue_wait_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "{{region}} p99",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -580,40 +585,71 @@
     },
     {
       "id": 11,
-      "title": "NATS Server Throughput (msgs/s)",
-      "description": "Ground truth from the NATS exporter, independent of application spans.",
+      "title": "Job size",
+      "description": "Encoded solve job bytes. The red line is the 8 MiB broker payload limit.",
       "type": "timeseries",
       "gridPos": {
-        "x": 0,
-        "y": 47,
-        "w": 12,
-        "h": 7
+        "x": 16,
+        "y": 16,
+        "w": 8,
+        "h": 8
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "reqps",
+          "unit": "bytes",
           "custom": {
-            "lineWidth": 2
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "thresholdsStyle": {
+              "mode": "line"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 8388608
+              }
+            ]
           }
-        }
+        },
+        "overrides": []
       },
       "options": {
         "tooltip": {
-          "mode": "multi"
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
         }
       },
       "targets": [
         {
-          "expr": "sum(rate(nats_varz_in_msgs[15s]))",
-          "legendFormat": "in",
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(job_bytes_bucket[$__rate_interval])))",
+          "legendFormat": "p50",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
           }
         },
         {
-          "expr": "sum(rate(nats_varz_out_msgs[15s]))",
-          "legendFormat": "out",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(job_bytes_bucket[$__rate_interval])))",
+          "legendFormat": "p95",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(job_bytes_bucket[$__rate_interval])))",
+          "legendFormat": "p99",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -627,40 +663,684 @@
     },
     {
       "id": 12,
-      "title": "Collector Health (spans/s)",
-      "description": "The telemetry pipeline's own pulse: spans accepted vs refused by the otel-collector. If the routers series go quiet, look here first.",
+      "title": "Commit time",
+      "description": "Prepare, publish and promote one commit, by decision kind.",
       "type": "timeseries",
       "gridPos": {
-        "x": 12,
-        "y": 47,
-        "w": 12,
-        "h": 7
+        "x": 0,
+        "y": 24,
+        "w": 8,
+        "h": 8
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "reqps",
+          "unit": "s",
           "custom": {
-            "lineWidth": 2
+            "lineWidth": 2,
+            "fillOpacity": 0
           }
-        }
+        },
+        "overrides": []
       },
       "options": {
         "tooltip": {
-          "mode": "multi"
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
         }
       },
       "targets": [
         {
-          "expr": "sum(rate(otelcol_receiver_accepted_spans_total[15s]))",
-          "legendFormat": "accepted",
+          "expr": "histogram_quantile(0.50, sum by (le, kind) (rate(checkpoint_commit_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "{{kind}} p50",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
           }
         },
         {
-          "expr": "sum(rate(otelcol_receiver_refused_spans_total[15s])) or vector(0)",
-          "legendFormat": "refused",
+          "expr": "histogram_quantile(0.95, sum by (le, kind) (rate(checkpoint_commit_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "{{kind}} p95",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le, kind) (rate(checkpoint_commit_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "{{kind}} p99",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
+      ],
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      }
+    },
+    {
+      "id": 13,
+      "title": "Result publish",
+      "description": "Matcher publish to broker acknowledgement.",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 8,
+        "y": 24,
+        "w": 8,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 0
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(result_publish_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "p50",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(result_publish_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "p95",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(result_publish_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "p99",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
+      ],
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      }
+    },
+    {
+      "id": 14,
+      "title": "Continuation mix (jobs/s)",
+      "description": "How each solve started: resume carries the trip, restart opens a segment, downgrade healed a shard seam.",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 16,
+        "y": 24,
+        "w": 8,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 20
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum by (continuation) (rate(routers_calls_total{span_name=\"match_event\"}[$__rate_interval]))",
+          "legendFormat": "{{continuation}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
+      ],
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      }
+    },
+    {
+      "id": 15,
+      "title": "Results and drops",
+      "type": "row",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 32,
+        "w": 24,
+        "h": 1
+      },
+      "panels": []
+    },
+    {
+      "id": 16,
+      "title": "Results by outcome (per second)",
+      "description": "Solve results accepted as the answer to an active job.",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 0,
+        "y": 33,
+        "w": 8,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 20
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum by (outcome) (rate(results_received_total[$__rate_interval]))",
+          "legendFormat": "{{outcome}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
+      ],
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      }
+    },
+    {
+      "id": 17,
+      "title": "Resets by reason (per second)",
+      "description": "Commits that opened a new segment.",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 8,
+        "y": 33,
+        "w": 8,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 0
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum by (reason) (rate(completions_total{outcome=\"reset\"}[$__rate_interval]))",
+          "legendFormat": "{{reason}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
+      ],
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      }
+    },
+    {
+      "id": 18,
+      "title": "Materialized by kind (per second)",
+      "description": "Committed outputs applied to the served view.",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 16,
+        "y": 33,
+        "w": 8,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 20
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum by (kind) (rate(materialized_outputs_total[$__rate_interval]))",
+          "legendFormat": "{{kind}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
+      ],
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      }
+    },
+    {
+      "id": 19,
+      "title": "Observation drops (per second)",
+      "description": "Suppressed before queueing, or poison raw messages, by reason.",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 0,
+        "y": 41,
+        "w": 8,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 0
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum by (reason) (rate(suppressed_observations_total[$__rate_interval]))",
+          "legendFormat": "suppressed {{reason}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "expr": "sum by (reason) (rate(poison_observations_total[$__rate_interval]))",
+          "legendFormat": "poison {{reason}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
+      ],
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      }
+    },
+    {
+      "id": 20,
+      "title": "Result drops (per second)",
+      "description": "Rejected, quarantined and parked results, and point drops inside the matcher.",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 8,
+        "y": 41,
+        "w": 8,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 0
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum by (reason) (rate(rejected_results_total[$__rate_interval]))",
+          "legendFormat": "rejected {{reason}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "expr": "sum by (reason) (rate(quarantined_results_total[$__rate_interval]))",
+          "legendFormat": "quarantined {{reason}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "expr": "sum(rate(parked_results_total[$__rate_interval]))",
+          "legendFormat": "parked",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "expr": "sum by (reason) (rate(routers_calls_total{span_name=\"point_drop\"}[$__rate_interval]))",
+          "legendFormat": "point drop {{reason}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
+      ],
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      }
+    },
+    {
+      "id": 21,
+      "title": "Dispatch held (per second)",
+      "description": "Dispatch attempts held back by admission or a transient fault, by region.",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 16,
+        "y": 41,
+        "w": 8,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 0
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum by (region) (rate(dispatch_held_total[$__rate_interval]))",
+          "legendFormat": "{{region}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
+      ],
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      }
+    },
+    {
+      "id": 22,
+      "title": "Infrastructure",
+      "type": "row",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 49,
+        "w": 24,
+        "h": 1
+      },
+      "panels": []
+    },
+    {
+      "id": 23,
+      "title": "Event bus messages (per second)",
+      "description": "Server-side in and out message rates.",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 0,
+        "y": 50,
+        "w": 8,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 0
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(nats_varz_in_msgs[$__rate_interval]))",
+          "legendFormat": "in",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "expr": "sum(rate(nats_varz_out_msgs[$__rate_interval]))",
+          "legendFormat": "out",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
+      ],
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      }
+    },
+    {
+      "id": 24,
+      "title": "Event bus memory and slow consumers",
+      "description": "Resident memory against the pod limit; slow consumers mean a subscriber is not keeping up.",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 8,
+        "y": 50,
+        "w": 8,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 0
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "slow consumers"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "short"
+              },
+              {
+                "id": "custom.axisPlacement",
+                "value": "right"
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum(nats_varz_mem)",
+          "legendFormat": "memory",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "expr": "sum(nats_varz_slow_consumers)",
+          "legendFormat": "slow consumers",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
+      ],
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      }
+    },
+    {
+      "id": 25,
+      "title": "Collector intake (per second)",
+      "description": "Spans and metric points the collector accepted or refused.",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 16,
+        "y": 50,
+        "w": 8,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 0
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(otelcol_receiver_accepted_spans_total[$__rate_interval]))",
+          "legendFormat": "spans accepted",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "expr": "sum(rate(otelcol_receiver_refused_spans_total[$__rate_interval])) or vector(0)",
+          "legendFormat": "spans refused",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "expr": "sum(rate(otelcol_receiver_accepted_metric_points_total[$__rate_interval]))",
+          "legendFormat": "metric points accepted",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
