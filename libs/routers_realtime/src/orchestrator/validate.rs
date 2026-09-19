@@ -215,7 +215,7 @@ mod tests {
     use geo::Point;
     use routers_network::mock::MockEntryId;
     use routers_network::{DirectionAwareEdgeId, Edge};
-    use routers_transition::matcher::Trip;
+    use routers_transition::matcher::{Continuation, Trip};
     use tokio::time::Instant;
 
     use super::*;
@@ -224,9 +224,9 @@ mod tests {
     use crate::orchestrator::scheduler::{CheckpointState, JobReservation};
     use crate::partition::partition_of;
     use crate::protocol::ids::{
-        GraphVersion, JobId, ObservationId, RegionId, Revision, SCHEMA_VERSION, SegmentId,
+        GraphVersion, JobId, Lane, ObservationId, RegionId, Revision, SCHEMA_VERSION, SegmentId,
     };
-    use crate::protocol::job::JobIdentity;
+    use crate::protocol::job::{JobIdentity, SolveJob};
     use crate::protocol::result::{SolveOutcome, SolveResult};
 
     #[derive(Clone)]
@@ -288,20 +288,29 @@ mod tests {
             seq: u64,
             base: Option<BaseState>,
         ) -> SolveResult<MockEntryId> {
-            let identity = self.identity(vehicle, seq, base);
-            SolveResult {
-                job: identity.job_id(),
-                identity,
-                outcome: SolveOutcome::Unanchored,
-                solved_at_us: 0,
-            }
+            let job = self.solve_job(vehicle, seq, base);
+            SolveResult::new(&job, SolveOutcome::Unanchored, 0)
+        }
+
+        fn solve_job(
+            &self,
+            vehicle: u64,
+            seq: u64,
+            base: Option<BaseState>,
+        ) -> SolveJob<MockEntryId> {
+            SolveJob::new(
+                self.identity(vehicle, seq, base),
+                Lane::DEFAULT,
+                1_000,
+                Continuation::Restart { fresh: Vec::new() },
+            )
         }
 
         fn job(&self, vehicle: u64, seq: u64, base: Option<BaseState>) -> ActiveJob {
-            let identity = self.identity(vehicle, seq, base);
+            let solve_job = self.solve_job(vehicle, seq, base);
             ActiveJob {
-                id: identity.job_id(),
-                identity,
+                id: solve_job.id,
+                identity: solve_job.identity,
                 observation: self.obs(seq),
                 deadline: self.base + Duration::from_secs(30),
                 bytes: 100,
@@ -341,7 +350,6 @@ mod tests {
                 pending: VecDeque::new(),
                 active,
                 committing,
-                parked: Vec::new(),
                 last_touch: self.base,
             }
         }
@@ -402,14 +410,10 @@ mod tests {
     #[test]
     fn rejects_a_crossed_envelope_before_touching_state() {
         let fx = Fixture::new();
-        let identity = fx.identity(1, 10, None);
+        let job = fx.solve_job(1, 10, None);
         // A forged id that the identity does not hash to.
-        let forged = SolveResult::<MockEntryId> {
-            job: JobId(0),
-            identity,
-            outcome: SolveOutcome::Unanchored,
-            solved_at_us: 0,
-        };
+        let mut forged = SolveResult::new(&job, SolveOutcome::Unanchored, 0);
+        forged.job = JobId(0);
         let vehicle = fx.vehicle(CheckpointState::Unloaded, None, false);
 
         assert!(matches!(
@@ -424,12 +428,13 @@ mod tests {
         // Its id still hashes correctly, so validation reaches the schema gate.
         let mut identity = fx.identity(1, 10, None);
         identity.schema = crate::protocol::ids::SchemaVersion(SCHEMA_VERSION.0 + 1);
-        let result = SolveResult::<MockEntryId> {
-            job: identity.job_id(),
+        let job = SolveJob::new(
             identity,
-            outcome: SolveOutcome::Unanchored,
-            solved_at_us: 0,
-        };
+            Lane::DEFAULT,
+            1_000,
+            Continuation::Restart { fresh: Vec::new() },
+        );
+        let result = SolveResult::new(&job, SolveOutcome::Unanchored, 0);
         let vehicle = fx.vehicle(CheckpointState::Unloaded, None, false);
 
         assert!(matches!(

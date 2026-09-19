@@ -28,7 +28,7 @@ use crate::orchestrator::dispatch::{
     DispatchConfig, DispatchError, Dispatcher, TimestampRegression, timestamp_regression,
 };
 use crate::orchestrator::frontier::{FrontierConfig, FrontierTracker};
-use crate::orchestrator::reader::{RawDisposition, RawEnvelope, RawReader, SuppressReason};
+use crate::orchestrator::reader::{DeferReason, RawDisposition, RawEnvelope, RawReader};
 use crate::orchestrator::recovery::{RecoveryReport, restore_vehicle};
 use crate::orchestrator::scheduler::{
     ActiveJob, CheckpointState, JobReservation, Scheduler, SchedulerConfig, VehicleState,
@@ -49,6 +49,8 @@ pub struct WorkerConfig {
     pub partition: u16,
     /// The scheduler's per-vehicle limits.
     pub scheduler: SchedulerConfig,
+    /// Most early result deliveries retained per vehicle with broker ownership.
+    pub parked_limit: usize,
     /// The frontier persistence cadence.
     pub frontier: FrontierConfig,
     /// The dispatcher's continuity/publish knobs (mirror of the built one).
@@ -76,6 +78,7 @@ impl WorkerConfig {
         Self {
             partition,
             scheduler: SchedulerConfig::default(),
+            parked_limit: 4,
             frontier: FrontierConfig::default(),
             dispatch: DispatchConfig::default(),
             commit: CommitConfig::default(),
@@ -98,8 +101,10 @@ pub struct WorkerStats {
     pub queued: u64,
     /// Duplicate transport deliveries coalesced.
     pub coalesced: u64,
-    /// Valid-but-suppressed raw messages (includes `coalesced`).
+    /// Valid raw messages suppressed because they were already durable.
     pub suppressed: u64,
+    /// Valid raw deliveries left broker-owned due to capacity or duplicate ownership.
+    pub deferred: u64,
     /// Poison raw messages acked and dropped.
     pub poison: u64,
     /// Jobs dispatched to the solve plane.
@@ -153,6 +158,14 @@ struct PendingReset {
     prior: Option<Revision>,
 }
 
+/// An early result retained with its still-unacknowledged broker delivery.
+/// Dropping this value (including on crash) leaves the result eligible for
+/// broker redelivery.
+struct ParkedResult<E: Entry, H: AckHandle> {
+    result: SolveResult<E>,
+    handle: H,
+}
+
 /// The worker's own owned projection of [`Verdict`].
 enum ResultVerdict {
     /// Commit this result as the answer to the active job.
@@ -190,9 +203,10 @@ enum DispatchOutcome {
 /// The single-task partition worker.
 pub struct PartitionWorker<E, S, JP, OP, RS, XS>
 where
-    E: Entry,
+    E: Entry + serde::de::DeserializeOwned,
     S: CheckpointStore,
     RS: Source<RawBytes>,
+    XS: Source<SolveResult<E>>,
 {
     cfg: WorkerConfig,
     catalog: Arc<Catalog>,
@@ -214,6 +228,10 @@ where
     active_meta: HashMap<VehicleId, ActiveMeta>,
     /// A pending `Reset { StateLost }`, applied on the next commit.
     pending_reset: HashMap<VehicleId, PendingReset>,
+    /// Early results retaining their unacknowledged broker deliveries.
+    parked_results: HashMap<VehicleId, Vec<ParkedResult<E, XS::Handle>>>,
+    /// Accepted results retaining broker ownership while their commit is blocked.
+    blocked_results: HashMap<VehicleId, ParkedResult<E, XS::Handle>>,
     /// Vehicles retired after a permanent commit fault.
     quarantined: HashSet<VehicleId>,
     shutdown: Shutdown,
@@ -282,6 +300,8 @@ where
             held: HashMap::new(),
             active_meta: HashMap::new(),
             pending_reset: HashMap::new(),
+            parked_results: HashMap::new(),
+            blocked_results: HashMap::new(),
             quarantined: HashSet::new(),
             shutdown,
             drain: Drain::new(),
@@ -309,7 +329,6 @@ where
         loop {
             let next_deadline = self.deadlines.next_at();
             tokio::select! {
-                biased;
                 () = self.shutdown.triggered() => break,
                 maybe = self.raw.next(), if raw_open => match maybe {
                     Some(Ok(delivery)) => self.on_raw(delivery).await,
@@ -351,6 +370,7 @@ where
             subject: &delivery.subject,
             headers: Some(&delivery.headers),
             bytes: delivery.item.0.as_slice(),
+            sent_at: delivery.sent_at,
             handle: delivery.handle,
         };
         let disposition = reader.admit_bytes(&mut self.scheduler, &mut self.tracker, envelope, now);
@@ -370,15 +390,22 @@ where
             RawDisposition::Suppressed { handle, reason } => {
                 self.stats.suppressed += 1;
                 self.metrics.suppressed(reason.label());
-                if reason == SuppressReason::Coalesced {
-                    self.stats.coalesced += 1;
-                }
                 let seq = handle.sequence();
                 let _ = handle.ack().await;
-                // A coalesced duplicate is not terminal; the original owns its completion.
-                if reason != SuppressReason::Coalesced {
-                    self.tracker.complete(seq);
+                self.tracker.complete(seq);
+            }
+            RawDisposition::Deferred { handle, reason } => {
+                self.stats.deferred += 1;
+                self.metrics.deferred(reason.label());
+                if reason == DeferReason::DuplicateOwned {
+                    self.stats.coalesced += 1;
                 }
+                debug!(reason = reason.label(), "deferring raw message");
+                let _ = handle.nak(Some(self.cfg.blocked_retry)).await;
+                // A conforming broker applies the delay. Also yield so a test
+                // adapter that redelivers immediately cannot monopolise this
+                // task's biased select loop.
+                tokio::task::yield_now().await;
             }
         }
         self.pump().await;
@@ -386,23 +413,19 @@ where
 
     /// Handle one result delivery, then drive any newly-ready vehicle.
     async fn on_result(&mut self, delivery: Delivery<SolveResult<E>, XS::Handle>) {
-        self.on_result_inner(delivery.item, Some(delivery.handle))
-            .await;
+        self.on_result_inner(delivery.item, delivery.handle).await;
         self.pump().await;
     }
 
-    /// The shared result path, reused for both a freshly delivered result
-    /// (`handle` is `Some`) and a parked one replayed after dispatch (`None`).
-    async fn on_result_inner(&mut self, result: SolveResult<E>, handle: Option<XS::Handle>) {
+    /// The shared result path for fresh and locally parked broker deliveries.
+    async fn on_result_inner(&mut self, result: SolveResult<E>, handle: XS::Handle) {
         let vehicle = result.identity.vehicle_id;
         let now = Instant::now();
         match self.result_verdict(vehicle, &result, now) {
             ResultVerdict::Accept => {
                 self.stats.accepted += 1;
                 let Some(meta) = self.active_meta.get(&vehicle).cloned() else {
-                    if let Some(handle) = handle {
-                        let _ = handle.ack().await;
-                    }
+                    let _ = handle.ack().await;
                     return;
                 };
                 self.metrics
@@ -415,6 +438,7 @@ where
                             .as_secs_f64(),
                     );
                 }
+                let result_for_retry = result.clone();
                 let decision = if matches!(result.outcome, SolveOutcome::Solved { .. }) {
                     Decision::Solved {
                         result,
@@ -434,14 +458,32 @@ where
                         segment: meta.segment,
                     }
                 };
-                self.commit_decision(vehicle, decision, handle).await;
+                self.commit_decision(
+                    vehicle,
+                    decision,
+                    Some(ParkedResult {
+                        result: result_for_retry,
+                        handle,
+                    }),
+                )
+                .await;
             }
             ResultVerdict::Park => {
-                self.stats.parked += 1;
-                self.metrics.parked();
-                self.scheduler.park(vehicle, result, now);
-                if let Some(handle) = handle {
-                    let _ = handle.ack().await;
+                let limit = self.cfg.parked_limit;
+                let tracked = self.scheduler.state(vehicle).is_some();
+                if !tracked || limit == 0 {
+                    let _ = handle.nak(Some(self.cfg.blocked_retry)).await;
+                    tokio::task::yield_now().await;
+                    return;
+                }
+                let parked = self.parked_results.entry(vehicle).or_default();
+                if parked.len() < limit {
+                    parked.push(ParkedResult { result, handle });
+                    self.stats.parked += 1;
+                    self.metrics.parked();
+                } else {
+                    let _ = handle.nak(Some(self.cfg.blocked_retry)).await;
+                    tokio::task::yield_now().await;
                 }
             }
             ResultVerdict::Reject(reason) => {
@@ -452,9 +494,7 @@ where
                     reason = reason.label(),
                     "rejected result"
                 );
-                if let Some(handle) = handle {
-                    let _ = handle.ack().await;
-                }
+                let _ = handle.ack().await;
             }
             ResultVerdict::Quarantine(reason) => {
                 self.stats.quarantined += 1;
@@ -464,7 +504,13 @@ where
                     reason = reason.label(),
                     "quarantined solve result: kept out of the commit path"
                 );
-                if let Some(handle) = handle {
+                if reason == QuarantineReason::DuplicateAfterCommit {
+                    // The retained original result is not yet proven durable.
+                    // ACKing an ack-wait redelivery can retire the broker
+                    // record and make a crash lose the only answer.
+                    let _ = handle.nak(Some(self.cfg.blocked_retry)).await;
+                    tokio::task::yield_now().await;
+                } else {
                     let _ = handle.ack().await;
                 }
             }
@@ -537,6 +583,7 @@ where
                 self.active_meta.remove(&vehicle);
                 self.held.remove(&vehicle);
                 self.pending_reset.remove(&vehicle);
+                self.parked_results.remove(&vehicle);
             }
         }
 
@@ -678,8 +725,10 @@ where
                 self.metrics
                     .job_bytes(resolution.region.as_str(), job_bytes);
 
-                for result in self.scheduler.take_parked(vehicle) {
-                    self.on_result_inner(result, None).await;
+                if let Some(parked) = self.parked_results.remove(&vehicle) {
+                    for parked in parked {
+                        self.on_result_inner(parked.result, parked.handle).await;
+                    }
                 }
                 DispatchOutcome::Done
             }
@@ -740,23 +789,23 @@ where
         &mut self,
         vehicle: VehicleId,
         decision: Decision<E>,
-        result_handle: Option<XS::Handle>,
+        result_delivery: Option<ParkedResult<E, XS::Handle>>,
     ) {
         let _guard = self.drain.begin();
         let now = Instant::now();
         let now_us = unix_micros();
 
         let Some(meta) = self.active_meta.get(&vehicle).cloned() else {
-            if let Some(handle) = result_handle {
-                let _ = handle.ack().await;
+            if let Some(delivery) = result_delivery {
+                let _ = delivery.handle.ack().await;
             }
             return;
         };
 
         // Arbitration point: the first to prepare wins.
         if self.scheduler.begin_commit(vehicle).is_err() {
-            if let Some(handle) = result_handle {
-                let _ = handle.ack().await;
+            if let Some(delivery) = result_delivery {
+                let _ = delivery.handle.ack().await;
             }
             return;
         }
@@ -802,8 +851,8 @@ where
                 if let Ok(finished) = self.scheduler.finish(vehicle, now) {
                     let seq = finished.observation.id.sequence;
                     let _ = finished.observation.handle.ack().await;
-                    if let Some(handle) = result_handle {
-                        let _ = handle.ack().await;
+                    if let Some(delivery) = result_delivery {
+                        let _ = delivery.handle.ack().await;
                     }
                     self.tracker.complete(seq);
                     drop(finished.job); // releases the admission permit
@@ -847,6 +896,9 @@ where
                 {
                     self.scheduler.set_checkpoint(vehicle, restored.checkpoint);
                 }
+                if let Some(delivery) = result_delivery {
+                    self.blocked_results.insert(vehicle, delivery);
+                }
                 self.blocked.insert(vehicle, now + self.cfg.blocked_retry);
             }
             Err(error) if is_permanent_commit_error(&error) => {
@@ -854,6 +906,9 @@ where
             }
             Err(error) => {
                 warn!(vehicle = vehicle.0, %error, "commit incomplete; blocking vehicle");
+                if let Some(delivery) = result_delivery {
+                    self.blocked_results.insert(vehicle, delivery);
+                }
                 self.blocked.insert(vehicle, now + self.cfg.blocked_retry);
             }
         }
@@ -940,7 +995,7 @@ where
             graph: graph.clone(),
             region: region.clone(),
         };
-        let job_id = identity.job_id();
+        let job_id = identity.local_decision_id();
         // Fall back to the stored `prior` so a state-lost terminal CASes against the stale revision, not `None`.
         let expected_base = base
             .map(|b| b.revision)
@@ -1007,7 +1062,14 @@ where
                         .finish_prepared(vehicle, self.cfg.partition, prepared)
                         .await
                     {
-                        Ok(_) => self.resolve_blocked(vehicle, now).await,
+                        Ok(committed) => {
+                            let active = self.scheduler.active(vehicle).map(|job| job.observation);
+                            if finished_prepared_is_active(active, committed.raw) {
+                                self.resolve_blocked(vehicle, now).await;
+                            } else {
+                                self.retry_unprepared(vehicle, now).await;
+                            }
+                        }
                         Err(error) if is_permanent_commit_error(&error) => {
                             self.quarantine_vehicle(vehicle, &error);
                         }
@@ -1017,14 +1079,72 @@ where
                         }
                     }
                 }
-                None => self.resolve_blocked(vehicle, now).await,
+                None => self.retry_unprepared(vehicle, now).await,
             }
         }
     }
 
-    /// Finish unblocking a vehicle whose surviving commit has been resolved:
-    /// advance past its head (if a committing job is still attached) and clear
-    /// its bookkeeping so its next observation restores fresh state.
+    /// Reconcile a blocked commit for which the store has no prepared record.
+    /// Only a checkpoint that covers the active raw permits acknowledgement;
+    /// otherwise roll the in-memory commit back and re-dispatch the same head.
+    async fn retry_unprepared(&mut self, vehicle: VehicleId, now: Instant) {
+        let Some(observation) = self.scheduler.active(vehicle).map(|job| job.observation) else {
+            self.active_meta.remove(&vehicle);
+            self.blocked.remove(&vehicle);
+            return;
+        };
+
+        let restored = match restore_vehicle(
+            &self.store,
+            vehicle,
+            self.cfg.partition,
+            &self.committer,
+        )
+        .await
+        {
+            Ok(restored) => restored,
+            Err(error) => {
+                debug!(vehicle = vehicle.0, %error, "blocked commit still cannot restore");
+                self.blocked.insert(vehicle, now + self.cfg.blocked_retry);
+                return;
+            }
+        };
+
+        let committed = restored
+            .checkpoint
+            .present()
+            .is_some_and(|checkpoint| checkpoint.last_input >= observation);
+        self.scheduler.set_checkpoint(vehicle, restored.checkpoint);
+        if committed {
+            self.resolve_blocked(vehicle, now).await;
+            return;
+        }
+
+        if let Some(reason) = restored.reset {
+            self.pending_reset.insert(
+                vehicle,
+                PendingReset {
+                    reason,
+                    prior: restored.prior,
+                },
+            );
+        }
+        if let Some(delivery) = self.blocked_results.remove(&vehicle) {
+            self.parked_results
+                .entry(vehicle)
+                .or_default()
+                .push(delivery);
+        }
+        if let Some(job) = self.scheduler.rollback_commit(vehicle) {
+            drop(job);
+        }
+        self.active_meta.remove(&vehicle);
+        self.blocked.remove(&vehicle);
+        self.held.remove(&vehicle);
+    }
+
+    /// Finish unblocking a vehicle whose commit is known durable: advance past
+    /// its head and clear bookkeeping so the next observation restores state.
     async fn resolve_blocked(&mut self, vehicle: VehicleId, now: Instant) {
         if self.scheduler.active(vehicle).is_some() {
             // Force a reload of the promoted checkpoint on the next dispatch.
@@ -1039,6 +1159,9 @@ where
         }
         self.active_meta.remove(&vehicle);
         self.blocked.remove(&vehicle);
+        if let Some(delivery) = self.blocked_results.remove(&vehicle) {
+            let _ = delivery.handle.ack().await;
+        }
         self.stats.frontier = self.tracker.frontier();
     }
 
@@ -1080,6 +1203,16 @@ fn is_permanent_commit_error<SE>(error: &CommitError<SE>) -> bool {
     matches!(error, CommitError::Decode(_) | CommitError::Encode(_))
 }
 
+/// A recovered prepared record may belong to an older or otherwise foreign
+/// decision for the same vehicle. It can release the current raw only when its
+/// durable identity is exactly the scheduler's active observation.
+fn finished_prepared_is_active(
+    active: Option<crate::protocol::ids::ObservationId>,
+    committed_raw: crate::protocol::ids::ObservationId,
+) -> bool {
+    active == Some(committed_raw)
+}
+
 /// A detached, empty [`VehicleState`] for validating a result for an untracked vehicle.
 fn detached_state<E: Entry, H: AckHandle>(now: Instant) -> VehicleState<E, H> {
     VehicleState {
@@ -1087,7 +1220,6 @@ fn detached_state<E: Entry, H: AckHandle>(now: Instant) -> VehicleState<E, H> {
         pending: VecDeque::new(),
         active: None,
         committing: false,
-        parked: Vec::new(),
         last_touch: now,
     }
 }
@@ -1130,14 +1262,14 @@ mod tests {
     use chrono::{DateTime, Utc};
     use geo::Point;
     use routers_network::mock::MockEntryId;
-    use routers_transition::matcher::Trip;
+    use routers_transition::matcher::{Continuation, Trip};
 
     use crate::bus::Wire;
     use crate::bus::memory::{MemoryBus, MemoryPublisher, MemorySource};
     use crate::event::{MatchedDiff, Payload, shard_of};
     use crate::orchestrator::admission::AdmissionConfig;
     use crate::partition::partition_of;
-    use crate::protocol::ids::{JobId, ObservationId, OutputId};
+    use crate::protocol::ids::{JobId, Lane, ObservationId, OutputId};
     use crate::protocol::output::OutputKind;
     use crate::store::checkpoint::{CommitPhase, MemoryCheckpointStore, PreparedCommit};
     use crate::topology::{output_subject, raw_subject, result_subject};
@@ -1257,6 +1389,22 @@ freshness_budget_ms = {budget_ms}
         partition_of(VehicleId(vehicle)) as u16
     }
 
+    #[test]
+    fn foreign_prepared_completion_cannot_release_the_active_raw() {
+        let active = ObservationId {
+            partition: 7,
+            sequence: 12,
+        };
+        let foreign = ObservationId {
+            partition: 7,
+            sequence: 11,
+        };
+
+        assert!(finished_prepared_is_active(Some(active), active));
+        assert!(!finished_prepared_is_active(Some(active), foreign));
+        assert!(!finished_prepared_is_active(None, active));
+    }
+
     fn same_partition_as(vehicle: u64) -> u64 {
         let want = partition_for(vehicle);
         (vehicle + 1..)
@@ -1277,7 +1425,7 @@ freshness_budget_ms = {budget_ms}
             .publish_bytes(
                 &raw_subject(u64::from(partition)),
                 &msg_id,
-                HeaderMap::new(),
+                crate::bus::outbound(),
                 &bytes,
             )
             .await
@@ -1481,12 +1629,13 @@ freshness_budget_ms = {budget_ms}
                     graph: GraphVersion::new("g1").unwrap(),
                     region: RegionId::new("r1").unwrap(),
                 };
-                let late = SolveResult::<E> {
-                    job: identity.job_id(),
+                let job = SolveJob::new(
                     identity,
-                    outcome: SolveOutcome::Unanchored,
-                    solved_at_us: 0,
-                };
+                    Lane::DEFAULT,
+                    i64::MAX,
+                    Continuation::Restart { fresh: Vec::new() },
+                );
+                let late = SolveResult::new(&job, SolveOutcome::Unanchored, 0);
                 bus.publisher::<SolveResult<E>>()
                     .publish(
                         &result_subject(u64::from(partition)),
@@ -1511,7 +1660,7 @@ freshness_budget_ms = {budget_ms}
     }
 
     #[tokio::test(start_paused = true)]
-    async fn duplicate_raw_is_coalesced_and_acked() {
+    async fn duplicate_raw_is_coalesced_and_left_broker_owned() {
         let vehicle = 1u64;
         let partition = partition_for(vehicle);
         let bus = MemoryBus::new();
@@ -1538,7 +1687,8 @@ freshness_budget_ms = {budget_ms}
             async move {
                 wait_until(|| !bus.published(job_filter).is_empty()).await;
                 bus.redeliver_unacked(&raw_sub);
-                wait_until(|| bus.acked_count(&raw_sub) >= 1).await;
+                wait_until(|| !bus.nak_delays().is_empty()).await;
+                assert_eq!(bus.acked_count(&raw_sub), 0);
                 shutdown.trigger(crate::lifecycle::DrainReason::Operator);
             }
         };

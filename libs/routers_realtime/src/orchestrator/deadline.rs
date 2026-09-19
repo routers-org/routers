@@ -197,7 +197,7 @@ mod tests {
     use alloc::collections::VecDeque;
 
     use routers_network::mock::MockEntryId;
-    use routers_transition::matcher::Trip;
+    use routers_transition::matcher::{Continuation, Trip};
 
     use super::*;
     use crate::event::VehicleId;
@@ -207,9 +207,9 @@ mod tests {
     use crate::orchestrator::validate::{self, RejectReason, Verdict};
     use crate::partition::partition_of;
     use crate::protocol::ids::{
-        GraphVersion, ObservationId, RegionId, Revision, SCHEMA_VERSION, SegmentId,
+        GraphVersion, Lane, ObservationId, RegionId, Revision, SCHEMA_VERSION, SegmentId,
     };
-    use crate::protocol::job::{BaseState, JobIdentity};
+    use crate::protocol::job::{BaseState, JobIdentity, SolveJob};
     use crate::protocol::result::{SolveOutcome, SolveResult};
     use crate::store::checkpoint::VehicleCheckpoint;
 
@@ -269,10 +269,10 @@ mod tests {
         }
 
         fn job(&self, vehicle: u64, seq: u64, base: Option<BaseState>) -> ActiveJob {
-            let identity = self.identity(vehicle, seq, base);
+            let solve_job = self.solve_job(vehicle, seq, base);
             ActiveJob {
-                id: identity.job_id(),
-                identity,
+                id: solve_job.id,
+                identity: solve_job.identity,
                 observation: self.obs(seq),
                 deadline: self.base + Duration::from_secs(30),
                 bytes: 100,
@@ -289,13 +289,22 @@ mod tests {
             seq: u64,
             base: Option<BaseState>,
         ) -> SolveResult<MockEntryId> {
-            let identity = self.identity(vehicle, seq, base);
-            SolveResult {
-                job: identity.job_id(),
-                identity,
-                outcome: SolveOutcome::Unanchored,
-                solved_at_us: 0,
-            }
+            let job = self.solve_job(vehicle, seq, base);
+            SolveResult::new(&job, SolveOutcome::Unanchored, 0)
+        }
+
+        fn solve_job(
+            &self,
+            vehicle: u64,
+            seq: u64,
+            base: Option<BaseState>,
+        ) -> SolveJob<MockEntryId> {
+            SolveJob::new(
+                self.identity(vehicle, seq, base),
+                Lane::DEFAULT,
+                1_000,
+                Continuation::Restart { fresh: Vec::new() },
+            )
         }
 
         fn checkpoint(&self, last_seq: u64, segment: u64) -> VehicleCheckpoint<MockEntryId> {
@@ -322,7 +331,6 @@ mod tests {
                 pending: VecDeque::new(),
                 active,
                 committing,
-                parked: Vec::new(),
                 last_touch: self.base,
             }
         }

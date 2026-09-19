@@ -273,7 +273,7 @@ impl<P> Dispatcher<P> {
             graph: resolution.graph.clone(),
             region: resolution.region.clone(),
         };
-        let deadline_us = now_us + resolution.budget.as_micros() as i64;
+        let deadline_us = head.published_at.deadline_after(resolution.budget);
         let job = SolveJob::new(identity.clone(), resolution.lane, deadline_us, continuation);
 
         let bytes = job.encode().map_err(DispatchError::Encode)?;
@@ -299,7 +299,7 @@ impl<P> Dispatcher<P> {
                 id: job.id,
                 identity,
                 observation: head.id,
-                deadline: now + resolution.budget,
+                deadline: now + remaining_until(deadline_us, now_us),
                 bytes: byte_len,
                 reservation: JobReservation::Admitted(permit),
                 dispatched: now,
@@ -356,6 +356,14 @@ impl<P> Dispatcher<P> {
     }
 }
 
+/// Translate an absolute broker-age deadline back to the worker's monotonic
+/// clock. An already-expired job fires immediately.
+fn remaining_until(deadline_us: i64, now_us: i64) -> Duration {
+    u64::try_from(deadline_us.saturating_sub(now_us))
+        .map(Duration::from_micros)
+        .unwrap_or(Duration::ZERO)
+}
+
 #[cfg(test)]
 mod tests {
     use chrono::{DateTime, Utc};
@@ -372,6 +380,7 @@ mod tests {
     use super::*;
     use crate::bus::memory::MemoryBus;
     use crate::orchestrator::admission::{Admission, AdmissionConfig};
+    use crate::orchestrator::scheduler::PublishedAtMicros;
     use crate::protocol::ids::{GraphVersion, Lane, RegionId, Revision};
     use crate::region::resolver::ResolutionKind;
 
@@ -438,6 +447,8 @@ mod tests {
                 sequence: seq,
             },
             payload: payload(vehicle, pt, ts_us),
+            published_at: PublishedAtMicros::from_unix_micros(ts_us)
+                .expect("test timestamp is non-negative"),
             handle: NoAck,
             received: Instant::now(),
         }
@@ -665,7 +676,6 @@ mod tests {
         assert!(dispatched.reset.is_none());
         assert!(!dispatched.duplicate);
         assert_eq!(dispatched.job.observation, head.id);
-        assert_eq!(dispatched.job.id, dispatched.job.identity.job_id());
         assert_eq!(adm.global().jobs, 1);
 
         let subject = job_subject(&res.graph, &res.region, res.lane);
@@ -701,6 +711,8 @@ mod tests {
                 sequence: 999,
             },
             payload: head_payload,
+            published_at: PublishedAtMicros::from_unix_micros(TRACE_START_US)
+                .expect("test timestamp is non-negative"),
             handle: NoAck,
             received: Instant::now(),
         };
@@ -797,6 +809,57 @@ mod tests {
         assert!(bus.published(&subject).is_empty(), "nothing is published");
         assert_eq!(adm.global().jobs, 0, "no credit is reserved");
         assert_eq!(adm.snapshot()[0].jobs, 0);
+    }
+
+    #[tokio::test]
+    async fn stamped_raw_rebuilds_the_same_job_id_and_deadline_after_redelivery() {
+        let bus = MemoryBus::new();
+        let dispatcher = dispatcher(&bus, DispatchConfig::default());
+        let adm = admission(10);
+        let res = resolution();
+        let mut head = pending(1, 42, point!(x: -118.15, y: 34.15), TRACE_START_US);
+        let published_us = 1_775_000_000_000_000i64;
+        head.published_at = PublishedAtMicros::from_unix_micros(published_us)
+            .expect("test timestamp is non-negative");
+
+        let first = dispatcher
+            .dispatch::<MockEntryId, _>(
+                VehicleId(1),
+                &head,
+                None,
+                &res,
+                &adm,
+                Instant::now(),
+                published_us + 1_000,
+            )
+            .await
+            .expect("first dispatch");
+        let first_id = first.job.id;
+        drop(first);
+
+        let replay = dispatcher
+            .dispatch::<MockEntryId, _>(
+                VehicleId(1),
+                &head,
+                None,
+                &res,
+                &adm,
+                Instant::now(),
+                published_us + 9_000_000,
+            )
+            .await
+            .expect("redelivery dispatch");
+
+        assert_eq!(replay.job.id, first_id);
+        assert!(replay.duplicate, "stable proof deduplicates at the broker");
+        let subject = job_subject(&res.graph, &res.region, res.lane);
+        let records = bus.published(&subject);
+        assert_eq!(records.len(), 1);
+        let job = SolveJob::<MockEntryId>::decode(&records[0].2).expect("job decodes");
+        assert_eq!(
+            job.deadline_us,
+            published_us + i64::try_from(BUDGET.as_micros()).unwrap()
+        );
     }
 
     #[tokio::test]

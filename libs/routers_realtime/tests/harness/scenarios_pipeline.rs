@@ -2,6 +2,8 @@
 //! duplicate coalescing, result idempotency, and early-result parking.
 
 use super::fixture::*;
+use core::time::Duration;
+use routers_realtime::orchestrator::admission::Admission;
 
 /// Six observations solve to six matched outputs with climbing revisions, one
 /// materialised layer per stamp, and the frontier at the last raw sequence.
@@ -61,8 +63,8 @@ async fn happy_path_matches_and_finalizes() {
     assert_eq!(segment.last_revision, Some(Revision(last_seq)));
 }
 
-/// A raw redelivered while its original is still in flight coalesces: no second
-/// job or output.
+/// A raw redelivered while its original is still in flight remains broker-owned;
+/// crashing before commit therefore lets restart process it exactly once.
 #[tokio::test(start_paused = true)]
 async fn duplicate_raw_delivery_is_coalesced_not_reprocessed() {
     let fleet = Fleet::bent_road();
@@ -75,17 +77,23 @@ async fn duplicate_raw_delivery_is_coalesced_not_reprocessed() {
 
     advance_until(|| !fleet.bus.published("solve.v1.g.>").is_empty()).await;
     fleet.redeliver_raw(partition);
-    advance_until(|| fleet.bus.acked_count(&raw_subject_of(partition)) >= 1).await;
+    advance_until(|| !fleet.bus.nak_delays().is_empty()).await;
 
-    let stats = orchestrator.stop().await;
-
-    assert_eq!(stats.observed, 2, "the observation was delivered twice");
-    assert_eq!(stats.coalesced, 1, "the redelivery coalesced");
-    assert_eq!(stats.dispatched, 1, "only one job was dispatched");
-    assert!(
-        published_outputs(&fleet.bus, partition).is_empty(),
-        "no output while the single job is still in flight",
+    assert_eq!(
+        fleet.bus.acked_count(&raw_subject_of(partition)),
+        0,
+        "the duplicate cannot retire the original before commit",
     );
+    orchestrator.crash();
+
+    let matcher = fleet.spawn_matcher(MatcherBehaviour::scripted_layer());
+    let restarted = fleet.spawn_orchestrator(partition);
+    fleet.settle().await;
+    let stats = restarted.stop().await;
+    matcher.stop().await;
+
+    assert_eq!(stats.committed, 1);
+    assert_eq!(published_outputs(&fleet.bus, partition).len(), 1);
 }
 
 /// A duplicate delivery of an already-decided result is rejected out of the commit path.
@@ -101,11 +109,12 @@ async fn duplicate_result_delivery_is_idempotent() {
 
     advance_until(|| !fleet.bus.published("solve.v1.g.>").is_empty()).await;
 
-    let identity = fleet.fresh_identity(vehicle, observation);
-    fleet.publish_result(identity.clone(), empty_solved()).await;
-    fleet
-        .publish_result_dup(identity, empty_solved(), "dup")
-        .await;
+    let job = published_jobs(&fleet.bus)
+        .into_iter()
+        .find(|job| job.identity.observation == observation)
+        .expect("observation job published");
+    fleet.publish_result(&job, empty_solved()).await;
+    fleet.publish_result_dup(&job, empty_solved(), "dup").await;
     fleet.redeliver_results(partition);
 
     fleet.settle().await;
@@ -126,31 +135,52 @@ async fn duplicate_result_delivery_is_idempotent() {
     );
 }
 
-/// A result that reaches the worker before its job is dispatched is parked, then
-/// accepted when the dispatch lands — one output, no duplicate.
+/// A result retained while replay is admission-held stays broker-owned across
+/// a crash, then matches the byte-identical rebuilt job after restart.
 #[tokio::test(start_paused = true)]
 async fn early_result_is_parked_then_accepted() {
-    use routers_realtime::bus::adapter::PublishError;
-
-    let fleet = Fleet::bent_road();
+    let mut fleet = Fleet::bent_road();
     let vehicle = 1u64;
     let partition = fleet.partition_of(vehicle);
+    let result_subject = routers_realtime::topology::result_subject(u64::from(partition));
 
-    let orchestrator = fleet.spawn_orchestrator(partition);
-
-    // Arm a one-shot job-publish failure so the vehicle is held tracked-but-undispatched, and the answer parks.
+    // First publish the authentic job envelope, then model a crash before its
+    // result is consumed.
+    let first = fleet.spawn_orchestrator(partition);
     let observation = fleet.ingest(vehicle, obs_ts(0), road_points()[0]).await;
-    let identity = fleet.fresh_identity(vehicle, observation);
-    fleet.publish_result(identity, empty_solved()).await;
-    fleet
-        .bus
-        .fail_next_publish(PublishError::Failed(anyhow::anyhow!("job publish down")));
+    advance_until(|| !published_jobs(&fleet.bus).is_empty()).await;
+    let job = published_jobs(&fleet.bus)
+        .into_iter()
+        .find(|job| job.identity.observation == observation)
+        .expect("observation job published");
+    first.crash();
+
+    // Replay owns the raw but cannot dispatch yet, so the authentic result is
+    // parked with its delivery handle still unacknowledged.
+    fleet.admission = Admission::new(
+        AdmissionConfig {
+            global_jobs: 0,
+            region_jobs: 0,
+            ..AdmissionConfig::default()
+        },
+        fleet.catalog.regions.iter().map(|region| &region.id),
+    );
+    fleet.publish_result(&job, empty_solved()).await;
+    let held = fleet.spawn_orchestrator(partition);
+    tokio::time::sleep(Duration::from_millis(1)).await;
+    assert_eq!(fleet.bus.acked_count(&result_subject), 0);
+    held.crash();
+
+    fleet.admission = Admission::new(
+        AdmissionConfig::default(),
+        fleet.catalog.regions.iter().map(|region| &region.id),
+    );
+    let restarted = fleet.spawn_orchestrator(partition);
 
     fleet.settle().await;
-    let stats = orchestrator.stop().await;
+    let stats = restarted.stop().await;
 
-    assert!(stats.parked >= 1, "the early answer was parked");
-    assert_eq!(stats.accepted, 1, "then accepted on dispatch");
+    assert_eq!(stats.accepted, 1, "the replayed answer matched rebuilt job");
     assert_eq!(stats.committed, 1, "exactly one commit");
     assert_eq!(
         published_outputs(&fleet.bus, partition).len(),

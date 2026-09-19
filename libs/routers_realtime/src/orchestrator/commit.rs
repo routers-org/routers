@@ -587,12 +587,14 @@ mod tests {
         CostingStrategies, DefaultEmissionCost, DefaultTransitionCost,
     };
     use routers_transition::layer::generation::StandardGenerator;
-    use routers_transition::matcher::{Origin, Trip};
+    use routers_transition::matcher::{Continuation, Origin, Trip};
     use routers_transition::weigh::AllCompute;
 
     use super::*;
     use crate::bus::memory::{MemoryBus, MemoryPublisher};
     use crate::event::{MatchedDiff, MatchedLayer};
+    use crate::protocol::ids::Lane;
+    use crate::protocol::job::SolveJob;
     use crate::store::checkpoint::{MemoryCheckpointStore, Op};
 
     type E = MockEntryId;
@@ -653,17 +655,21 @@ mod tests {
         trip: Trip<E>,
         converged: Option<i64>,
     ) -> SolveResult<E> {
-        let id = identity(vehicle, seq);
-        SolveResult {
-            job: id.job_id(),
-            identity: id,
-            outcome: SolveOutcome::Solved {
+        let job = SolveJob::<E>::new(
+            identity(vehicle, seq),
+            Lane::DEFAULT,
+            1_000,
+            Continuation::Restart { fresh: Vec::new() },
+        );
+        SolveResult::new(
+            &job,
+            SolveOutcome::Solved {
                 diff,
                 trip,
                 converged_through: converged,
             },
-            solved_at_us: 0,
-        }
+            0,
+        )
     }
 
     fn checkpoint(
@@ -829,7 +835,14 @@ mod tests {
     #[test]
     fn reset_then_matched_are_two_ordered_indexed_outputs() {
         let prev = checkpoint(trip_with(&trace_origins()), 5, 3, Some(trace_ts(2)));
-        let job = identity(1, 200).job_id();
+        let identity = identity(1, 200);
+        let job = SolveJob::<E>::new(
+            identity,
+            Lane::DEFAULT,
+            1_000,
+            Continuation::Restart { fresh: Vec::new() },
+        )
+        .id;
         let plan = plan(
             Some(&prev),
             Decision::Solved {
@@ -894,7 +907,7 @@ mod tests {
         let kept = plan(
             Some(&prev),
             Decision::Terminal {
-                job: id.job_id(),
+                job: id.local_decision_id(),
                 identity: id.clone(),
                 reason: TerminalReason::Unanchored,
                 closes_segment: false,
@@ -915,7 +928,7 @@ mod tests {
         let closed = plan(
             Some(&prev),
             Decision::Terminal {
-                job: id.job_id(),
+                job: id.local_decision_id(),
                 identity: id,
                 reason: TerminalReason::JobExhausted,
                 closes_segment: true,
@@ -938,7 +951,7 @@ mod tests {
         let plan = plan(
             Some(&prev),
             Decision::Reset {
-                job: id.job_id(),
+                job: id.local_decision_id(),
                 identity: id,
                 reason: ResetReason::StateLost,
                 new_segment: SegmentId(300),
@@ -975,7 +988,7 @@ mod tests {
         plan(
             None,
             Decision::Terminal {
-                job: id.job_id(),
+                job: id.local_decision_id(),
                 identity: id,
                 reason: TerminalReason::Unanchored,
                 closes_segment: false,

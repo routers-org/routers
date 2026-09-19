@@ -14,6 +14,7 @@ use async_nats::HeaderMap;
 use async_nats::jetstream::{self, AckKind, consumer::PullConsumer};
 use futures::StreamExt;
 use tracing::warn;
+use web_time::{SystemTime, UNIX_EPOCH};
 
 use crate::bus::adapter::{
     AckHandle, Consumer, Delivery, PublishError, PublishOutcome, Publisher, Source,
@@ -66,13 +67,19 @@ async fn build_delivery<T: Wire>(message: jetstream::Message) -> Option<Delivery
     let subject = message.subject.to_string();
     let headers = message.headers.clone();
 
-    let sent_at = inbound(&subject, headers.as_ref());
+    // Continue tracing from producer headers even though broker metadata below
+    // is the authoritative, durable publish timestamp.
+    let _ = inbound(&subject, headers.as_ref());
     let msg_id = headers
         .as_ref()
         .and_then(|headers| msg_id_of(headers).map(str::to_owned));
 
-    let (sequence, deliveries) = match message.info() {
-        Ok(info) => (info.stream_sequence, info.delivered.max(0) as u32),
+    let (sequence, deliveries, sent_at) = match message.info() {
+        Ok(info) => (
+            info.stream_sequence,
+            info.delivered.max(0) as u32,
+            jetstream_published_at(info.published.unix_timestamp_nanos()),
+        ),
         Err(err) => {
             warn!("acking message with unreadable JetStream info on {subject}: {err}");
             let _ = message.ack().await;
@@ -102,6 +109,15 @@ async fn build_delivery<T: Wire>(message: jetstream::Message) -> Option<Delivery
             deliveries,
         },
     })
+}
+
+/// Convert JetStream's authoritative publish instant to the bus abstraction's
+/// clock type. NATS timestamps before the Unix epoch or beyond `u64` nanos are
+/// treated as absent rather than wrapping.
+fn jetstream_published_at(unix_nanos: i128) -> Option<SystemTime> {
+    u64::try_from(unix_nanos)
+        .ok()
+        .map(|nanos| UNIX_EPOCH + Duration::from_nanos(nanos))
 }
 
 /// A [`Publisher`] over a JetStream [`Context`](jetstream::Context). Each

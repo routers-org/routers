@@ -263,7 +263,7 @@ mod tests {
         plan(
             None,
             Decision::Terminal {
-                job: id.job_id(),
+                job: id.local_decision_id(),
                 identity: id,
                 reason: TerminalReason::Unanchored,
                 closes_segment: false,
@@ -663,7 +663,7 @@ mod tests {
         let observation = obs(200);
 
         let before = checkpoint_at(100, 100, SCHEMA_VERSION);
-        let id_before = identity_from(Some(&before), observation, &head).job_id();
+        let id_before = identity_from(Some(&before), observation, &head).local_decision_id();
 
         install_checkpoint_bytes(&store, &bus, vehicle, 100, before.encode().unwrap()).await;
         let restored: Restored<E> =
@@ -674,7 +674,7 @@ mod tests {
             panic!("the checkpoint must restore");
         };
 
-        let id_after = identity_from(Some(&after), observation, &head).job_id();
+        let id_after = identity_from(Some(&after), observation, &head).local_decision_id();
         assert_eq!(id_before, id_after);
     }
 }

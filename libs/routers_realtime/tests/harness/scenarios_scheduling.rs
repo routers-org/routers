@@ -30,10 +30,11 @@ async fn deadline_expiry_commits_terminal_and_rejects_late_result() {
         "the deadline committed one terminal",
     );
 
-    let identity = fleet.fresh_identity(vehicle, observation);
-    fleet
-        .publish_result(identity, SolveOutcome::Unanchored)
-        .await;
+    let job = published_jobs(&fleet.bus)
+        .into_iter()
+        .find(|job| job.identity.observation == observation)
+        .expect("expired job was published");
+    fleet.publish_result(&job, SolveOutcome::Unanchored).await;
     fleet.settle().await;
 
     let stats = orchestrator.stop().await;
@@ -181,5 +182,49 @@ async fn admission_caps_hold_work_outside_matcher_queues() {
         published_outputs(&fleet.bus, partition).len(),
         2,
         "two outputs, one per vehicle",
+    );
+}
+
+/// A full per-vehicle raw FIFO returns ownership to the broker rather than
+/// acknowledging and losing the valid observation. Once the head completes,
+/// redelivery enters the FIFO and commits normally.
+#[tokio::test(start_paused = true)]
+async fn pending_overflow_is_redelivered_after_capacity_returns() {
+    let fleet = Fleet::bent_road().with_pending_limit(1);
+    let vehicle = 1u64;
+    let partition = fleet.partition_of(vehicle);
+    let orchestrator = fleet.spawn_orchestrator(partition);
+
+    let first = fleet.ingest(vehicle, obs_ts(0), road_points()[0]).await;
+    advance_until(|| !fleet.bus.published(jobs_filter()).is_empty()).await;
+    let second = fleet.ingest(vehicle, obs_ts(1), road_points()[1]).await;
+    advance_until(|| !fleet.bus.nak_delays().is_empty()).await;
+
+    assert!(second.sequence > first.sequence);
+    assert_eq!(
+        fleet
+            .bus
+            .acked_count(&routers_realtime::topology::raw_subject(u64::from(
+                partition
+            ))),
+        0,
+        "neither the active head nor the backpressured raw is acknowledged",
+    );
+
+    let matcher = fleet.spawn_matcher(MatcherBehaviour::scripted_layer());
+    fleet.settle().await;
+    let stats = orchestrator.stop().await;
+    matcher.stop().await;
+
+    assert!(stats.deferred >= 1);
+    assert_eq!(stats.committed, 2);
+    assert_eq!(stats.frontier, second.sequence);
+    assert_eq!(
+        fleet
+            .bus
+            .acked_count(&routers_realtime::topology::raw_subject(u64::from(
+                partition
+            ))),
+        2,
     );
 }

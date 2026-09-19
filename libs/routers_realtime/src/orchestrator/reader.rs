@@ -8,13 +8,16 @@
 use async_nats::HeaderMap;
 use routers_network::Entry;
 use tokio::time::Instant;
+use web_time::SystemTime;
 
 use crate::bus::Wire;
 use crate::bus::adapter::{AckHandle, Delivery};
 use crate::event::Payload;
 use crate::ingress;
 use crate::orchestrator::frontier::{FrontierTracker, Observed};
-use crate::orchestrator::scheduler::{Enqueue, PendingObservation, Scheduler};
+use crate::orchestrator::scheduler::{
+    Enqueue, EnqueueReadiness, PendingObservation, PublishedAtMicros, Scheduler,
+};
 use crate::partition;
 use crate::protocol::ids::{ObservationId, SCHEMA_VERSION, SchemaVersion, headers};
 use crate::topology::partition_of_subject;
@@ -55,6 +58,9 @@ pub enum PoisonReason {
         /// The bounded [`ingress::IngressError::kind`] of the failing check.
         kind: &'static str,
     },
+    /// The broker publication instant was absent or outside the representable
+    /// non-negative Unix-microsecond range required for stable job identity.
+    PublishTime,
 }
 
 impl PoisonReason {
@@ -68,14 +74,14 @@ impl PoisonReason {
             PoisonReason::Schema { .. } => "schema",
             // Already a bounded `IngressError::kind`, so it doubles as the label.
             PoisonReason::Invalid { kind } => kind,
+            PoisonReason::PublishTime => "publish_time",
         }
     }
 }
 
 /// Why a valid raw message was suppressed rather than queued.
 ///
-/// [`SuppressReason::Coalesced`] is the one reason that is *not* terminal — see
-/// [`RawDisposition::is_terminal`].
+/// Every suppression is terminal for this sequence once acknowledged.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SuppressReason {
     /// The sequence is at or below the completion frontier — an already-terminal
@@ -83,11 +89,6 @@ pub enum SuppressReason {
     BehindFrontier,
     /// The loaded checkpoint already covers this observation's input.
     Committed,
-    /// The same observation id is already pending or in flight; the in-flight
-    /// original owns its completion.
-    Coalesced,
-    /// The vehicle's pending backlog is full; the observation was refused.
-    Overflow,
 }
 
 impl SuppressReason {
@@ -97,8 +98,26 @@ impl SuppressReason {
         match self {
             SuppressReason::BehindFrontier => "behind_frontier",
             SuppressReason::Committed => "committed",
-            SuppressReason::Coalesced => "coalesced",
-            SuppressReason::Overflow => "overflow",
+        }
+    }
+}
+
+/// Why a valid raw delivery must remain broker-owned for later redelivery.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeferReason {
+    /// The vehicle's bounded pending FIFO is full.
+    PendingFull,
+    /// The original delivery is pending or in flight and owns durability.
+    DuplicateOwned,
+}
+
+impl DeferReason {
+    /// A bounded, stable metric/log label.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            DeferReason::PendingFull => "pending_full",
+            DeferReason::DuplicateOwned => "duplicate_owned",
         }
     }
 }
@@ -123,14 +142,22 @@ pub enum RawDisposition<H: AckHandle> {
         /// Why it is poison.
         reason: PoisonReason,
     },
-    /// The message is valid but already decided or a duplicate; ack it, and
-    /// complete its sequence unless the reason is
-    /// [`SuppressReason::Coalesced`].
+    /// The message is valid but already durably decided; acknowledge it and
+    /// complete its sequence.
     Suppressed {
         /// The handle to acknowledge the suppressed delivery.
         handle: H,
         /// Why it was suppressed.
         reason: SuppressReason,
+    },
+    /// The message is valid but local capacity is exhausted or its original
+    /// delivery still owns durability; negatively acknowledge it without
+    /// completing the frontier hole.
+    Deferred {
+        /// The handle to negatively acknowledge for broker redelivery.
+        handle: H,
+        /// Why local processing cannot currently own the message.
+        reason: DeferReason,
     },
 }
 
@@ -138,17 +165,14 @@ impl<H: AckHandle> RawDisposition<H> {
     /// Whether the worker should mark this message's sequence complete on the
     /// frontier after acking it.
     ///
-    /// A [`SuppressReason::Coalesced`] or [`Queued`](RawDisposition::Queued)
-    /// message is *not* terminal — its sequence is completed by the in-flight
-    /// original or the later commit; everything else is terminal.
+    /// Queued and deferred messages are not terminal; everything else is.
     #[must_use]
     pub fn is_terminal(&self) -> bool {
         match self {
             RawDisposition::Poison { .. } => true,
-            RawDisposition::Suppressed { reason, .. } => {
-                !matches!(reason, SuppressReason::Coalesced)
-            }
+            RawDisposition::Suppressed { .. } => true,
             RawDisposition::Queued { .. } => false,
+            RawDisposition::Deferred { .. } => false,
         }
     }
 }
@@ -161,8 +185,18 @@ pub struct RawEnvelope<'a, H: AckHandle> {
     pub headers: Option<&'a HeaderMap>,
     /// The undecoded payload bytes.
     pub bytes: &'a [u8],
+    /// Stable producer publish time decoded by the bus adapter, if stamped.
+    pub sent_at: Option<SystemTime>,
     /// The acknowledgement handle for this delivery.
     pub handle: H,
+}
+
+/// A decoded raw delivery passed through the reader's shared validation tail.
+struct DecodedRaw<H: AckHandle> {
+    schema: Option<SchemaVersion>,
+    payload: Payload,
+    published_at: Option<SystemTime>,
+    handle: H,
 }
 
 /// The per-partition raw reader.
@@ -202,6 +236,7 @@ impl RawReader {
         E: Entry,
         H: AckHandle,
     {
+        let observed = tracker.observe(delivery.handle.sequence());
         let got = partition_of_subject(&delivery.subject);
         if got != Some(self.partition) {
             return RawDisposition::Poison {
@@ -215,10 +250,14 @@ impl RawReader {
         self.admit_payload(
             scheduler,
             tracker,
-            None,
-            delivery.item,
-            delivery.handle,
+            DecodedRaw {
+                schema: None,
+                payload: delivery.item,
+                published_at: delivery.sent_at,
+                handle: delivery.handle,
+            },
             now,
+            observed,
         )
     }
 
@@ -239,8 +278,10 @@ impl RawReader {
             subject,
             headers,
             bytes,
+            sent_at,
             handle,
         } = envelope;
+        let observed = tracker.observe(handle.sequence());
 
         let got = partition_of_subject(subject);
         if got != Some(self.partition) {
@@ -263,8 +304,18 @@ impl RawReader {
             }
         };
 
-        let schema = headers.and_then(headers::schema_of);
-        self.admit_payload(scheduler, tracker, schema, payload, handle, now)
+        self.admit_payload(
+            scheduler,
+            tracker,
+            DecodedRaw {
+                schema: headers.and_then(headers::schema_of),
+                payload,
+                published_at: sent_at,
+                handle,
+            },
+            now,
+            observed,
+        )
     }
 
     /// The shared tail: identity, schema, and sanity, then frontier and
@@ -273,15 +324,20 @@ impl RawReader {
         &self,
         scheduler: &mut Scheduler<E, H>,
         tracker: &mut FrontierTracker,
-        schema: Option<SchemaVersion>,
-        payload: Payload,
-        handle: H,
+        raw: DecodedRaw<H>,
         now: Instant,
+        observed: Observed,
     ) -> RawDisposition<H>
     where
         E: Entry,
         H: AckHandle,
     {
+        let DecodedRaw {
+            schema,
+            payload,
+            published_at,
+            handle,
+        } = raw;
         let vehicle_partition = partition::partition_of(payload.vehicle_id) as u16;
         if vehicle_partition != self.partition {
             return RawDisposition::Poison {
@@ -311,21 +367,19 @@ impl RawReader {
             };
         }
 
+        let Some(published_at) = published_at.and_then(PublishedAtMicros::from_system_time) else {
+            return RawDisposition::Poison {
+                handle,
+                reason: PoisonReason::PublishTime,
+            };
+        };
+
         let sequence = handle.sequence();
-        match tracker.observe(sequence) {
-            Observed::BehindFrontier => {
-                return RawDisposition::Suppressed {
-                    handle,
-                    reason: SuppressReason::BehindFrontier,
-                };
-            }
-            Observed::Duplicate => {
-                return RawDisposition::Suppressed {
-                    handle,
-                    reason: SuppressReason::Coalesced,
-                };
-            }
-            Observed::New => {}
+        if sequence <= tracker.frontier() {
+            return RawDisposition::Suppressed {
+                handle,
+                reason: SuppressReason::BehindFrontier,
+            };
         }
 
         let observation = PendingObservation {
@@ -334,22 +388,48 @@ impl RawReader {
                 sequence,
             },
             payload,
+            published_at,
             handle,
             received: now,
         };
+        let readiness = scheduler.enqueue_readiness(&observation);
+        match observed {
+            Observed::BehindFrontier => {
+                return RawDisposition::Suppressed {
+                    handle: observation.handle,
+                    reason: SuppressReason::BehindFrontier,
+                };
+            }
+            Observed::Duplicate if readiness == EnqueueReadiness::Coalesced => {
+                return RawDisposition::Deferred {
+                    handle: observation.handle,
+                    reason: DeferReason::DuplicateOwned,
+                };
+            }
+            // A deferred sequence already reserves a frontier hole but owns no
+            // scheduler slot. Its redelivery must be allowed to enqueue once
+            // capacity returns.
+            Observed::Duplicate | Observed::New => {}
+        }
+        if matches!(readiness, EnqueueReadiness::Backpressured { .. }) {
+            return RawDisposition::Deferred {
+                handle: observation.handle,
+                reason: DeferReason::PendingFull,
+            };
+        }
         match scheduler.enqueue(observation, now) {
             Enqueue::Queued { depth } => RawDisposition::Queued { depth },
-            Enqueue::Coalesced(handle) => RawDisposition::Suppressed {
+            Enqueue::Coalesced(handle) => RawDisposition::Deferred {
                 handle,
-                reason: SuppressReason::Coalesced,
+                reason: DeferReason::DuplicateOwned,
             },
             Enqueue::Committed(handle) => RawDisposition::Suppressed {
                 handle,
                 reason: SuppressReason::Committed,
             },
-            Enqueue::Overflow { handle, .. } => RawDisposition::Suppressed {
+            Enqueue::Overflow { handle, .. } => RawDisposition::Deferred {
                 handle,
-                reason: SuppressReason::Overflow,
+                reason: DeferReason::PendingFull,
             },
         }
     }
@@ -370,6 +450,7 @@ mod tests {
     use crate::orchestrator::scheduler::{CheckpointState, SchedulerConfig};
     use crate::protocol::ids::{GraphVersion, RegionId, Revision, SCHEMA_VERSION, SegmentId};
     use crate::store::checkpoint::{PartitionFrontier, VehicleCheckpoint};
+    use web_time::UNIX_EPOCH;
 
     use routers_transition::matcher::Trip;
 
@@ -455,6 +536,7 @@ mod tests {
                 subject,
                 headers,
                 bytes,
+                sent_at: Some(UNIX_EPOCH + Duration::from_secs(1)),
                 handle: self.ack(seq),
             }
         }
@@ -524,7 +606,7 @@ mod tests {
             subject: subject(),
             msg_id: None,
             headers: HeaderMap::new(),
-            sent_at: None,
+            sent_at: Some(UNIX_EPOCH + Duration::from_secs(1)),
             redelivered: false,
         };
 
@@ -560,7 +642,35 @@ mod tests {
             }
             other => panic!("expected SubjectPartition poison, got {other:?}"),
         }
-        assert_eq!(frontier.outstanding(), 0);
+        assert_eq!(
+            frontier.outstanding(),
+            1,
+            "even poison reserves a frontier hole until the worker acks it"
+        );
+        assert_eq!(sched.stats().pending, 0);
+    }
+
+    #[test]
+    fn missing_publish_time_is_poison_after_reserving_the_frontier_hole() {
+        let fx = Fixture::new();
+        let reader = RawReader::new(PARTITION);
+        let mut sched = scheduler();
+        let mut frontier = tracker(&fx);
+        let bytes = fx.good().encode().unwrap();
+        let subject = subject();
+        let mut envelope = fx.envelope(&subject, None, &bytes, 3);
+        envelope.sent_at = None;
+
+        let disposition = reader.admit_bytes(&mut sched, &mut frontier, envelope, fx.now);
+
+        assert!(matches!(
+            disposition,
+            RawDisposition::Poison {
+                reason: PoisonReason::PublishTime,
+                ..
+            }
+        ));
+        assert_eq!(frontier.oldest_outstanding(), Some(3));
         assert_eq!(sched.stats().pending, 0);
     }
 
@@ -793,7 +903,8 @@ mod tests {
         );
         assert!(matches!(first, RawDisposition::Queued { .. }));
 
-        // A coalesced redelivery is not terminal: the in-flight original owns it.
+        // A duplicate delivery stays broker-owned: acknowledging it could
+        // retire the original before its commit becomes durable.
         let again = reader.admit_bytes(
             &mut sched,
             &mut frontier,
@@ -801,11 +912,11 @@ mod tests {
             fx.now,
         );
         match &again {
-            RawDisposition::Suppressed {
+            RawDisposition::Deferred {
                 handle,
-                reason: SuppressReason::Coalesced,
+                reason: DeferReason::DuplicateOwned,
             } => assert_eq!(handle.sequence(), 7),
-            other => panic!("expected Coalesced suppression, got {other:?}"),
+            other => panic!("expected DuplicateOwned deferral, got {other:?}"),
         }
         assert!(!again.is_terminal());
         assert_eq!(sched.stats().pending, 1);
@@ -849,7 +960,7 @@ mod tests {
     }
 
     #[test]
-    fn overflow_is_suppressed_and_terminal() {
+    fn full_pending_queue_defers_and_reserves_the_frontier_hole() {
         let fx = Fixture::new();
         let reader = RawReader::new(PARTITION);
         let mut sched = Scheduler::<MockEntryId, TestAck>::new(SchedulerConfig {
@@ -875,13 +986,100 @@ mod tests {
             fx.now,
         );
         match &disposition {
-            RawDisposition::Suppressed {
+            RawDisposition::Deferred {
                 handle,
-                reason: SuppressReason::Overflow,
+                reason: DeferReason::PendingFull,
             } => assert_eq!(handle.sequence(), 11),
-            other => panic!("expected Overflow suppression, got {other:?}"),
+            other => panic!("expected PendingFull deferral, got {other:?}"),
         }
-        assert!(disposition.is_terminal());
+        assert!(!disposition.is_terminal());
+        assert_eq!(
+            frontier.outstanding(),
+            2,
+            "the deferred raw reserves a hole"
+        );
+        assert_eq!(frontier.oldest_outstanding(), Some(10));
+    }
+
+    #[test]
+    fn deferred_hole_blocks_later_completion_and_redelivery_can_enqueue() {
+        let fx = Fixture::new();
+        let reader = RawReader::new(PARTITION);
+        let mut full = Scheduler::<MockEntryId, TestAck>::new(SchedulerConfig {
+            pending_limit: 1,
+            ..SchedulerConfig::default()
+        });
+        let mut open = scheduler();
+        let mut frontier = FrontierTracker::new(
+            PARTITION,
+            Some(PartitionFrontier {
+                partition: PARTITION,
+                sequence: 10,
+            }),
+            fx.now,
+        );
+        let subject = subject();
+        let first_payload = fx.good();
+        let first_bytes = first_payload.encode().unwrap();
+        assert!(matches!(
+            full.enqueue(
+                PendingObservation {
+                    id: ObservationId {
+                        partition: PARTITION,
+                        sequence: 9,
+                    },
+                    payload: first_payload,
+                    published_at: PublishedAtMicros::from_unix_micros(1_000_000)
+                        .expect("test timestamp is non-negative"),
+                    handle: fx.ack(9),
+                    received: fx.now,
+                },
+                fx.now,
+            ),
+            Enqueue::Queued { .. }
+        ));
+
+        let deferred = reader.admit_bytes(
+            &mut full,
+            &mut frontier,
+            fx.envelope(&subject, None, &first_bytes, 11),
+            fx.now,
+        );
+        assert!(matches!(
+            deferred,
+            RawDisposition::Deferred {
+                reason: DeferReason::PendingFull,
+                ..
+            }
+        ));
+
+        let other_vehicle = (VEHICLE + 1..)
+            .find(|&vehicle| partition::partition_of(VehicleId(vehicle)) as u16 == PARTITION)
+            .expect("another vehicle in the partition");
+        let later_bytes = fx.payload(other_vehicle, 151.21, -33.86).encode().unwrap();
+        assert!(matches!(
+            reader.admit_bytes(
+                &mut open,
+                &mut frontier,
+                fx.envelope(&subject, None, &later_bytes, 12),
+                fx.now,
+            ),
+            RawDisposition::Queued { .. }
+        ));
+        frontier.complete(12);
+        assert_eq!(frontier.frontier(), 10, "sequence 11 remains a hard hole");
+
+        assert!(matches!(
+            reader.admit_bytes(
+                &mut open,
+                &mut frontier,
+                fx.envelope(&subject, None, &first_bytes, 11),
+                fx.now,
+            ),
+            RawDisposition::Queued { .. }
+        ));
+        frontier.complete(11);
+        assert_eq!(frontier.frontier(), 12);
     }
 
     #[test]
@@ -926,6 +1124,7 @@ mod tests {
             "vehicle_partition"
         );
         assert_eq!(PoisonReason::Schema { got: None }.label(), "schema");
+        assert_eq!(PoisonReason::PublishTime.label(), "publish_time");
         assert_eq!(
             PoisonReason::Invalid {
                 kind: "zero_vehicle"
@@ -935,8 +1134,8 @@ mod tests {
         );
         assert_eq!(SuppressReason::BehindFrontier.label(), "behind_frontier");
         assert_eq!(SuppressReason::Committed.label(), "committed");
-        assert_eq!(SuppressReason::Coalesced.label(), "coalesced");
-        assert_eq!(SuppressReason::Overflow.label(), "overflow");
+        assert_eq!(DeferReason::PendingFull.label(), "pending_full");
+        assert_eq!(DeferReason::DuplicateOwned.label(), "duplicate_owned");
     }
 
     /// `is_terminal` on a borrowed disposition (the enum owns a non-`Copy`

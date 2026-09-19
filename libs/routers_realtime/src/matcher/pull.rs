@@ -334,6 +334,7 @@ where
         Checked::Solve(_) => {
             let job_id = job.id;
             let identity = job.identity.clone();
+            let proof = job.proof();
             let started = bus::wallclock();
             let outcome = engine.solve_blocking(job).await;
             let solved_at = bus::wallclock();
@@ -346,6 +347,7 @@ where
             let result = SolveResult {
                 job: job_id,
                 identity,
+                proof,
                 outcome,
                 solved_at_us: unix_micros(),
             };

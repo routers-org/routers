@@ -29,6 +29,9 @@ struct Boundary<'a> {
     node_weights: &'a [u32],
 }
 
+/// Positioned transition metadata, final-layer range, and the populated DP table.
+type Tables<'a> = (Vec<Boundary<'a>>, Range<usize>, Vec<u32>);
+
 impl ViterbiSolver {
     pub fn new() -> Self {
         ViterbiSolver
@@ -203,10 +206,7 @@ impl ViterbiSolver {
 
     /// Resolve every boundary and run the forward pass: the positioned DP
     /// table that backtracking and convergence detection both read.
-    fn tables<'a>(
-        &self,
-        t: &'a Trellis,
-    ) -> Result<(Vec<Boundary<'a>>, Range<usize>, Vec<u32>), SolveError> {
+    fn tables<'a>(&self, t: &'a Trellis) -> Result<Tables<'a>, SolveError> {
         let boundaries = Self::boundaries(t).inspect_err(|e| warn!("{e}"))?;
         let last = t.layer_ranges().last().unwrap_or(0..0);
 
@@ -225,11 +225,11 @@ impl ViterbiSolver {
     /// change the chosen path at or before this layer — which is what lets a
     /// streaming caller emit that prefix and cut the trellis behind it.
     ///
-    /// Errors exactly where [`solve`] errors, so `None` means one thing only:
+    /// Errors exactly where [`Solve::solve`] errors, so `None` means one thing only:
     /// live paths exist but never fuse. Across solvable appends the point
     /// never moves backwards.
     ///
-    /// A pure query, priced accordingly: it rebuilds the DP table [`solve`]
+    /// A pure query, priced accordingly: it rebuilds the DP table [`Solve::solve`]
     /// builds, so asking is one extra forward pass. Callers on a hot path
     /// should ask once per solve, not once per read.
     #[cfg_attr(
