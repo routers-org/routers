@@ -18,12 +18,19 @@ use thiserror::Error;
 
 use crate::event::VehicleId;
 use crate::partition::{fnv1a, mix};
-use crate::protocol::ids::{ObservationId, OutputId, Revision, SegmentId};
+use crate::protocol::ids::{ObservationId, OutputId, Revision, SegmentId, token_safe};
 use crate::secret::SecretUrl;
 use crate::store::checkpoint::{
     CheckpointStore, CommitPhase, PartitionFrontier, PrepareOutcome, PreparedCommit,
-    StoredCheckpoint,
+    StoredCheckpoint, StoredCheckpointState,
 };
+
+/// Raw values returned by the checkpoint, revision-sentinel, and prepared-record pipeline.
+type LoadReply = (
+    HashMap<String, Vec<u8>>,
+    Option<u64>,
+    HashMap<String, Vec<u8>>,
+);
 
 /// The default idle lifetime of a committed checkpoint. Prepared records never
 /// expire.
@@ -41,10 +48,16 @@ pub enum ValkeyError {
     /// [`ValkeyCheckpointStore::connect`] was handed an empty endpoint list.
     #[error("no valkey endpoints were supplied")]
     NoEndpoints,
+    /// Two connection entries used the same stable node id.
+    #[error("duplicate valkey node id {0:?}")]
+    DuplicateNodeId(String),
     /// A promote or publish mark named an output that disagreed with the staged
     /// prepared record.
     #[error("prepared output mismatch: staged {staged}, got {got}")]
     OutputMismatch { staged: OutputId, got: OutputId },
+    /// Promotion was attempted before the output was durably published.
+    #[error("prepared output {output} has not been published")]
+    NotPublished { output: OutputId },
     /// A stored hash held a field that was missing or could not be decoded back
     /// into its typed form.
     #[error("malformed stored record: {0}")]
@@ -54,21 +67,83 @@ pub enum ValkeyError {
     UnexpectedReply(Vec<String>),
 }
 
+/// A stable rendezvous member id, independent of connection credentials and
+/// network addresses. It uses the same conservative token grammar as subjects.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct ValkeyNodeId(String);
+
+impl ValkeyNodeId {
+    /// Validate and wrap a non-empty `[A-Za-z0-9_-]+` node id.
+    pub fn new(value: &str) -> Result<Self, ValkeyEndpointError> {
+        if value.is_empty() {
+            return Err(ValkeyEndpointError::EmptyId);
+        }
+        if !token_safe(value) {
+            return Err(ValkeyEndpointError::UnsafeId(value.to_owned()));
+        }
+        Ok(Self(value.to_owned()))
+    }
+
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// One Valkey primary: a stable placement identity and its secret connection URL.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ValkeyEndpoint {
+    /// Stable identity retained across credential, DNS, and port changes.
+    pub id: ValkeyNodeId,
+    /// Secret-bearing URL used only to establish the connection.
+    pub url: SecretUrl,
+}
+
+/// Why an `id=url` Valkey endpoint specification was rejected.
+#[derive(Clone, Debug, PartialEq, Eq, Error)]
+pub enum ValkeyEndpointError {
+    /// The specification did not contain the required `=` separator.
+    #[error("valkey endpoint must be ID=URL")]
+    MissingSeparator,
+    /// The stable node id was empty.
+    #[error("valkey node id is empty")]
+    EmptyId,
+    /// The stable node id was not a conservative token.
+    #[error("valkey node id must match [A-Za-z0-9_-]+: {0:?}")]
+    UnsafeId(String),
+    /// The connection URL was invalid.
+    #[error("invalid valkey URL: {0}")]
+    Url(#[from] url::ParseError),
+}
+
+impl FromStr for ValkeyEndpoint {
+    type Err = ValkeyEndpointError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let (id, url) = value
+            .split_once('=')
+            .ok_or(ValkeyEndpointError::MissingSeparator)?;
+        Ok(Self {
+            id: ValkeyNodeId::new(id)?,
+            url: url.parse()?,
+        })
+    }
+}
+
 /// Which primary owns a key. Held apart from the connections so the mapping is
 /// testable without a server.
 #[derive(Clone)]
 struct Placement {
-    /// One hash per endpoint URL, keyed by URL not position, so reordering the
-    /// fleet moves no vehicle.
+    /// One hash per stable node id, so URL rotation and list reordering move no
+    /// vehicle.
     seeds: Vec<u64>,
 }
 
 impl Placement {
-    fn new(urls: &[SecretUrl]) -> Self {
+    fn new(endpoints: &[ValkeyEndpoint]) -> Self {
         Self {
-            seeds: urls
+            seeds: endpoints
                 .iter()
-                .map(|url| fnv1a(url.placement_identity().as_bytes()))
+                .map(|endpoint| fnv1a(endpoint.id.as_str().as_bytes()))
                 .collect(),
         }
     }
@@ -102,6 +177,11 @@ fn partition_slot(partition: u16) -> String {
 /// The committed-checkpoint hash for a vehicle.
 fn checkpoint_key(vehicle: VehicleId) -> String {
     format!("{{vehicle:{}}}:checkpoint", vehicle.0)
+}
+
+/// The durable last-promoted revision, retained after checkpoint payload expiry.
+fn committed_revision_key(vehicle: VehicleId) -> String {
+    format!("{{vehicle:{}}}:committed-revision", vehicle.0)
 }
 
 /// The prepared-commit hash for a vehicle.
@@ -252,8 +332,10 @@ fn take_u16(fields: &HashMap<String, Vec<u8>>, name: &str) -> Result<u16, Valkey
         .map_err(|_| ValkeyError::Malformed(format!("field {name} is not a u16")))
 }
 
-/// Compare-and-stage over a vehicle's key group. `KEYS[1]` = checkpoint hash,
-/// `KEYS[2]` = prepared hash; `ARGV[1]` = expected base (`''` = no checkpoint),
+/// Compare-and-stage over a vehicle's key group. `KEYS[1]` = checkpoint hash
+/// (unused, but keeps the invocation's full key group explicit), `KEYS[2]` =
+/// prepared hash, `KEYS[3]` = durable committed revision;
+/// `ARGV[1]` = expected base (`''` = never seen),
 /// `ARGV[2..=11]` = prepared fields in [`prepared_to_fields`] order.
 const PREPARE_LUA: &str = r#"
 local existing = redis.call('HGET', KEYS[2], 'output')
@@ -263,7 +345,7 @@ if existing then
   end
   return {'busy', existing}
 end
-local actual = redis.call('HGET', KEYS[1], 'revision')
+local actual = redis.call('GET', KEYS[3])
 if ARGV[1] == '' then
   if actual then
     return {'conflict', actual}
@@ -288,9 +370,11 @@ return {'prepared'}
 "#;
 
 /// Install the prepared record's checkpoint and drop the prepared record.
-/// `KEYS[1]` = checkpoint, `KEYS[2]` = prepared; `ARGV[1]` = output being
+/// `KEYS[1]` = checkpoint, `KEYS[2]` = prepared, `KEYS[3]` = durable committed
+/// revision; `ARGV[1]` = output being
 /// promoted, `ARGV[2]` = checkpoint TTL in ms. `{'noop'}` when already gone,
-/// `{'mismatch', staged}` on a different output.
+/// `{'mismatch', staged}` on a different output, and `{'not-published'}` when
+/// the broker-acknowledged phase transition has not happened yet.
 const PROMOTE_LUA: &str = r#"
 local existing = redis.call('HGET', KEYS[2], 'output')
 if not existing then
@@ -299,11 +383,16 @@ end
 if existing ~= ARGV[1] then
   return {'mismatch', existing}
 end
+local phase = redis.call('HGET', KEYS[2], 'phase')
+if phase ~= 'published' then
+  return {'not-published'}
+end
 local rev = redis.call('HGET', KEYS[2], 'next_revision')
 local seg = redis.call('HGET', KEYS[2], 'next_segment')
 local bytes = redis.call('HGET', KEYS[2], 'next_checkpoint')
 redis.call('HSET', KEYS[1], 'revision', rev, 'segment', seg, 'bytes', bytes)
 redis.call('PEXPIRE', KEYS[1], ARGV[2])
+redis.call('SET', KEYS[3], rev)
 redis.call('DEL', KEYS[2])
 return {'ok'}
 "#;
@@ -344,9 +433,8 @@ impl Scripts {
 /// How to reach the Valkey fleet and how long a committed checkpoint lives.
 #[derive(Clone, Debug)]
 pub struct ValkeyConfig {
-    /// The primaries, addressed by URL; may be reordered without moving any
-    /// vehicle.
-    pub urls: Vec<SecretUrl>,
+    /// The primaries, each with a stable placement id and a connection URL.
+    pub endpoints: Vec<ValkeyEndpoint>,
     /// How long a committed checkpoint survives without a fresh commit, applied
     /// as a `PEXPIRE` on every promotion. Prepared records never get a TTL.
     pub checkpoint_ttl: Duration,
@@ -356,9 +444,9 @@ pub struct ValkeyConfig {
 
 impl ValkeyConfig {
     /// A config for `urls` with the default checkpoint TTL and connect timeout.
-    pub fn new(urls: Vec<SecretUrl>) -> Self {
+    pub fn new(endpoints: Vec<ValkeyEndpoint>) -> Self {
         Self {
-            urls,
+            endpoints,
             checkpoint_ttl: DEFAULT_CHECKPOINT_TTL,
             connect_timeout: DEFAULT_CONNECT_TIMEOUT,
         }
@@ -386,16 +474,25 @@ impl ValkeyCheckpointStore {
     /// Errors on an empty endpoint list or a connection that exceeds
     /// [`ValkeyConfig::connect_timeout`].
     pub async fn connect(cfg: ValkeyConfig) -> Result<Self, ValkeyError> {
-        if cfg.urls.is_empty() {
+        if cfg.endpoints.is_empty() {
             return Err(ValkeyError::NoEndpoints);
         }
 
-        let placement = Placement::new(&cfg.urls);
+        let mut ids = std::collections::HashSet::with_capacity(cfg.endpoints.len());
+        for endpoint in &cfg.endpoints {
+            if !ids.insert(endpoint.id.clone()) {
+                return Err(ValkeyError::DuplicateNodeId(
+                    endpoint.id.as_str().to_owned(),
+                ));
+            }
+        }
 
-        let conns = try_join_all(cfg.urls.iter().cloned().map(|url| {
+        let placement = Placement::new(&cfg.endpoints);
+
+        let conns = try_join_all(cfg.endpoints.iter().cloned().map(|endpoint| {
             let connect_timeout = cfg.connect_timeout;
             async move {
-                let client = redis::Client::open(url.connection_url())?;
+                let client = redis::Client::open(endpoint.url.connection_url())?;
                 let config =
                     redis::AsyncConnectionConfig::new().set_connection_timeout(connect_timeout);
                 let conn = client
@@ -472,30 +569,45 @@ fn parse_ok_or_mismatch(reply: &[String], got: OutputId) -> Result<(), ValkeyErr
     }
 }
 
+/// Read a promotion reply, additionally enforcing the publish-before-promote
+/// state transition inside the atomic script.
+fn parse_promote_reply(reply: &[String], got: OutputId) -> Result<(), ValkeyError> {
+    match reply.first().map(String::as_str) {
+        Some("not-published") => Err(ValkeyError::NotPublished { output: got }),
+        _ => parse_ok_or_mismatch(reply, got),
+    }
+}
+
 impl CheckpointStore for ValkeyCheckpointStore {
     type Error = ValkeyError;
 
     async fn load(
         &self,
         vehicle: VehicleId,
-    ) -> Result<(Option<StoredCheckpoint>, Option<PreparedCommit>), Self::Error> {
+    ) -> Result<(StoredCheckpointState, Option<PreparedCommit>), Self::Error> {
         let mut conn = self.vehicle_conn(vehicle);
 
-        // One key group, so a pipeline reads both in one round trip.
+        // One hash-slot and an atomic pipeline give recovery a point-in-time
+        // view of the checkpoint, revision sentinel, and prepared record.
         let mut pipe = redis::pipe();
-        pipe.cmd("HGETALL")
+        pipe.atomic()
+            .cmd("HGETALL")
             .arg(checkpoint_key(vehicle))
+            .cmd("GET")
+            .arg(committed_revision_key(vehicle))
             .cmd("HGETALL")
             .arg(prepared_key(vehicle));
-        let (checkpoint_fields, prepared_fields): (
-            HashMap<String, Vec<u8>>,
-            HashMap<String, Vec<u8>>,
-        ) = pipe.query_async(&mut conn).await?;
+        let (checkpoint_fields, committed_revision, prepared_fields): LoadReply =
+            pipe.query_async(&mut conn).await?;
 
         let checkpoint = if checkpoint_fields.is_empty() {
-            None
+            committed_revision.map_or(StoredCheckpointState::NeverSeen, |revision| {
+                StoredCheckpointState::Expired {
+                    revision: Revision(revision),
+                }
+            })
         } else {
-            Some(stored_from_fields(&checkpoint_fields)?)
+            StoredCheckpointState::Present(stored_from_fields(&checkpoint_fields)?)
         };
         let prepared = if prepared_fields.is_empty() {
             None
@@ -522,6 +634,7 @@ impl CheckpointStore for ValkeyCheckpointStore {
         invocation
             .key(checkpoint_key(vehicle))
             .key(prepared_key(vehicle))
+            .key(committed_revision_key(vehicle))
             .arg(expected);
         for (_, value) in &fields {
             invocation.arg(value.as_slice());
@@ -574,10 +687,11 @@ impl CheckpointStore for ValkeyCheckpointStore {
         invocation
             .key(checkpoint_key(vehicle))
             .key(prepared_key(vehicle))
+            .key(committed_revision_key(vehicle))
             .arg(output.to_string())
             .arg(ttl_ms);
         let reply: Vec<String> = invocation.invoke_async(&mut conn).await?;
-        parse_ok_or_mismatch(&reply, output)?;
+        parse_promote_reply(&reply, output)?;
 
         // Best-effort index removal; a leaked entry is repaired by `list_prepared`.
         let mut index_conn = self.partition_conn(partition);
@@ -667,9 +781,13 @@ impl CheckpointStore for ValkeyCheckpointStore {
 mod tests {
     use super::*;
 
-    fn fleet(n: usize) -> Vec<SecretUrl> {
+    fn fleet(n: usize) -> Vec<ValkeyEndpoint> {
         (0..n)
-            .map(|i| format!("redis://valkey-{i:03}:6379").parse().unwrap())
+            .map(|i| {
+                format!("node-{i:03}=redis://valkey-{i:03}:6379")
+                    .parse()
+                    .unwrap()
+            })
             .collect()
     }
 
@@ -683,6 +801,10 @@ mod tests {
     fn keys_are_hash_tagged_per_vehicle() {
         let vehicle = VehicleId(42);
         assert_eq!(checkpoint_key(vehicle), "{vehicle:42}:checkpoint");
+        assert_eq!(
+            committed_revision_key(vehicle),
+            "{vehicle:42}:committed-revision"
+        );
         assert_eq!(prepared_key(vehicle), "{vehicle:42}:prepared");
         assert_eq!(vehicle_slot(vehicle), "vehicle:42");
     }
@@ -712,10 +834,40 @@ mod tests {
         shuffled.reverse();
         let (direct, reversed) = (Placement::new(&urls), Placement::new(&shuffled));
         for slot in slots(1000) {
-            let expected = &urls[direct.index_for(&slot)];
-            let actual = &shuffled[reversed.index_for(&slot)];
+            let expected = &urls[direct.index_for(&slot)].id;
+            let actual = &shuffled[reversed.index_for(&slot)].id;
             assert_eq!(expected, actual, "{slot} moved when the list was reordered");
         }
+    }
+
+    #[test]
+    fn placement_survives_connection_url_rotation() {
+        let before = fleet(8);
+        let mut after = before.clone();
+        for (index, endpoint) in after.iter_mut().enumerate() {
+            endpoint.url = format!("redis://new-password@replacement-{index}:6380")
+                .parse()
+                .unwrap();
+        }
+        let (before, after) = (Placement::new(&before), Placement::new(&after));
+        for slot in slots(1_000) {
+            assert_eq!(before.index_for(&slot), after.index_for(&slot));
+        }
+    }
+
+    #[test]
+    fn endpoint_parser_requires_a_valid_stable_id() {
+        assert!(
+            "primary=redis://localhost:6379"
+                .parse::<ValkeyEndpoint>()
+                .is_ok()
+        );
+        assert!("redis://localhost:6379".parse::<ValkeyEndpoint>().is_err());
+        assert!(
+            "bad.id=redis://localhost:6379"
+                .parse::<ValkeyEndpoint>()
+                .is_err()
+        );
     }
 
     #[test]
@@ -895,12 +1047,22 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn promotion_reply_rejects_an_unpublished_record() {
+        let output = OutputId(0x1);
+        assert!(matches!(
+            parse_promote_reply(&strings(&["not-published"]), output),
+            Err(ValkeyError::NotPublished { output: got }) if got == output
+        ));
+        assert!(PROMOTE_LUA.contains("phase ~= 'published'"));
+    }
+
     // --- Lua argument-layout guards ----------------------------------------
 
     #[test]
-    fn prepare_lua_references_its_keys_and_argv() {
-        assert!(PREPARE_LUA.contains("KEYS[1]"));
+    fn prepare_lua_references_its_required_keys_and_argv() {
         assert!(PREPARE_LUA.contains("KEYS[2]"));
+        assert!(PREPARE_LUA.contains("KEYS[3]"));
         for n in 1..=11 {
             assert!(
                 PREPARE_LUA.contains(&format!("ARGV[{n}]")),
@@ -923,9 +1085,11 @@ mod tests {
     fn promote_lua_references_its_keys_and_argv() {
         assert!(PROMOTE_LUA.contains("KEYS[1]"));
         assert!(PROMOTE_LUA.contains("KEYS[2]"));
+        assert!(PROMOTE_LUA.contains("KEYS[3]"));
         assert!(PROMOTE_LUA.contains("ARGV[1]"));
         assert!(PROMOTE_LUA.contains("ARGV[2]"));
         assert!(PROMOTE_LUA.contains("PEXPIRE"));
+        assert!(PROMOTE_LUA.contains("redis.call('SET', KEYS[3], rev)"));
         for field in ["next_revision", "next_segment", "next_checkpoint"] {
             assert!(PROMOTE_LUA.contains(&format!("'{field}'")));
         }

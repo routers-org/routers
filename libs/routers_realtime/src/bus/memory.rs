@@ -418,13 +418,20 @@ impl MemoryBus {
         result
     }
 
-    fn deliver<T: Wire>(
-        &self,
-        consumer_id: u64,
-        polled: Polled,
-    ) -> anyhow::Result<Delivery<T, MemoryAck>> {
-        let item = T::decode(&polled.bytes)?;
-        Ok(Delivery {
+    /// Decode one claimed record. A malformed record is transport poison, just
+    /// like it is in JetStream: acknowledge it here and keep looking for a
+    /// useful delivery. There is no handle a caller could safely use after
+    /// decoding failed, so returning an error would leave a record unretired.
+    fn deliver<T: Wire>(&self, consumer_id: u64, polled: Polled) -> Option<Delivery<T, MemoryAck>> {
+        let item = match T::decode(&polled.bytes) {
+            Ok(item) => item,
+            Err(error) => {
+                self.0.lock().unwrap().ack(consumer_id, polled.seq);
+                tracing::warn!(subject = %polled.subject, %error, "acking undecodable memory-bus message");
+                return None;
+            }
+        };
+        Some(Delivery {
             item,
             handle: MemoryAck {
                 bus: self.clone(),
@@ -548,7 +555,10 @@ impl<T: Wire> Source<T> for MemorySource<T> {
                 }
             };
             if let Some(polled) = polled {
-                return Some(self.bus.deliver::<T>(self.consumer_id, polled));
+                if let Some(delivery) = self.bus.deliver::<T>(self.consumer_id, polled) {
+                    return Some(Ok(delivery));
+                }
+                continue;
             }
 
             notified.as_mut().await;
@@ -597,7 +607,9 @@ impl<T: Wire> Consumer<T> for MemoryConsumer<T> {
             if !polled.is_empty() {
                 let mut batch = Vec::with_capacity(polled.len());
                 for item in polled {
-                    batch.push(self.bus.deliver::<T>(self.consumer_id, item)?);
+                    if let Some(delivery) = self.bus.deliver::<T>(self.consumer_id, item) {
+                        batch.push(delivery);
+                    }
                 }
                 return Ok(batch);
             }
@@ -765,6 +777,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn malformed_payload_is_acked_and_skipped_without_redelivery() {
+        let bus = MemoryBus::new();
+        let publisher = bus.publisher::<TestMsg>();
+        let mut source = bus.source::<TestMsg>("s");
+
+        publisher
+            .publish_bytes("s", "poison", HeaderMap::new(), b"not postcard")
+            .await
+            .expect("publish poison bytes");
+        publisher
+            .publish("s", "good", HeaderMap::new(), &msg(7))
+            .await
+            .expect("publish good message");
+
+        // The caller never receives a handle for poison, because the adapter
+        // has already retired it; the next value is the useful message.
+        let good = source
+            .next()
+            .await
+            .expect("good delivery")
+            .expect("decoded");
+        assert_eq!(good.item, msg(7));
+        assert_eq!(bus.acked_count("s"), 1, "the poison was acknowledged");
+
+        // An ack-wait sweep must not resurrect a poison record the caller
+        // could not acknowledge itself.
+        bus.redeliver_unacked("s");
+        good.handle.ack().await.expect("ack good message");
+        assert_eq!(bus.acked_count("s"), 2);
+    }
+
+    #[tokio::test]
     async fn duplicate_msg_id_is_reported_and_not_redelivered() {
         let bus = MemoryBus::new();
         let publisher = bus.publisher::<TestMsg>();
@@ -797,6 +841,42 @@ mod tests {
 
         let delivery = source.next().await.expect("some").expect("ok");
         assert_eq!(delivery.item, msg(1));
+    }
+
+    #[tokio::test]
+    async fn concurrent_duplicate_publishes_store_one_message() {
+        let bus = MemoryBus::new();
+        let mut publishers = tokio::task::JoinSet::new();
+
+        for n in 0..32 {
+            let publisher = bus.publisher::<TestMsg>();
+            publishers.spawn(async move {
+                publisher
+                    .publish("s", "same-id", HeaderMap::new(), &msg(n))
+                    .await
+                    .expect("publish")
+            });
+        }
+
+        let mut fresh = 0;
+        let mut duplicates = 0;
+        while let Some(outcome) = publishers.join_next().await {
+            match outcome.expect("publisher task joins") {
+                PublishOutcome::Acked {
+                    sequence: 1,
+                    duplicate: false,
+                } => fresh += 1,
+                PublishOutcome::Acked {
+                    sequence: 1,
+                    duplicate: true,
+                } => duplicates += 1,
+                outcome => panic!("unexpected concurrent publish outcome: {outcome:?}"),
+            }
+        }
+
+        assert_eq!(fresh, 1, "one publish wins the stream sequence");
+        assert_eq!(duplicates, 31, "every concurrent retry deduplicates");
+        assert_eq!(bus.published("s").len(), 1);
     }
 
     #[tokio::test]

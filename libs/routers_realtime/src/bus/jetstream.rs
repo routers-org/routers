@@ -61,8 +61,9 @@ impl AckHandle for JetStreamAck {
 /// Turn one delivered [`jetstream::Message`] into a decoded [`Delivery`].
 ///
 /// Returns `None` — after acking and warning — when the message has unreadable
-/// ack metadata or an undecodable payload; acking it is deliberate poison
-/// handling so it does not loop forever under redelivery.
+/// ack metadata or an undecodable payload; acking it is deliberate transport
+/// poison handling so it does not loop forever under redelivery. The memory
+/// adapter owns the same behaviour, keeping business consumers decode-free.
 async fn build_delivery<T: Wire>(message: jetstream::Message) -> Option<Delivery<T, JetStreamAck>> {
     let subject = message.subject.to_string();
     let headers = message.headers.clone();
@@ -82,7 +83,9 @@ async fn build_delivery<T: Wire>(message: jetstream::Message) -> Option<Delivery
         ),
         Err(err) => {
             warn!("acking message with unreadable JetStream info on {subject}: {err}");
-            let _ = message.ack().await;
+            if let Err(ack_err) = message.ack().await {
+                warn!("could not acknowledge unreadable JetStream message on {subject}: {ack_err}");
+            }
             return None;
         }
     };
@@ -91,7 +94,11 @@ async fn build_delivery<T: Wire>(message: jetstream::Message) -> Option<Delivery
         Ok(item) => item,
         Err(err) => {
             warn!("acking undecodable message on {subject}: {err}");
-            let _ = message.ack().await;
+            if let Err(ack_err) = message.ack().await {
+                warn!(
+                    "could not acknowledge undecodable JetStream message on {subject}: {ack_err}"
+                );
+            }
             return None;
         }
     };

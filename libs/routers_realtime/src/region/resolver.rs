@@ -23,7 +23,7 @@ pub struct Pin {
     pub region: RegionId,
     /// The graph that solve ran against; a mismatch with the catalog breaks hysteresis and re-resolves.
     pub graph: GraphVersion,
-    /// The catalog `routing_version` when pinned; only [`Resolver::routing_changed`] consults it.
+    /// The catalog `routing_version` when pinned.
     pub routing_version: u64,
 }
 
@@ -99,8 +99,8 @@ impl<'c> Resolver<'c> {
     ) -> Result<Resolution, Unserved> {
         let cell = shard_of(point);
 
-        // routing_version is intentionally ignored here; that is routing_changed's job.
         if let Some(pin) = pinned
+            && pin.routing_version == self.catalog.routing_version
             && let Some(region) = self.catalog.region(&pin.region)
             && region.graph == pin.graph
             && (region.coverage.contains(&cell) || region.overlap.contains(&cell))
@@ -125,11 +125,6 @@ impl<'c> Resolver<'c> {
         })
     }
 
-    /// Whether the vehicle's pin was made against a stale routing.
-    pub fn routing_changed(&self, pinned: &Pin) -> bool {
-        pinned.routing_version != self.catalog.routing_version
-    }
-
     /// Assemble a [`Resolution`] for a chosen region.
     fn resolution(&self, vehicle: VehicleId, region: &Region, kind: ResolutionKind) -> Resolution {
         Resolution {
@@ -144,7 +139,7 @@ impl<'c> Resolver<'c> {
 
     /// The job lane a vehicle takes within a region (stable per id, spread across lanes).
     fn lane_for(vehicle: VehicleId, region: &Region) -> Lane {
-        Lane((mix(vehicle.0) % u64::from(region.lanes)) as u8)
+        Lane((mix(vehicle.0) % u64::from(region.lanes.get())) as u8)
     }
 }
 
@@ -345,22 +340,20 @@ freshness_budget_ms = 45000
     }
 
     #[test]
-    fn routing_changed_compares_against_catalog() {
+    fn routing_change_breaks_hysteresis_and_repins() {
         let catalog = build_catalog(5);
         let resolver = Resolver::new(&catalog);
 
-        let current = Pin {
+        let stale = Pin {
             region: rid("west"),
             graph: gv("g"),
-            routing_version: 5,
-        };
-        assert!(!resolver.routing_changed(&current));
-
-        let stale = Pin {
             routing_version: 4,
-            ..current
         };
-        assert!(resolver.routing_changed(&stale));
+        let res = resolver
+            .resolve(VehicleId(7), melbourne(), Some(&stale))
+            .unwrap();
+        assert_eq!(res.region, rid("east"));
+        assert_eq!(res.kind, ResolutionKind::Repinned);
     }
 
     #[test]

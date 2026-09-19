@@ -317,6 +317,7 @@ mod tests {
                 graph: self.graph.clone(),
                 schema: SCHEMA_VERSION,
                 region: self.region.clone(),
+                routing_version: 1,
             }
         }
 
@@ -495,7 +496,7 @@ mod tests {
 
         let active = vehicle.active.as_ref().expect("live job present");
         let decision = terminal_decision(active, TerminalReason::DeadlineExpired, segment);
-        let plan = commit::plan(Some(&prev), decision, fx.obs(10), &fx.region, &fx.graph, 0);
+        let plan = commit::plan(Some(&prev), decision, fx.obs(10), &fx.region, &fx.graph, 1);
         assert_eq!(plan.next.last_input, fx.obs(10));
 
         let after = fx.vehicle(CheckpointState::Present(plan.next), None, false);

@@ -2,14 +2,8 @@
 {{- include "routers.validate" . }}
 {{- range $region := $.Values.catalog.regions }}
 {{- $id := toString $region.id }}
-{{- $per := dict }}
-{{- if hasKey $.Values.matcher.perRegion $id }}{{ $per = index $.Values.matcher.perRegion $id }}{{ end }}
-{{- $replicas := $.Values.matcher.replicas }}
-{{- if hasKey $per "replicas" }}{{ $replicas = $per.replicas }}{{ end }}
-{{- $resources := $.Values.matcher.resources }}
-{{- if hasKey $per "resources" }}{{ $resources = $per.resources }}{{ end }}
-{{- $autoscaling := $.Values.matcher.autoscaling }}
-{{- if hasKey $per "autoscaling" }}{{ $autoscaling = $per.autoscaling }}{{ end }}
+{{- $minReplicas := int $region.replicas.min }}
+{{- $maxReplicas := int $region.replicas.max }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -20,7 +14,7 @@ metadata:
     app: matcher
     region: "{{ $id }}"
 spec:
-  replicas: {{ $replicas }}
+  replicas: {{ $minReplicas }}
   selector:
     matchLabels:
       app: matcher
@@ -53,8 +47,8 @@ spec:
             - {{ $id | quote }}
             - "--shard-dir"
             - "/shards"
-            - "--ready-file"
-            - "/tmp/routers-ready"
+            - "--health-addr"
+            - {{ printf "0.0.0.0:%v" $.Values.matcher.healthPort | quote }}
             {{- if $.Values.matcher.slots }}
             - "--slots"
             - {{ $.Values.matcher.slots | quote }}
@@ -77,17 +71,30 @@ spec:
             - name: {{ $name }}
               value: {{ $value | quote }}
             {{- end }}
-          # Marker present == graph loaded; startup budget is generous since a shard load can take minutes.
+          ports:
+            - name: health
+              containerPort: {{ $.Values.matcher.healthPort }}
+              protocol: TCP
+          # Readiness follows the matcher's in-process state machine. The startup
+          # budget is generous because loading a large graph can take minutes.
           readinessProbe:
-            exec:
-              command: ["test", "-f", "/tmp/routers-ready"]
+            httpGet:
+              path: /ready
+              port: health
             periodSeconds: 5
             failureThreshold: 3
           startupProbe:
-            exec:
-              command: ["test", "-f", "/tmp/routers-ready"]
+            httpGet:
+              path: /ready
+              port: health
             periodSeconds: 10
             failureThreshold: 60
+          livenessProbe:
+            httpGet:
+              path: /live
+              port: health
+            periodSeconds: 10
+            failureThreshold: 3
           volumeMounts:
             - name: catalog
               mountPath: /etc/routers/catalog.toml
@@ -97,7 +104,7 @@ spec:
               mountPath: /shards
               readOnly: true
           resources:
-            {{- toYaml $resources | nindent 12 }}
+            {{- toYaml $.Values.matcher.resources | nindent 12 }}
       volumes:
         - name: catalog
           configMap:
@@ -123,7 +130,7 @@ spec:
           {{- else }}
           {{- fail (printf "shardCache.mode must be 'hostPath', 'pvc' or 'gcsfuse', got %q" $.Values.shardCache.mode) }}
           {{- end }}
-{{- if $autoscaling.enabled }}
+{{- if ne $minReplicas $maxReplicas }}
 ---
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
@@ -138,14 +145,14 @@ spec:
     apiVersion: apps/v1
     kind: Deployment
     name: matcher-{{ $id }}
-  minReplicas: {{ $autoscaling.minReplicas }}
-  maxReplicas: {{ $autoscaling.maxReplicas }}
+  minReplicas: {{ $minReplicas }}
+  maxReplicas: {{ $maxReplicas }}
   metrics:
     - type: Resource
       resource:
         name: cpu
         target:
           type: Utilization
-          averageUtilization: {{ $autoscaling.targetCPUUtilizationPercentage }}
+          averageUtilization: {{ $.Values.matcher.targetCPUUtilizationPercentage }}
 {{- end }}
 {{- end }}

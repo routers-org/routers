@@ -2,7 +2,7 @@ routers-realtime installed as {{ .Release.Name }} in namespace {{ .Release.Names
 
 Deployed:
 {{- range $region := .Values.catalog.regions }}
-  - matcher-{{ $region.id }} (graph {{ $region.graph }}, coverage {{ join ", " $region.coverage }}){{ if $.Values.matcher.autoscaling.enabled }}, HPA to {{ $.Values.matcher.autoscaling.maxReplicas }}{{ end }}
+  - matcher-{{ $region.id }} (graph {{ $region.graph }}, coverage {{ join ", " $region.coverage }}){{ if ne (int $region.replicas.min) (int $region.replicas.max) }}, HPA {{ $region.replicas.min }}-{{ $region.replicas.max }}{{ end }}
 {{- end }}
   - orchestrator fleet: {{ .Values.orchestrator.replicas }} pod(s) over 1024 partitions, {{ .Values.streams }} raw stream(s)
 {{- if .Values.materializer.enabled }}

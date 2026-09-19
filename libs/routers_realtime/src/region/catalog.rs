@@ -7,6 +7,7 @@
 //! `coverage` cells are owned and disjoint across the catalog; `overlap` cells
 //! are certified boundary fallbacks a region can also serve.
 
+use core::num::{NonZeroU8, NonZeroU32};
 use core::time::Duration;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -18,15 +19,52 @@ use thiserror::Error;
 use crate::event::SHARD_PRECISION;
 use crate::protocol::ids::{GraphVersion, RegionId};
 
+/// A nonzero number of priority lanes in a region's job plane.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[repr(transparent)]
+pub struct LaneCount(NonZeroU8);
+
+impl LaneCount {
+    /// Construct a lane count from a value that is already known nonzero.
+    #[must_use]
+    pub const fn new(value: NonZeroU8) -> Self {
+        Self(value)
+    }
+
+    /// The number of addressable lanes.
+    #[must_use]
+    pub const fn get(self) -> u8 {
+        self.0.get()
+    }
+}
+
 /// The horizontal-scale bounds the scheduler is allowed to run a region
 /// between. `min` guarantees a floor of warm matchers; `max` caps the burst.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Replicas {
     /// Fewest matcher replicas to keep serving the region (at least one).
-    pub min: u32,
+    pub min: NonZeroU32,
     /// Most matcher replicas the region may scale out to.
-    pub max: u32,
+    pub max: NonZeroU32,
+}
+
+impl Replicas {
+    /// Build a nonempty, ordered replica range.
+    pub fn new(min: NonZeroU32, max: NonZeroU32) -> Result<Self, ReplicaRangeError> {
+        if min > max {
+            return Err(ReplicaRangeError { min, max });
+        }
+        Ok(Self { min, max })
+    }
+}
+
+/// An inverted replica range.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Error)]
+#[error("replica range is inverted (min={}, max={})", min, max)]
+pub struct ReplicaRangeError {
+    min: NonZeroU32,
+    max: NonZeroU32,
 }
 
 /// One solve region: a graph snapshot, the cells it owns, and the operational
@@ -45,7 +83,7 @@ pub struct Region {
     #[serde(default, with = "cells")]
     pub overlap: Vec<Geohash>,
     /// Priority lanes the job plane exposes; lanes `0..lanes` are valid, so at least one.
-    pub lanes: u8,
+    pub lanes: LaneCount,
     /// The compute profile the scheduler places matchers on (opaque label, e.g. `"cpu-8"`).
     pub resource_class: String,
     /// The replica scaling envelope.
@@ -127,12 +165,13 @@ pub enum CatalogError {
         first: String,
         second: String,
     },
-    /// A region exposed no lanes, so no job could ever be addressed to it.
-    #[error("region {0:?} sets lanes = 0 (needs at least one lane)")]
-    ZeroLanes(String),
-    /// A region's replica envelope was empty or inverted.
-    #[error("region {region:?} has invalid replicas (min={min}, max={max}); need 1 <= min <= max")]
-    BadReplicas { region: String, min: u32, max: u32 },
+    /// A region's replica envelope was inverted.
+    #[error("region {region:?} has invalid replicas (min={min}, max={max}); need min <= max")]
+    BadReplicas {
+        region: String,
+        min: NonZeroU32,
+        max: NonZeroU32,
+    },
     /// A region owned no cells, so it would serve nothing.
     #[error("region {0:?} has empty coverage")]
     EmptyCoverage(String),
@@ -253,10 +292,7 @@ impl Region {
         if self.coverage.is_empty() {
             return Err(CatalogError::EmptyCoverage(id.to_owned()));
         }
-        if self.lanes == 0 {
-            return Err(CatalogError::ZeroLanes(id.to_owned()));
-        }
-        if self.replicas.min == 0 || self.replicas.min > self.replicas.max {
+        if self.replicas.min > self.replicas.max {
             return Err(CatalogError::BadReplicas {
                 region: id.to_owned(),
                 min: self.replicas.min,
@@ -379,9 +415,12 @@ freshness_budget_ms = 30000
         assert_eq!(region.graph.as_str(), "sydney-2026-09-01");
         assert_eq!(region.coverage, vec![cell("r3gq"), cell("r3gr")]);
         assert_eq!(region.overlap, vec![cell("r3gw")]);
-        assert_eq!(region.lanes, 1);
+        assert_eq!(region.lanes.get(), 1);
         assert_eq!(region.resource_class, "cpu-8");
-        assert_eq!(region.replicas, Replicas { min: 1, max: 8 });
+        assert_eq!(
+            region.replicas,
+            Replicas::new(NonZeroU32::MIN, NonZeroU32::new(8).expect("nonzero")).expect("range")
+        );
         assert_eq!(region.freshness_budget, Duration::from_millis(30_000));
     }
 
@@ -508,7 +547,7 @@ resource_class = "c"
 replicas = { min = 1, max = 1 }
 freshness_budget_ms = 1000
 "#,
-                want: |e| matches!(e, CatalogError::ZeroLanes(id) if id == "r"),
+                want: |e| matches!(e, CatalogError::Toml(_)),
             },
             Case {
                 label: "replicas min > max",
@@ -524,7 +563,13 @@ resource_class = "c"
 replicas = { min = 5, max = 2 }
 freshness_budget_ms = 1000
 "#,
-                want: |e| matches!(e, CatalogError::BadReplicas { min: 5, max: 2, .. }),
+                want: |e| {
+                    matches!(
+                        e,
+                        CatalogError::BadReplicas { min, max, .. }
+                            if min.get() == 5 && max.get() == 2
+                    )
+                },
             },
             Case {
                 label: "replicas min == 0",
@@ -540,7 +585,7 @@ resource_class = "c"
 replicas = { min = 0, max = 2 }
 freshness_budget_ms = 1000
 "#,
-                want: |e| matches!(e, CatalogError::BadReplicas { min: 0, .. }),
+                want: |e| matches!(e, CatalogError::Toml(_)),
             },
             Case {
                 label: "empty coverage",
@@ -767,7 +812,10 @@ freshness_budget_ms = 1000
         assert!(toml::from_str::<Catalog>(&unknown_region_field).is_err());
 
         let mut raw: RawCatalog = toml::from_str(EXAMPLE).expect("raw catalog parses for attack");
-        raw.regions[0].lanes = 0;
+        raw.regions[0].replicas = Replicas {
+            min: NonZeroU32::new(8).expect("nonzero"),
+            max: NonZeroU32::MIN,
+        };
         let bytes = postcard::to_allocvec(&raw).expect("raw catalog serializes");
         assert!(postcard::from_bytes::<Catalog>(&bytes).is_err());
     }

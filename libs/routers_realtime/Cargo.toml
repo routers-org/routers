@@ -36,7 +36,7 @@ web-time = "1"
 # Utilities
 fnv_rs = "0.4.4"
 futures = "0.3.32"
-tokio = { workspace = true, features = ["signal", "sync", "time"] }
+tokio = { workspace = true, features = ["net", "signal", "sync", "time"] }
 itertools = { workspace = true }
 clap = { workspace = true, features = ["derive", "env"] }
 url = { workspace = true }
@@ -52,6 +52,7 @@ buffa = { workspace = true }
 buffa-types = { workspace = true }
 
 # Systems
+axum = "0.8.4"
 async-nats = "0.38.0"
 redis = { version = "0.29", features = ["tokio-comp", "streams"] }
 polars = { version = "0.46", default-features = false, features = ["lazy", "csv", "strings", "dtype-full"] }

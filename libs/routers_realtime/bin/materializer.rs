@@ -23,6 +23,7 @@ use routers_realtime::metrics::Metrics;
 use routers_realtime::partition::PARTITIONS;
 use routers_realtime::protocol::output::CommittedOutput;
 use routers_realtime::secret::SecretUrl;
+use routers_realtime::store::valkey::ValkeyEndpoint;
 use routers_realtime::topology;
 
 /// The entry type the fleet solves against.
@@ -55,10 +56,9 @@ struct Args {
     #[arg(short, env, long)]
     nats: SecretUrl,
 
-    /// Valkey primaries, comma-separated. Order is irrelevant (rendezvous hash),
-    /// but every process touching the served view must be given the same set.
+    /// Valkey primaries as stable-id=URL, comma-separated.
     #[arg(short, env, long, value_delimiter = ',')]
-    valkey: Vec<SecretUrl>,
+    valkey: Vec<ValkeyEndpoint>,
 
     /// The partitions to materialise, as an inclusive range ("0-255"); omitted,
     /// the consumer tails the whole output plane.
@@ -173,7 +173,7 @@ mod tests {
             "--nats",
             "nats://localhost",
             "--valkey",
-            "redis://localhost",
+            "primary=redis://localhost",
         ]);
         assert_eq!(args.consumer_name, "materializer");
         assert!(args.partitions.is_none());
@@ -187,7 +187,7 @@ mod tests {
             "--nats",
             "nats://localhost",
             "--valkey",
-            "redis://a:6379,redis://b:6379",
+            "a=redis://a:6379,b=redis://b:6379",
         ]);
         assert_eq!(args.valkey.len(), 2);
     }

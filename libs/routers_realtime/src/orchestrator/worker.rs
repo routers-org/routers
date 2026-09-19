@@ -21,7 +21,7 @@ use crate::event::VehicleId;
 use crate::lifecycle::{Drain, Shutdown};
 use crate::matcher::pull::RawBytes;
 use crate::metrics::Metrics;
-use crate::orchestrator::admission::{Admission, Waiting};
+use crate::orchestrator::admission::{Admission, HeldReason, Waiting};
 use crate::orchestrator::commit::{self, CommitConfig, CommitError, Committer, Decision};
 use crate::orchestrator::deadline::{self, DeadlineConfig, Deadlines, Expiry};
 use crate::orchestrator::dispatch::{
@@ -37,7 +37,7 @@ use crate::orchestrator::validate::{self, QuarantineReason, RejectReason, Verdic
 use crate::protocol::ids::{GraphVersion, RegionId, Revision, SCHEMA_VERSION, SegmentId};
 use crate::protocol::job::{BaseState, JobIdentity, SolveJob};
 use crate::protocol::output::{CommittedOutput, ResetReason, TerminalReason};
-use crate::protocol::result::{SolveOutcome, SolveResult};
+use crate::protocol::result::SolveResult;
 use crate::region::catalog::Catalog;
 use crate::region::resolver::{Pin, Resolver};
 use crate::store::checkpoint::{CheckpointStore, PartitionFrontier, VehicleCheckpoint};
@@ -144,6 +144,8 @@ struct ActiveMeta {
     region: RegionId,
     /// The graph snapshot (for the next checkpoint).
     graph: GraphVersion,
+    /// The routing topology used to select the serving region.
+    routing_version: u64,
     /// The revision the commit compare-and-swaps against.
     expected_base: Option<Revision>,
 }
@@ -156,6 +158,13 @@ struct PendingReset {
     reason: ResetReason,
     /// The revision the reset's commit must compare-and-swap against, or `None`.
     prior: Option<Revision>,
+}
+
+/// Routing provenance used to synthesize a terminal without dispatching a job.
+struct LocalTerminalRoute {
+    region: RegionId,
+    graph: GraphVersion,
+    routing_version: u64,
 }
 
 /// An early result retained with its still-unacknowledged broker delivery.
@@ -193,9 +202,11 @@ impl From<Verdict<'_>> for ResultVerdict {
 enum DispatchOutcome {
     /// A job was published (or the observation was terminal-committed directly).
     Done,
-    /// Admission (or a transient publish fault) held the dispatch; the caller
-    /// should stop draining the ready queue this round.
-    Held,
+    /// Admission held the dispatch in one region; other regions can still run.
+    RegionHeld,
+    /// A global admission ceiling or transient dispatch fault means the caller
+    /// should stop draining this round.
+    GloballyHeld,
     /// Nothing to do (blocked, ineligible, or a transient restore failure).
     Skipped,
 }
@@ -440,25 +451,7 @@ where
                     );
                 }
                 let result_for_retry = result.clone();
-                let decision = if matches!(result.outcome, SolveOutcome::Solved { .. }) {
-                    Decision::Solved {
-                        result,
-                        reset: meta.reset,
-                        segment: meta.segment,
-                    }
-                } else {
-                    let reason = result
-                        .outcome
-                        .terminal_reason()
-                        .unwrap_or(TerminalReason::Internal);
-                    Decision::Terminal {
-                        job: result.job,
-                        identity: result.identity.clone(),
-                        reason,
-                        closes_segment: false,
-                        segment: meta.segment,
-                    }
-                };
+                let decision = Decision::from_result(result, meta.reset, meta.segment);
                 self.commit_decision(
                     vehicle,
                     decision,
@@ -592,11 +585,12 @@ where
         self.pump().await;
     }
 
-    /// Drain the ready queue, dispatching each vehicle in turn and stopping at
-    /// the first admission hold (nothing more can be dispatched this round).
+    /// Drain the ready queue, dispatching each vehicle in turn. A region-local
+    /// hold does not prevent work in other regions; a global or transient hold
+    /// stops the round.
     async fn pump(&mut self) {
         while let Some(vehicle) = self.scheduler.next_ready() {
-            if let DispatchOutcome::Held = self.try_dispatch(vehicle).await {
+            if let DispatchOutcome::GloballyHeld = self.try_dispatch(vehicle).await {
                 break;
             }
         }
@@ -659,7 +653,7 @@ where
         let pin = checkpoint.as_ref().map(|cp| Pin {
             region: cp.region.clone(),
             graph: cp.graph.clone(),
-            routing_version: self.catalog.routing_version,
+            routing_version: cp.routing_version,
         });
 
         let resolution = {
@@ -711,6 +705,7 @@ where
                         segment: d.segment,
                         region: resolution.region.clone(),
                         graph: resolution.graph.clone(),
+                        routing_version: resolution.routing_version,
                         expected_base,
                     },
                 );
@@ -739,7 +734,12 @@ where
                 debug!(vehicle = vehicle.0, reason = %reason, "dispatch held by admission");
                 self.held
                     .insert(vehicle, self.admission.hold(&resolution.region));
-                DispatchOutcome::Held
+                match reason {
+                    HeldReason::RegionJobs | HeldReason::RegionBytes => DispatchOutcome::RegionHeld,
+                    HeldReason::GlobalJobs | HeldReason::GlobalBytes => {
+                        DispatchOutcome::GloballyHeld
+                    }
+                }
             }
             Err(DispatchError::TimestampRegression(regression)) => {
                 self.commit_timestamp_regression(vehicle, checkpoint.as_ref(), regression)
@@ -750,7 +750,7 @@ where
                 warn!(vehicle = vehicle.0, %error, "dispatch failed; will retry");
                 self.held
                     .insert(vehicle, self.admission.hold(&resolution.region));
-                DispatchOutcome::Held
+                DispatchOutcome::GloballyHeld
             }
         }
     }
@@ -775,8 +775,11 @@ where
         );
         self.commit_local_terminal(
             vehicle,
-            checkpoint.region.clone(),
-            checkpoint.graph.clone(),
+            LocalTerminalRoute {
+                region: checkpoint.region.clone(),
+                graph: checkpoint.graph.clone(),
+                routing_version: checkpoint.routing_version,
+            },
             Some(checkpoint),
             TerminalReason::TimestampRegression,
             JobReservation::SyntheticTerminal,
@@ -794,7 +797,6 @@ where
     ) {
         let _guard = self.drain.begin();
         let now = Instant::now();
-        let now_us = unix_micros();
 
         let Some(meta) = self.active_meta.get(&vehicle).cloned() else {
             if let Some(delivery) = result_delivery {
@@ -836,7 +838,7 @@ where
             raw,
             &meta.region,
             &meta.graph,
-            now_us,
+            meta.routing_version,
         );
         let next = plan.next.clone();
 
@@ -941,10 +943,14 @@ where
         checkpoint: Option<&VehicleCheckpoint<E>>,
         cell: String,
     ) {
-        let (region, graph) = match checkpoint {
-            Some(cp) => (cp.region.clone(), cp.graph.clone()),
+        let (region, graph, routing_version) = match checkpoint {
+            Some(cp) => (cp.region.clone(), cp.graph.clone(), cp.routing_version),
             None => match self.catalog.regions.first() {
-                Some(region) => (region.id.clone(), region.graph.clone()),
+                Some(region) => (
+                    region.id.clone(),
+                    region.graph.clone(),
+                    self.catalog.routing_version,
+                ),
                 None => {
                     warn!(vehicle = vehicle.0, %cell, "unserved cell and empty catalog; cannot advance");
                     return;
@@ -958,8 +964,11 @@ where
         debug!(vehicle = vehicle.0, %cell, "committing unsupported-coverage terminal");
         self.commit_local_terminal(
             vehicle,
-            region,
-            graph,
+            LocalTerminalRoute {
+                region,
+                graph,
+                routing_version,
+            },
             checkpoint,
             TerminalReason::UnsupportedCoverage,
             JobReservation::Admitted(permit),
@@ -971,12 +980,16 @@ where
     async fn commit_local_terminal(
         &mut self,
         vehicle: VehicleId,
-        region: RegionId,
-        graph: GraphVersion,
+        route: LocalTerminalRoute,
         checkpoint: Option<&VehicleCheckpoint<E>>,
         reason: TerminalReason,
         reservation: JobReservation,
     ) {
+        let LocalTerminalRoute {
+            region,
+            graph,
+            routing_version,
+        } = route;
         let now = Instant::now();
         let head_obs = self
             .scheduler
@@ -1008,6 +1021,7 @@ where
                 segment,
                 region,
                 graph,
+                routing_version,
                 expected_base,
             },
         );
@@ -1166,15 +1180,16 @@ where
         self.stats.frontier = self.tracker.frontier();
     }
 
-    /// Re-attempt dispatch for every admission-held vehicle.
+    /// Re-attempt dispatch for every admission-held vehicle. A saturated region
+    /// does not prevent another region whose credit has recovered from running.
     async fn retry_held(&mut self) {
         let held: Vec<VehicleId> = self.held.keys().copied().collect();
         for vehicle in held {
             if self.blocked.contains_key(&vehicle) {
                 continue;
             }
-            if let DispatchOutcome::Held = self.try_dispatch(vehicle).await {
-                // Still held: stop hammering admission this round.
+            if let DispatchOutcome::GloballyHeld = self.try_dispatch(vehicle).await {
+                // Global admission or the publish path is still unavailable.
                 break;
             }
         }
@@ -1272,6 +1287,7 @@ mod tests {
     use crate::partition::partition_of;
     use crate::protocol::ids::{JobId, Lane, ObservationId, OutputId};
     use crate::protocol::output::OutputKind;
+    use crate::protocol::result::SolveOutcome;
     use crate::store::checkpoint::{CommitPhase, MemoryCheckpointStore, PreparedCommit};
     use crate::topology::{output_subject, raw_subject, result_subject};
 
@@ -1307,6 +1323,46 @@ lanes = 1
 resource_class = "c"
 replicas = {{ min = 1, max = 1 }}
 freshness_budget_ms = {budget_ms}
+"#,
+        );
+        Catalog::parse(&toml).expect("catalog parses")
+    }
+
+    /// A Melbourne fix in a different precision-4 cell from [`point`].
+    fn second_point() -> Point {
+        Point::new(144.9631, -37.8136)
+    }
+
+    /// Two disjoint regions for proving that one region's admission pressure
+    /// does not stall the other.
+    fn two_region_catalog() -> Catalog {
+        let first = shard_of(point()).to_string();
+        let second = shard_of(second_point()).to_string();
+        assert_ne!(first, second);
+        let toml = format!(
+            r#"
+version = 1
+routing_version = 1
+
+[[regions]]
+id = "r1"
+graph = "g1"
+coverage = ["{first}"]
+overlap = []
+lanes = 1
+resource_class = "c"
+replicas = {{ min = 1, max = 1 }}
+freshness_budget_ms = 30000
+
+[[regions]]
+id = "r2"
+graph = "g2"
+coverage = ["{second}"]
+overlap = []
+lanes = 1
+resource_class = "c"
+replicas = {{ min = 1, max = 1 }}
+freshness_budget_ms = 30000
 "#,
         );
         Catalog::parse(&toml).expect("catalog parses")
@@ -1406,6 +1462,189 @@ freshness_budget_ms = {budget_ms}
         assert!(!finished_prepared_is_active(None, active));
     }
 
+    #[tokio::test]
+    async fn pump_continues_after_a_region_local_admission_hold() {
+        let first = 1u64;
+        let second = same_partition_as(first);
+        let partition = partition_for(first);
+        let bus = MemoryBus::new();
+        let store = MemoryCheckpointStore::new();
+        let shutdown = Shutdown::new();
+        let catalog = Arc::new(two_region_catalog());
+        let admission = Admission::new(
+            AdmissionConfig {
+                global_jobs: 10,
+                region_jobs: 1,
+                ..AdmissionConfig::default()
+            },
+            catalog.regions.iter().map(|region| &region.id),
+        );
+        let occupied = admission
+            .try_admit(&RegionId::new("r1").unwrap(), 1)
+            .expect("r1 has one slot");
+
+        publish_raw_at(&bus, partition, first, 1_775_000_000_000_000, point()).await;
+        publish_raw_at(
+            &bus,
+            partition,
+            second,
+            1_775_000_000_000_000,
+            second_point(),
+        )
+        .await;
+        let report = clean_report(partition);
+        let mut worker = build_worker_with(
+            config(partition),
+            catalog,
+            &bus,
+            &store,
+            admission,
+            &report,
+            shutdown,
+        );
+        enqueue_next_raw(&mut worker).await;
+        enqueue_next_raw(&mut worker).await;
+
+        worker.pump().await;
+
+        let published = bus.published("solve.v1.g.>");
+        assert_eq!(
+            published.len(),
+            1,
+            "the free region dispatched in this pass"
+        );
+        let job = SolveJob::<E>::decode(&published[0].2).expect("job decodes");
+        assert_eq!(job.identity.vehicle_id, VehicleId(second));
+        assert_eq!(job.identity.region, RegionId::new("r2").unwrap());
+        assert!(worker.held.contains_key(&VehicleId(first)));
+        drop(occupied);
+    }
+
+    #[tokio::test]
+    async fn pump_stops_after_a_global_admission_hold() {
+        let first = 1u64;
+        let second = same_partition_as(first);
+        let partition = partition_for(first);
+        let bus = MemoryBus::new();
+        let store = MemoryCheckpointStore::new();
+        let shutdown = Shutdown::new();
+        let catalog = Arc::new(two_region_catalog());
+        let admission = Admission::new(
+            AdmissionConfig {
+                global_jobs: 1,
+                region_jobs: 10,
+                ..AdmissionConfig::default()
+            },
+            catalog.regions.iter().map(|region| &region.id),
+        );
+        let occupied = admission
+            .try_admit(&RegionId::new("r1").unwrap(), 1)
+            .expect("the process has one slot");
+
+        publish_raw_at(&bus, partition, first, 1_775_000_000_000_000, point()).await;
+        publish_raw_at(
+            &bus,
+            partition,
+            second,
+            1_775_000_000_000_000,
+            second_point(),
+        )
+        .await;
+        let report = clean_report(partition);
+        let mut worker = build_worker_with(
+            config(partition),
+            catalog,
+            &bus,
+            &store,
+            admission,
+            &report,
+            shutdown,
+        );
+        enqueue_next_raw(&mut worker).await;
+        enqueue_next_raw(&mut worker).await;
+
+        worker.pump().await;
+
+        assert!(
+            bus.published("solve.v1.g.>").is_empty(),
+            "global pressure stops the round before another region is attempted"
+        );
+        assert!(worker.held.contains_key(&VehicleId(first)));
+        assert!(!worker.held.contains_key(&VehicleId(second)));
+        drop(occupied);
+    }
+
+    #[tokio::test]
+    async fn retry_held_continues_past_a_still_saturated_region() {
+        let first = 1u64;
+        let second = same_partition_as(first);
+        let partition = partition_for(first);
+        let bus = MemoryBus::new();
+        let store = MemoryCheckpointStore::new();
+        let shutdown = Shutdown::new();
+        let catalog = Arc::new(two_region_catalog());
+        let admission = Admission::new(
+            AdmissionConfig {
+                global_jobs: 10,
+                region_jobs: 1,
+                ..AdmissionConfig::default()
+            },
+            catalog.regions.iter().map(|region| &region.id),
+        );
+
+        publish_raw_at(&bus, partition, first, 1_775_000_000_000_000, point()).await;
+        publish_raw_at(
+            &bus,
+            partition,
+            second,
+            1_775_000_000_000_000,
+            second_point(),
+        )
+        .await;
+        let report = clean_report(partition);
+        let mut worker = build_worker_with(
+            config(partition),
+            catalog,
+            &bus,
+            &store,
+            admission.clone(),
+            &report,
+            shutdown,
+        );
+        enqueue_next_raw(&mut worker).await;
+        enqueue_next_raw(&mut worker).await;
+        worker.held.insert(
+            VehicleId(first),
+            admission.hold(&RegionId::new("r1").unwrap()),
+        );
+        worker.held.insert(
+            VehicleId(second),
+            admission.hold(&RegionId::new("r2").unwrap()),
+        );
+
+        // Saturate whichever region the HashMap will retry first. The other
+        // region must still dispatch during the same retry pass.
+        let first_retry = *worker.held.keys().next().expect("two held vehicles");
+        let (blocked_region, expected_vehicle) = if first_retry == VehicleId(first) {
+            (RegionId::new("r1").unwrap(), VehicleId(second))
+        } else {
+            (RegionId::new("r2").unwrap(), VehicleId(first))
+        };
+        let occupied = admission
+            .try_admit(&blocked_region, 1)
+            .expect("the first region has one slot");
+
+        worker.retry_held().await;
+
+        let published = bus.published("solve.v1.g.>");
+        assert_eq!(published.len(), 1, "the free region retried in this pass");
+        let job = SolveJob::<E>::decode(&published[0].2).expect("job decodes");
+        assert_eq!(job.identity.vehicle_id, expected_vehicle);
+        assert!(worker.held.contains_key(&first_retry));
+        assert!(!worker.held.contains_key(&expected_vehicle));
+        drop(occupied);
+    }
+
     fn same_partition_as(vehicle: u64) -> u64 {
         let want = partition_for(vehicle);
         (vehicle + 1..)
@@ -1413,11 +1652,17 @@ freshness_budget_ms = {budget_ms}
             .expect("another vehicle in the partition")
     }
 
-    async fn publish_raw(bus: &MemoryBus, partition: u16, vehicle: u64, ts_us: i64) -> u64 {
+    async fn publish_raw_at(
+        bus: &MemoryBus,
+        partition: u16,
+        vehicle: u64,
+        ts_us: i64,
+        point: Point,
+    ) -> u64 {
         let payload = Payload {
             vehicle_id: VehicleId(vehicle),
             timestamp: DateTime::<Utc>::from_timestamp_micros(ts_us).unwrap(),
-            point: point(),
+            point,
         };
         let bytes = payload.encode().unwrap();
         let msg_id = format!("{vehicle}:{ts_us}");
@@ -1434,6 +1679,38 @@ freshness_budget_ms = {budget_ms}
         match outcome {
             crate::bus::adapter::PublishOutcome::Acked { sequence, .. } => sequence,
         }
+    }
+
+    async fn publish_raw(bus: &MemoryBus, partition: u16, vehicle: u64, ts_us: i64) -> u64 {
+        publish_raw_at(bus, partition, vehicle, ts_us, point()).await
+    }
+
+    /// Pull one raw delivery into the scheduler without pumping it, so a test
+    /// can arrange a complete dispatch round before exercising the worker.
+    async fn enqueue_next_raw(worker: &mut Worker) {
+        let delivery = worker
+            .raw
+            .next()
+            .await
+            .expect("raw source stays open")
+            .expect("raw delivery decodes");
+        let reader = worker.reader;
+        let envelope = RawEnvelope {
+            subject: &delivery.subject,
+            headers: Some(&delivery.headers),
+            bytes: delivery.item.0.as_slice(),
+            sent_at: delivery.sent_at,
+            handle: delivery.handle,
+        };
+        assert!(matches!(
+            reader.admit_bytes(
+                &mut worker.scheduler,
+                &mut worker.tracker,
+                envelope,
+                Instant::now(),
+            ),
+            RawDisposition::Queued { .. }
+        ));
     }
 
     /// A scripted matcher: every job gets a `Solved` result with an empty diff.

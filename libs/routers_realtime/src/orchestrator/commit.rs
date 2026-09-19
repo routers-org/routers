@@ -43,12 +43,19 @@ const BACKOFF_CAP: Duration = Duration::from_secs(2);
 #[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug)]
 pub enum Decision<E: Entry> {
-    /// The solve produced an emission; `result`'s outcome must be
-    /// [`SolveOutcome::Solved`]. `reset` is `Some` when this match opens a new
-    /// segment (a reset output is emitted first), `None` to continue.
+    /// The solve produced an emission. `reset` is `Some` when this match opens
+    /// a new segment (a reset output is emitted first), `None` to continue.
     Solved {
-        /// The solve result being committed; its outcome must be `Solved`.
-        result: SolveResult<E>,
+        /// The job that produced the solved outcome.
+        job: JobId,
+        /// The job's identity (the vehicle is read from it).
+        identity: JobIdentity,
+        /// The authoritative matched-history change.
+        diff: MatchedDiff<E>,
+        /// The resumable matcher state after applying this solve.
+        trip: Trip<E>,
+        /// The event-time watermark through which the match has converged.
+        converged_through: Option<i64>,
         /// The reason a new segment was opened, or `None` to continue.
         reset: Option<ResetReason>,
         /// The segment this match belongs to (a new one when `reset` is set).
@@ -82,6 +89,75 @@ pub enum Decision<E: Entry> {
     },
 }
 
+impl<E: Entry> Decision<E> {
+    /// Convert a validated matcher result into a commit decision.
+    ///
+    /// Matching the wire outcome here keeps a terminal outcome out of the
+    /// [`Solved`](Self::Solved) variant, so [`plan`] has no invalid outcome
+    /// combination to defend against.
+    #[must_use]
+    pub fn from_result(
+        result: SolveResult<E>,
+        reset: Option<ResetReason>,
+        segment: SegmentId,
+    ) -> Self {
+        let SolveResult {
+            job,
+            identity,
+            outcome,
+            ..
+        } = result;
+        match outcome {
+            SolveOutcome::Solved {
+                diff,
+                trip,
+                converged_through,
+            } => Self::Solved {
+                job,
+                identity,
+                diff,
+                trip,
+                converged_through,
+                reset,
+                segment,
+            },
+            SolveOutcome::Unanchored => {
+                Self::terminal(job, identity, TerminalReason::Unanchored, segment)
+            }
+            SolveOutcome::Disconnected => {
+                Self::terminal(job, identity, TerminalReason::Disconnected, segment)
+            }
+            SolveOutcome::UnsupportedCoverage { .. } => {
+                Self::terminal(job, identity, TerminalReason::UnsupportedCoverage, segment)
+            }
+            SolveOutcome::VersionMismatch { .. } => {
+                Self::terminal(job, identity, TerminalReason::VersionMismatch, segment)
+            }
+            SolveOutcome::DeadlineExpired => {
+                Self::terminal(job, identity, TerminalReason::DeadlineExpired, segment)
+            }
+            SolveOutcome::Oversized { .. } | SolveOutcome::Internal { .. } => {
+                Self::terminal(job, identity, TerminalReason::Internal, segment)
+            }
+        }
+    }
+
+    fn terminal(
+        job: JobId,
+        identity: JobIdentity,
+        reason: TerminalReason,
+        segment: SegmentId,
+    ) -> Self {
+        Self::Terminal {
+            job,
+            identity,
+            reason,
+            closes_segment: false,
+            segment,
+        }
+    }
+}
+
 /// The output of [`plan`]: the committed outputs and next checkpoint, before
 /// either is made durable.
 #[derive(Clone, Debug)]
@@ -109,8 +185,7 @@ fn later(a: Option<i64>, b: Option<i64>) -> Option<i64> {
 
 /// Compute the committed history and next checkpoint for one decision.
 ///
-/// Pure: a function of `prev`, `decision`, and the identifying context; `now_us`
-/// is accepted for call-site uniformity but not consulted today.
+/// Pure: a function of `prev`, `decision`, and the identifying context.
 ///
 /// Every output and `next` carry [`Revision::from`]`(observation)`. Outputs are
 /// ordered `[Reset?] → [Retraction?] → Matched | Terminal | Reset` with
@@ -122,34 +197,21 @@ pub fn plan<E: Entry>(
     observation: ObservationId,
     region: &RegionId,
     graph: &GraphVersion,
-    now_us: i64,
+    routing_version: u64,
 ) -> Plan<E> {
-    let _ = now_us;
-
     let revision = Revision::from(observation);
 
     match decision {
         Decision::Solved {
-            result,
+            job,
+            identity,
+            diff,
+            trip,
+            converged_through,
             reset,
             segment,
         } => {
-            let SolveResult {
-                job,
-                identity,
-                outcome,
-                ..
-            } = result;
             let vehicle = identity.vehicle_id;
-
-            let (diff, trip, converged_through) = match outcome {
-                SolveOutcome::Solved {
-                    diff,
-                    trip,
-                    converged_through,
-                } => (diff, trip, converged_through),
-                other => unreachable!("Decision::Solved built from a {} outcome", other.kind()),
-            };
 
             // A reset opens a new segment: its finality base is `None`.
             let segment_changed = reset.is_some();
@@ -246,6 +308,7 @@ pub fn plan<E: Entry>(
                 graph: graph.clone(),
                 schema: SCHEMA_VERSION,
                 region: region.clone(),
+                routing_version,
             };
 
             Plan {
@@ -297,6 +360,7 @@ pub fn plan<E: Entry>(
                 graph: graph.clone(),
                 schema: SCHEMA_VERSION,
                 region: region.clone(),
+                routing_version,
             };
 
             Plan {
@@ -336,6 +400,7 @@ pub fn plan<E: Entry>(
                 graph: graph.clone(),
                 schema: SCHEMA_VERSION,
                 region: region.clone(),
+                routing_version,
             };
 
             Plan {
@@ -687,6 +752,7 @@ mod tests {
             graph: graph(),
             schema: SCHEMA_VERSION,
             region: region(),
+            routing_version: 1,
         }
     }
 
@@ -744,6 +810,79 @@ mod tests {
     }
 
     #[test]
+    fn result_conversion_classifies_every_terminal_outcome() {
+        let cases: Vec<(SolveOutcome<E>, TerminalReason)> = vec![
+            (SolveOutcome::Unanchored, TerminalReason::Unanchored),
+            (SolveOutcome::Disconnected, TerminalReason::Disconnected),
+            (
+                SolveOutcome::UnsupportedCoverage {
+                    cell: "r3gx".to_owned(),
+                },
+                TerminalReason::UnsupportedCoverage,
+            ),
+            (
+                SolveOutcome::VersionMismatch {
+                    expected: graph(),
+                    got: GraphVersion::new("g2").unwrap(),
+                },
+                TerminalReason::VersionMismatch,
+            ),
+            (
+                SolveOutcome::DeadlineExpired,
+                TerminalReason::DeadlineExpired,
+            ),
+            (
+                SolveOutcome::Oversized {
+                    bytes: 11,
+                    limit: 10,
+                },
+                TerminalReason::Internal,
+            ),
+            (
+                SolveOutcome::Internal {
+                    reason: "matcher fault".to_owned(),
+                },
+                TerminalReason::Internal,
+            ),
+        ];
+
+        for (index, (outcome, expected_reason)) in cases.into_iter().enumerate() {
+            let seq = 100 + index as u64;
+            let job = SolveJob::<E>::new(
+                identity(1, seq),
+                Lane::DEFAULT,
+                1_000,
+                Continuation::Restart { fresh: Vec::new() },
+            );
+            let expected_job = job.id;
+            let decision = Decision::from_result(
+                SolveResult::new(&job, outcome, 0),
+                Some(ResetReason::Gap),
+                SegmentId(7),
+            );
+
+            match decision {
+                Decision::Terminal {
+                    job,
+                    identity,
+                    reason,
+                    closes_segment,
+                    segment,
+                } => {
+                    assert_eq!(job, expected_job);
+                    assert_eq!(identity.observation, obs(seq));
+                    assert_eq!(reason, expected_reason);
+                    assert!(!closes_segment);
+                    assert_eq!(segment, SegmentId(7));
+                }
+                Decision::Solved { .. } | Decision::Reset { .. } => {
+                    panic!("a terminal solve outcome must become a terminal decision")
+                }
+            }
+        }
+    }
+
+    #[test]
     fn solved_finalization_is_monotone_within_a_segment() {
         for (converged, expected) in [
             (Some(50), Some(100)),
@@ -753,15 +892,15 @@ mod tests {
             let prev = checkpoint(Trip::new(), 5, 3, Some(100));
             let plan = plan(
                 Some(&prev),
-                Decision::Solved {
-                    result: solved(1, 200, diff(200, &[150]), Trip::new(), converged),
-                    reset: None,
-                    segment: SegmentId(3),
-                },
+                Decision::from_result(
+                    solved(1, 200, diff(200, &[150]), Trip::new(), converged),
+                    None,
+                    SegmentId(3),
+                ),
                 obs(200),
                 &region(),
                 &graph(),
-                0,
+                1,
             );
             assert_eq!(plan.finalized_through, expected, "converged {converged:?}");
             assert_eq!(plan.next.finalized_through, expected);
@@ -774,15 +913,15 @@ mod tests {
         let prev = checkpoint(Trip::new(), 5, 3, Some(100));
         let plan = plan(
             Some(&prev),
-            Decision::Solved {
-                result: solved(1, 200, diff(200, &[50, 150]), Trip::new(), Some(150)),
-                reset: None,
-                segment: SegmentId(3),
-            },
+            Decision::from_result(
+                solved(1, 200, diff(200, &[50, 150]), Trip::new(), Some(150)),
+                None,
+                SegmentId(3),
+            ),
             obs(200),
             &region(),
             &graph(),
-            0,
+            1,
         );
 
         assert_eq!(plan.stripped_final_layers, 1);
@@ -803,21 +942,21 @@ mod tests {
         let prev = checkpoint(trip_with(&trace_origins()), 5, 3, Some(trace_ts(2)));
         let plan = plan(
             Some(&prev),
-            Decision::Solved {
-                result: solved(
+            Decision::from_result(
+                solved(
                     1,
                     200,
                     diff(200, &[trace_ts(0), trace_ts(3)]),
                     Trip::new(),
                     Some(trace_ts(3)),
                 ),
-                reset: None,
-                segment: SegmentId(3),
-            },
+                None,
+                SegmentId(3),
+            ),
             obs(200),
             &region(),
             &graph(),
-            0,
+            1,
         );
 
         assert_eq!(plan.stripped_final_layers, 1, "trace_ts(0) is finalised");
@@ -845,22 +984,22 @@ mod tests {
         .id;
         let plan = plan(
             Some(&prev),
-            Decision::Solved {
+            Decision::from_result(
                 // A reset abandons the old segment: nothing stripped, no retractions.
-                result: solved(
+                solved(
                     1,
                     200,
                     diff(200, &[trace_ts(0), trace_ts(3)]),
                     Trip::new(),
                     Some(trace_ts(3)),
                 ),
-                reset: Some(ResetReason::Gap),
-                segment: SegmentId(200),
-            },
+                Some(ResetReason::Gap),
+                SegmentId(200),
+            ),
             obs(200),
             &region(),
             &graph(),
-            0,
+            1,
         );
 
         assert_eq!(plan.stripped_final_layers, 0);
@@ -916,7 +1055,7 @@ mod tests {
             obs(200),
             &region(),
             &graph(),
-            0,
+            1,
         );
         assert_eq!(kinds(&kept), vec!["terminal"]);
         assert_eq!(kept.next.trip.layers(), prev.trip.layers());
@@ -937,7 +1076,7 @@ mod tests {
             obs(201),
             &region(),
             &graph(),
-            0,
+            1,
         );
         assert_eq!(closed.next.trip.layers(), 0);
         assert_eq!(closed.next.finalized_through, None);
@@ -959,7 +1098,7 @@ mod tests {
             obs(300),
             &region(),
             &graph(),
-            0,
+            1,
         );
 
         assert_eq!(kinds(&plan), vec!["reset"]);
@@ -997,28 +1136,28 @@ mod tests {
             obs(seq),
             &region(),
             &graph(),
-            0,
+            1,
         )
     }
 
     fn reset_matched_plan(seq: u64) -> Plan<E> {
         plan(
             None,
-            Decision::Solved {
-                result: solved(
+            Decision::from_result(
+                solved(
                     1,
                     seq,
                     diff(seq, &[trace_ts(0)]),
                     Trip::new(),
                     Some(trace_ts(0)),
                 ),
-                reset: Some(ResetReason::Teleport),
-                segment: SegmentId(seq),
-            },
+                Some(ResetReason::Teleport),
+                SegmentId(seq),
+            ),
             obs(seq),
             &region(),
             &graph(),
-            0,
+            1,
         )
     }
 

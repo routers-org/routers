@@ -23,7 +23,7 @@ pub struct SecretUrl(SecretString);
 
 impl PartialEq for SecretUrl {
     fn eq(&self, other: &Self) -> bool {
-        self.placement_identity() == other.placement_identity()
+        self.0.expose_secret() == other.0.expose_secret()
     }
 }
 
@@ -37,13 +37,6 @@ impl SecretUrl {
     #[must_use]
     pub fn connection_url(&self) -> Url {
         Url::parse(self.0.expose_secret()).expect("SecretUrl validates its URL during parsing")
-    }
-
-    /// The stable full endpoint identity used for rendezvous placement.
-    ///
-    /// This is crate-private so it cannot become an application logging API.
-    pub(crate) fn placement_identity(&self) -> &str {
-        self.0.expose_secret()
     }
 
     fn sanitized_endpoint(&self) -> String {

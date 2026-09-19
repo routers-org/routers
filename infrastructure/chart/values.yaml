@@ -59,19 +59,15 @@ shardCache:
     mountOptions: implicit-dirs,file-cache:max-size-mb:-1,metadata-cache:ttl-secs:-1
 
 # One matcher Deployment per region, configured through args (no clap env).
+# Capacity is authoritative in catalog.regions[].replicas; the chart derives
+# the Deployment floor and, when min < max, its HPA bounds from that value.
 matcher:
   image:
     repository: routers-matcher
     tag: latest
     pullPolicy: Never
-  replicas: 1
-  # Per-region overrides keyed by id: { replicas, autoscaling, resources }.
-  perRegion: {}
-  autoscaling:
-    enabled: false
-    minReplicas: 1
-    maxReplicas: 8
-    targetCPUUtilizationPercentage: 80
+  healthPort: 9091
+  targetCPUUtilizationPercentage: 80
   rustLog: info
   # Empty keeps the binary default (one slot per core); else rendered as --slots.
   slots: ""

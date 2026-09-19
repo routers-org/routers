@@ -43,6 +43,11 @@ helm.sh/chart: {{ printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" }}
 {{- if lt (int $region.lanes) 1 -}}
 {{- fail (printf "region %q sets lanes = %d; a region needs at least one lane or no job can be addressed to it." $id (int $region.lanes)) -}}
 {{- end -}}
+{{- $minReplicas := int $region.replicas.min -}}
+{{- $maxReplicas := int $region.replicas.max -}}
+{{- if or (lt $minReplicas 1) (lt $maxReplicas $minReplicas) -}}
+{{- fail (printf "region %q has replicas min=%d max=%d; catalog is the matcher capacity authority and requires 1 <= min <= max." $id $minReplicas $maxReplicas) -}}
+{{- end -}}
 {{- range $cell := $region.coverage -}}
 {{- $cell = toString $cell -}}
 {{- if ne (len $cell) $precision -}}

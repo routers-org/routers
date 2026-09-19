@@ -510,6 +510,7 @@ mod tests {
             graph: graph(),
             schema: SCHEMA_VERSION,
             region: region(),
+            routing_version: 1,
         }
     }
 
