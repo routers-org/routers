@@ -391,6 +391,7 @@ mod tests {
     use super::*;
 
     use alloc::sync::Arc;
+    use core::num::{NonZeroU8, NonZeroU32};
     use core::time::Duration;
 
     use async_nats::HeaderMap;
@@ -408,7 +409,7 @@ mod tests {
     use crate::protocol::ids::{GraphVersion, Lane, ObservationId, RegionId, SCHEMA_VERSION};
     use crate::protocol::job::{JobIdentity, SolveJob};
     use crate::protocol::result::{SolveOutcome, SolveResult};
-    use crate::region::{Region, Replicas};
+    use crate::region::{LaneCount, Region, Replicas};
     use crate::topology::jobs::{job_stream_subjects, job_subject};
 
     const GRAPH: &str = "v1";
@@ -465,9 +466,9 @@ mod tests {
             graph: GraphVersion::new(GRAPH).unwrap(),
             coverage: served_cells().into_iter().collect(),
             overlap: Vec::new(),
-            lanes: 1,
+            lanes: LaneCount::new(NonZeroU8::MIN),
             resource_class: "cpu-1".to_owned(),
-            replicas: Replicas { min: 1, max: 1 },
+            replicas: Replicas::new(NonZeroU32::MIN, NonZeroU32::MIN).expect("range"),
             freshness_budget: Duration::from_millis(1000),
         }
     }

@@ -193,7 +193,9 @@ mod tests {
         GraphVersion, JobId, Lane, ObservationId, RegionId, SCHEMA_VERSION,
     };
     use crate::protocol::job::JobIdentity;
-    use crate::region::Replicas;
+    use core::num::{NonZeroU8, NonZeroU32};
+
+    use crate::region::{LaneCount, Replicas};
 
     const GRAPH: &str = "test-graph";
     const REGION: &str = "test-region";
@@ -227,9 +229,9 @@ mod tests {
             graph: GraphVersion::new(GRAPH).unwrap(),
             coverage: vec![served_cell()],
             overlap: Vec::new(),
-            lanes: 1,
+            lanes: LaneCount::new(NonZeroU8::MIN),
             resource_class: "cpu-1".to_owned(),
-            replicas: Replicas { min: 1, max: 1 },
+            replicas: Replicas::new(NonZeroU32::MIN, NonZeroU32::MIN).expect("range"),
             freshness_budget: Duration::from_millis(1000),
         }
     }

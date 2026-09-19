@@ -77,11 +77,11 @@ The normal test suite uses the memory bus and memory checkpoint store; it does n
 
 ## Deployment and configuration
 
-Each binary accepts its main connection values from flags or the corresponding uppercase environment variables emitted by Clap (for example `--nats` / `NATS` and `--valkey` / `VALKEY`). NATS and Valkey URLs may carry credentials. They are parsed as [`secret::SecretUrl`]: diagnostics show only scheme, host, and port. Plaintext access is confined to client construction and one-way endpoint hashing for stable Valkey placement. Do not place these URLs in command output, support bundles, or hand-written logs.
+Each binary accepts its main connection values from flags or the corresponding uppercase environment variables emitted by Clap (for example `--nats` / `NATS` and `--valkey` / `VALKEY`). NATS and Valkey URLs may carry credentials. They are parsed as [`secret::SecretUrl`]: diagnostics show only scheme, host, and port. Valkey endpoints use `stable-id=URL` (for example `primary=redis://valkey:6379`); rendezvous placement hashes the stable ID, so rotating a URL or its credentials does not remap vehicles. Plaintext URL access is confined to client construction. Do not place these URLs in command output, support bundles, or hand-written logs.
 
 The orchestrator reconciles raw, job, result, and output streams before it starts workers. All orchestrator replicas must agree on the partition mapping, raw-stream count, catalog, retention, and the complete Valkey checkpoint fleet. Each partition must be owned by exactly one live orchestrator. StatefulSet ordinal assignment (`--pod-name` plus `--fleet`) derives contiguous ownership; an explicit `--partitions` range is available for controlled deployments.
 
-Matcher replicas are scoped to one catalog region and its pinned graph. Their shared `(graph, region)` durable consumer is intentional: matching replicas with the same configuration share work. Materializer replicas similarly share `--consumer-name` when they are intended to share work; choose distinct names to replay independently. Every process that reads or writes a Valkey fleet must receive the same unordered endpoint set, because rendezvous placement hashes the full endpoint identity.
+Matcher replicas are scoped to one catalog region and its pinned graph. Their shared `(graph, region)` durable consumer is intentional: matching replicas with the same configuration share work. Materializer replicas similarly share `--consumer-name` when they are intended to share work; choose distinct names to replay independently. Every process that reads or writes a Valkey fleet must receive the same unordered set of stable node IDs; connection URLs may rotate independently.
 
 Retention is an operational recovery budget, not just a storage cost. Keep raw retention longer than the maximum expected outage and rewind. Keep results and output long enough for their consumers to recover. Do not alter raw stream count, names, subject prefixes, protocol schema, or Valkey endpoint identity in place; treat each as a migration.
 
@@ -93,7 +93,7 @@ Retention is an operational recovery budget, not just a storage cost. Keep raw r
 - A matcher acknowledges a job only after its result has been published.
 - A materializer acknowledges output only after its Valkey merge has completed.
 - Finalized layers are immutable; a later revision can revise only permitted history in the same vehicle segment.
-- The checkpoint and served-view Valkey fleets are separate concerns; endpoint reordering is safe, but changing the set remaps keys and requires planning.
+- The checkpoint and served-view Valkey fleets are separate concerns; endpoint reordering and URL rotation are safe, but changing the set of stable node IDs remaps keys and requires planning.
 
 [`ingress`]: https://docs.rs/routers_realtime/latest/routers_realtime/ingress/index.html
 [`orchestrator`]: https://docs.rs/routers_realtime/latest/routers_realtime/orchestrator/index.html

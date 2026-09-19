@@ -47,6 +47,8 @@ pub struct VehicleCheckpoint<E: Entry> {
     pub schema: SchemaVersion,
     /// The region that owns the vehicle's solves.
     pub region: RegionId,
+    /// The routing topology under which `region` was selected.
+    pub routing_version: u64,
 }
 
 impl<E: Entry> VehicleCheckpoint<E> {
@@ -85,6 +87,71 @@ pub struct StoredCheckpoint {
     pub segment: SegmentId,
     /// The encoded [`VehicleCheckpoint`]; opaque to the store.
     pub bytes: Vec<u8>,
+}
+
+/// What durable checkpoint state exists for a vehicle.
+///
+/// [`Expired`](Self::Expired) is distinct from [`NeverSeen`](Self::NeverSeen):
+/// the checkpoint payload may be evicted after an idle period, but a compact
+/// revision sentinel remains so recovery opens a `StateLost` segment instead
+/// of silently treating an established vehicle as new.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum StoredCheckpointState {
+    /// No commit has ever been promoted for this vehicle.
+    NeverSeen,
+    /// The resumable checkpoint payload is still available.
+    Present(StoredCheckpoint),
+    /// A checkpoint was committed, but its resumable payload has expired.
+    Expired {
+        /// The last promoted revision, retained for the next commit's CAS.
+        revision: Revision,
+    },
+}
+
+impl StoredCheckpointState {
+    /// The last committed revision, whether or not its payload remains.
+    #[must_use]
+    pub fn revision(&self) -> Option<Revision> {
+        match self {
+            Self::NeverSeen => None,
+            Self::Present(checkpoint) => Some(checkpoint.revision),
+            Self::Expired { revision } => Some(*revision),
+        }
+    }
+
+    /// Borrow the resumable checkpoint, if its payload remains.
+    #[must_use]
+    pub fn present(&self) -> Option<&StoredCheckpoint> {
+        match self {
+            Self::Present(checkpoint) => Some(checkpoint),
+            Self::NeverSeen | Self::Expired { .. } => None,
+        }
+    }
+
+    /// Whether a resumable payload remains.
+    #[must_use]
+    pub fn is_some(&self) -> bool {
+        matches!(self, Self::Present(_))
+    }
+
+    /// Whether no resumable payload remains (never seen or expired).
+    #[must_use]
+    pub fn is_none(&self) -> bool {
+        !self.is_some()
+    }
+
+    /// Extract the resumable checkpoint or panic with `message`.
+    pub fn expect(self, message: &str) -> StoredCheckpoint {
+        match self {
+            Self::Present(checkpoint) => checkpoint,
+            Self::NeverSeen | Self::Expired { .. } => panic!("{message}"),
+        }
+    }
+
+    /// Extract the resumable checkpoint or panic.
+    pub fn unwrap(self) -> StoredCheckpoint {
+        self.expect("called StoredCheckpointState::unwrap without a present checkpoint")
+    }
 }
 
 /// How far a [`PreparedCommit`] has progressed through the publish step.
@@ -170,7 +237,7 @@ pub trait CheckpointStore: Clone + Send + Sync + 'static {
     async fn load(
         &self,
         vehicle: VehicleId,
-    ) -> Result<(Option<StoredCheckpoint>, Option<PreparedCommit>), Self::Error>;
+    ) -> Result<(StoredCheckpointState, Option<PreparedCommit>), Self::Error>;
 
     /// Compare-and-stage a commit for `vehicle` in `partition`, atomically over
     /// the vehicle's keys. An existing prepared record short-circuits to
@@ -192,10 +259,11 @@ pub trait CheckpointStore: Clone + Send + Sync + 'static {
     async fn mark_published(&self, vehicle: VehicleId, output: OutputId)
     -> Result<(), Self::Error>;
 
-    /// Promote the vehicle's prepared commit in `partition`, atomically:
-    /// install the [`StoredCheckpoint`] from the prepared record, delete that
-    /// record, and drop the vehicle from the partition index. Idempotent when
-    /// already promoted; errors on a different staged output.
+    /// Promote the vehicle's published prepared commit in `partition`:
+    /// atomically install the [`StoredCheckpoint`] and delete the prepared
+    /// record. The best-effort partition index may be cleaned separately.
+    /// Idempotent when already promoted; errors on a different staged output or
+    /// when the record has not reached [`CommitPhase::Published`].
     async fn promote(
         &self,
         vehicle: VehicleId,
@@ -245,12 +313,16 @@ pub enum MemoryError {
     /// An operation named an output that disagreed with the staged record.
     #[error("prepared output mismatch: staged {staged}, got {got}")]
     OutputMismatch { staged: OutputId, got: OutputId },
+    /// Promotion was attempted before the output was durably published.
+    #[error("prepared output {output} has not been published")]
+    NotPublished { output: OutputId },
 }
 
 /// The mutex-guarded state behind a [`MemoryCheckpointStore`].
 #[derive(Default)]
 struct Inner {
     checkpoints: HashMap<VehicleId, StoredCheckpoint>,
+    committed_revisions: HashMap<VehicleId, Revision>,
     prepared: HashMap<VehicleId, PreparedCommit>,
     index: HashMap<u16, HashSet<VehicleId>>,
     frontiers: HashMap<u16, PartitionFrontier>,
@@ -270,6 +342,8 @@ pub struct MemoryCheckpointStore {
 pub struct MemorySnapshot {
     /// Every committed checkpoint, by vehicle.
     pub checkpoints: HashMap<VehicleId, StoredCheckpoint>,
+    /// The compact durable sentinel retained after checkpoint expiry.
+    pub committed_revisions: HashMap<VehicleId, Revision>,
     /// Every staged prepared commit, by vehicle.
     pub prepared: HashMap<VehicleId, PreparedCommit>,
     /// The prepared index: which vehicles are staged in each partition.
@@ -295,6 +369,7 @@ impl MemoryCheckpointStore {
         let inner = self.lock();
         MemorySnapshot {
             checkpoints: inner.checkpoints.clone(),
+            committed_revisions: inner.committed_revisions.clone(),
             prepared: inner.prepared.clone(),
             index: inner.index.clone(),
             frontiers: inner.frontiers.clone(),
@@ -327,12 +402,21 @@ impl CheckpointStore for MemoryCheckpointStore {
     async fn load(
         &self,
         vehicle: VehicleId,
-    ) -> Result<(Option<StoredCheckpoint>, Option<PreparedCommit>), Self::Error> {
+    ) -> Result<(StoredCheckpointState, Option<PreparedCommit>), Self::Error> {
         let mut inner = self.lock();
         if inner.faults.remove(&Op::Load) {
             return Err(MemoryError::Injected);
         }
-        let checkpoint = inner.checkpoints.get(&vehicle).cloned();
+        let checkpoint = match inner.checkpoints.get(&vehicle).cloned() {
+            Some(checkpoint) => StoredCheckpointState::Present(checkpoint),
+            None => inner
+                .committed_revisions
+                .get(&vehicle)
+                .copied()
+                .map_or(StoredCheckpointState::NeverSeen, |revision| {
+                    StoredCheckpointState::Expired { revision }
+                }),
+        };
         let prepared = inner.prepared.get(&vehicle).cloned();
         Ok((checkpoint, prepared))
     }
@@ -359,7 +443,7 @@ impl CheckpointStore for MemoryCheckpointStore {
         }
 
         // `None` expected_base demands that no checkpoint exists at all.
-        let actual = inner.checkpoints.get(&vehicle).map(|c| c.revision);
+        let actual = inner.committed_revisions.get(&vehicle).copied();
         let matches_base = match prepared.expected_base {
             None => actual.is_none(),
             Some(base) => actual == Some(base),
@@ -408,11 +492,16 @@ impl CheckpointStore for MemoryCheckpointStore {
 
         // Build the checkpoint before mutating, so the borrow ends before delete.
         let stored = match inner.prepared.get(&vehicle) {
-            Some(prepared) if prepared.output == output => StoredCheckpoint {
-                revision: prepared.next_revision,
-                segment: prepared.next_segment,
-                bytes: prepared.next_checkpoint.clone(),
-            },
+            Some(prepared) if prepared.output == output && prepared.is_published() => {
+                StoredCheckpoint {
+                    revision: prepared.next_revision,
+                    segment: prepared.next_segment,
+                    bytes: prepared.next_checkpoint.clone(),
+                }
+            }
+            Some(prepared) if prepared.output == output => {
+                return Err(MemoryError::NotPublished { output });
+            }
             Some(prepared) => {
                 return Err(MemoryError::OutputMismatch {
                     staged: prepared.output,
@@ -426,6 +515,7 @@ impl CheckpointStore for MemoryCheckpointStore {
         if let Some(set) = inner.index.get_mut(&partition) {
             set.remove(&vehicle);
         }
+        inner.committed_revisions.insert(vehicle, stored.revision);
         inner.checkpoints.insert(vehicle, stored);
         Ok(())
     }
@@ -526,6 +616,7 @@ mod tests {
             s.prepare(vehicle, 0, p.clone()).await.unwrap(),
             PrepareOutcome::Prepared
         );
+        s.mark_published(vehicle, p.output).await.unwrap();
         s.promote(vehicle, 0, p.output).await.unwrap();
     }
 
@@ -633,13 +724,14 @@ mod tests {
             PrepareOutcome::Prepared
         );
 
+        s.mark_published(v, p.output).await.unwrap();
         s.promote(v, 4, p.output).await.unwrap();
 
         let (checkpoint, pending) = s.load(v).await.unwrap();
         assert_eq!(pending, None);
         assert_eq!(
             checkpoint,
-            Some(StoredCheckpoint {
+            StoredCheckpointState::Present(StoredCheckpoint {
                 revision: Revision(42),
                 segment: SegmentId(7),
                 bytes: vec![9, 8, 7],
@@ -660,6 +752,18 @@ mod tests {
         let err = s.promote(v, 0, OutputId(0xffff)).await.unwrap_err();
         assert!(matches!(err, MemoryError::OutputMismatch { .. }));
         assert!(s.load(v).await.unwrap().1.is_some());
+    }
+
+    #[tokio::test]
+    async fn promote_rejects_an_unpublished_record() {
+        let s = store();
+        let v = VehicleId(1);
+        let p = prepared(0xa1, None);
+        s.prepare(v, 0, p.clone()).await.unwrap();
+
+        let err = s.promote(v, 0, p.output).await.unwrap_err();
+        assert!(matches!(err, MemoryError::NotPublished { output } if output == p.output));
+        assert!(!s.load(v).await.unwrap().1.unwrap().is_published());
     }
 
     #[tokio::test]
@@ -752,7 +856,13 @@ mod tests {
         s.expire_idle(v).await.unwrap();
 
         let (checkpoint, pending) = s.load(v).await.unwrap();
-        assert_eq!(checkpoint, None, "the committed checkpoint is dropped");
+        assert_eq!(
+            checkpoint,
+            StoredCheckpointState::Expired {
+                revision: Revision(5)
+            },
+            "the payload is dropped but continuity is retained"
+        );
         assert_eq!(pending, Some(p), "the prepared record is untouched");
     }
 
@@ -851,6 +961,7 @@ mod tests {
             graph: GraphVersion::new("g1").unwrap(),
             schema: SCHEMA_VERSION,
             region: RegionId::new("r1").unwrap(),
+            routing_version: 1,
         };
 
         let bytes = checkpoint.encode().expect("encode");
@@ -878,6 +989,7 @@ mod tests {
             graph: GraphVersion::new("g").unwrap(),
             schema: SCHEMA_VERSION,
             region: RegionId::new("r").unwrap(),
+            routing_version: 1,
         };
 
         let stored = checkpoint.to_stored().expect("to_stored");

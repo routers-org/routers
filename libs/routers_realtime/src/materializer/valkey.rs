@@ -23,7 +23,7 @@ use crate::materializer::sink::{Applied, SegmentState, Sink, StoredLayer, merge,
 use crate::partition::{fnv1a, mix};
 use crate::protocol::ids::{Revision, SegmentId};
 use crate::protocol::output::{CommittedOutput, OutputKind};
-use crate::secret::SecretUrl;
+use crate::store::valkey::ValkeyEndpoint;
 
 /// Why a Valkey apply failed.
 #[derive(Debug, Error)]
@@ -37,6 +37,9 @@ pub enum ValkeyError {
     /// No primaries were supplied.
     #[error("no valkey endpoints supplied")]
     NoEndpoints,
+    /// Two primaries claimed the same stable rendezvous identity.
+    #[error("duplicate valkey node id {0:?}")]
+    DuplicateNodeId(String),
     /// A materialised vehicle's optimistic version was not a valid unsigned integer.
     #[error("invalid materialized view version {0:?}")]
     MalformedVersion(String),
@@ -122,16 +125,16 @@ return 1
 /// pure function so the mapping stays stable across a fleet change.
 #[derive(Clone)]
 struct Placement {
-    /// One hash per endpoint URL, so identity is the URL, not the list position.
+    /// One hash per stable node id, independent of URL and list position.
     seeds: Vec<u64>,
 }
 
 impl Placement {
-    fn new(urls: &[SecretUrl]) -> Self {
+    fn new(endpoints: &[ValkeyEndpoint]) -> Self {
         Self {
-            seeds: urls
+            seeds: endpoints
                 .iter()
-                .map(|url| fnv1a(url.placement_identity().as_bytes()))
+                .map(|endpoint| fnv1a(endpoint.id.as_str().as_bytes()))
                 .collect(),
         }
     }
@@ -148,6 +151,21 @@ impl Placement {
             .map(|(index, _)| index)
             .expect("fleet is non-empty, checked in ValkeySink::connect")
     }
+}
+
+fn validate_endpoints(endpoints: &[ValkeyEndpoint]) -> Result<(), ValkeyError> {
+    if endpoints.is_empty() {
+        return Err(ValkeyError::NoEndpoints);
+    }
+    let mut ids = std::collections::HashSet::with_capacity(endpoints.len());
+    for endpoint in endpoints {
+        if !ids.insert(endpoint.id.clone()) {
+            return Err(ValkeyError::DuplicateNodeId(
+                endpoint.id.as_str().to_owned(),
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// The HASH holding one segment's layers.
@@ -180,25 +198,23 @@ pub struct ValkeySink {
 }
 
 impl ValkeySink {
-    /// Connect to every primary in `urls`. The set is unordered, but every
+    /// Connect to every primary in `endpoints`. The set is unordered, but every
     /// process that touches the view must be handed the same set, or a vehicle's
     /// history splits across primaries. Each apply uses a vehicle-wide
     /// compare-and-set script, so concurrent materializers cannot overwrite a
     /// snapshot that another writer has already advanced.
-    pub async fn connect(urls: &[SecretUrl]) -> Result<Self, ValkeyError> {
-        if urls.is_empty() {
-            return Err(ValkeyError::NoEndpoints);
-        }
-        let mut conns = Vec::with_capacity(urls.len());
-        for url in urls {
-            let conn = redis::Client::open(url.connection_url())?
+    pub async fn connect(endpoints: &[ValkeyEndpoint]) -> Result<Self, ValkeyError> {
+        validate_endpoints(endpoints)?;
+        let mut conns = Vec::with_capacity(endpoints.len());
+        for endpoint in endpoints {
+            let conn = redis::Client::open(endpoint.url.connection_url())?
                 .get_multiplexed_async_connection()
                 .await?;
             conns.push(conn);
         }
         Ok(Self {
             conns,
-            placement: Placement::new(urls),
+            placement: Placement::new(endpoints),
             apply_script: Arc::new(redis::Script::new(APPLY_LUA)),
         })
     }
@@ -526,6 +542,18 @@ mod tests {
     }
 
     #[test]
+    fn endpoints_require_unique_stable_ids() {
+        let duplicate = [
+            "primary=redis://one:6379".parse().unwrap(),
+            "primary=redis://two:6379".parse().unwrap(),
+        ];
+        assert!(matches!(
+            validate_endpoints(&duplicate),
+            Err(ValkeyError::DuplicateNodeId(id)) if id == "primary"
+        ));
+    }
+
+    #[test]
     fn stale_writer_cannot_apply_its_precomputed_mutations() {
         let mut version = 0;
         let mut written = Vec::new();
@@ -610,8 +638,12 @@ mod tests {
 
     #[test]
     fn placement_is_deterministic_and_order_independent() {
-        let urls: Vec<SecretUrl> = (0..8)
-            .map(|i| format!("redis://valkey-{i:02}:6379").parse().unwrap())
+        let urls: Vec<ValkeyEndpoint> = (0..8)
+            .map(|i| {
+                format!("node-{i:02}=redis://valkey-{i:02}:6379")
+                    .parse()
+                    .unwrap()
+            })
             .collect();
         let mut reversed = urls.clone();
         reversed.reverse();
@@ -622,8 +654,8 @@ mod tests {
         for vehicle in 0..1000u64 {
             let key = vehicle.to_string();
             assert_eq!(
-                urls[direct.index_for(&key)],
-                reversed[flipped.index_for(&key)]
+                urls[direct.index_for(&key)].id,
+                reversed[flipped.index_for(&key)].id
             );
         }
     }

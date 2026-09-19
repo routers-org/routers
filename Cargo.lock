@@ -7532,6 +7532,7 @@ version = "0.4.6"
 dependencies = [
  "anyhow",
  "async-nats",
+ "axum",
  "buffa",
  "buffa-types",
  "chrono",

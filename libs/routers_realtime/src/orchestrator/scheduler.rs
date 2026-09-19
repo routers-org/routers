@@ -740,6 +740,7 @@ mod tests {
                 graph: GraphVersion::new("g1").unwrap(),
                 schema: SCHEMA_VERSION,
                 region: self.region.clone(),
+                routing_version: 1,
             })
         }
     }

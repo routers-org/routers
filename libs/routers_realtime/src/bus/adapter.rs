@@ -99,16 +99,20 @@ pub trait Publisher<T: Wire>: Clone + Send + Sync + 'static {
     }
 }
 
-/// A continuous, push-style stream of deliveries. [`next`](Self::next) is
-/// cancellation-safe: dropping the future before it resolves consumes no message.
+/// A continuous, push-style stream of decoded deliveries. Adapters acknowledge
+/// malformed payloads as transport poison before exposing a delivery, so callers
+/// only own acknowledgements for successfully decoded values.
+/// [`next`](Self::next) is cancellation-safe: dropping the future before it
+/// resolves consumes no message.
 pub trait Source<T: Wire>: Send {
     type Handle: AckHandle;
 
-    /// Await the next delivery; `None` only once the bus is closed and drained.
+    /// Await the next decoded delivery; `None` only once the bus is closed and drained.
     async fn next(&mut self) -> Option<anyhow::Result<Delivery<T, Self::Handle>>>;
 }
 
 /// A capacity-bounded pull consumer, where `max` bounds messages held in flight.
+/// Adapters retire malformed transport payloads before returning this batch.
 pub trait Consumer<T: Wire>: Send {
     type Handle: AckHandle;
 

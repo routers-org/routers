@@ -33,12 +33,12 @@ itertools = { workspace = true }
 # CLI, for the `generate-shards` binary only (native).
 clap = { workspace = true, features = ["derive", "env"], optional = true }
 env_logger = { workspace = true, optional = true }
-# Artifact manifest checksums + JSON, for `generate-shards` (cli feature only).
-sha2 = { version = "0.10", optional = true }
-serde_json = { workspace = true, optional = true }
+# Artifact manifests are shared by the generator and every runtime loader.
+sha2 = "0.10"
+serde_json = { workspace = true }
 
 # Serialization
-serde = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
 postcard = { workspace = true }
 
 # `web_time::Instant` is a `std::time::Instant` drop-in; std on every target
@@ -77,7 +77,7 @@ s2 = ["dep:s2"]
 web = ["dep:wasm-bindgen", "dep:wasm-bindgen-futures", "dep:js-sys", "dep:web-sys"]
 
 # The `generate-shards` binary.
-cli = ["dep:clap", "dep:env_logger", "dep:sha2", "dep:serde_json"]
+cli = ["dep:clap", "dep:env_logger"]
 
 [dev-dependencies]
 routers_fixtures = { workspace = true }

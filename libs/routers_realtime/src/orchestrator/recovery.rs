@@ -16,7 +16,7 @@ use crate::orchestrator::commit::{CommitError, Committer};
 use crate::orchestrator::scheduler::CheckpointState;
 use crate::protocol::ids::{Revision, SCHEMA_VERSION};
 use crate::protocol::output::{CommittedOutput, ResetReason};
-use crate::store::checkpoint::{CheckpointStore, VehicleCheckpoint};
+use crate::store::checkpoint::{CheckpointStore, StoredCheckpointState, VehicleCheckpoint};
 
 /// What a partition's recovery pass resolved, for the worker to act on.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -159,13 +159,22 @@ where
         stored
     };
 
-    let Some(stored) = stored else {
-        // No committed checkpoint: a genuinely fresh vehicle, not state loss.
-        return Ok(Restored {
-            checkpoint: CheckpointState::Absent,
-            reset: None,
-            prior: None,
-        });
+    let stored = match stored {
+        StoredCheckpointState::NeverSeen => {
+            return Ok(Restored {
+                checkpoint: CheckpointState::Absent,
+                reset: None,
+                prior: None,
+            });
+        }
+        StoredCheckpointState::Expired { revision } => {
+            return Ok(Restored {
+                checkpoint: CheckpointState::Absent,
+                reset: Some(ResetReason::StateLost),
+                prior: Some(revision),
+            });
+        }
+        StoredCheckpointState::Present(stored) => stored,
     };
 
     let prior = Some(stored.revision);
@@ -272,7 +281,7 @@ mod tests {
             obs(seq),
             &region(),
             &graph(),
-            0,
+            1,
         )
     }
 
@@ -396,6 +405,7 @@ mod tests {
             graph: graph(),
             schema,
             region: region(),
+            routing_version: 1,
         }
     }
 

@@ -866,6 +866,7 @@ fn valid_checkpoint_bytes(vehicle: u64, partition: u16, revision: u64) -> Vec<u8
         graph: GraphVersion::new("g-r1").expect("graph token"),
         schema: SCHEMA_VERSION,
         region: RegionId::new("r1").expect("region token"),
+        routing_version: 1,
     };
     let _ = vehicle;
     checkpoint.encode().expect("checkpoint encodes")

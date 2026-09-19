@@ -1,8 +1,9 @@
 //! Matcher graph bootstrap: turn a catalog entry into a solvable network.
 //!
 //! A matcher serves one [`Region`] and loads its verified graph once at
-//! startup. Every coverage cell is verified before any is decoded, so a bad
-//! checksum fails the whole boot rather than after paying to load the rest.
+//! startup. Every served cell (coverage and overlap) is verified before any is
+//! decoded, so a bad checksum fails the whole boot rather than after paying to
+//! load the rest.
 //! [`Net`] is always a [`MultiShardNetwork`], even for a single-cell region, so
 //! every region yields one concrete network type.
 
@@ -11,7 +12,9 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 
 use routers_codec::osm::{OsmEdgeMetadata, OsmEntryId};
-use routers_shard::{Geohash, MultiShardNetwork, ShardedNetwork};
+use routers_shard::{
+    ArtifactError, Geohash, Manifest, MultiShardNetwork, ShardedNetwork, VerifiedArtifact,
+};
 use thiserror::Error;
 use tokio::task::JoinError;
 use tokio::time::Instant;
@@ -19,7 +22,7 @@ use tracing::info;
 
 use crate::lifecycle::{ReadinessSetter, ReadyState};
 use crate::protocol::ids::RegionId;
-use crate::region::{ArtifactError, Catalog, CatalogError, Manifest, Region};
+use crate::region::{Catalog, CatalogError, Region};
 
 /// One verified shard bundle, decoded from its `.shard.rt` file.
 pub type Shard = ShardedNetwork<OsmEntryId, OsmEdgeMetadata, Geohash>;
@@ -28,6 +31,14 @@ pub type Shard = ShardedNetwork<OsmEntryId, OsmEdgeMetadata, Geohash>;
 /// against. Always a [`MultiShardNetwork`], even for a single-cell region.
 pub type Net = MultiShardNetwork<OsmEntryId, OsmEdgeMetadata, Geohash>;
 
+/// Catalog metadata and verified files prepared by the blocking bootstrap stage.
+type PreparedRegion = (
+    Catalog,
+    Region,
+    Vec<Geohash>,
+    Vec<(Geohash, VerifiedArtifact)>,
+);
+
 /// Where to find the pieces a matcher needs at startup.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BootstrapConfig {
@@ -35,7 +46,7 @@ pub struct BootstrapConfig {
     pub catalog: PathBuf,
     /// The region this matcher serves; must exist in the catalog.
     pub region: RegionId,
-    /// Directory holding the `manifest.json` and the `.shard.rt` bundles.
+    /// Directory holding [`routers_shard::MANIFEST_FILENAME`] and the `.shard.rt` bundles.
     pub shard_dir: PathBuf,
 }
 
@@ -73,14 +84,14 @@ pub enum BootstrapError {
     /// The catalog parsed, but held no region with the requested id.
     #[error("catalog has no region {0:?}")]
     UnknownRegion(RegionId),
-    /// The manifest was missing/invalid, or a coverage cell's artifact failed
+    /// The manifest was missing/invalid, or a served cell's artifact failed
     /// verification.
     #[error("artifact: {0}")]
     Artifact(#[from] ArtifactError),
     /// A verified bundle could not be decoded into a network.
     #[error("failed to load shard for cell {cell:?}: {reason}")]
     Load {
-        /// The coverage cell whose bundle failed to decode.
+        /// The served cell whose bundle failed to decode.
         cell: String,
         /// The underlying decode error, rendered as text.
         reason: String,
@@ -105,8 +116,9 @@ pub enum BootstrapError {
 /// Load and verify the region graph named by `cfg`, publishing readiness
 /// transitions to `readiness` as it goes.
 ///
-/// Sets [`ReadyState::Starting`] on entry, [`ReadyState::Ready`] on success, and
-/// [`ReadyState::Failed`] on any error (also returned).
+/// Sets [`ReadyState::Starting`] on entry and leaves it there on success so the
+/// caller can finish connecting downstream dependencies before declaring the
+/// process ready. Sets [`ReadyState::Failed`] on any error (also returned).
 ///
 /// # Errors
 ///
@@ -118,10 +130,7 @@ pub async fn bootstrap(
 ) -> Result<Loaded, BootstrapError> {
     readiness.set(ReadyState::Starting);
     match load(cfg).await {
-        Ok(loaded) => {
-            readiness.set(ReadyState::Ready);
-            Ok(loaded)
-        }
+        Ok(loaded) => Ok(loaded),
         Err(err) => {
             readiness.set(ReadyState::Failed);
             Err(err)
@@ -133,21 +142,15 @@ pub async fn bootstrap(
 async fn load(cfg: &BootstrapConfig) -> Result<Loaded, BootstrapError> {
     let started = Instant::now();
 
-    let catalog = Catalog::load(&cfg.catalog)?;
-    let region = catalog
-        .region(&cfg.region)
-        .ok_or_else(|| BootstrapError::UnknownRegion(cfg.region.clone()))?
-        .clone();
-
-    let manifest = Manifest::load(&cfg.shard_dir)?;
-
-    // Verify every coverage cell before decoding any, so a bad checksum fails
-    // fast rather than after paying to load the rest.
-    let mut verified = Vec::with_capacity(region.coverage.len());
-    for cell in &region.coverage {
-        let artifact = manifest.verify(&cfg.shard_dir, cell, &region.graph)?;
-        verified.push((*cell, artifact));
-    }
+    // Catalog and manifest reads, metadata checks, and checksum streams are
+    // filesystem work. Keep all of it off the async reactor, just like decode.
+    let catalog_path = cfg.catalog.clone();
+    let shard_dir = cfg.shard_dir.clone();
+    let region_id = cfg.region.clone();
+    let (catalog, region, served_cells, verified) =
+        tokio::task::spawn_blocking(move || prepare(catalog_path, shard_dir, region_id))
+            .await
+            .map_err(BootstrapError::Join)??;
 
     let mut shards: Vec<Arc<Shard>> = Vec::with_capacity(verified.len());
     for (cell, artifact) in &verified {
@@ -171,8 +174,7 @@ async fn load(cfg: &BootstrapConfig) -> Result<Loaded, BootstrapError> {
 
     let network = MultiShardNetwork::new(shards);
 
-    let mut cells: HashSet<Geohash> = region.coverage.iter().copied().collect();
-    cells.extend(region.overlap.iter().copied());
+    let cells: HashSet<Geohash> = served_cells.into_iter().collect();
 
     info!(
         region = %region.id,
@@ -194,6 +196,34 @@ async fn load(cfg: &BootstrapConfig) -> Result<Loaded, BootstrapError> {
     })
 }
 
+/// Read and verify the complete graph input before the async bootstrap decodes it.
+fn prepare(
+    catalog_path: PathBuf,
+    shard_dir: PathBuf,
+    region_id: RegionId,
+) -> Result<PreparedRegion, BootstrapError> {
+    let catalog = Catalog::load(catalog_path)?;
+    let region = catalog
+        .region(&region_id)
+        .ok_or(BootstrapError::UnknownRegion(region_id))?
+        .clone();
+    let manifest = Manifest::load(&shard_dir)?;
+
+    let mut served_cells = region.coverage.clone();
+    served_cells.extend(region.overlap.iter().copied());
+    let mut verified = Vec::with_capacity(served_cells.len());
+    for cell in &served_cells {
+        let artifact = manifest.verify(
+            &shard_dir,
+            cell,
+            region.graph.as_str(),
+            crate::event::SHARD_PRECISION,
+        )?;
+        verified.push((*cell, artifact));
+    }
+    Ok((catalog, region, served_cells, verified))
+}
+
 #[cfg(test)]
 mod tests {
     use alloc::collections::BTreeMap;
@@ -208,8 +238,7 @@ mod tests {
     use super::*;
     use crate::event::SHARD_PRECISION;
     use crate::lifecycle::Readiness;
-    use crate::protocol::ids::GraphVersion;
-    use crate::region::artifact::{Artifact, MANIFEST_FILENAME};
+    use routers_shard::{Artifact, MANIFEST_FILENAME};
 
     const GRAPH: &str = "test-graph";
 
@@ -267,9 +296,9 @@ mod tests {
 
         Artifact {
             file,
-            sha256: crate::region::sha256_hex(&path).expect("hash bundle"),
+            sha256: routers_shard::sha256_hex(&path).expect("hash bundle"),
             bytes: std::fs::metadata(&path).expect("stat bundle").len(),
-            graph: GraphVersion::new(GRAPH).unwrap(),
+            graph: GRAPH.to_owned(),
             precision: SHARD_PRECISION,
             nodes: 0,
             edges: 0,
@@ -278,10 +307,7 @@ mod tests {
     }
 
     fn write_manifest(dir: &std::path::Path, artifacts: BTreeMap<String, Artifact>) {
-        let manifest = Manifest {
-            version: 1,
-            artifacts,
-        };
+        let manifest = Manifest::new(artifacts);
         std::fs::write(
             dir.join(MANIFEST_FILENAME),
             serde_json::to_string(&manifest).unwrap(),
@@ -307,12 +333,12 @@ mod tests {
         path
     }
 
-    /// A valid environment: shard bundles for `coverage`, a manifest over them,
-    /// and a catalog naming `coverage`/`overlap` for `test-region`.
+    /// A valid environment: shard bundles for every served cell, a manifest over
+    /// them, and a catalog naming `coverage`/`overlap` for `test-region`.
     fn valid_fixture(tag: &str, coverage: &[&str], overlap: &[&str]) -> (PathBuf, BootstrapConfig) {
         let dir = scratch_dir(tag);
         let mut artifacts = BTreeMap::new();
-        for c in coverage {
+        for c in coverage.iter().chain(overlap) {
             artifacts.insert((*c).to_owned(), write_shard(&dir, c));
         }
         write_manifest(&dir, artifacts);
@@ -332,13 +358,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn single_cell_region_boots_to_ready() {
+    async fn single_cell_region_loads_while_starting() {
         let (dir, cfg) = valid_fixture("single", &["r3gq"], &[]);
         let (setter, watcher) = Readiness::new();
 
         let loaded = bootstrap(&cfg, &setter).await.expect("boot succeeds");
 
-        assert_eq!(watcher.current(), ReadyState::Ready);
+        assert_eq!(watcher.current(), ReadyState::Starting);
         assert_eq!(loaded.region.id.as_str(), "test-region");
         assert_eq!(loaded.catalog_version, 5);
         assert_eq!(loaded.routing_version, 7);
@@ -357,13 +383,38 @@ mod tests {
 
         let loaded = bootstrap(&cfg, &setter).await.expect("boot succeeds");
 
-        assert_eq!(watcher.current(), ReadyState::Ready);
-        assert_eq!(loaded.network.shard_count(), 2);
+        assert_eq!(watcher.current(), ReadyState::Starting);
+        assert_eq!(loaded.network.shard_count(), 3);
         assert!(loaded.serves(&cell("r3gq")));
         assert!(loaded.serves(&cell("r3gr")));
         assert!(loaded.serves(&cell("r3gw")), "overlap cell is served");
         assert_eq!(loaded.cells.len(), 3);
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn overlap_is_not_advertised_without_a_verified_bundle() {
+        let dir = scratch_dir("missing-overlap");
+        let mut artifacts = BTreeMap::new();
+        artifacts.insert("r3gq".to_owned(), write_shard(&dir, "r3gq"));
+        write_manifest(&dir, artifacts);
+        let cfg = BootstrapConfig {
+            catalog: write_catalog(&dir, &["r3gq"], &["r3gw"]),
+            region: RegionId::new("test-region").expect("region id"),
+            shard_dir: dir.clone(),
+        };
+        let (setter, watcher) = Readiness::new();
+
+        let error = bootstrap(&cfg, &setter)
+            .await
+            .expect_err("missing overlap fails");
+
+        assert!(matches!(
+            error,
+            BootstrapError::Artifact(ArtifactError::MissingCell { cell }) if cell == "r3gw"
+        ));
+        assert_eq!(watcher.current(), ReadyState::Failed);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -450,7 +501,7 @@ mod tests {
         let dir = scratch_dir("failfast");
         let good = write_shard(&dir, "r3gq");
         let mut bad = write_shard(&dir, "r3gr");
-        bad.graph = GraphVersion::new("some-other-graph").unwrap();
+        bad.graph = "some-other-graph".to_owned();
         let mut artifacts = BTreeMap::new();
         artifacts.insert("r3gq".to_owned(), good);
         artifacts.insert("r3gr".to_owned(), bad);
@@ -487,9 +538,9 @@ mod tests {
             "r3gq".to_owned(),
             Artifact {
                 file: file.to_owned(),
-                sha256: crate::region::sha256_hex(&path).unwrap(),
+                sha256: routers_shard::sha256_hex(&path).unwrap(),
                 bytes: garbage.len() as u64,
-                graph: GraphVersion::new(GRAPH).unwrap(),
+                graph: GRAPH.to_owned(),
                 precision: SHARD_PRECISION,
                 nodes: 0,
                 edges: 0,

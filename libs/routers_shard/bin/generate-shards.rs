@@ -9,17 +9,14 @@ use std::path::{Path, PathBuf};
 use web_time::{SystemTime, UNIX_EPOCH};
 
 extern crate alloc;
-use alloc::collections::{BTreeMap, BTreeSet};
-
-use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
+use alloc::collections::BTreeMap;
 
 use routers_codec::osm::{OsmEdgeMetadata, OsmEntryId, OsmNetwork};
 use routers_network::edge::Weight;
-use routers_shard::{GeohashStrategy, ShardSource, ShardedNetwork};
-
-/// The JSON artifact manifest's file name, written beside the `.shard.rt` bundles.
-const JSON_MANIFEST_FILENAME: &str = "manifest.json";
+use routers_shard::{
+    Artifact, ArtifactError, GeohashStrategy, MANIFEST_FILENAME, Manifest, ShardSource,
+    ShardedNetwork, sha256_hex, token_safe,
+};
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -52,12 +49,6 @@ struct Args {
     /// workspace's `target/shard_cache` (what the chart mounts).
     #[arg(short, long, env = "SHARD_OUTPUT_DIR")]
     output: Option<PathBuf>,
-
-    /// The name of the manifest file to write. An existing manifest is
-    /// merged into, not replaced, so several regions can share one output
-    /// directory.
-    #[arg(short, long, env = "MANIFEST_FILENAME", default_value = "manifest.txt")]
-    manifest_filename: String,
 }
 
 #[derive(ClapArgs, Debug)]
@@ -136,7 +127,7 @@ fn main() {
 
     let built_at = rfc3339_utc(now());
     let mut built = Vec::with_capacity(total);
-    let mut artifacts: BTreeMap<String, ArtifactDoc> = BTreeMap::new();
+    let mut artifacts: BTreeMap<String, Artifact> = BTreeMap::new();
     let mut failed = Vec::new();
     for (i, net) in partition.enumerate() {
         let name = format!("{}.shard.rt", net.owned);
@@ -148,13 +139,12 @@ fn main() {
             failed.push((name, e));
             continue;
         }
-        // A checksum failure is surfaced but still keeps the shard in the `.txt` list.
         built.push(name.clone());
         match artifact_metadata(&path) {
             Ok((sha256, bytes)) => {
                 artifacts.insert(
                     cell,
-                    ArtifactDoc {
+                    Artifact {
                         file: name,
                         sha256,
                         bytes,
@@ -170,46 +160,20 @@ fn main() {
         }
     }
 
-    // Merge into any existing manifest: the output directory is shared by
-    // every region generated into it, and a rerun must not duplicate lines.
-    let manifest = out_dir.join(args.manifest_filename);
-    let mut names: BTreeSet<String> = match std::fs::read_to_string(&manifest) {
-        Ok(existing) => existing
-            .lines()
-            .map(str::trim)
-            .filter(|l| !l.is_empty())
-            .map(str::to_owned)
-            .collect(),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => BTreeSet::new(),
-        Err(e) => panic!("read existing manifest {manifest:?}: {e}"),
+    // This JSON document is the one contract shared by generator and runtime.
+    let manifest_path = out_dir.join(MANIFEST_FILENAME);
+    let mut manifest = match Manifest::load(&out_dir) {
+        Ok(manifest) => manifest,
+        Err(ArtifactError::MissingManifest { .. }) => Manifest::new(BTreeMap::new()),
+        Err(error) => panic!("load existing manifest {manifest_path:?}: {error}"),
     };
-    let before = names.len();
-    names.extend(built.iter().cloned());
-    let mut contents = names.iter().cloned().collect::<Vec<_>>().join("\n");
-    contents.push('\n');
-    std::fs::write(&manifest, contents).expect("write manifest");
+    let before = manifest.artifacts.len();
+    manifest.merge(Manifest::new(artifacts));
+    write_manifest_atomically(&manifest_path, &manifest);
     info!(
-        "manifest {manifest:?}: {} entries ({} new)",
-        names.len(),
-        names.len() - before
-    );
-
-    // Merge fresh entries into the JSON manifest (newest wins per cell); replaced atomically.
-    let json_path = out_dir.join(JSON_MANIFEST_FILENAME);
-    let mut doc = match std::fs::read_to_string(&json_path) {
-        Ok(text) => serde_json::from_str::<ManifestDoc>(&text).unwrap_or_else(|e| {
-            panic!("parse existing manifest {json_path:?}: {e}");
-        }),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => ManifestDoc::default(),
-        Err(e) => panic!("read existing manifest {json_path:?}: {e}"),
-    };
-    let json_before = doc.artifacts.len();
-    doc.artifacts.extend(artifacts);
-    write_manifest_atomically(&json_path, &doc);
-    info!(
-        "json manifest {json_path:?}: {} entries ({} new)",
-        doc.artifacts.len(),
-        doc.artifacts.len() - json_before
+        "manifest {manifest_path:?}: {} entries ({} new)",
+        manifest.artifacts.len(),
+        manifest.artifacts.len() - before
     );
 
     info!(
@@ -219,83 +183,18 @@ fn main() {
     );
 }
 
-/// A local mirror of `routers_realtime::region::Manifest` (its source of truth),
-/// duplicated because `routers_shard` must not depend on `routers_realtime`.
-#[derive(Serialize, Deserialize)]
-struct ManifestDoc {
-    version: u32,
-    #[serde(default)]
-    artifacts: BTreeMap<String, ArtifactDoc>,
-}
-
-impl Default for ManifestDoc {
-    fn default() -> Self {
-        ManifestDoc {
-            version: 1,
-            artifacts: BTreeMap::new(),
-        }
-    }
-}
-
-/// A local mirror of `routers_realtime::region::Artifact` (see [`ManifestDoc`]).
-#[derive(Serialize, Deserialize)]
-struct ArtifactDoc {
-    file: String,
-    sha256: String,
-    bytes: u64,
-    graph: String,
-    precision: u8,
-    nodes: u64,
-    edges: u64,
-    built_at: String,
-}
-
 /// Serialise `doc` and replace `path` atomically (sibling temp file + rename), so
 /// a crashed run leaves the previous manifest intact.
-fn write_manifest_atomically(path: &Path, doc: &ManifestDoc) {
-    let json = serde_json::to_string_pretty(doc).expect("serialise manifest");
-    let tmp = path.with_file_name(format!(
-        "{JSON_MANIFEST_FILENAME}.tmp.{}",
-        std::process::id()
-    ));
+fn write_manifest_atomically(path: &Path, manifest: &Manifest) {
+    let json = serde_json::to_string_pretty(manifest).expect("serialise manifest");
+    let tmp = path.with_file_name(format!("{MANIFEST_FILENAME}.tmp.{}", std::process::id()));
     std::fs::write(&tmp, json).unwrap_or_else(|e| panic!("write {tmp:?}: {e}"));
     std::fs::rename(&tmp, path).unwrap_or_else(|e| panic!("rename {tmp:?} -> {path:?}: {e}"));
 }
 
-/// The streaming lowercase-hex SHA-256 and byte length of a file (buffered, so a
-/// large bundle never sits in memory).
+/// The shared SHA-256 and byte length of a bundle.
 fn artifact_metadata(path: &Path) -> std::io::Result<(String, u64)> {
-    use std::io::Read;
-
-    let mut file = std::fs::File::open(path)?;
-    let mut hasher = Sha256::new();
-    let mut buffer = vec![0u8; 1 << 20];
-    let mut bytes = 0u64;
-    loop {
-        let read = file.read(&mut buffer)?;
-        if read == 0 {
-            break;
-        }
-        bytes += read as u64;
-        hasher.update(&buffer[..read]);
-    }
-
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let digest = hasher.finalize();
-    let mut sha256 = String::with_capacity(digest.len() * 2);
-    for &byte in digest.iter() {
-        sha256.push(HEX[(byte >> 4) as usize] as char);
-        sha256.push(HEX[(byte & 0x0f) as usize] as char);
-    }
-    Ok((sha256, bytes))
-}
-
-/// The NATS-token-safe rule (`[A-Za-z0-9_-]+`), duplicated from
-/// `routers_realtime::protocol::ids::token_safe`.
-fn token_safe(s: &str) -> bool {
-    !s.is_empty()
-        && s.bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+    Ok((sha256_hex(path)?, std::fs::metadata(path)?.len()))
 }
 
 /// The current wall-clock time, isolated so the `disallowed_methods` allow (the

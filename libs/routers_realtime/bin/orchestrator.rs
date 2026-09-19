@@ -36,7 +36,7 @@ use routers_realtime::protocol::output::CommittedOutput;
 use routers_realtime::protocol::result::SolveResult;
 use routers_realtime::region::catalog::Catalog;
 use routers_realtime::secret::SecretUrl;
-use routers_realtime::store::valkey::{ValkeyCheckpointStore, ValkeyConfig};
+use routers_realtime::store::valkey::{ValkeyCheckpointStore, ValkeyConfig, ValkeyEndpoint};
 use routers_realtime::topology::{
     JobsConfig, OutputConfig, RawConfig, ResultsConfig, ensure_job_stream, ensure_output_stream,
     ensure_raw_stream, ensure_result_stream, raw_consumer, raw_stream_index, result_consumer,
@@ -71,9 +71,10 @@ struct Args {
     #[arg(short, env, long)]
     nats: SecretUrl,
 
-    /// Valkey primaries, comma-separated; every process touching the checkpoints must be given the same set.
+    /// Valkey primaries as stable-id=URL, comma-separated. Stable ids must not
+    /// change when credentials or network addresses rotate.
     #[arg(short, env, long, value_delimiter = ',')]
-    valkey: Vec<SecretUrl>,
+    valkey: Vec<ValkeyEndpoint>,
 
     /// Path to the region catalog (TOML): regions, graph versions, and cell coverage.
     #[arg(short, env, long)]
@@ -423,7 +424,7 @@ mod tests {
             "--nats",
             "nats://localhost",
             "--valkey",
-            "redis://localhost",
+            "primary=redis://localhost",
             "--catalog",
             "/tmp/catalog.toml",
         ];
@@ -476,7 +477,7 @@ mod tests {
     fn valkey_urls_split_on_commas() {
         // A comma-separated value splits into one URL per entry; this second
         // `--valkey` occurrence adds two to the base helper's single URL.
-        let parsed = args(&["--valkey", "redis://a:6379,redis://b:6379"]);
+        let parsed = args(&["--valkey", "a=redis://a:6379,b=redis://b:6379"]);
         assert_eq!(parsed.valkey.len(), 3);
     }
 

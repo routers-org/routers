@@ -3,7 +3,8 @@ infra:
   eventBus:
     url: nats://nats.routers-dev.svc.cluster.local:4222
   kv:
-    url: redis://valkey-primary.routers-dev.svc.cluster.local:6379
+    # Stable rendezvous id separated from the rotatable connection URL.
+    url: primary=redis://valkey-primary.routers-dev.svc.cluster.local:6379
   telemetry:
     otlpUrl: http://otel-collector-opentelemetry-collector.routers-dev.svc.cluster.local:4318
 

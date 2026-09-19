@@ -29,7 +29,8 @@ pub struct Stats {
     pub duplicates: u64,
     /// Outputs that dropped non-final layers.
     pub retracted: u64,
-    /// Messages the source could not decode (or a transient pull error).
+    /// Delivery errors surfaced by the source. Malformed wire payloads are
+    /// acknowledged as transport poison before reaching this loop.
     pub poison: u64,
     /// Outputs the sink failed to persist; each was negatively acknowledged.
     pub errors: u64,
@@ -100,7 +101,7 @@ where
                     None => break,
                     Some(Ok(delivery)) => delivery,
                     Some(Err(err)) => {
-                        warn!(error = %err, "skipping undecodable committed output");
+                        warn!(error = %err, "committed-output source failed; continuing");
                         stats.poison += 1;
                         continue;
                     }
@@ -309,14 +310,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn undecodable_message_is_counted_as_poison() {
+    async fn malformed_payload_is_acked_by_the_transport_before_materializing() {
         use crate::bus::adapter::Publisher;
 
         let bus = MemoryBus::new();
         let source = bus.source::<CommittedOutput<E>>(FILTER);
         let sink = MemorySink::<E>::new();
 
-        // Raw bytes that are not a `CommittedOutput`: the source's decode fails.
+        // Raw bytes that are not a `CommittedOutput`: the adapter owns their
+        // decode and acknowledges this poison before it reaches the consumer.
         let mut poison_headers = HeaderMap::new();
         headers::stamp_schema(&mut poison_headers);
         bus.publisher::<CommittedOutput<E>>()
@@ -335,8 +337,16 @@ mod tests {
             .await
             .expect("run");
 
-        assert_eq!(stats.poison, 1);
+        assert_eq!(
+            stats.poison, 0,
+            "transport poison does not leak into the reducer"
+        );
         assert_eq!(stats.applied, 1, "the good output still applied");
         assert_eq!(sink.len(), 1);
+        assert_eq!(
+            bus.acked_count(FILTER),
+            2,
+            "the poison and good output were retired"
+        );
     }
 }

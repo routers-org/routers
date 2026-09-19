@@ -9,12 +9,10 @@ use alloc::sync::Arc;
 use core::fmt;
 use core::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 use core::time::Duration;
-use std::path::PathBuf;
 
 use tokio::sync::{Notify, watch};
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
-use tracing::warn;
 
 /// Why a drain was started; bounded so it can double as a metric label.
 #[repr(u8)]
@@ -264,13 +262,7 @@ impl Readiness {
     #[must_use]
     pub fn new() -> (ReadinessSetter, ReadinessWatcher) {
         let (tx, rx) = watch::channel(ReadyState::Starting);
-        (
-            ReadinessSetter {
-                tx,
-                ready_file: None,
-            },
-            ReadinessWatcher { rx },
-        )
+        (ReadinessSetter { tx }, ReadinessWatcher { rx })
     }
 }
 
@@ -289,58 +281,34 @@ pub enum ReadyState {
 
 impl fmt::Display for ReadyState {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let label = match self {
+        f.write_str(self.as_label())
+    }
+}
+
+impl ReadyState {
+    /// Stable lowercase representation suitable for health responses and metrics.
+    #[must_use]
+    pub const fn as_label(self) -> &'static str {
+        match self {
             Self::Starting => "starting",
             Self::Ready => "ready",
             Self::Draining => "draining",
             Self::Failed => "failed",
-        };
-        f.write_str(label)
+        }
     }
 }
 
-/// The write side of a readiness channel. When a ready file is attached via
-/// [`ReadinessSetter::with_ready_file`], [`ReadyState::Ready`] creates it and
-/// any other state removes it; file maintenance is best-effort.
+/// The write side of a readiness channel.
+#[derive(Clone)]
 pub struct ReadinessSetter {
     tx: watch::Sender<ReadyState>,
-    ready_file: Option<PathBuf>,
 }
 
 impl ReadinessSetter {
-    /// Attach a marker file mirrored to the [`ReadyState::Ready`] state.
-    #[must_use]
-    pub fn with_ready_file(mut self, path: impl Into<PathBuf>) -> Self {
-        self.ready_file = Some(path.into());
-        self
-    }
-
-    /// Publish a new state to all watchers and reconcile the ready file. Always
-    /// notifies, even if unchanged, so a re-assertion still wakes a `changed()`.
+    /// Publish a new state. Always notifies, even if unchanged, so a
+    /// re-assertion still wakes a [`ReadinessWatcher::changed`] call.
     pub fn set(&self, state: ReadyState) {
         self.tx.send_replace(state);
-        self.sync_ready_file(state);
-    }
-
-    fn sync_ready_file(&self, state: ReadyState) {
-        let Some(path) = self.ready_file.as_ref() else {
-            return;
-        };
-        match state {
-            ReadyState::Ready => {
-                if let Err(err) = std::fs::File::create(path) {
-                    warn!(path = %path.display(), error = %err, "failed to create readiness file");
-                }
-            }
-            _ => {
-                // An already-absent file is the desired end state, not a failure.
-                if path.exists()
-                    && let Err(err) = std::fs::remove_file(path)
-                {
-                    warn!(path = %path.display(), error = %err, "failed to remove readiness file");
-                }
-            }
-        }
     }
 }
 
@@ -368,7 +336,6 @@ impl ReadinessWatcher {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use core::sync::atomic::{AtomicU64, Ordering};
 
     #[test]
     fn drain_reason_labels_are_stable() {
@@ -479,38 +446,5 @@ mod tests {
 
         setter.set(ReadyState::Draining);
         assert_eq!(watcher.changed().await, ReadyState::Draining);
-    }
-
-    fn unique_temp_path(tag: &str) -> PathBuf {
-        static COUNTER: AtomicU64 = AtomicU64::new(0);
-        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-        std::env::temp_dir().join(format!(
-            "routers-realtime-{tag}-{}-{n}.flag",
-            std::process::id()
-        ))
-    }
-
-    #[tokio::test]
-    async fn ready_file_appears_and_disappears() {
-        let path = unique_temp_path("ready");
-        let _ = std::fs::remove_file(&path);
-
-        let (setter, _watcher) = Readiness::new();
-        let setter = setter.with_ready_file(&path);
-        assert!(!path.exists());
-
-        setter.set(ReadyState::Ready);
-        assert!(path.exists(), "Ready should create the marker file");
-
-        setter.set(ReadyState::Draining);
-        assert!(!path.exists(), "Draining should remove the marker file");
-
-        setter.set(ReadyState::Ready);
-        assert!(path.exists());
-
-        setter.set(ReadyState::Failed);
-        assert!(!path.exists());
-
-        let _ = std::fs::remove_file(&path);
     }
 }
