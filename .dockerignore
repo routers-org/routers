@@ -12,11 +12,11 @@ target/
 # Not compiled into any image
 conformance/external/
 benches/snapshots/
-examples/
 libs/routers_fixtures/resources/
 libs/routers_viewer/assets/
 libs/routers_tz/data/*
 !libs/routers_tz/data/prebuilt/
+
 *.csv
 *.csv.zip
 *.wkt

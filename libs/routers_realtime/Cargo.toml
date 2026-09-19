@@ -7,7 +7,7 @@ license = "GPL-3.0-or-later"
 
 [dependencies]
 # Internal Crates
-routers_codec = { workspace = true }
+routers_codec = { workspace = true, version = "1.0.0", features = ["osm"] }
 routers_network = { workspace = true }
 routers_shard = { workspace = true }
 routers_transition = { workspace = true }
