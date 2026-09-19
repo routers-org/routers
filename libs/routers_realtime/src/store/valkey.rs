@@ -15,11 +15,11 @@ use std::collections::HashMap;
 use futures::future::try_join_all;
 use redis::aio::MultiplexedConnection;
 use thiserror::Error;
-use url::Url;
 
 use crate::event::VehicleId;
 use crate::partition::{fnv1a, mix};
 use crate::protocol::ids::{ObservationId, OutputId, Revision, SegmentId};
+use crate::secret::SecretUrl;
 use crate::store::checkpoint::{
     CheckpointStore, CommitPhase, PartitionFrontier, PrepareOutcome, PreparedCommit,
     StoredCheckpoint,
@@ -64,11 +64,11 @@ struct Placement {
 }
 
 impl Placement {
-    fn new(urls: &[Url]) -> Self {
+    fn new(urls: &[SecretUrl]) -> Self {
         Self {
             seeds: urls
                 .iter()
-                .map(|url| fnv1a(url.as_str().as_bytes()))
+                .map(|url| fnv1a(url.placement_identity().as_bytes()))
                 .collect(),
         }
     }
@@ -346,7 +346,7 @@ impl Scripts {
 pub struct ValkeyConfig {
     /// The primaries, addressed by URL; may be reordered without moving any
     /// vehicle.
-    pub urls: Vec<Url>,
+    pub urls: Vec<SecretUrl>,
     /// How long a committed checkpoint survives without a fresh commit, applied
     /// as a `PEXPIRE` on every promotion. Prepared records never get a TTL.
     pub checkpoint_ttl: Duration,
@@ -356,7 +356,7 @@ pub struct ValkeyConfig {
 
 impl ValkeyConfig {
     /// A config for `urls` with the default checkpoint TTL and connect timeout.
-    pub fn new(urls: Vec<Url>) -> Self {
+    pub fn new(urls: Vec<SecretUrl>) -> Self {
         Self {
             urls,
             checkpoint_ttl: DEFAULT_CHECKPOINT_TTL,
@@ -395,7 +395,7 @@ impl ValkeyCheckpointStore {
         let conns = try_join_all(cfg.urls.iter().cloned().map(|url| {
             let connect_timeout = cfg.connect_timeout;
             async move {
-                let client = redis::Client::open(url)?;
+                let client = redis::Client::open(url.connection_url())?;
                 let config =
                     redis::AsyncConnectionConfig::new().set_connection_timeout(connect_timeout);
                 let conn = client
@@ -667,9 +667,9 @@ impl CheckpointStore for ValkeyCheckpointStore {
 mod tests {
     use super::*;
 
-    fn fleet(n: usize) -> Vec<Url> {
+    fn fleet(n: usize) -> Vec<SecretUrl> {
         (0..n)
-            .map(|i| Url::parse(&format!("redis://valkey-{i:03}:6379")).unwrap())
+            .map(|i| format!("redis://valkey-{i:03}:6379").parse().unwrap())
             .collect()
     }
 

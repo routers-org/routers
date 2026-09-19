@@ -129,7 +129,7 @@ pub struct Restored<E: Entry> {
 ///
 /// * no checkpoint ⇒ [`Absent`](CheckpointState::Absent), no reset;
 /// * decodes at the current
-///   [`SCHEMA_VERSION`](crate::protocol::ids::SCHEMA_VERSION) ⇒
+///   [`SCHEMA_VERSION`] ⇒
 ///   [`Present`](CheckpointState::Present), no reset;
 /// * will not decode, or a superseded schema ⇒
 ///   [`Absent`](CheckpointState::Absent) with [`ResetReason::StateLost`].
@@ -415,7 +415,8 @@ mod tests {
         observation: ObservationId,
         head: &Payload,
     ) -> JobIdentity {
-        let built = build_context(checkpoint, observation, head, &DispatchConfig::default());
+        let built = build_context(checkpoint, observation, head, &DispatchConfig::default())
+            .expect("recovery fixtures use a monotonic head");
         JobIdentity {
             schema: SCHEMA_VERSION,
             vehicle_id: VehicleId(1),

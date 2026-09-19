@@ -2,7 +2,7 @@
 //!
 //! Builds a deterministic, immutable solve context from a checkpoint and head
 //! observation, reserves admission credit before publishing, then republishes the
-//! identical bytes under the job's [`JobId`] on an ambiguous outcome so the broker
+//! identical bytes under the job's [`JobId`](crate::protocol::ids::JobId) on an ambiguous outcome so the broker
 //! dedups. A pure builder with no mutable state: the vehicle is never advanced on
 //! a failed publish, and the scheduler is left to the caller.
 
@@ -19,7 +19,7 @@ use crate::bus::adapter::{AckHandle, PublishError, PublishOutcome, Publisher};
 use crate::bus::outbound;
 use crate::event::{Payload, VehicleId};
 use crate::orchestrator::admission::{Admission, AdmitError, HeldReason, Permit};
-use crate::orchestrator::scheduler::{ActiveJob, PendingObservation};
+use crate::orchestrator::scheduler::{ActiveJob, JobReservation, PendingObservation};
 use crate::protocol::ids::headers::stamp_schema;
 use crate::protocol::ids::{ObservationId, SCHEMA_VERSION, SegmentId};
 use crate::protocol::job::{BaseState, JobIdentity, SolveJob};
@@ -68,6 +68,37 @@ pub struct Built<E: Entry> {
     pub reset: Option<ResetReason>,
 }
 
+/// A same-vehicle temporal ordering violation that must be terminally committed
+/// instead of reaching the matcher.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Error)]
+#[error("observation timestamp {incoming} is not newer than committed timestamp {committed}")]
+pub struct TimestampRegression {
+    /// The last origin retained by the committed vehicle checkpoint.
+    pub committed: i64,
+    /// The timestamp carried by the newer raw stream sequence.
+    pub incoming: i64,
+}
+
+/// Classify a newer raw sequence whose supplier time does not advance the same
+/// vehicle's committed origin.
+#[must_use]
+pub fn timestamp_regression<E: Entry>(
+    checkpoint: Option<&VehicleCheckpoint<E>>,
+    observation: ObservationId,
+    head: &Payload,
+) -> Option<TimestampRegression> {
+    let checkpoint = checkpoint?;
+    if observation.sequence <= checkpoint.last_input.sequence {
+        return None;
+    }
+    let committed = checkpoint.trip.origins().last()?.timestamp;
+    let incoming = head.timestamp.timestamp_micros();
+    (incoming <= committed).then_some(TimestampRegression {
+        committed,
+        incoming,
+    })
+}
+
 /// The [`Origin`] a payload represents: position and supplier timestamp in unix microseconds.
 fn origin_of(payload: &Payload) -> Origin {
     Origin::new(payload.point, payload.timestamp.timestamp_micros())
@@ -96,19 +127,19 @@ pub fn build_context<E: Entry>(
     observation: ObservationId,
     head: &Payload,
     cfg: &DispatchConfig,
-) -> Built<E> {
+) -> Result<Built<E>, TimestampRegression> {
     let head_origin = origin_of(head);
     let fresh_segment = SegmentId::from(observation);
 
     let Some(checkpoint) = checkpoint else {
-        return Built {
+        return Ok(Built {
             continuation: Continuation::Restart {
                 fresh: vec![head_origin],
             },
             base: None,
             segment: fresh_segment,
             reset: None,
-        };
+        });
     };
 
     // The commit CASes on this revision even on a reset, so a racing commit is still caught.
@@ -117,40 +148,41 @@ pub fn build_context<E: Entry>(
         segment: checkpoint.segment,
     };
 
+    if let Some(regression) = timestamp_regression(Some(checkpoint), observation, head) {
+        return Err(regression);
+    }
     let last = checkpoint.trip.origins().last();
-    debug_assert!(
-        last.is_none_or(|last| head_origin.timestamp > last.timestamp),
-        "head observation must be newer than the last committed origin \
-         (the reader/scheduler suppress regressions)"
-    );
 
     if let Some(reason) = last.and_then(|last| continuity_break(last, &head_origin, cfg)) {
-        return Built {
+        return Ok(Built {
             continuation: Continuation::Restart {
                 fresh: vec![head_origin],
             },
             base: Some(current),
             segment: fresh_segment,
             reset: Some(reason),
-        };
+        });
     }
 
     let mut history: Vec<Origin> = checkpoint.trip.origins().to_vec();
     history.push(head_origin);
     let continuation = Continuation::reconcile(Some(checkpoint.trip.clone()), &history);
 
-    Built {
+    Ok(Built {
         continuation,
         base: Some(current),
         segment: checkpoint.segment,
         reset: None,
-    }
+    })
 }
 
 /// Why a [`Dispatcher::dispatch`] did not publish a job. Every variant leaves the
 /// vehicle's state untouched and releases any reserved permit.
 #[derive(Debug, Error)]
 pub enum DispatchError {
+    /// A newer raw sequence did not advance the vehicle's committed event time.
+    #[error(transparent)]
+    TimestampRegression(#[from] TimestampRegression),
     /// A credit scope was at capacity; nothing was published and the caller retries later.
     #[error("admission held: {0}")]
     Held(HeldReason),
@@ -231,7 +263,7 @@ impl<P> Dispatcher<P> {
             base,
             segment,
             reset,
-        } = build_context(checkpoint, head.id, &head.payload, &self.cfg);
+        } = build_context(checkpoint, head.id, &head.payload, &self.cfg)?;
 
         let identity = JobIdentity {
             schema: SCHEMA_VERSION,
@@ -269,7 +301,7 @@ impl<P> Dispatcher<P> {
                 observation: head.id,
                 deadline: now + resolution.budget,
                 bytes: byte_len,
-                permit,
+                reservation: JobReservation::Admitted(permit),
                 dispatched: now,
             },
             reset,
@@ -488,7 +520,7 @@ mod tests {
         };
         let head = payload(1, point!(x: -118.15, y: 34.15), TRACE_START_US);
 
-        let built = build_context::<MockEntryId>(None, obs, &head, &cfg);
+        let built = build_context::<MockEntryId>(None, obs, &head, &cfg).unwrap();
 
         assert!(built.base.is_none());
         assert!(built.reset.is_none());
@@ -509,7 +541,7 @@ mod tests {
             sequence: 999,
         };
 
-        let built = build_context(Some(&cp), obs, &head, &cfg);
+        let built = build_context(Some(&cp), obs, &head, &cfg).unwrap();
 
         assert!(built.reset.is_none());
         assert_eq!(built.segment, SegmentId(7));
@@ -542,7 +574,7 @@ mod tests {
             sequence: 999,
         };
 
-        let built = build_context(Some(&cp), obs, &head, &cfg);
+        let built = build_context(Some(&cp), obs, &head, &cfg).unwrap();
 
         assert_eq!(built.reset, Some(ResetReason::Gap));
         assert_eq!(built.segment, SegmentId(999));
@@ -573,11 +605,37 @@ mod tests {
             sequence: 999,
         };
 
-        let built = build_context(Some(&cp), obs, &head, &cfg);
+        let built = build_context(Some(&cp), obs, &head, &cfg).unwrap();
 
         assert_eq!(built.reset, Some(ResetReason::Teleport));
         assert_eq!(built.segment, SegmentId(999));
         assert!(matches!(built.continuation, Continuation::Restart { .. }));
+    }
+
+    #[test]
+    fn newer_sequence_with_non_increasing_timestamp_is_a_typed_regression() {
+        let cfg = DispatchConfig::default();
+        let cp = checkpoint(500, 7);
+        let last = trace_origins().last().unwrap().timestamp;
+
+        for incoming in [last - 1, last] {
+            let head = payload(1, point!(x: -118.180, y: 34.1403), incoming);
+            let obs = ObservationId {
+                partition: 7,
+                sequence: 501,
+            };
+
+            match build_context(Some(&cp), obs, &head, &cfg) {
+                Err(regression) => assert_eq!(
+                    regression,
+                    TimestampRegression {
+                        committed: last,
+                        incoming,
+                    }
+                ),
+                Ok(_) => panic!("non-increasing timestamp must not build solve context"),
+            }
+        }
     }
 
     fn dispatcher(

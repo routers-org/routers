@@ -84,6 +84,7 @@ impl<E: Entry> Clone for VehicleMaterialized<E> {
         Self {
             segments: self.segments.clone(),
             current: self.current,
+            current_revision: self.current_revision,
         }
     }
 }
@@ -94,6 +95,7 @@ impl<E: Entry> Clone for crate::materializer::sink::SegmentState<E> {
             layers: self.layers.clone(),
             finalized_through: self.finalized_through,
             last_revision: self.last_revision,
+            retractions: self.retractions.clone(),
         }
     }
 }

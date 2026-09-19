@@ -5,29 +5,19 @@
 //! nothing. Identity must agree across the delivery subject, the vehicle id's
 //! partition, and the reader's own; a mismatch is poison.
 
-use core::time::Duration;
-
 use async_nats::HeaderMap;
-use chrono::{DateTime, Utc};
 use routers_network::Entry;
 use tokio::time::Instant;
 
 use crate::bus::Wire;
 use crate::bus::adapter::{AckHandle, Delivery};
 use crate::event::Payload;
-use crate::ingress::{self, IngressLimits};
+use crate::ingress;
 use crate::orchestrator::frontier::{FrontierTracker, Observed};
 use crate::orchestrator::scheduler::{Enqueue, PendingObservation, Scheduler};
 use crate::partition;
 use crate::protocol::ids::{ObservationId, SCHEMA_VERSION, SchemaVersion, headers};
 use crate::topology::partition_of_subject;
-
-/// A window wide enough that [`ingress::validate`] applies only its structural
-/// checks (identity, finiteness, coordinate range), never its age window.
-const SANITY_LIMITS: IngressLimits = IngressLimits {
-    max_age: Duration::from_secs(u64::MAX),
-    max_ahead: Duration::from_secs(u64::MAX),
-};
 
 /// Why a raw message can never become an observation and is acked-and-forgotten.
 ///
@@ -314,7 +304,7 @@ impl RawReader {
             };
         }
 
-        if let Err(error) = ingress::validate(&payload, sanity_reference(), &SANITY_LIMITS) {
+        if let Err(error) = ingress::validate(&payload) {
             return RawDisposition::Poison {
                 handle,
                 reason: PoisonReason::Invalid { kind: error.kind() },
@@ -365,18 +355,13 @@ impl RawReader {
     }
 }
 
-/// The fixed reference instant [`ingress::validate`] is called against; with
-/// [`SANITY_LIMITS`]'s unbounded window it never affects the outcome.
-fn sanity_reference() -> DateTime<Utc> {
-    DateTime::from_timestamp(0, 0).expect("the unix epoch is a valid timestamp")
-}
-
 #[cfg(test)]
 mod tests {
     use alloc::sync::Arc;
+    use core::time::Duration;
     use std::sync::Mutex;
 
-    use chrono::TimeZone;
+    use chrono::{TimeZone, Utc};
     use geo::Point;
     use routers_network::mock::MockEntryId;
 

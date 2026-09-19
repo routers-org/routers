@@ -368,6 +368,19 @@ impl Fleet {
     /// Publish one raw observation on its partition's journal, returning its
     /// [`ObservationId`] (whose sequence is the revision downstream).
     pub async fn ingest(&self, vehicle: u64, ts_us: i64, point: Point) -> ObservationId {
+        self.ingest_with_msg_id(vehicle, ts_us, point, None).await
+    }
+
+    /// Publish a raw observation with an optional explicit broker dedup id.
+    /// Tests use the override to model two distinct raw sequences carrying the
+    /// same supplier timestamp.
+    pub async fn ingest_with_msg_id(
+        &self,
+        vehicle: u64,
+        ts_us: i64,
+        point: Point,
+        msg_id: Option<&str>,
+    ) -> ObservationId {
         let partition = self.partition_of(vehicle);
         let payload = Payload {
             vehicle_id: VehicleId(vehicle),
@@ -382,7 +395,7 @@ impl Fleet {
             .publisher::<RawBytes>()
             .publish_bytes(
                 &raw_subject(u64::from(partition)),
-                &ingress::msg_id(&payload),
+                msg_id.unwrap_or(&ingress::msg_id(&payload)),
                 hdrs,
                 &bytes,
             )

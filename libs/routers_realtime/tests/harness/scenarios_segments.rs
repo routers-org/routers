@@ -3,11 +3,6 @@
 
 use super::fixture::*;
 
-/// The concrete raw subject for a partition.
-fn raw_subject(partition: u16) -> String {
-    routers_realtime::topology::raw_subject(u64::from(partition))
-}
-
 /// Corrupting the committed checkpoint makes the next observation open a fresh
 /// `Reset { StateLost }` segment, leaving the old layers untouched. State loss is
 /// modelled by an undecodable checkpoint (a dropped one would read as fresh, no reset).
@@ -143,44 +138,73 @@ async fn teleport_resets_segment() {
     );
 }
 
-/// An observation behind the partition's completion frontier is suppressed and
-/// acked without a job. Regressions are suppressed by frontier sequence, not
-/// wall-clock stamps, so the scenario drives it through the frontier.
+/// New raw sequences whose supplier timestamps do not advance the same
+/// vehicle's committed origin become durable terminals. The checkpoint and
+/// frontier advance, while the retained trip remains unchanged.
 #[tokio::test(start_paused = true)]
-async fn timestamp_regression_is_suppressed() {
+async fn newer_sequences_with_older_or_equal_timestamps_commit_terminals() {
     let fleet = Fleet::bent_road();
     let vehicle = 1u64;
     let partition = fleet.partition_of(vehicle);
+    let point = road_points()[0];
+    let committed_ts = obs_ts(1);
 
-    // The partition has already committed up to sequence 5.
-    fleet
-        .store
-        .set_frontier(routers_realtime::store::checkpoint::PartitionFrontier {
-            partition,
-            sequence: 5,
-        })
-        .await
-        .unwrap();
-
+    let matcher = fleet.spawn_matcher(MatcherBehaviour::engine());
     let orchestrator = fleet.spawn_orchestrator(partition);
-    let observation = fleet.ingest(vehicle, obs_ts(0), road_points()[0]).await;
-    assert!(observation.sequence <= 5, "the raw is behind the frontier");
+    let initial = fleet.ingest(vehicle, committed_ts, point).await;
+    fleet.settle().await;
+
+    let older = fleet.ingest(vehicle, committed_ts - 1, point).await;
+    let equal = fleet
+        .ingest_with_msg_id(
+            vehicle,
+            committed_ts,
+            point,
+            Some("equal-timestamp-new-sequence"),
+        )
+        .await;
+    assert!(older.sequence > initial.sequence);
+    assert!(equal.sequence > older.sequence);
 
     fleet.settle().await;
     let stats = orchestrator.stop().await;
+    matcher.stop().await;
 
     assert_eq!(
-        stats.dispatched, 0,
-        "no job was dispatched for the regression"
+        stats.dispatched, 1,
+        "only the monotonic observation was solved"
     );
-    assert!(stats.suppressed >= 1, "the regression was suppressed");
-    assert!(
-        published_outputs(&fleet.bus, partition).is_empty(),
-        "no output for a suppressed regression",
+    assert_eq!(
+        stats.committed, 3,
+        "both regressions were durably committed"
     );
-    assert!(
-        fleet.bus.acked_count(&raw_subject(partition)) >= 1,
-        "the suppressed raw was acked",
+    assert_eq!(stats.terminal, 2);
+    assert_eq!(stats.frontier, equal.sequence);
+
+    let outputs = published_outputs(&fleet.bus, partition);
+    assert_eq!(
+        outputs
+            .iter()
+            .filter(|output| matches!(
+                output.kind,
+                OutputKind::Terminal {
+                    reason: TerminalReason::TimestampRegression,
+                    ..
+                }
+            ))
+            .count(),
+        2,
+    );
+
+    let stored = fleet.store.snapshot().checkpoints[&VehicleId(vehicle)].clone();
+    let checkpoint =
+        routers_realtime::store::checkpoint::VehicleCheckpoint::<E>::decode(&stored.bytes).unwrap();
+    assert_eq!(checkpoint.last_input, equal);
+    assert_eq!(checkpoint.revision, Revision(equal.sequence));
+    assert_eq!(
+        checkpoint.trip.origins().last().unwrap().timestamp,
+        committed_ts,
+        "terminal regressions advance durable input without changing the trip",
     );
 }
 

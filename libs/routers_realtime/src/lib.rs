@@ -24,6 +24,7 @@ pub mod orchestrator;
 pub mod partition;
 pub mod protocol;
 pub mod region;
+pub mod secret;
 pub mod store;
 pub mod telemetry;
 pub mod topology;

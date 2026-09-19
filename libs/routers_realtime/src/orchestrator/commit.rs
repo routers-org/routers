@@ -356,7 +356,7 @@ pub struct CommitConfig {
     /// means try once and never retry.
     pub publish_attempts: u32,
     /// The first inter-attempt pause; it doubles after each ambiguous attempt,
-    /// capped at [`BACKOFF_CAP`].
+    /// capped at a fixed two-second maximum.
     pub backoff: Duration,
 }
 

@@ -16,7 +16,6 @@ use std::sync::Arc;
 use anyhow::Context as _;
 use clap::Parser;
 use tracing::info;
-use url::Url;
 
 use routers_codec::osm::{OsmEdgeMetadata, OsmEntryId};
 use routers_network::Metadata;
@@ -31,6 +30,7 @@ use routers_realtime::matcher::validate::ValidateConfig;
 use routers_realtime::metrics::Metrics;
 use routers_realtime::protocol::ids::{IdError, RegionId};
 use routers_realtime::protocol::result::SolveResult;
+use routers_realtime::secret::SecretUrl;
 use routers_realtime::topology::jobs::{JobsConfig, job_consumer, open_job_stream};
 
 /// The network entry type this region's graph is keyed by.
@@ -59,7 +59,7 @@ fn parse_region(value: &str) -> Result<RegionId, IdError> {
 struct Args {
     /// URL of the NATS server to connect to.
     #[arg(long)]
-    nats: Url,
+    nats: SecretUrl,
 
     /// Path to the region catalog TOML (mounted read-only).
     #[arg(long)]
@@ -142,9 +142,9 @@ async fn main() -> anyhow::Result<()> {
         readiness.set(ReadyState::Draining);
     });
 
-    let client = async_nats::connect(args.nats.as_str())
+    let client = async_nats::connect(args.nats.connection_url().as_str())
         .await
-        .with_context(|| format!("could not connect to NATS at {}", args.nats))?;
+        .context("could not connect to NATS")?;
     let context = async_nats::jetstream::new(client);
 
     // Read raw job bytes so the loop can size-gate them before decode.
@@ -230,7 +230,7 @@ mod tests {
     fn parses_required_fields_and_defaults() {
         let args = Args::parse_from(base());
 
-        assert_eq!(args.nats.as_str(), "nats://localhost:4222");
+        assert_eq!(args.nats.connection_url().as_str(), "nats://localhost:4222");
         assert_eq!(args.catalog, PathBuf::from("/etc/routers/catalog.toml"));
         assert_eq!(args.region, RegionId::new("syd").unwrap());
         assert_eq!(args.shard_dir, PathBuf::from("/var/lib/routers/shards"));

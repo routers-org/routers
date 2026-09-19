@@ -167,7 +167,8 @@ macro_rules! token_id {
     ($(#[$meta:meta])* $name:ident) => {
         $(#[$meta])*
         #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-        pub struct $name(pub String);
+        #[serde(try_from = "String", into = "String")]
+        pub struct $name(String);
 
         impl $name {
             /// Validate `s` as a NATS-safe token and wrap it. Rejects the
@@ -185,6 +186,28 @@ macro_rules! token_id {
             /// Borrow the validated token.
             pub fn as_str(&self) -> &str {
                 &self.0
+            }
+        }
+
+        impl TryFrom<String> for $name {
+            type Error = IdError;
+
+            fn try_from(value: String) -> Result<Self, Self::Error> {
+                Self::new(&value)
+            }
+        }
+
+        impl From<$name> for String {
+            fn from(value: $name) -> Self {
+                value.0
+            }
+        }
+
+        impl FromStr for $name {
+            type Err = IdError;
+
+            fn from_str(value: &str) -> Result<Self, Self::Err> {
+                Self::new(value)
             }
         }
 
@@ -403,6 +426,40 @@ mod tests {
         );
         assert_eq!(GraphVersion::new("ok-1").unwrap().as_str(), "ok-1");
         assert_eq!(GraphVersion::new("ok-1").unwrap().to_string(), "ok-1");
+    }
+
+    #[test]
+    fn token_ids_validate_all_deserialization_boundaries() {
+        #[derive(Deserialize)]
+        struct Tokens {
+            graph: GraphVersion,
+            region: RegionId,
+        }
+
+        let valid = Tokens {
+            graph: GraphVersion::new("graph-1").unwrap(),
+            region: RegionId::new("region_1").unwrap(),
+        };
+        let bytes = postcard::to_allocvec(&valid.graph).unwrap();
+        assert_eq!(
+            bytes,
+            postcard::to_allocvec("graph-1").unwrap(),
+            "validated newtype must preserve the existing string wire encoding"
+        );
+        assert_eq!(
+            postcard::from_bytes::<GraphVersion>(&bytes).unwrap(),
+            valid.graph
+        );
+        let toml = "graph = \"graph-1\"\nregion = \"region_1\"\n";
+        let decoded: Tokens = toml::from_str(toml).unwrap();
+        assert_eq!(decoded.graph, valid.graph);
+        assert_eq!(decoded.region, valid.region);
+
+        let invalid_postcard = postcard::to_allocvec("bad.token").unwrap();
+        assert!(postcard::from_bytes::<GraphVersion>(&invalid_postcard).is_err());
+        assert!(postcard::from_bytes::<RegionId>(&invalid_postcard).is_err());
+        assert!(toml::from_str::<Tokens>("graph = \"bad.token\"\nregion = \"ok\"\n").is_err());
+        assert!(toml::from_str::<Tokens>("graph = \"ok\"\nregion = \"bad region\"\n").is_err());
     }
 
     #[test]

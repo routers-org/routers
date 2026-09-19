@@ -203,7 +203,7 @@ mod tests {
     use crate::event::VehicleId;
     use crate::orchestrator::admission::{Admission, AdmissionConfig};
     use crate::orchestrator::commit;
-    use crate::orchestrator::scheduler::CheckpointState;
+    use crate::orchestrator::scheduler::{CheckpointState, JobReservation};
     use crate::orchestrator::validate::{self, RejectReason, Verdict};
     use crate::partition::partition_of;
     use crate::protocol::ids::{
@@ -276,7 +276,9 @@ mod tests {
                 observation: self.obs(seq),
                 deadline: self.base + Duration::from_secs(30),
                 bytes: 100,
-                permit: self.admission.try_admit(&self.region, 100).unwrap(),
+                reservation: JobReservation::Admitted(
+                    self.admission.try_admit(&self.region, 100).unwrap(),
+                ),
                 dispatched: self.base,
             }
         }
