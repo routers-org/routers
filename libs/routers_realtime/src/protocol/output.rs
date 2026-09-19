@@ -33,6 +33,9 @@ pub enum TerminalReason {
     Disconnected,
     /// An unexpected fault; the reason string stays in logs, not on the wire.
     Internal,
+    /// A newer raw sequence carried an event time not newer than this
+    /// vehicle's last committed origin.
+    TimestampRegression,
 }
 
 impl TerminalReason {
@@ -45,6 +48,7 @@ impl TerminalReason {
             TerminalReason::VersionMismatch => "version_mismatch",
             TerminalReason::Unanchored => "unanchored",
             TerminalReason::Disconnected => "disconnected",
+            TerminalReason::TimestampRegression => "timestamp_regression",
             TerminalReason::Internal => "internal",
         }
     }
@@ -438,6 +442,7 @@ mod tests {
             TerminalReason::VersionMismatch,
             TerminalReason::Unanchored,
             TerminalReason::Disconnected,
+            TerminalReason::TimestampRegression,
             TerminalReason::Internal,
         ];
         for reason in all {
@@ -448,6 +453,7 @@ mod tests {
                 TerminalReason::VersionMismatch => "version_mismatch",
                 TerminalReason::Unanchored => "unanchored",
                 TerminalReason::Disconnected => "disconnected",
+                TerminalReason::TimestampRegression => "timestamp_regression",
                 TerminalReason::Internal => "internal",
             };
             assert_eq!(reason.label(), expected);

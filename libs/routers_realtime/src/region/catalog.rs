@@ -16,11 +16,12 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::event::SHARD_PRECISION;
-use crate::protocol::ids::{GraphVersion, RegionId, token_safe};
+use crate::protocol::ids::{GraphVersion, RegionId};
 
 /// The horizontal-scale bounds the scheduler is allowed to run a region
 /// between. `min` guarantees a floor of warm matchers; `max` caps the burst.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Replicas {
     /// Fewest matcher replicas to keep serving the region (at least one).
     pub min: u32,
@@ -31,8 +32,9 @@ pub struct Replicas {
 /// One solve region: a graph snapshot, the cells it owns, and the operational
 /// envelope the orchestrator and autoscaler need to run it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Region {
-    /// The region's identity; also a NATS subject/stream token, so it must be [`token_safe`].
+    /// The region's identity; also a NATS subject/stream token.
     pub id: RegionId,
     /// The road-network snapshot this region's matchers load and solve against.
     pub graph: GraphVersion,
@@ -55,9 +57,10 @@ pub struct Region {
 
 /// A versioned snapshot of the whole region topology.
 ///
-/// Built by [`Catalog::parse`] or [`Catalog::load`], which validate the
-/// document and index it, so a `Catalog` in hand is always validated.
+/// Every deserialization route, including direct `toml` or `serde` use,
+/// validates the document and builds its indices before yielding a value.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "RawCatalog")]
 pub struct Catalog {
     /// The snapshot's monotonic version. Lets a consumer detect a newer mount.
     pub version: u64,
@@ -79,6 +82,17 @@ pub struct Catalog {
     fallback_index: HashMap<Geohash, Vec<usize>>,
 }
 
+/// The serialised catalog shape before cross-region validation and indexing.
+/// Keeping it private ensures only [`Catalog`] crosses the public boundary.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawCatalog {
+    version: u64,
+    routing_version: u64,
+    #[serde(default)]
+    regions: Vec<Region>,
+}
+
 /// Everything a catalog can be rejected for. Each variant names the offending
 /// region (and cell, where relevant) so an operator can find it in the source.
 #[derive(Debug, Error)]
@@ -98,13 +112,6 @@ pub enum CatalogError {
     /// Two regions shared an id, so it no longer identifies one region.
     #[error("region {0:?} is defined more than once")]
     DuplicateRegion(String),
-    /// An id or graph value held a character that is unsafe in a NATS subject.
-    #[error("region {region:?} has an unsafe {field} token {value:?} (needs [A-Za-z0-9_-]+)")]
-    UnsafeToken {
-        region: String,
-        field: &'static str,
-        value: String,
-    },
     /// A cell was not at [`SHARD_PRECISION`], so it names no shard artifact.
     #[error("region {region:?} cell {cell:?} has precision {precision}, expected {expected}")]
     CellPrecision {
@@ -141,9 +148,8 @@ impl Catalog {
     /// Parse and fully validate a catalog from TOML, building the lookup
     /// indices. The first [`CatalogError`] found is returned.
     pub fn parse(toml: &str) -> Result<Self, CatalogError> {
-        let mut catalog: Catalog = toml::from_str(toml)?;
-        catalog.validate_and_index()?;
-        Ok(catalog)
+        let raw: RawCatalog = toml::from_str(toml)?;
+        raw.try_into()
     }
 
     /// Read a catalog from `path` and [`parse`](Self::parse) it. An I/O failure
@@ -223,24 +229,27 @@ impl Catalog {
     }
 }
 
+impl TryFrom<RawCatalog> for Catalog {
+    type Error = CatalogError;
+
+    fn try_from(raw: RawCatalog) -> Result<Self, Self::Error> {
+        let mut catalog = Self {
+            version: raw.version,
+            routing_version: raw.routing_version,
+            regions: raw.regions,
+            region_index: HashMap::new(),
+            owner_index: HashMap::new(),
+            fallback_index: HashMap::new(),
+        };
+        catalog.validate_and_index()?;
+        Ok(catalog)
+    }
+}
+
 impl Region {
     /// Validate everything that depends only on this region in isolation.
     fn validate_shape(&self) -> Result<(), CatalogError> {
         let id = self.id.as_str();
-        if !token_safe(id) {
-            return Err(CatalogError::UnsafeToken {
-                region: id.to_owned(),
-                field: "id",
-                value: id.to_owned(),
-            });
-        }
-        if !token_safe(self.graph.as_str()) {
-            return Err(CatalogError::UnsafeToken {
-                region: id.to_owned(),
-                field: "graph",
-                value: self.graph.as_str().to_owned(),
-            });
-        }
         if self.coverage.is_empty() {
             return Err(CatalogError::EmptyCoverage(id.to_owned()));
         }
@@ -432,43 +441,6 @@ replicas = { min = 1, max = 1 }
 freshness_budget_ms = 1000
 "#,
                 want: |e| matches!(e, CatalogError::DuplicateRegion(id) if id == "dup"),
-            },
-            Case {
-                label: "unsafe id token",
-                toml: r#"
-version = 1
-routing_version = 1
-[[regions]]
-id = "bad.id"
-graph = "g"
-coverage = ["r3gq"]
-lanes = 1
-resource_class = "c"
-replicas = { min = 1, max = 1 }
-freshness_budget_ms = 1000
-"#,
-                want: |e| {
-                    matches!(
-                        e,
-                        CatalogError::UnsafeToken { field: "id", value, .. } if value == "bad.id"
-                    )
-                },
-            },
-            Case {
-                label: "unsafe graph token",
-                toml: r#"
-version = 1
-routing_version = 1
-[[regions]]
-id = "r"
-graph = "bad graph"
-coverage = ["r3gq"]
-lanes = 1
-resource_class = "c"
-replicas = { min = 1, max = 1 }
-freshness_budget_ms = 1000
-"#,
-                want: |e| matches!(e, CatalogError::UnsafeToken { field: "graph", .. }),
             },
             Case {
                 label: "cell precision mismatch",
@@ -747,6 +719,57 @@ freshness_budget_ms = 1000
         let rendered = toml::to_string(&catalog).expect("catalog should serialise");
         let reparsed = Catalog::parse(&rendered).expect("re-rendered catalog should parse");
         assert_eq!(catalog, reparsed);
+    }
+
+    #[test]
+    fn direct_deserialization_validates_indexes_and_round_trips() {
+        let catalog: Catalog = toml::from_str(EXAMPLE).expect("direct TOML deserialization");
+        assert_eq!(
+            catalog
+                .region(&region_id("syd-east"))
+                .map(|region| region.graph.as_str()),
+            Some("sydney-2026-09-01")
+        );
+        assert_eq!(
+            catalog
+                .owner_of(&cell("r3gq"))
+                .map(|region| region.id.as_str()),
+            Some("syd-east")
+        );
+        assert_eq!(
+            catalog
+                .fallbacks_for(&cell("r3gw"))
+                .map(|region| region.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["syd-east"]
+        );
+
+        let bytes = postcard::to_allocvec(&catalog).expect("catalog serializes");
+        let decoded: Catalog = postcard::from_bytes(&bytes).expect("catalog deserializes");
+        assert_eq!(decoded, catalog);
+        assert_eq!(
+            decoded
+                .owner_of(&cell("r3gr"))
+                .map(|region| region.id.as_str()),
+            Some("syd-east")
+        );
+    }
+
+    #[test]
+    fn direct_deserialization_rejects_invalid_catalogs() {
+        let invalid_token = EXAMPLE.replace("id = \"syd-east\"", "id = \"bad.id\"");
+        assert!(toml::from_str::<Catalog>(&invalid_token).is_err());
+
+        let unknown_top_level = format!("{EXAMPLE}\nunexpected = true\n");
+        assert!(toml::from_str::<Catalog>(&unknown_top_level).is_err());
+
+        let unknown_region_field = EXAMPLE.replace("lanes = 1", "lanes = 1\nunexpected = true");
+        assert!(toml::from_str::<Catalog>(&unknown_region_field).is_err());
+
+        let mut raw: RawCatalog = toml::from_str(EXAMPLE).expect("raw catalog parses for attack");
+        raw.regions[0].lanes = 0;
+        let bytes = postcard::to_allocvec(&raw).expect("raw catalog serializes");
+        assert!(postcard::from_bytes::<Catalog>(&bytes).is_err());
     }
 
     /// A unique scratch path, namespaced by pid and a counter so parallel tests never collide.

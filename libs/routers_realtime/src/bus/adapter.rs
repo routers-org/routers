@@ -2,7 +2,7 @@
 //!
 //! A transport-only seam so the same calls drive the in-memory fake in
 //! [`super::memory`] under test and JetStream in production. Futures are not
-//! `Send` — callers own them on a single task, so [`async_fn_in_trait`] is fine.
+//! `Send` — callers own them on a single task, so native `async fn` in traits is fine.
 #![allow(async_fn_in_trait)]
 
 use core::time::Duration;

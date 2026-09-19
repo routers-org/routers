@@ -262,7 +262,7 @@ impl Metrics {
         }
     }
 
-    /// Bucket a partition into one of [`PARTITION_CLASSES`] bounded classes.
+    /// Bucket a partition into one of the bounded partition classes.
     #[must_use]
     pub fn partition_class(partition: u16) -> String {
         format!("c{}", partition % PARTITION_CLASSES)

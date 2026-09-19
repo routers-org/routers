@@ -13,7 +13,6 @@ use async_nats::jetstream::stream::Stream as JetStream;
 use async_nats::{ConnectOptions, ServerAddr};
 use clap::Parser;
 use log::info;
-use url::Url;
 
 use routers_codec::osm::OsmEntryId;
 use routers_realtime::bus::adapter::Source;
@@ -23,6 +22,7 @@ use routers_realtime::materializer::{ValkeySink, consumer};
 use routers_realtime::metrics::Metrics;
 use routers_realtime::partition::PARTITIONS;
 use routers_realtime::protocol::output::CommittedOutput;
+use routers_realtime::secret::SecretUrl;
 use routers_realtime::topology;
 
 /// The entry type the fleet solves against.
@@ -53,12 +53,12 @@ fn parse_partitions(spec: &str) -> Result<RangeInclusive<u64>, String> {
 struct Args {
     /// URL of the NATS server.
     #[arg(short, env, long)]
-    nats: Url,
+    nats: SecretUrl,
 
     /// Valkey primaries, comma-separated. Order is irrelevant (rendezvous hash),
     /// but every process touching the served view must be given the same set.
     #[arg(short, env, long, value_delimiter = ',')]
-    valkey: Vec<Url>,
+    valkey: Vec<SecretUrl>,
 
     /// The partitions to materialise, as an inclusive range ("0-255"); omitted,
     /// the consumer tails the whole output plane.
@@ -112,7 +112,8 @@ async fn main() -> anyhow::Result<()> {
 
     let shutdown = Shutdown::from_signals();
 
-    let nats_url = ServerAddr::from_url(args.nats).context("could not create NATS url")?;
+    let nats_url =
+        ServerAddr::from_url(args.nats.connection_url()).context("could not create NATS url")?;
     let client = ConnectOptions::new()
         .name("MaterializerService")
         .connect(nats_url)

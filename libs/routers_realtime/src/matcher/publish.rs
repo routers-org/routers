@@ -29,7 +29,7 @@ pub struct PublishConfig {
     /// the first attempt, so `1` means "try once, never retry".
     pub attempts: u32,
     /// The first inter-attempt pause. Doubles after each ambiguous attempt,
-    /// capped at [`BACKOFF_CAP`].
+    /// capped at a fixed two-second maximum.
     pub backoff: Duration,
     /// The redelivery hint attached to the job's `nak`: how long the broker holds
     /// the job back before offering it again.
@@ -173,7 +173,7 @@ impl<P> ResultPublisher<P> {
 
 #[cfg(test)]
 mod tests {
-    use super::{PublishConfig, PublishFailure, Published, ResultPublisher};
+    use super::{PublishConfig, PublishFailure, ResultPublisher};
 
     use alloc::sync::Arc;
     use core::time::Duration;

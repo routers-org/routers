@@ -2,7 +2,7 @@
 //!
 //! One orchestrator process owns a disjoint slice of the vehicle partition
 //! space and runs one
-//! [`PartitionWorker`](routers_realtime::orchestrator::worker::PartitionWorker)
+//! [`PartitionWorker`]
 //! per owned partition, with no cross-partition sharing. This binary is only
 //! wiring: connect NATS and Valkey, reconcile every plane before any worker
 //! reads, recover each partition, and spawn the workers.
@@ -18,7 +18,6 @@ use anyhow::{Context as _, Result};
 use async_nats::{ConnectOptions, ServerAddr, jetstream};
 use clap::Parser;
 use tracing::{error, info};
-use url::Url;
 
 use routers_codec::osm::OsmEntryId;
 use routers_realtime::bus::jetstream::{JetStreamPublisher, JetStreamSource};
@@ -36,6 +35,7 @@ use routers_realtime::protocol::job::SolveJob;
 use routers_realtime::protocol::output::CommittedOutput;
 use routers_realtime::protocol::result::SolveResult;
 use routers_realtime::region::catalog::Catalog;
+use routers_realtime::secret::SecretUrl;
 use routers_realtime::store::valkey::{ValkeyCheckpointStore, ValkeyConfig};
 use routers_realtime::topology::{
     JobsConfig, OutputConfig, RawConfig, ResultsConfig, ensure_job_stream, ensure_output_stream,
@@ -69,11 +69,11 @@ fn parse_partitions(s: &str) -> core::result::Result<RangeInclusive<u64>, String
 struct Args {
     /// URL of the NATS server.
     #[arg(short, env, long)]
-    nats: Url,
+    nats: SecretUrl,
 
     /// Valkey primaries, comma-separated; every process touching the checkpoints must be given the same set.
     #[arg(short, env, long, value_delimiter = ',')]
-    valkey: Vec<Url>,
+    valkey: Vec<SecretUrl>,
 
     /// Path to the region catalog (TOML): regions, graph versions, and cell coverage.
     #[arg(short, env, long)]
@@ -247,7 +247,8 @@ async fn main() -> Result<()> {
     let shutdown = Shutdown::from_signals();
 
     // The context is cloned per publisher, sharing one multiplexed connection.
-    let nats_url = ServerAddr::from_url(args.nats.clone()).context("could not create NATS url")?;
+    let nats_url =
+        ServerAddr::from_url(args.nats.connection_url()).context("could not create NATS url")?;
     let client = ConnectOptions::new()
         .name("OrchestratorService")
         .connect(nats_url)

@@ -16,7 +16,6 @@ use async_nats::jetstream::{
     self,
     stream::{Config, DiscardPolicy, RetentionPolicy, StorageType},
 };
-use chrono::{DateTime, TimeDelta, Utc};
 use thiserror::Error;
 use web_time::SystemTime;
 
@@ -40,24 +39,6 @@ const INITIAL_BACKOFF: Duration = Duration::from_millis(50);
 /// The ceiling on the exponential publish backoff.
 const MAX_BACKOFF: Duration = Duration::from_secs(5);
 
-/// How stale or how early an observation may be to still be admitted.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct IngressLimits {
-    /// The oldest an observation may be; older is [`IngressError::TooOld`].
-    pub max_age: Duration,
-    /// How far into the future a timestamp may sit before [`IngressError::InFuture`].
-    pub max_ahead: Duration,
-}
-
-impl Default for IngressLimits {
-    fn default() -> Self {
-        Self {
-            max_age: Duration::from_secs(7 * 24 * 60 * 60),
-            max_ahead: Duration::from_secs(5 * 60),
-        }
-    }
-}
-
 /// Why an observation was not admitted. Validation variants are data faults;
 /// [`IngressError::Publish`] is an infrastructure fault after retries.
 #[derive(Debug, Error)]
@@ -74,18 +55,6 @@ pub enum IngressError {
     /// The longitude fell outside `[-180, 180]` degrees.
     #[error("longitude {0} is outside [-180, 180]")]
     LongitudeOutOfRange(f64),
-    /// The observation was older than [`IngressLimits::max_age`].
-    #[error("observation is {age:?} old, past the age limit")]
-    TooOld {
-        /// How far in the past the observation's timestamp was.
-        age: Duration,
-    },
-    /// The timestamp was more than [`IngressLimits::max_ahead`] into the future.
-    #[error("observation timestamp is {ahead:?} in the future, past the skew limit")]
-    InFuture {
-        /// How far in the future the observation's timestamp was.
-        ahead: Duration,
-    },
     /// The broker never acknowledged the publish, after every retry.
     #[error("publish was not acknowledged after retries")]
     Publish(#[source] anyhow::Error),
@@ -99,8 +68,6 @@ impl IngressError {
             IngressError::NonFinite => "non_finite",
             IngressError::LatitudeOutOfRange(_) => "latitude_out_of_range",
             IngressError::LongitudeOutOfRange(_) => "longitude_out_of_range",
-            IngressError::TooOld { .. } => "too_old",
-            IngressError::InFuture { .. } => "in_future",
             IngressError::Publish(_) => "publish",
         }
     }
@@ -111,13 +78,11 @@ impl IngressError {
     }
 }
 
-/// Check one observation against the admission rules, using `now` as the
-/// reference clock and `limits` as the age/skew window.
-pub fn validate(
-    payload: &Payload,
-    now: DateTime<Utc>,
-    limits: &IngressLimits,
-) -> Result<(), IngressError> {
+/// Check one observation against the structural admission rules.
+///
+/// Event time is deliberately not compared with this process's wall clock:
+/// distributed producers and replay sources do not share a trustworthy clock.
+pub fn validate(payload: &Payload) -> Result<(), IngressError> {
     if payload.vehicle_id.0 == 0 {
         return Err(IngressError::ZeroVehicle);
     }
@@ -132,21 +97,6 @@ pub fn validate(
     }
     if !(-LONGITUDE_LIMIT..=LONGITUDE_LIMIT).contains(&longitude) {
         return Err(IngressError::LongitudeOutOfRange(longitude));
-    }
-
-    // A limit too large for `TimeDelta` saturates to "never reject on time".
-    let max_age = TimeDelta::from_std(limits.max_age).unwrap_or(TimeDelta::MAX);
-    let max_ahead = TimeDelta::from_std(limits.max_ahead).unwrap_or(TimeDelta::MAX);
-    let delta = now - payload.timestamp; // positive => in the past
-    if delta > max_age {
-        return Err(IngressError::TooOld {
-            age: delta.to_std().unwrap_or(Duration::ZERO),
-        });
-    }
-    if -delta > max_ahead {
-        return Err(IngressError::InFuture {
-            ahead: (-delta).to_std().unwrap_or(Duration::ZERO),
-        });
     }
 
     Ok(())
@@ -181,18 +131,16 @@ pub struct Ingress {
     js: jetstream::Context,
     /// The isolated run token, or `None` for the live journal.
     run: Option<String>,
-    limits: IngressLimits,
     publish_timeout: Duration,
     attempts: u32,
 }
 
 impl Ingress {
     /// An ingress onto the live raw journal (canonical subjects and streams).
-    pub fn live(js: jetstream::Context, limits: IngressLimits) -> Self {
+    pub fn live(js: jetstream::Context) -> Self {
         Self {
             js,
             run: None,
-            limits,
             publish_timeout: DEFAULT_PUBLISH_TIMEOUT,
             attempts: DEFAULT_ATTEMPTS,
         }
@@ -201,11 +149,7 @@ impl Ingress {
     /// An ingress onto an isolated replay journal named `run`.
     ///
     /// `run` must be NATS-safe; an unsafe or empty token is rejected.
-    pub fn isolated(
-        js: jetstream::Context,
-        run: &str,
-        limits: IngressLimits,
-    ) -> Result<Self, IdError> {
+    pub fn isolated(js: jetstream::Context, run: &str) -> Result<Self, IdError> {
         if run.is_empty() {
             return Err(IdError::Empty);
         }
@@ -215,7 +159,6 @@ impl Ingress {
         Ok(Self {
             js,
             run: Some(run.to_owned()),
-            limits,
             publish_timeout: DEFAULT_PUBLISH_TIMEOUT,
             attempts: DEFAULT_ATTEMPTS,
         })
@@ -231,11 +174,6 @@ impl Ingress {
     pub fn with_attempts(mut self, attempts: u32) -> Self {
         self.attempts = attempts.max(1);
         self
-    }
-
-    /// The admission limits this ingress applies.
-    pub fn limits(&self) -> &IngressLimits {
-        &self.limits
     }
 
     /// The subject one partition's observations publish to, prefixed for an isolated run.
@@ -299,8 +237,7 @@ impl Ingress {
         payload: &Payload,
         received_at: SystemTime,
     ) -> Result<PublishAck, IngressError> {
-        // The receipt time is this observation's clock; validate against it.
-        validate(payload, DateTime::<Utc>::from(received_at), &self.limits)?;
+        validate(payload)?;
 
         let subject = self.subject(partition::partition_of(payload.vehicle_id));
         let id = msg_id(payload);
@@ -369,7 +306,7 @@ fn prefixed_raw_subject(run: Option<&str>, partition: u64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use chrono::TimeZone;
+    use chrono::{DateTime, TimeDelta, TimeZone, Utc};
     use geo::Point;
 
     use super::*;
@@ -393,17 +330,8 @@ mod tests {
 
     #[test]
     fn validation_table() {
-        let limits = IngressLimits::default();
-        let old = now() - TimeDelta::days(8); // past max_age (7d)
-        let future = now() + TimeDelta::minutes(6); // past max_ahead (5m)
-
-        let cases: [(&str, Payload, Option<&str>); 9] = [
+        let cases: [(&str, Payload, Option<&str>); 6] = [
             ("valid", valid(), None),
-            (
-                "valid at exact age boundary",
-                payload(42, 151.2093, -33.8688, now() - TimeDelta::days(7)),
-                None,
-            ),
             (
                 "zero vehicle",
                 payload(0, 151.2093, -33.8688, now()),
@@ -429,20 +357,10 @@ mod tests {
                 payload(42, -180.5, -33.8688, now()),
                 Some("longitude_out_of_range"),
             ),
-            (
-                "too old",
-                payload(42, 151.2093, -33.8688, old),
-                Some("too_old"),
-            ),
-            (
-                "in the future",
-                payload(42, 151.2093, -33.8688, future),
-                Some("in_future"),
-            ),
         ];
 
         for (label, event, expected) in cases {
-            let result = validate(&event, now(), &limits);
+            let result = validate(&event);
             match expected {
                 None => assert!(result.is_ok(), "{label}: expected accept, got {result:?}"),
                 Some(kind) => {
@@ -455,58 +373,25 @@ mod tests {
 
     #[test]
     fn validation_carries_the_offending_value() {
-        match validate(
-            &payload(42, 151.2093, 90.5, now()),
-            now(),
-            &IngressLimits::default(),
-        ) {
+        match validate(&payload(42, 151.2093, 90.5, now())) {
             Err(IngressError::LatitudeOutOfRange(lat)) => assert_eq!(lat, 90.5),
             other => panic!("expected LatitudeOutOfRange, got {other:?}"),
         }
-        match validate(
-            &payload(42, -181.0, -33.0, now()),
-            now(),
-            &IngressLimits::default(),
-        ) {
+        match validate(&payload(42, -181.0, -33.0, now())) {
             Err(IngressError::LongitudeOutOfRange(lon)) => assert_eq!(lon, -181.0),
             other => panic!("expected LongitudeOutOfRange, got {other:?}"),
         }
     }
 
     #[test]
-    fn validation_reports_how_stale_or_early() {
-        let limits = IngressLimits::default();
-        match validate(
-            &payload(42, 151.0, -33.0, now() - TimeDelta::days(10)),
-            now(),
-            &limits,
-        ) {
-            Err(IngressError::TooOld { age }) => {
-                assert_eq!(age, Duration::from_secs(10 * 24 * 60 * 60));
-            }
-            other => panic!("expected TooOld, got {other:?}"),
-        }
-        match validate(
-            &payload(42, 151.0, -33.0, now() + TimeDelta::minutes(10)),
-            now(),
-            &limits,
-        ) {
-            Err(IngressError::InFuture { ahead }) => {
-                assert_eq!(ahead, Duration::from_secs(10 * 60));
-            }
-            other => panic!("expected InFuture, got {other:?}"),
-        }
+    fn validation_accepts_arbitrary_wall_clock_age_and_skew() {
+        assert!(validate(&payload(42, 151.0, -33.0, now() - TimeDelta::days(10_000),)).is_ok());
+        assert!(validate(&payload(42, 151.0, -33.0, now() + TimeDelta::days(10_000),)).is_ok());
     }
 
     #[test]
     fn is_data_fault_separates_bad_rows_from_broker_failures() {
         assert!(IngressError::ZeroVehicle.is_data_fault());
-        assert!(
-            IngressError::TooOld {
-                age: Duration::ZERO
-            }
-            .is_data_fault()
-        );
         assert!(!IngressError::Publish(anyhow!("broker down")).is_data_fault());
     }
 

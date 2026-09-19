@@ -221,7 +221,7 @@ mod tests {
     use super::*;
     use crate::event::{MatchedLayer, VehicleId};
     use crate::orchestrator::admission::{Admission, AdmissionConfig};
-    use crate::orchestrator::scheduler::CheckpointState;
+    use crate::orchestrator::scheduler::{CheckpointState, JobReservation};
     use crate::partition::partition_of;
     use crate::protocol::ids::{
         GraphVersion, JobId, ObservationId, RegionId, Revision, SCHEMA_VERSION, SegmentId,
@@ -305,7 +305,9 @@ mod tests {
                 observation: self.obs(seq),
                 deadline: self.base + Duration::from_secs(30),
                 bytes: 100,
-                permit: self.admission.try_admit(&self.region, 100).unwrap(),
+                reservation: JobReservation::Admitted(
+                    self.admission.try_admit(&self.region, 100).unwrap(),
+                ),
                 dispatched: self.base,
             }
         }

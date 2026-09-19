@@ -4,10 +4,11 @@ version = "0.4.6"
 edition = "2024"
 description = "A Demonstration for Real-Time Map Matching"
 license = "GPL-3.0-or-later"
+readme = "README.md"
 
 [dependencies]
 # Internal Crates
-routers_codec = { workspace = true, version = "1.0.0", features = ["osm"] }
+routers_codec = { workspace = true, features = ["osm"] }
 routers_network = { workspace = true }
 routers_shard = { workspace = true }
 routers_transition = { workspace = true }
@@ -39,6 +40,7 @@ tokio = { workspace = true, features = ["signal", "sync", "time"] }
 itertools = { workspace = true }
 clap = { workspace = true, features = ["derive", "env"] }
 url = { workspace = true }
+secrecy = "0.10.3"
 geo = { workspace = true, features = ["serde"] }
 indicatif = "0.18.4"
 indicatif-log-bridge = "0.2.3"

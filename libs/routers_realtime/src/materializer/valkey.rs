@@ -13,13 +13,13 @@ use redis::aio::MultiplexedConnection;
 use routers_network::Entry;
 use serde::de::DeserializeOwned;
 use thiserror::Error;
-use url::Url;
 
 use crate::event::VehicleId;
 use crate::materializer::sink::{Applied, SegmentState, Sink, StoredLayer, merge, target_segment};
 use crate::partition::{fnv1a, mix};
 use crate::protocol::ids::{Revision, SegmentId};
 use crate::protocol::output::{CommittedOutput, OutputKind};
+use crate::secret::SecretUrl;
 
 /// Why a Valkey apply failed.
 #[derive(Debug, Error)]
@@ -44,11 +44,11 @@ struct Placement {
 }
 
 impl Placement {
-    fn new(urls: &[Url]) -> Self {
+    fn new(urls: &[SecretUrl]) -> Self {
         Self {
             seeds: urls
                 .iter()
-                .map(|url| fnv1a(url.as_str().as_bytes()))
+                .map(|url| fnv1a(url.placement_identity().as_bytes()))
                 .collect(),
         }
     }
@@ -82,6 +82,11 @@ fn finalized_field(segment: SegmentId) -> String {
     format!("finalized_through:{}", segment.0)
 }
 
+/// The metadata field holding the newest output revision applied to a segment.
+fn last_revision_field(segment: SegmentId) -> String {
+    format!("last_revision:{}", segment.0)
+}
+
 /// A fleet of independent Valkey primaries backing the materialised view,
 /// addressed by vehicle. Cloning shares the underlying sockets.
 #[derive(Clone)]
@@ -94,13 +99,13 @@ impl ValkeySink {
     /// Connect to every primary in `urls`. The set is unordered, but every
     /// process that touches the view must be handed the same set, or a vehicle's
     /// history splits across primaries.
-    pub async fn connect(urls: &[Url]) -> Result<Self, ValkeyError> {
+    pub async fn connect(urls: &[SecretUrl]) -> Result<Self, ValkeyError> {
         if urls.is_empty() {
             return Err(ValkeyError::NoEndpoints);
         }
         let mut conns = Vec::with_capacity(urls.len());
         for url in urls {
-            let conn = redis::Client::open(url.clone())?
+            let conn = redis::Client::open(url.connection_url())?
                 .get_multiplexed_async_connection()
                 .await?;
             conns.push(conn);
@@ -123,21 +128,29 @@ async fn load_layers<E: Entry + DeserializeOwned>(
     conn: &mut MultiplexedConnection,
     vehicle: VehicleId,
     segment: SegmentId,
-) -> Result<BTreeMap<i64, StoredLayer<E>>, ValkeyError> {
+) -> Result<(BTreeMap<i64, StoredLayer<E>>, BTreeMap<i64, Revision>), ValkeyError> {
     let raw: std::collections::HashMap<String, Vec<u8>> = redis::cmd("HGETALL")
         .arg(segment_key(vehicle, segment))
         .query_async(conn)
         .await?;
 
     let mut layers = BTreeMap::new();
+    let mut retractions = BTreeMap::new();
     for (field, bytes) in raw {
-        // Skip fields that are not timestamps rather than fail.
+        if let Some(timestamp) = field
+            .strip_prefix("retracted:")
+            .and_then(|value| value.parse::<i64>().ok())
+        {
+            retractions.insert(timestamp, postcard::from_bytes(&bytes)?);
+            continue;
+        }
+        // Skip fields that are neither layers nor recognised tombstones.
         let Ok(timestamp) = field.parse::<i64>() else {
             continue;
         };
         layers.insert(timestamp, postcard::from_bytes(&bytes)?);
     }
-    Ok(layers)
+    Ok((layers, retractions))
 }
 
 /// The vehicle's metadata HASH, read as plain strings.
@@ -167,15 +180,30 @@ impl<E: Entry + DeserializeOwned> Sink<E> for ValkeySink {
         let segment = target_segment(output);
         let mut conn = self.connection(vehicle);
 
-        let layers = load_layers::<E>(&mut conn, vehicle, segment).await?;
+        let (layers, retractions) = load_layers::<E>(&mut conn, vehicle, segment).await?;
         let meta = read_meta(&mut conn, vehicle).await?;
         let had_current = meta.contains_key("current_segment");
+        let current_segment = meta
+            .get("current_segment")
+            .and_then(|value| value.parse::<u64>().ok())
+            .map(SegmentId);
+        let current_revision = meta
+            .get("current_revision")
+            .and_then(|value| value.parse::<u64>().ok())
+            .map(Revision);
         let mut state = SegmentState {
             finalized_through: meta
                 .get(&finalized_field(segment))
                 .and_then(|value| value.parse::<i64>().ok()),
-            last_revision: highest_revision(&layers),
+            last_revision: meta
+                .get(&last_revision_field(segment))
+                .and_then(|value| value.parse::<u64>().ok())
+                .map(Revision)
+                // Backward compatibility for hashes written before explicit
+                // revision metadata was introduced.
+                .or_else(|| highest_revision(&layers)),
             layers,
+            retractions,
         };
 
         // Snapshot the stored revisions so the write-back touches only changes.
@@ -185,6 +213,8 @@ impl<E: Entry + DeserializeOwned> Sink<E> for ValkeySink {
             .map(|(timestamp, stored)| (*timestamp, stored.revision))
             .collect();
         let before_finalized = state.finalized_through;
+        let before_revision = state.last_revision;
+        let before_retractions = state.retractions.clone();
 
         let applied = merge(&mut state, output);
 
@@ -210,6 +240,26 @@ impl<E: Entry + DeserializeOwned> Sink<E> for ValkeySink {
                 dirty = true;
             }
         }
+        for (timestamp, revision) in &state.retractions {
+            if before_retractions.get(timestamp) != Some(revision) {
+                let bytes = postcard::to_allocvec(revision)?;
+                pipe.cmd("HSET")
+                    .arg(&layer_key)
+                    .arg(format!("retracted:{timestamp}"))
+                    .arg(bytes)
+                    .ignore();
+                dirty = true;
+            }
+        }
+        for timestamp in before_retractions.keys() {
+            if !state.retractions.contains_key(timestamp) {
+                pipe.cmd("HDEL")
+                    .arg(&layer_key)
+                    .arg(format!("retracted:{timestamp}"))
+                    .ignore();
+                dirty = true;
+            }
+        }
         if state.finalized_through != before_finalized
             && let Some(through) = state.finalized_through
         {
@@ -220,12 +270,33 @@ impl<E: Entry + DeserializeOwned> Sink<E> for ValkeySink {
                 .ignore();
             dirty = true;
         }
-        // A reset moves the current segment; a vehicle's first output sets it.
-        if matches!(output.kind, OutputKind::Reset { .. }) || !had_current {
+        if state.last_revision != before_revision
+            && let Some(revision) = state.last_revision
+        {
+            pipe.cmd("HSET")
+                .arg(&meta_key)
+                .arg(last_revision_field(segment))
+                .arg(revision.0)
+                .ignore();
+            dirty = true;
+        }
+
+        // A reset moves the current segment only when it is not stale. Outputs
+        // in the current segment advance its revision even when they carry no
+        // layers, so a late reset cannot roll the vehicle backwards.
+        let reset = matches!(output.kind, OutputKind::Reset { .. });
+        let update_current = !had_current
+            || (reset && current_revision.is_none_or(|current| output.revision.0 >= current.0))
+            || (!reset
+                && current_segment == Some(segment)
+                && current_revision.is_none_or(|current| output.revision.0 > current.0));
+        if update_current {
             pipe.cmd("HSET")
                 .arg(&meta_key)
                 .arg("current_segment")
                 .arg(segment.0)
+                .arg("current_revision")
+                .arg(output.revision.0)
                 .ignore();
             dirty = true;
         }
@@ -247,12 +318,13 @@ mod tests {
         assert_eq!(segment_key(VehicleId(42), SegmentId(7)), "matched:{42}:7");
         assert_eq!(meta_key(VehicleId(42)), "matched:{42}:meta");
         assert_eq!(finalized_field(SegmentId(7)), "finalized_through:7");
+        assert_eq!(last_revision_field(SegmentId(7)), "last_revision:7");
     }
 
     #[test]
     fn placement_is_deterministic_and_order_independent() {
-        let urls: Vec<Url> = (0..8)
-            .map(|i| Url::parse(&format!("redis://valkey-{i:02}:6379")).unwrap())
+        let urls: Vec<SecretUrl> = (0..8)
+            .map(|i| format!("redis://valkey-{i:02}:6379").parse().unwrap())
             .collect();
         let mut reversed = urls.clone();
         reversed.reverse();

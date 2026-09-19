@@ -73,6 +73,16 @@ pub struct PendingObservation<H: AckHandle> {
     pub received: Instant,
 }
 
+/// Why an active scheduler entry does or does not own admission credit.
+#[derive(Debug)]
+pub enum JobReservation {
+    /// A published matcher job owns its normal admission permit.
+    Admitted(admission::Permit),
+    /// A worker-local terminal transition publishes no matcher job and needs no
+    /// admission credit.
+    SyntheticTerminal,
+}
+
 /// The single logical solve a vehicle has in flight.
 ///
 /// It owns the [`admission::Permit`], released when the job is dropped on
@@ -89,8 +99,8 @@ pub struct ActiveJob {
     pub deadline: Instant,
     /// The job's encoded size in bytes — what the admission permit reserved.
     pub bytes: u64,
-    /// The admission reservation held for the lifetime of the job.
-    pub permit: admission::Permit,
+    /// The admission state held for the lifetime of this scheduler entry.
+    pub reservation: JobReservation,
     /// When the job was dispatched — used to measure solve latency.
     pub dispatched: Instant,
 }
@@ -674,7 +684,9 @@ mod tests {
                 },
                 deadline: now + Duration::from_secs(30),
                 bytes: 100,
-                permit: self.admission.try_admit(&self.region, 100).unwrap(),
+                reservation: JobReservation::Admitted(
+                    self.admission.try_admit(&self.region, 100).unwrap(),
+                ),
                 dispatched: now,
             }
         }

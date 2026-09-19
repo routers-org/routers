@@ -24,13 +24,14 @@ use polars::prelude::*;
 use routers_realtime::{
     bus,
     event::{Payload, VehicleId},
-    ingress::{Ingress, IngressLimits},
-    partition, topology,
+    ingress::Ingress,
+    partition,
+    secret::SecretUrl,
+    topology,
 };
 use tokio::sync::mpsc;
 use tokio::task::{JoinError, JoinSet};
 use tokio::time::Instant;
-use url::Url;
 
 /// Bounded depth of each lane's hand-off channel, so a stalled broker back-pressures the walker rather than buffering the whole file.
 const LANE_CHANNEL_CAPACITY: usize = 1024;
@@ -44,7 +45,7 @@ struct Args {
 
     /// The URL of the NATS server
     #[arg(short, env, long)]
-    nats: Url,
+    nats: SecretUrl,
 
     /// The replay speed, as a multiplier of the original event rate.
     /// Any negative, or zero-value will default to FLOOD mode, where events are published as fast as possible.
@@ -69,14 +70,6 @@ struct Args {
     /// Replay into an isolated run (subjects/streams prefixed `replay.<run>.`); `<run>` must be NATS-safe (`[A-Za-z0-9_-]+`).
     #[arg(long, env = "REPLAY_ISOLATED")]
     isolated: Option<String>,
-
-    /// Reject observations older than this before publishing (humantime, e.g. `7days`). Defaults to `IngressLimits::default()` (7 days).
-    #[arg(long, env, value_parser = humantime::parse_duration)]
-    max_age: Option<Duration>,
-
-    /// Reject observations more than this far in the future (humantime, e.g. `5min`); guards clock skew. Defaults to 5 minutes.
-    #[arg(long, env, value_parser = humantime::parse_duration)]
-    max_ahead: Option<Duration>,
 }
 
 // 2026-04-01 03:40:02 UTC, or 2026-04-01 03:40:02.123456 UTC
@@ -119,24 +112,18 @@ async fn main() -> anyhow::Result<()> {
 
     let client = ConnectOptions::new()
         .name("ReplayService")
-        .connect(ServerAddr::from_url(args.nats)?)
+        .connect(ServerAddr::from_url(args.nats.connection_url())?)
         .await?;
 
     let context = jetstream::new(client);
 
-    let defaults = IngressLimits::default();
-    let limits = IngressLimits {
-        max_age: args.max_age.unwrap_or(defaults.max_age),
-        max_ahead: args.max_ahead.unwrap_or(defaults.max_ahead),
-    };
-
     let ingress = match &args.isolated {
         Some(run) => {
             info!("isolated replay run: {run:?}");
-            Ingress::isolated(context, run, limits)
+            Ingress::isolated(context, run)
                 .with_context(|| format!("invalid --isolated run token {run:?}"))?
         }
-        None => Ingress::live(context, limits),
+        None => Ingress::live(context),
     };
 
     let raw_cfg = topology::RawConfig {
@@ -302,7 +289,7 @@ struct LaneReport {
     published: u64,
     /// Of `published`, those the broker collapsed onto an earlier identical send.
     duplicates: u64,
-    /// Rejected rows, keyed by the fixed [`IngressError::kind`] label.
+    /// Rejected rows, keyed by the fixed `IngressError::kind` label.
     rejected: BTreeMap<&'static str, u64>,
 }
 

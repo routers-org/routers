@@ -24,12 +24,14 @@ use crate::metrics::Metrics;
 use crate::orchestrator::admission::{Admission, Waiting};
 use crate::orchestrator::commit::{self, CommitConfig, CommitError, Committer, Decision};
 use crate::orchestrator::deadline::{self, DeadlineConfig, Deadlines, Expiry};
-use crate::orchestrator::dispatch::{DispatchConfig, DispatchError, Dispatcher};
+use crate::orchestrator::dispatch::{
+    DispatchConfig, DispatchError, Dispatcher, TimestampRegression, timestamp_regression,
+};
 use crate::orchestrator::frontier::{FrontierConfig, FrontierTracker};
 use crate::orchestrator::reader::{RawDisposition, RawEnvelope, RawReader, SuppressReason};
 use crate::orchestrator::recovery::{RecoveryReport, restore_vehicle};
 use crate::orchestrator::scheduler::{
-    ActiveJob, CheckpointState, Scheduler, SchedulerConfig, VehicleState,
+    ActiveJob, CheckpointState, JobReservation, Scheduler, SchedulerConfig, VehicleState,
 };
 use crate::orchestrator::validate::{self, QuarantineReason, RejectReason, Verdict};
 use crate::protocol::ids::{GraphVersion, RegionId, Revision, SCHEMA_VERSION, SegmentId};
@@ -591,6 +593,15 @@ where
         }
 
         let checkpoint = self.scheduler.checkpoint(vehicle).present().cloned();
+        let regression = self
+            .scheduler
+            .head(vehicle)
+            .and_then(|head| timestamp_regression(checkpoint.as_ref(), head.id, &head.payload));
+        if let Some(regression) = regression {
+            self.commit_timestamp_regression(vehicle, checkpoint.as_ref(), regression)
+                .await;
+            return DispatchOutcome::Done;
+        }
         let head_point = self
             .scheduler
             .head(vehicle)
@@ -680,6 +691,11 @@ where
                     .insert(vehicle, self.admission.hold(&resolution.region));
                 DispatchOutcome::Held
             }
+            Err(DispatchError::TimestampRegression(regression)) => {
+                self.commit_timestamp_regression(vehicle, checkpoint.as_ref(), regression)
+                    .await;
+                DispatchOutcome::Done
+            }
             Err(error) => {
                 warn!(vehicle = vehicle.0, %error, "dispatch failed; will retry");
                 self.held
@@ -687,6 +703,35 @@ where
                 DispatchOutcome::Held
             }
         }
+    }
+
+    /// Durably advance past a newer raw sequence whose event time does not
+    /// advance this vehicle's committed origin. No matcher job is published.
+    async fn commit_timestamp_regression(
+        &mut self,
+        vehicle: VehicleId,
+        checkpoint: Option<&VehicleCheckpoint<E>>,
+        regression: TimestampRegression,
+    ) {
+        let Some(checkpoint) = checkpoint else {
+            debug_assert!(false, "a timestamp regression requires a checkpoint");
+            return;
+        };
+        debug!(
+            vehicle = vehicle.0,
+            committed_timestamp = regression.committed,
+            incoming_timestamp = regression.incoming,
+            "committing timestamp-regression terminal"
+        );
+        self.commit_local_terminal(
+            vehicle,
+            checkpoint.region.clone(),
+            checkpoint.graph.clone(),
+            Some(checkpoint),
+            TerminalReason::TimestampRegression,
+            JobReservation::SyntheticTerminal,
+        )
+        .await;
     }
 
     /// Commit `decision` for `vehicle` and advance past its head. The single
@@ -833,21 +878,13 @@ where
 
     /// Commit an `UnsupportedCoverage` terminal for a vehicle no region serves.
     ///
-    /// A synthetic zero-byte permit and job stand in so the scheduler can advance
-    /// past the head; the permit is released on every exit path.
+    /// A synthetic job stands in so the scheduler can advance past the head.
     async fn commit_unserved(
         &mut self,
         vehicle: VehicleId,
         checkpoint: Option<&VehicleCheckpoint<E>>,
         cell: String,
     ) {
-        let now = Instant::now();
-        let head_obs = self
-            .scheduler
-            .head(vehicle)
-            .expect("an eligible vehicle has a head")
-            .id;
-
         let (region, graph) = match checkpoint {
             Some(cp) => (cp.region.clone(), cp.graph.clone()),
             None => match self.catalog.regions.first() {
@@ -862,7 +899,34 @@ where
             warn!(vehicle = vehicle.0, %cell, "unserved cell and admission full; cannot advance");
             return;
         };
+        debug!(vehicle = vehicle.0, %cell, "committing unsupported-coverage terminal");
+        self.commit_local_terminal(
+            vehicle,
+            region,
+            graph,
+            checkpoint,
+            TerminalReason::UnsupportedCoverage,
+            JobReservation::Admitted(permit),
+        )
+        .await;
+    }
 
+    /// Install a worker-local job and commit its terminal decision.
+    async fn commit_local_terminal(
+        &mut self,
+        vehicle: VehicleId,
+        region: RegionId,
+        graph: GraphVersion,
+        checkpoint: Option<&VehicleCheckpoint<E>>,
+        reason: TerminalReason,
+        reservation: JobReservation,
+    ) {
+        let now = Instant::now();
+        let head_obs = self
+            .scheduler
+            .head(vehicle)
+            .expect("an eligible vehicle has a head")
+            .id;
         let segment = checkpoint.map_or(SegmentId::from(head_obs), |cp| cp.segment);
         let base = checkpoint.map(|cp| BaseState {
             revision: cp.revision,
@@ -897,7 +961,7 @@ where
             observation: head_obs,
             deadline: now,
             bytes: 0,
-            permit,
+            reservation,
             dispatched: now,
         };
         if self.scheduler.activate(vehicle, job).is_err() {
@@ -906,11 +970,10 @@ where
         }
         self.pending_reset.remove(&vehicle);
 
-        debug!(vehicle = vehicle.0, %cell, "committing unsupported-coverage terminal");
         let decision = Decision::Terminal {
             job: job_id,
             identity,
-            reason: TerminalReason::UnsupportedCoverage,
+            reason,
             closes_segment: false,
             segment,
         };

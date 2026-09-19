@@ -2,7 +2,7 @@
 //! implement.
 //!
 //! Several independent consumers apply a
-//! [`CommittedOutput`](crate::protocol::output::CommittedOutput), so the decision
+//! [`CommittedOutput`], so the decision
 //! logic lives here as one pure, idempotent function, [`merge`]. Idempotence lets
 //! a sink acknowledge only after it has persisted: a replayed output resolves to
 //! [`Applied::Duplicate`].
@@ -71,6 +71,9 @@ pub struct SegmentState<E: Entry> {
     pub finalized_through: Option<i64>,
     /// The highest revision applied to this segment, for observability.
     pub last_revision: Option<Revision>,
+    /// Retraction revisions by timestamp. Tombstones prevent a late matched
+    /// output from resurrecting a layer removed by a newer commit.
+    pub retractions: BTreeMap<i64, Revision>,
 }
 
 // Manual `Default` so it does not demand `E: Default`.
@@ -80,6 +83,7 @@ impl<E: Entry> Default for SegmentState<E> {
             layers: BTreeMap::new(),
             finalized_through: None,
             last_revision: None,
+            retractions: BTreeMap::new(),
         }
     }
 }
@@ -124,9 +128,16 @@ pub fn merge<E: Entry>(state: &mut SegmentState<E>, output: &CommittedOutput<E>)
                     kept_final += 1;
                     continue;
                 }
+                // A newer (or equal) retraction wins even when delivery order
+                // is reversed. A genuinely newer match clears the tombstone.
+                let retracted_at = state.retractions.get(&timestamp).copied();
+                if !supersedes(revision, retracted_at) {
+                    continue;
+                }
                 let existing = state.layers.get(&timestamp).map(|stored| stored.revision);
                 if supersedes(revision, existing) {
                     let replacing = existing.is_some();
+                    state.retractions.remove(&timestamp);
                     state.layers.insert(
                         timestamp,
                         StoredLayer {
@@ -142,11 +153,20 @@ pub fn merge<E: Entry>(state: &mut SegmentState<E>, output: &CommittedOutput<E>)
                 }
             }
 
-            if let Some(through) = *finalized_through {
+            let newest = state
+                .last_revision
+                .is_none_or(|current| revision.0 >= current.0);
+            if newest && let Some(through) = *finalized_through {
                 state.finalized_through = Some(match state.finalized_through {
                     Some(existing) if existing >= through => existing,
                     _ => through,
                 });
+                // Once a timestamp is final, the watermark itself prevents a
+                // late layer from being installed, so its tombstone no longer
+                // carries information and can be discarded.
+                state
+                    .retractions
+                    .retain(|timestamp, _| !is_final(*timestamp, state.finalized_through));
             }
 
             state.last_revision = Some(match state.last_revision {
@@ -171,19 +191,55 @@ pub fn merge<E: Entry>(state: &mut SegmentState<E>, output: &CommittedOutput<E>)
             let watermark = state.finalized_through;
             let mut removed = 0usize;
             for &timestamp in timestamps {
-                // Final layers survive a retraction; only refinable ones drop.
-                if !is_final(timestamp, watermark) && state.layers.remove(&timestamp).is_some() {
-                    removed += 1;
+                // Final layers survive a retraction. A retraction may only
+                // remove a layer produced by an older revision; this also
+                // makes replay safe if the matched output from the same commit
+                // happened to arrive first.
+                let retractable = state
+                    .layers
+                    .get(&timestamp)
+                    .is_some_and(|stored| stored.revision.0 < output.revision.0);
+                if !is_final(timestamp, watermark) {
+                    let tombstone_needed = state
+                        .layers
+                        .get(&timestamp)
+                        .is_none_or(|stored| stored.revision.0 < output.revision.0);
+                    if tombstone_needed {
+                        let existing = state.retractions.get(&timestamp).copied();
+                        if supersedes(output.revision, existing) {
+                            state.retractions.insert(timestamp, output.revision);
+                        }
+                    }
+                    if retractable {
+                        state.layers.remove(&timestamp);
+                        removed += 1;
+                    }
                 }
             }
+            state.last_revision = Some(match state.last_revision {
+                Some(current) if current.0 >= output.revision.0 => current,
+                _ => output.revision,
+            });
             Applied::Retracted { layers: removed }
         }
 
         // A terminal changes no layers; the segment stays as it is.
-        OutputKind::Terminal { .. } => Applied::Terminal,
+        OutputKind::Terminal { .. } => {
+            state.last_revision = Some(match state.last_revision {
+                Some(current) if current.0 >= output.revision.0 => current,
+                _ => output.revision,
+            });
+            Applied::Terminal
+        }
 
         // The new segment arrives empty and stays empty here.
-        OutputKind::Reset { .. } => Applied::SegmentOpened,
+        OutputKind::Reset { .. } => {
+            state.last_revision = Some(match state.last_revision {
+                Some(current) if current.0 >= output.revision.0 => current,
+                _ => output.revision,
+            });
+            Applied::SegmentOpened
+        }
     }
 }
 
@@ -195,6 +251,8 @@ pub struct VehicleMaterialized<E: Entry> {
     pub segments: BTreeMap<SegmentId, SegmentState<E>>,
     /// The segment new work belongs to (advanced only by a reset).
     pub current: SegmentId,
+    /// Highest revision that established or updated [`Self::current`].
+    pub current_revision: Option<Revision>,
 }
 
 impl<E: Entry> VehicleMaterialized<E> {
@@ -203,7 +261,11 @@ impl<E: Entry> VehicleMaterialized<E> {
     pub fn new(current: SegmentId) -> Self {
         let mut segments = BTreeMap::new();
         segments.insert(current, SegmentState::new());
-        Self { segments, current }
+        Self {
+            segments,
+            current,
+            current_revision: None,
+        }
     }
 
     /// Apply one output, routing it to the segment it belongs to. A reset makes
@@ -212,7 +274,19 @@ impl<E: Entry> VehicleMaterialized<E> {
     pub fn apply(&mut self, output: &CommittedOutput<E>) -> Applied {
         let segment = target_segment(output);
         if matches!(output.kind, OutputKind::Reset { .. }) {
-            self.current = segment;
+            if self
+                .current_revision
+                .is_none_or(|current| output.revision.0 >= current.0)
+            {
+                self.current = segment;
+                self.current_revision = Some(output.revision);
+            }
+        } else if segment == self.current
+            && self
+                .current_revision
+                .is_none_or(|current| output.revision.0 > current.0)
+        {
+            self.current_revision = Some(output.revision);
         }
         let state = self.segments.entry(segment).or_default();
         merge(state, output)
@@ -413,6 +487,7 @@ mod tests {
         );
         assert_eq!(merge(&mut state, &terminal), Applied::Terminal);
         assert_eq!(state.layers.len(), 1);
+        assert_eq!(state.last_revision, Some(Revision(6)));
     }
 
     #[test]
@@ -470,6 +545,120 @@ mod tests {
         );
         assert_eq!(vehicle.current, SegmentId(2));
         assert!(vehicle.segments[&SegmentId(1)].layers.contains_key(&50));
+    }
+
+    #[test]
+    fn stale_retraction_cannot_delete_a_newer_layer() {
+        let mut state = SegmentState::<E>::new();
+        merge(&mut state, &matched(7, 1, &[100], None));
+
+        let stale = output_of(
+            6,
+            1,
+            OutputKind::Retraction {
+                timestamps: vec![100],
+            },
+        );
+        assert_eq!(merge(&mut state, &stale), Applied::Retracted { layers: 0 });
+        assert_eq!(state.layers[&100].revision, Revision(7));
+        assert_eq!(state.last_revision, Some(Revision(7)));
+    }
+
+    #[test]
+    fn same_revision_retraction_cannot_delete_matched_output() {
+        let mut state = SegmentState::<E>::new();
+        merge(&mut state, &matched(7, 1, &[100], None));
+
+        let replayed = output_of(
+            7,
+            1,
+            OutputKind::Retraction {
+                timestamps: vec![100],
+            },
+        );
+        assert_eq!(
+            merge(&mut state, &replayed),
+            Applied::Retracted { layers: 0 }
+        );
+        assert!(state.layers.contains_key(&100));
+    }
+
+    #[test]
+    fn stale_reset_cannot_move_current_segment_backwards() {
+        let mut vehicle = VehicleMaterialized::<E>::new(SegmentId(1));
+        vehicle.apply(&matched(5, 1, &[100], None));
+        vehicle.apply(&output_of(
+            8,
+            1,
+            OutputKind::Reset {
+                reason: ResetReason::Gap,
+                new_segment: SegmentId(8),
+            },
+        ));
+        vehicle.apply(&output_of(
+            6,
+            1,
+            OutputKind::Reset {
+                reason: ResetReason::Operator,
+                new_segment: SegmentId(6),
+            },
+        ));
+
+        assert_eq!(vehicle.current, SegmentId(8));
+        assert_eq!(vehicle.current_revision, Some(Revision(8)));
+    }
+
+    #[test]
+    fn stale_matched_output_cannot_advance_finality() {
+        let mut state = SegmentState::<E>::new();
+        merge(&mut state, &matched(8, 1, &[300], Some(300)));
+
+        assert_eq!(
+            merge(&mut state, &matched(7, 1, &[400], Some(900))),
+            Applied::Inserted { layers: 1 }
+        );
+        assert_eq!(state.finalized_through, Some(300));
+        assert!(state.layers.contains_key(&400));
+    }
+
+    #[test]
+    fn newer_retraction_prevents_late_layer_resurrection() {
+        let mut state = SegmentState::<E>::new();
+        let retraction = output_of(
+            8,
+            1,
+            OutputKind::Retraction {
+                timestamps: vec![100],
+            },
+        );
+        merge(&mut state, &retraction);
+
+        assert_eq!(
+            merge(&mut state, &matched(7, 1, &[100], None)),
+            Applied::Duplicate
+        );
+        assert!(!state.layers.contains_key(&100));
+        assert_eq!(state.retractions[&100], Revision(8));
+    }
+
+    #[test]
+    fn finality_prunes_retraction_tombstones() {
+        let mut state = SegmentState::<E>::new();
+        merge(
+            &mut state,
+            &output_of(
+                8,
+                1,
+                OutputKind::Retraction {
+                    timestamps: vec![100],
+                },
+            ),
+        );
+
+        merge(&mut state, &matched(9, 1, &[200], Some(100)));
+
+        assert!(state.retractions.is_empty());
+        assert_eq!(state.finalized_through, Some(100));
     }
 
     #[test]
