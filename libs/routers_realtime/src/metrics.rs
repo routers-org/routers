@@ -56,6 +56,7 @@ pub struct Metrics {
     offered_observations: Counter<u64>,
     queued_observations: Counter<u64>,
     suppressed_observations: Counter<u64>,
+    deferred_observations: Counter<u64>,
     poison_observations: Counter<u64>,
 
     dispatch_held: Counter<u64>,
@@ -119,7 +120,11 @@ impl Metrics {
             .build();
         let suppressed_observations = meter
             .u64_counter("suppressed_observations")
-            .with_description("Valid observations suppressed before queueing (e.g. coalesced).")
+            .with_description("Valid observations acknowledged because durable state covers them.")
+            .build();
+        let deferred_observations = meter
+            .u64_counter("deferred_observations")
+            .with_description("Valid observations left broker-owned for later redelivery.")
             .build();
         let poison_observations = meter
             .u64_counter("poison_observations")
@@ -236,6 +241,7 @@ impl Metrics {
             offered_observations,
             queued_observations,
             suppressed_observations,
+            deferred_observations,
             poison_observations,
             dispatch_held,
             jobs_claimed,
@@ -282,6 +288,11 @@ impl Metrics {
     /// One valid observation was suppressed before queueing, by reason.
     pub fn suppressed(&self, reason: &str) {
         self.suppressed_observations.add(1, &[reason_attr(reason)]);
+    }
+
+    /// One valid observation remained broker-owned for later redelivery, by reason.
+    pub fn deferred(&self, reason: &str) {
+        self.deferred_observations.add(1, &[reason_attr(reason)]);
     }
 
     /// One unusable raw message was dropped, by reason.
@@ -598,7 +609,8 @@ mod tests {
 
         m.observed("c0");
         m.queued();
-        m.suppressed("coalesced");
+        m.suppressed("committed");
+        m.deferred("duplicate_owned");
         m.poison("bad-schema");
         m.held("syd");
         m.dispatched("syd", 0);
@@ -626,6 +638,7 @@ mod tests {
             "offered_observations",
             "queued_observations",
             "suppressed_observations",
+            "deferred_observations",
             "poison_observations",
             "dispatch_held",
             "jobs_claimed",

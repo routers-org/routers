@@ -694,7 +694,7 @@ mod tests {
         assert_eq!(partition_slot(7), "partition:7");
     }
 
-    // --- placement (carried from the legacy store) --------------------------
+    // --- placement ----------------------------------------------------------
 
     #[test]
     fn placement_is_deterministic() {

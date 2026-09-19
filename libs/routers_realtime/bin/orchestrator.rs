@@ -204,10 +204,10 @@ fn owned_partitions(args: &Args) -> Result<RangeInclusive<u64>> {
 fn worker_config(args: &Args, partition: u16) -> WorkerConfig {
     WorkerConfig {
         scheduler: SchedulerConfig {
-            parked_limit: args.parked_limit,
             idle_ttl: args.idle_ttl,
             ..SchedulerConfig::default()
         },
+        parked_limit: args.parked_limit,
         dispatch: dispatch_config(args),
         commit: CommitConfig::default(),
         grace: args.grace,
@@ -506,7 +506,7 @@ mod tests {
 
         let worker = worker_config(&parsed, 5);
         assert_eq!(worker.partition, 5);
-        assert_eq!(worker.scheduler.parked_limit, 9);
+        assert_eq!(worker.parked_limit, 9);
         assert_eq!(worker.scheduler.idle_ttl, Duration::from_secs(180));
         assert_eq!(worker.grace, Duration::from_secs(7));
         // The worker's mirror of the dispatch knobs matches the dispatcher's.

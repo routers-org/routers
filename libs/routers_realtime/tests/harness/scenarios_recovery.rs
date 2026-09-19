@@ -8,6 +8,7 @@
 //! [`crash`]: super::fixture::OrchestratorHandle::crash
 
 use super::fixture::*;
+use core::time::Duration;
 
 /// A crash after publish but before promote: recovery re-publishes (deduplicated)
 /// and promotes, so exactly one output survives and the checkpoint lands.
@@ -153,5 +154,77 @@ async fn shutdown_drains_and_leaves_recoverable_state() {
             .0
             .is_some(),
         "a checkpoint was committed",
+    );
+}
+
+/// A prepare failure leaves no durable commit. The worker must roll back and
+/// retry the same raw rather than treating an empty prepared slot as success.
+#[tokio::test(start_paused = true)]
+async fn prepare_failure_retries_without_acknowledging_undurable_raw() {
+    let fleet = Fleet::bent_road();
+    let vehicle = 1u64;
+    let partition = fleet.partition_of(vehicle);
+    fleet.store.fail_next(Op::Prepare);
+
+    let matcher = fleet.spawn_matcher(MatcherBehaviour::scripted_layer());
+    let orchestrator = fleet.spawn_orchestrator(partition);
+    let observation = fleet.ingest(vehicle, obs_ts(0), road_points()[0]).await;
+
+    fleet.settle().await;
+    let stats = orchestrator.stop().await;
+    matcher.stop().await;
+
+    assert_eq!(stats.committed, 1, "the retried decision became durable");
+    assert_eq!(stats.frontier, observation.sequence);
+    assert_eq!(published_outputs(&fleet.bus, partition).len(), 1);
+    let checkpoint = fleet
+        .store
+        .load(VehicleId(vehicle))
+        .await
+        .unwrap()
+        .0
+        .expect("checkpoint committed after retry");
+    assert_eq!(checkpoint.revision, Revision(observation.sequence));
+}
+
+/// An ack-wait copy arriving while the accepted result's promote is blocked
+/// must not retire the broker record before durability is proven.
+#[tokio::test(start_paused = true)]
+async fn duplicate_result_during_blocked_commit_is_not_acknowledged() {
+    let fleet = Fleet::bent_road().with_blocked_retry(Duration::from_secs(60));
+    let vehicle = 1u64;
+    let partition = fleet.partition_of(vehicle);
+    let result_subject = routers_realtime::topology::result_subject(u64::from(partition));
+    fleet.store.fail_next(Op::Promote);
+
+    let matcher = fleet.spawn_matcher(MatcherBehaviour::scripted_layer());
+    let orchestrator = fleet.spawn_orchestrator(partition);
+    fleet.ingest(vehicle, obs_ts(0), road_points()[0]).await;
+    advance_until(|| !published_outputs(&fleet.bus, partition).is_empty()).await;
+
+    fleet.redeliver_results(partition);
+    tokio::time::sleep(Duration::from_millis(1)).await;
+    assert_eq!(
+        fleet.bus.acked_count(&result_subject),
+        0,
+        "neither the retained original nor its ack-wait copy is acked",
+    );
+
+    orchestrator.crash();
+    matcher.stop().await;
+    let restarted = fleet.spawn_orchestrator(partition);
+    fleet.settle().await;
+    let _ = restarted.stop().await;
+
+    assert_eq!(published_outputs(&fleet.bus, partition).len(), 1);
+    assert!(
+        fleet
+            .store
+            .load(VehicleId(vehicle))
+            .await
+            .unwrap()
+            .0
+            .is_some(),
+        "recovery promoted the surviving prepared commit",
     );
 }

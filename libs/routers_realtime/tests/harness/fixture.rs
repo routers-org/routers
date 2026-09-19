@@ -37,6 +37,7 @@ use routers_realtime::orchestrator::admission::Admission;
 use routers_realtime::orchestrator::commit::{CommitConfig, Committer};
 use routers_realtime::orchestrator::dispatch::Dispatcher;
 use routers_realtime::orchestrator::recovery::recover_partition;
+use routers_realtime::orchestrator::scheduler::SchedulerConfig;
 use routers_realtime::orchestrator::worker::{PartitionWorker, WorkerConfig};
 use routers_realtime::partition::partition_of;
 use routers_realtime::protocol::ids::headers;
@@ -294,6 +295,9 @@ pub struct Fleet {
     pub admission: Admission,
     /// The per-region freshness budget baked into the catalog (the deadline).
     budget_ms: u64,
+    pending_limit: usize,
+    parked_limit: usize,
+    blocked_retry: Duration,
 }
 
 impl Fleet {
@@ -319,6 +323,9 @@ impl Fleet {
             catalog,
             admission,
             budget_ms,
+            pending_limit: SchedulerConfig::default().pending_limit,
+            parked_limit: WorkerConfig::new(0).parked_limit,
+            blocked_retry: Duration::from_millis(20),
         }
     }
 
@@ -342,6 +349,20 @@ impl Fleet {
     #[must_use]
     pub fn with_admission(mut self, cfg: AdmissionConfig) -> Self {
         self.admission = Admission::new(cfg, self.catalog.regions.iter().map(|r| &r.id));
+        self
+    }
+
+    /// Tighten the per-vehicle raw FIFO for backpressure scenarios.
+    #[must_use]
+    pub fn with_pending_limit(mut self, pending_limit: usize) -> Self {
+        self.pending_limit = pending_limit;
+        self
+    }
+
+    /// Tune how long worker-local retry gates hold broker redelivery.
+    #[must_use]
+    pub fn with_blocked_retry(mut self, blocked_retry: Duration) -> Self {
+        self.blocked_retry = blocked_retry;
         self
     }
 
@@ -388,7 +409,7 @@ impl Fleet {
             point,
         };
         let bytes = payload.encode().expect("payload encodes");
-        let mut hdrs = HeaderMap::new();
+        let mut hdrs = routers_realtime::bus::outbound();
         headers::stamp_schema(&mut hdrs);
         let outcome = self
             .bus
@@ -438,14 +459,10 @@ impl Fleet {
         }
     }
 
-    /// Publish a solve result for `identity` directly onto its partition's result plane.
-    pub async fn publish_result(&self, identity: JobIdentity, outcome: SolveOutcome<E>) {
-        let result = SolveResult {
-            job: identity.job_id(),
-            identity,
-            outcome,
-            solved_at_us: 0,
-        };
+    /// Publish a solve result for an actual dispatched job directly onto its
+    /// partition's result plane.
+    pub async fn publish_result(&self, job: &SolveJob<E>, outcome: SolveOutcome<E>) {
+        let result = SolveResult::new(job, outcome, 0);
         let partition = result.partition();
         self.bus
             .publisher::<SolveResult<E>>()
@@ -461,18 +478,8 @@ impl Fleet {
 
     /// Publish a second copy of a result under a distinct dedup key (`tag`) so the
     /// broker does not collapse it — a genuine duplicate delivery to reject.
-    pub async fn publish_result_dup(
-        &self,
-        identity: JobIdentity,
-        outcome: SolveOutcome<E>,
-        tag: &str,
-    ) {
-        let result = SolveResult {
-            job: identity.job_id(),
-            identity,
-            outcome,
-            solved_at_us: 0,
-        };
+    pub async fn publish_result_dup(&self, job: &SolveJob<E>, outcome: SolveOutcome<E>, tag: &str) {
+        let result = SolveResult::new(job, outcome, 0);
         let partition = result.partition();
         let msg_id = format!("{}-{tag}", result.msg_id());
         self.bus
@@ -704,7 +711,12 @@ impl Fleet {
     fn worker_config(&self, partition: u16) -> WorkerConfig {
         WorkerConfig {
             tick: Duration::from_millis(20),
-            blocked_retry: Duration::from_millis(20),
+            blocked_retry: self.blocked_retry,
+            parked_limit: self.parked_limit,
+            scheduler: SchedulerConfig {
+                pending_limit: self.pending_limit,
+                ..SchedulerConfig::default()
+            },
             commit: zero_backoff_commit_config(),
             ..WorkerConfig::new(partition)
         }
@@ -898,5 +910,14 @@ pub fn published_outputs(bus: &MemoryBus, partition: u16) -> Vec<CommittedOutput
     bus.published(&output_subject(u64::from(partition)))
         .into_iter()
         .map(|(_, _, bytes)| CommittedOutput::<E>::decode(&bytes).expect("output decodes"))
+        .collect()
+}
+
+/// Decode every solve job in stream order.
+#[must_use]
+pub fn published_jobs(bus: &MemoryBus) -> Vec<SolveJob<E>> {
+    bus.published("solve.v1.g.>")
+        .into_iter()
+        .map(|(_, _, bytes)| SolveJob::<E>::decode(&bytes).expect("job decodes"))
         .collect()
 }

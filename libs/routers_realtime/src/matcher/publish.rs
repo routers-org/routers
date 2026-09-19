@@ -211,13 +211,12 @@ mod tests {
             graph: GraphVersion::new("europe-2026-09").unwrap(),
             region: RegionId::new("paris").unwrap(),
         };
-        let job = SolveJob {
-            id: identity.job_id(),
+        let job = SolveJob::new(
             identity,
-            lane: Lane::DEFAULT,
-            deadline_us: 1_726_000_000_000_000,
-            context: Continuation::Restart { fresh: Vec::new() },
-        };
+            Lane::DEFAULT,
+            1_726_000_000_000_000,
+            Continuation::Restart { fresh: Vec::new() },
+        );
         SolveResult::new(&job, SolveOutcome::Unanchored, 1_726_000_000_500_000)
     }
 

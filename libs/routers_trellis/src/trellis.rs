@@ -48,19 +48,248 @@ type Result<T> = core::result::Result<T, TrellisError>;
 
 /// Layered graph where each layer is connected only to its adjacent layers.
 ///
-/// Each layer-to-layer boundary holds a [`Transition`] that starts `Pending`
+/// Each layer-to-layer boundary holds a transition that starts `Pending`
 /// (no edges yet) and becomes `Resolved` once edges are written via
-/// [`set_edge`] or [`fill_transition`]. Solvers refuse to run until every
+/// [`set_edge`](Self::set_edge) or [`fill_transition`](Self::fill_transition).
+/// Solvers refuse to run until every
 /// transition is resolved.
 ///
 /// Every node additionally carries a weight (default 0), paid on entering it —
 /// including in the first layer. Set them with [`fill_nodes`](Self::fill_nodes).
 #[derive(Clone, Debug, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "serde", derive(Deserialize))]
+#[cfg_attr(feature = "serde", serde(try_from = "RawTrellis"))]
 pub struct Trellis {
     widths: Vec<u32>,
     nodes: Vec<u32>,
     transitions: Vec<Transition>,
+}
+
+/// Hard aggregate bounds for attacker-controlled trellis wire data. These
+/// apply before any dense transition buffers are reconstructed or may later be
+/// created by resolving a pending boundary.
+#[cfg(feature = "serde")]
+const MAX_WIRE_LAYERS: usize = 4_096;
+#[cfg(feature = "serde")]
+const MAX_WIRE_NODES: usize = 1 << 20;
+#[cfg(feature = "serde")]
+const MAX_WIRE_TOTAL_TRANSITION_SLOTS: usize = 1 << 20;
+
+/// The on-wire shape, intentionally identical to [`Trellis`], but retaining
+/// sparse transition wires until aggregate shape validation has completed.
+#[cfg(feature = "serde")]
+#[derive(Deserialize)]
+struct RawTrellis {
+    #[serde(deserialize_with = "deserialize_widths")]
+    widths: Vec<u32>,
+    #[serde(deserialize_with = "deserialize_nodes")]
+    nodes: Vec<u32>,
+    #[serde(deserialize_with = "deserialize_transitions")]
+    transitions: Vec<crate::transition::Wire>,
+}
+
+/// Borrowed trellis shape used for serialization after validating that it is
+/// accepted by the same bounded wire contract as deserialization.
+#[cfg(feature = "serde")]
+#[derive(Serialize)]
+struct WireTrellis<'a> {
+    widths: &'a [u32],
+    nodes: &'a [u32],
+    transitions: &'a [Transition],
+}
+
+#[cfg(feature = "serde")]
+fn validate_wire_shape(
+    widths: &[u32],
+    nodes: &[u32],
+    transition_count: usize,
+    mut transition_len: impl FnMut(usize) -> Option<usize>,
+) -> core::result::Result<(), String> {
+    if widths.is_empty() {
+        return Err("trellis is empty".to_owned());
+    }
+    if widths.len() > MAX_WIRE_LAYERS {
+        return Err("trellis exceeds the layer limit".to_owned());
+    }
+    if widths.contains(&0) {
+        return Err("trellis contains a zero-width layer".to_owned());
+    }
+    if transition_count != widths.len() - 1 {
+        return Err("trellis transition count does not match layer count".to_owned());
+    }
+
+    let node_count = widths
+        .iter()
+        .try_fold(0usize, |total, &width| total.checked_add(width as usize))
+        .ok_or_else(|| "trellis node count overflowed".to_owned())?;
+    if node_count > MAX_WIRE_NODES || nodes.len() != node_count {
+        return Err("trellis node weights do not match bounded layer shape".to_owned());
+    }
+    if nodes.iter().any(|&weight| weight > MAX_WEIGHT) {
+        return Err("trellis node weight exceeds the maximum".to_owned());
+    }
+
+    let mut total_slots = 0usize;
+    for layer in 0..transition_count {
+        let expected = (widths[layer] as usize)
+            .checked_mul(widths[layer + 1] as usize)
+            .ok_or_else(|| "trellis transition shape overflowed".to_owned())?;
+        total_slots = total_slots
+            .checked_add(expected)
+            .ok_or_else(|| "trellis transition slots overflowed".to_owned())?;
+        if total_slots > MAX_WIRE_TOTAL_TRANSITION_SLOTS {
+            return Err("trellis exceeds the aggregate transition slot limit".to_owned());
+        }
+        if let Some(len) = transition_len(layer)
+            && len != expected
+        {
+            return Err("trellis transition length does not match layer shape".to_owned());
+        }
+    }
+    Ok(())
+}
+
+#[cfg(feature = "serde")]
+impl Serialize for Trellis {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> core::result::Result<S::Ok, S::Error> {
+        validate_wire_shape(
+            &self.widths,
+            &self.nodes,
+            self.transitions.len(),
+            |layer| match &self.transitions[layer] {
+                Transition::Pending => None,
+                Transition::Resolved(weights) => Some(weights.len()),
+            },
+        )
+        .map_err(serde::ser::Error::custom)?;
+        WireTrellis {
+            widths: &self.widths,
+            nodes: &self.nodes,
+            transitions: &self.transitions,
+        }
+        .serialize(serializer)
+    }
+}
+
+#[cfg(feature = "serde")]
+fn deserialize_bounded_vec<'de, D>(
+    deserializer: D,
+    limit: usize,
+    label: &'static str,
+) -> core::result::Result<Vec<u32>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    struct BoundedU32s {
+        limit: usize,
+        label: &'static str,
+    }
+
+    impl<'de> serde::de::Visitor<'de> for BoundedU32s {
+        type Value = Vec<u32>;
+
+        fn expecting(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            write!(formatter, "at most {} {}", self.limit, self.label)
+        }
+
+        fn visit_seq<A>(self, mut sequence: A) -> core::result::Result<Self::Value, A::Error>
+        where
+            A: serde::de::SeqAccess<'de>,
+        {
+            let mut values = Vec::new();
+            while let Some(value) = sequence.next_element()? {
+                if values.len() == self.limit {
+                    return Err(serde::de::Error::custom(format!(
+                        "trellis has more than {} {}",
+                        self.limit, self.label
+                    )));
+                }
+                values.push(value);
+            }
+            Ok(values)
+        }
+    }
+
+    deserializer.deserialize_seq(BoundedU32s { limit, label })
+}
+
+#[cfg(feature = "serde")]
+fn deserialize_widths<'de, D>(deserializer: D) -> core::result::Result<Vec<u32>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    deserialize_bounded_vec(deserializer, MAX_WIRE_LAYERS, "layer widths")
+}
+
+#[cfg(feature = "serde")]
+fn deserialize_nodes<'de, D>(deserializer: D) -> core::result::Result<Vec<u32>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    deserialize_bounded_vec(deserializer, MAX_WIRE_NODES, "node weights")
+}
+
+#[cfg(feature = "serde")]
+fn deserialize_transitions<'de, D>(
+    deserializer: D,
+) -> core::result::Result<Vec<crate::transition::Wire>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    struct BoundedTransitions;
+
+    impl<'de> serde::de::Visitor<'de> for BoundedTransitions {
+        type Value = Vec<crate::transition::Wire>;
+
+        fn expecting(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            formatter.write_str("a bounded trellis transition list")
+        }
+
+        fn visit_seq<A>(self, mut sequence: A) -> core::result::Result<Self::Value, A::Error>
+        where
+            A: serde::de::SeqAccess<'de>,
+        {
+            let mut transitions = Vec::new();
+            while let Some(transition) = sequence.next_element()? {
+                if transitions.len() == MAX_WIRE_LAYERS.saturating_sub(1) {
+                    return Err(serde::de::Error::custom(format!(
+                        "trellis has more than {} transitions",
+                        MAX_WIRE_LAYERS - 1
+                    )));
+                }
+                transitions.push(transition);
+            }
+            Ok(transitions)
+        }
+    }
+
+    deserializer.deserialize_seq(BoundedTransitions)
+}
+
+#[cfg(feature = "serde")]
+impl TryFrom<RawTrellis> for Trellis {
+    type Error = String;
+
+    fn try_from(raw: RawTrellis) -> core::result::Result<Self, Self::Error> {
+        validate_wire_shape(&raw.widths, &raw.nodes, raw.transitions.len(), |layer| {
+            crate::transition::Transition::wire_len(&raw.transitions[layer]).map(|len| len as usize)
+        })?;
+
+        let transitions = raw
+            .transitions
+            .into_iter()
+            .map(crate::transition::Transition::from_wire::<serde::de::value::Error>)
+            .collect::<core::result::Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())?;
+        Ok(Self {
+            widths: raw.widths,
+            nodes: raw.nodes,
+            transitions,
+        })
+    }
 }
 
 impl Trellis {
@@ -379,5 +608,98 @@ impl Trellis {
     pub fn last(&self, n: usize) -> Result<Trellis> {
         let start = self.layers().saturating_sub(n);
         self.partition(LayerId(start as u32)..LayerId(self.layers() as u32))
+    }
+}
+
+#[cfg(all(test, feature = "serde"))]
+mod deserialize_tests {
+    use super::*;
+
+    #[derive(Serialize)]
+    #[allow(dead_code)]
+    enum TestWire {
+        Pending,
+        Sparse { len: u32, edges: Vec<(u32, u32)> },
+    }
+
+    #[derive(Serialize)]
+    struct TestTrellis {
+        widths: Vec<u32>,
+        nodes: Vec<u32>,
+        transitions: Vec<TestWire>,
+    }
+
+    #[test]
+    fn aggregate_transition_slots_are_rejected_before_dense_reconstruction() {
+        // Each empty sparse boundary would individually reconstruct to 4 MiB.
+        // The aggregate validation rejects this two-boundary wire before either
+        // dense buffer is allocated.
+        let wire = TestTrellis {
+            widths: vec![1024, 1024, 1024],
+            nodes: vec![0; 3 * 1024],
+            transitions: vec![
+                TestWire::Sparse {
+                    len: MAX_WIRE_TOTAL_TRANSITION_SLOTS as u32,
+                    edges: Vec::new(),
+                },
+                TestWire::Sparse {
+                    len: MAX_WIRE_TOTAL_TRANSITION_SLOTS as u32,
+                    edges: Vec::new(),
+                },
+            ],
+        };
+        let bytes = postcard::to_allocvec(&wire).expect("forged wire serializes");
+        assert!(postcard::from_bytes::<Trellis>(&bytes).is_err());
+    }
+
+    #[test]
+    fn pending_boundary_with_excessive_potential_slots_is_rejected() {
+        let width = (MAX_WIRE_NODES / 2) as u32;
+        let wire = TestTrellis {
+            widths: vec![width, width],
+            nodes: vec![0; MAX_WIRE_NODES],
+            transitions: vec![TestWire::Pending],
+        };
+        let bytes = postcard::to_allocvec(&wire).expect("forged wire serializes");
+        assert!(postcard::from_bytes::<Trellis>(&bytes).is_err());
+    }
+
+    #[test]
+    fn serialization_rejects_a_trellis_over_the_aggregate_transition_limit() {
+        let mut trellis = Trellis::new(vec![1024, 1024, 1024]).expect("valid trellis");
+        let absent_edges = vec![NO_EDGE; MAX_WIRE_TOTAL_TRANSITION_SLOTS];
+        trellis
+            .fill_transition(LayerId(0), &absent_edges)
+            .expect("first boundary is valid");
+        trellis
+            .fill_transition(LayerId(1), &absent_edges)
+            .expect("second boundary is valid");
+
+        assert!(postcard::to_allocvec(&trellis).is_err());
+    }
+
+    #[test]
+    fn serialization_rejects_pending_trellis_with_excessive_potential_slots() {
+        let width = (MAX_WIRE_NODES / 2) as u32;
+        let trellis = Trellis::new(vec![width, width]).expect("valid trellis");
+        assert!(postcard::to_allocvec(&trellis).is_err());
+    }
+
+    #[test]
+    fn trellis_round_trip_preserves_the_existing_wire_shape() {
+        let trellis = Trellis::new(vec![2, 3]).expect("valid trellis");
+        let bytes = postcard::to_allocvec(&trellis).expect("trellis serializes");
+        assert_eq!(postcard::from_bytes::<Trellis>(&bytes).unwrap(), trellis);
+    }
+
+    #[test]
+    fn wire_rejects_node_weight_above_the_solver_limit() {
+        let wire = TestTrellis {
+            widths: vec![1],
+            nodes: vec![MAX_WEIGHT + 1],
+            transitions: Vec::new(),
+        };
+        let bytes = postcard::to_allocvec(&wire).expect("forged wire serializes");
+        assert!(postcard::from_bytes::<Trellis>(&bytes).is_err());
     }
 }

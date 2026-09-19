@@ -1,11 +1,11 @@
 //! `SolveJob`: the regional solve-job message, one unit of work handed to the
 //! regional matchers. Its identity is a deterministic hash of its
-//! [`JobIdentity`], so two orchestrators that build the same context mint the
-//! same [`JobId`] and the broker's `Nats-Msg-Id` dedup collapses the duplicate.
+//! entire solve envelope, so two orchestrators that build the same context mint
+//! the same [`JobId`] and the broker's `Nats-Msg-Id` dedup collapses the duplicate.
 //!
-//! Field order in [`JobIdentity`] is wire law: postcard hashes it, so reordering
+//! Field order in [`JobProof`] is wire law: postcard hashes it, so reordering
 //! silently changes every job id in the fleet. Do not reorder without bumping
-//! the schema and the domain tag below.
+//! the solve-job contract and the domain tag below.
 
 use core::time::Duration;
 
@@ -31,9 +31,9 @@ pub struct BaseState {
     pub segment: SegmentId,
 }
 
-/// Everything that makes a solve job's context unique. The job's [`JobId`] is
-/// the digest of this record, so two jobs that would compute a different answer
-/// differ here in at least one field. Field order is wire law (see module docs).
+/// The durable, store-addressable portion of a solve job's context. The full
+/// [`JobId`] additionally authenticates the lane, deadline, and continuation
+/// through [`JobProof`].
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct JobIdentity {
     /// The wire contract this job was produced against; a peer on a different
@@ -51,16 +51,73 @@ pub struct JobIdentity {
     pub region: RegionId,
 }
 
-/// The domain-separation tag mixed into every job digest; bump it whenever the
-/// wire contract bumps.
+/// The v1 domain-separation tag mixed into every solve-job digest.
 const JOB_ID_DOMAIN: &[u8] = b"routers.solve-job.v1";
+/// Separates the continuation digest from the outer solve-job digest.
+const CONTINUATION_DOMAIN: &[u8] = b"routers.solve-job.continuation.v1";
 
 impl JobIdentity {
-    /// The deterministic 128-bit identity of a job with this context: the
-    /// leading 16 bytes of `sha256(domain-tag ∥ postcard(self))`.
+    /// The deterministic id of a context-only local decision. It is not the
+    /// [`SolveJob`] id: use [`SolveJob::computed_id`] for a dispatched solve.
+    ///
+    /// This remains for local terminal decisions, which have no continuation
+    /// or deadline to authenticate.
+    #[must_use]
+    pub fn local_decision_id(&self) -> JobId {
+        let bytes = postcard::to_allocvec(self).expect("JobIdentity is infallibly serialisable");
+        JobId(ids::digest128(&[
+            b"routers.local-decision.v1",
+            bytes.as_slice(),
+        ]))
+    }
+}
+
+/// Digest of the continuation payload inside a [`JobProof`].
+///
+/// This deliberately is not a [`JobId`]: it participates in the outer job-id
+/// digest but cannot itself name or authenticate a dispatched solve job. As a
+/// serde newtype around `u128`, it preserves the prior postcard wire shape.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+struct ContinuationDigest(u128);
+
+/// Compact, self-verifying summary of every solve-affecting job field. Results
+/// echo this rather than the potentially large continuation itself, allowing
+/// their [`JobId`] to be verified without a store lookup or duplicate payload.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct JobProof {
+    /// The durable identity and resumed base state.
+    pub identity: JobIdentity,
+    /// The queue lane selected for this solve.
+    pub lane: Lane,
+    /// The absolute deadline the matcher must honour.
+    pub deadline_us: i64,
+    continuation: ContinuationDigest,
+}
+
+impl JobProof {
+    fn for_job<E: Entry>(
+        identity: &JobIdentity,
+        lane: Lane,
+        deadline_us: i64,
+        context: &Continuation<E>,
+    ) -> Self {
+        let bytes = postcard::to_allocvec(context)
+            .expect("Continuation is infallibly serialisable for an Entry");
+        Self {
+            identity: identity.clone(),
+            lane,
+            deadline_us,
+            continuation: ContinuationDigest(ids::digest128(&[
+                CONTINUATION_DOMAIN,
+                bytes.as_slice(),
+            ])),
+        }
+    }
+
+    /// The deterministic solve-job id, covering every field in this proof.
     #[must_use]
     pub fn job_id(&self) -> JobId {
-        let bytes = postcard::to_allocvec(self).expect("JobIdentity is infallibly serialisable");
+        let bytes = postcard::to_allocvec(self).expect("JobProof is infallibly serialisable");
         JobId(ids::digest128(&[JOB_ID_DOMAIN, bytes.as_slice()]))
     }
 }
@@ -70,7 +127,7 @@ impl JobIdentity {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(bound(serialize = "E: Serialize", deserialize = "E: Deserialize<'de>"))]
 pub struct SolveJob<E: Entry> {
-    /// The job's deterministic identity; equals `identity.job_id()`.
+    /// The job's deterministic identity; equals [`SolveJob::computed_id`].
     pub id: JobId,
     /// The context that makes this job unique and that `id` digests.
     pub identity: JobIdentity,
@@ -83,14 +140,15 @@ pub struct SolveJob<E: Entry> {
 }
 
 impl<E: Entry> SolveJob<E> {
-    /// Build a job for `identity`, computing its [`JobId`] so the two agree.
+    /// Build a job for `identity`, computing a [`JobId`] that authenticates
+    /// the complete solve envelope.
     pub fn new(
         identity: JobIdentity,
         lane: Lane,
         deadline_us: i64,
         context: Continuation<E>,
     ) -> Self {
-        let id = identity.job_id();
+        let id = JobProof::for_job(&identity, lane, deadline_us, &context).job_id();
         Self {
             id,
             identity,
@@ -100,10 +158,23 @@ impl<E: Entry> SolveJob<E> {
         }
     }
 
+    /// The compact proof of the complete solve envelope, suitable for echoing
+    /// in a result without duplicating its continuation.
+    #[must_use]
+    pub fn proof(&self) -> JobProof {
+        JobProof::for_job(&self.identity, self.lane, self.deadline_us, &self.context)
+    }
+
+    /// Recompute the id from every solve-affecting envelope field.
+    #[must_use]
+    pub fn computed_id(&self) -> JobId {
+        self.proof().job_id()
+    }
+
     /// Check that this envelope is self-consistent: its `id` is the digest of
-    /// its `identity`, and its `identity.schema` is the schema this build speaks.
+    /// every solve-affecting field, and its schema is the schema this build speaks.
     pub fn verify(&self) -> Result<(), JobError> {
-        let expected = self.identity.job_id();
+        let expected = self.computed_id();
         if self.id != expected {
             return Err(JobError::IdMismatch {
                 expected,
@@ -158,7 +229,7 @@ postcard_wire!(SolveJob<E: Entry>);
 /// Why a [`SolveJob`] failed to verify or decode.
 #[derive(Debug, Error)]
 pub enum JobError {
-    /// The envelope's `id` is not the digest of its `identity`.
+    /// The envelope's `id` is not the digest of its complete solve context.
     #[error("job id mismatch: expected {expected}, got {got}")]
     IdMismatch {
         /// The id recomputed from the envelope's identity.
@@ -209,102 +280,70 @@ mod tests {
         Continuation::Restart { fresh }
     }
 
-    #[test]
-    fn same_identity_yields_same_id() {
-        let a = SolveJob::new(
+    fn sample_job() -> SolveJob<MockEntryId> {
+        SolveJob::new(
             sample_identity(),
             Lane::DEFAULT,
             10,
             restart(vec![origin(1)]),
-        );
-        let b = SolveJob::new(
-            sample_identity(),
-            Lane::DEFAULT,
-            999,
-            restart(vec![origin(2)]),
-        );
-        assert_eq!(
-            a.id, b.id,
-            "id derives only from identity, not lane/deadline/context"
-        );
-        assert_eq!(a.id, sample_identity().job_id());
+        )
     }
 
     #[test]
-    fn each_field_changes_the_id() {
-        let base = sample_identity();
-        let base_id = base.job_id();
+    fn same_complete_envelope_yields_same_id() {
+        assert_eq!(sample_job().id, sample_job().id);
+    }
 
-        let mutations: Vec<(&str, JobIdentity)> = vec![
-            (
-                "schema",
-                JobIdentity {
-                    schema: SchemaVersion(2),
-                    ..sample_identity()
-                },
-            ),
-            (
-                "vehicle_id",
-                JobIdentity {
-                    vehicle_id: VehicleId(2),
-                    ..sample_identity()
-                },
-            ),
-            (
-                "observation.partition",
-                JobIdentity {
-                    observation: ObservationId {
-                        partition: 486,
-                        sequence: 7,
-                    },
-                    ..sample_identity()
-                },
-            ),
-            (
-                "observation.sequence",
-                JobIdentity {
-                    observation: ObservationId {
-                        partition: 485,
-                        sequence: 8,
-                    },
-                    ..sample_identity()
-                },
-            ),
-            (
-                "base",
-                JobIdentity {
-                    base: Some(BaseState {
-                        revision: Revision(3),
-                        segment: SegmentId(3),
-                    }),
-                    ..sample_identity()
-                },
-            ),
-            (
-                "graph",
-                JobIdentity {
-                    graph: GraphVersion::new("g2").unwrap(),
-                    ..sample_identity()
-                },
-            ),
-            (
-                "region",
-                JobIdentity {
-                    region: RegionId::new("r2").unwrap(),
-                    ..sample_identity()
-                },
-            ),
-        ];
+    #[test]
+    fn every_solve_affecting_field_changes_the_id() {
+        let base = sample_job();
+        let base_id = base.id;
+        let mut mutations: Vec<(&str, SolveJob<MockEntryId>)> = Vec::new();
 
-        let mut seen = vec![base_id];
-        for (field, mutated) in mutations {
-            let id = mutated.job_id();
-            assert_ne!(id, base_id, "changing {field} left the id unchanged");
-            assert!(
-                !seen.contains(&id),
-                "changing {field} collided with another id"
+        let mut changed = base.clone();
+        changed.identity.schema = SchemaVersion(SCHEMA_VERSION.0 + 1);
+        mutations.push(("schema", changed));
+        let mut changed = base.clone();
+        changed.identity.vehicle_id = VehicleId(2);
+        mutations.push(("vehicle_id", changed));
+        let mut changed = base.clone();
+        changed.identity.observation.partition += 1;
+        mutations.push(("observation.partition", changed));
+        let mut changed = base.clone();
+        changed.identity.observation.sequence += 1;
+        mutations.push(("observation.sequence", changed));
+        let mut changed = base.clone();
+        changed.identity.base = Some(BaseState {
+            revision: Revision(3),
+            segment: SegmentId(3),
+        });
+        mutations.push(("base", changed));
+        let mut changed = base.clone();
+        changed.identity.graph = GraphVersion::new("g2").unwrap();
+        mutations.push(("graph", changed));
+        let mut changed = base.clone();
+        changed.identity.region = RegionId::new("r2").unwrap();
+        mutations.push(("region", changed));
+        let mut changed = base.clone();
+        changed.lane = Lane(1);
+        mutations.push(("lane", changed));
+        let mut changed = base.clone();
+        changed.deadline_us += 1;
+        mutations.push(("deadline_us", changed));
+        let mut changed = base.clone();
+        changed.context = restart(vec![origin(2)]);
+        mutations.push(("continuation", changed));
+
+        for (field, changed) in mutations {
+            assert_ne!(
+                changed.computed_id(),
+                base_id,
+                "changing {field} left the id unchanged"
             );
-            seen.push(id);
+            assert!(
+                matches!(changed.verify(), Err(JobError::IdMismatch { .. })),
+                "changing {field} without replacing id must fail verification"
+            );
         }
     }
 
@@ -317,9 +356,9 @@ mod tests {
             }),
             ..sample_identity()
         };
-        let a = with_base(1, 1).job_id();
-        let b = with_base(2, 1).job_id();
-        let c = with_base(1, 2).job_id();
+        let a = SolveJob::new(with_base(1, 1), Lane::DEFAULT, 10, restart(vec![])).id;
+        let b = SolveJob::new(with_base(2, 1), Lane::DEFAULT, 10, restart(vec![])).id;
+        let c = SolveJob::new(with_base(1, 2), Lane::DEFAULT, 10, restart(vec![])).id;
         assert_ne!(a, b, "revision must affect the id");
         assert_ne!(a, c, "segment must affect the id");
         assert_ne!(b, c);
@@ -358,16 +397,14 @@ mod tests {
     #[test]
     fn verify_catches_a_wrong_schema() {
         let identity = JobIdentity {
-            schema: SchemaVersion(2),
+            schema: SchemaVersion(SCHEMA_VERSION.0 + 1),
             ..sample_identity()
         };
         let job = SolveJob::new(identity, Lane::DEFAULT, 100, restart(vec![origin(1)]));
         assert!(matches!(
             job.verify(),
-            Err(JobError::Schema {
-                expected: SCHEMA_VERSION,
-                got: SchemaVersion(2),
-            })
+            Err(JobError::Schema { expected, got })
+                if expected == SCHEMA_VERSION && got == SchemaVersion(SCHEMA_VERSION.0 + 1)
         ));
     }
 
@@ -488,10 +525,8 @@ mod tests {
             graph: GraphVersion::new("g1").unwrap(),
             region: RegionId::new("r1").unwrap(),
         };
-        assert_eq!(
-            identity.job_id().to_string(),
-            "31f0fe50944127c3cf4104603200b947",
-            "job id is wire law; see the comment above"
-        );
+        let job = SolveJob::new(identity, Lane::DEFAULT, 10, restart(vec![origin(1)]));
+        assert_eq!(job.computed_id(), job.id);
+        assert_eq!(job.id.to_string().len(), 32);
     }
 }

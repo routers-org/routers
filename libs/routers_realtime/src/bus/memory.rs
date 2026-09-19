@@ -167,6 +167,9 @@ impl Inner {
         let cs = self.consumers.get_mut(&consumer_id)?;
 
         while let Some(seq) = cs.redeliver.pop_front() {
+            if cs.acked.contains(&seq) {
+                continue;
+            }
             if let Some(stored) = log.get(seq.wrapping_sub(1) as usize) {
                 let count = cs.delivered.entry(seq).or_insert(0);
                 *count += 1;
@@ -210,7 +213,12 @@ impl Inner {
 
     fn nak(&mut self, consumer_id: u64, seq: u64, delay: Option<Duration>) {
         self.nak_delays.push(delay);
+        self.queue_redelivery(consumer_id, seq);
+    }
+
+    fn queue_redelivery(&mut self, consumer_id: u64, seq: u64) {
         if let Some(cs) = self.consumers.get_mut(&consumer_id)
+            && !cs.acked.contains(&seq)
             && !cs.redeliver.contains(&seq)
         {
             cs.redeliver.push_back(seq);
@@ -448,6 +456,25 @@ impl AckHandle for MemoryAck {
     }
 
     async fn nak(self, delay: Option<Duration>) -> anyhow::Result<()> {
+        if let Some(delay) = delay.filter(|delay| !delay.is_zero()) {
+            let bus = self.bus.clone();
+            let consumer_id = self.consumer_id;
+            let seq = self.seq;
+            {
+                let mut inner = bus.0.lock().unwrap();
+                inner.nak_delays.push(Some(delay));
+            }
+            tokio::spawn(async move {
+                tokio::time::sleep(delay).await;
+                let notify = {
+                    let mut inner = bus.0.lock().unwrap();
+                    inner.queue_redelivery(consumer_id, seq);
+                    inner.notify.clone()
+                };
+                notify.notify_waiters();
+            });
+            return Ok(());
+        }
         let notify = {
             let mut inner = self.bus.0.lock().unwrap();
             inner.nak(self.consumer_id, self.seq, delay);
@@ -792,7 +819,7 @@ mod tests {
         assert_eq!(second.next().await.unwrap().unwrap().item, msg(2));
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn nak_redelivers_to_the_same_consumer() {
         let bus = MemoryBus::new();
         let publisher = bus.publisher::<TestMsg>();
@@ -812,11 +839,56 @@ mod tests {
             .await
             .expect("nak");
 
+        tokio::time::advance(Duration::from_millis(250)).await;
         let again = source.next().await.unwrap().unwrap();
         assert!(again.redelivered);
         assert_eq!(again.handle.deliveries(), 2);
         assert_eq!(again.handle.sequence(), 1);
         assert_eq!(bus.nak_delays(), vec![Some(Duration::from_millis(250))]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn delayed_nak_does_not_resurrect_a_sequence_acked_before_the_timer() {
+        let bus = MemoryBus::new();
+        let publisher = bus.publisher::<TestMsg>();
+        let mut source = bus.source::<TestMsg>("s");
+
+        publisher
+            .publish("s", "id-1", HeaderMap::new(), &msg(1))
+            .await
+            .expect("publish");
+        source
+            .next()
+            .await
+            .unwrap()
+            .unwrap()
+            .handle
+            .nak(Some(Duration::from_millis(250)))
+            .await
+            .expect("nak");
+
+        // Model another ack-wait copy reaching the same consumer before the
+        // delayed NAK timer fires.
+        bus.redeliver_unacked("s");
+        source
+            .next()
+            .await
+            .unwrap()
+            .unwrap()
+            .handle
+            .ack()
+            .await
+            .expect("ack copy");
+        tokio::time::advance(Duration::from_millis(250)).await;
+        tokio::task::yield_now().await;
+
+        let inner = bus.0.lock().unwrap();
+        let consumer = inner.consumers.get(&source.consumer_id).unwrap();
+        assert!(consumer.acked.contains(&1));
+        assert!(
+            consumer.redeliver.is_empty(),
+            "acked sequence stayed retired"
+        );
     }
 
     #[tokio::test]

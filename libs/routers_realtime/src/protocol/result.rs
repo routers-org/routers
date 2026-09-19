@@ -17,7 +17,7 @@ use crate::bus::{Wire, postcard_wire};
 use crate::event::MatchedDiff;
 use crate::partition::partition_of;
 use crate::protocol::ids::{GraphVersion, JobId};
-use crate::protocol::job::{JobIdentity, SolveJob};
+use crate::protocol::job::{JobIdentity, JobProof, SolveJob};
 use crate::protocol::output::TerminalReason;
 
 /// The outcome of solving one job: either the matched emission with the resume
@@ -109,16 +109,20 @@ impl<E: Entry> SolveOutcome<E> {
 }
 
 /// One matcher's answer to one job, addressed to the vehicle's result partition.
-/// `job` and `identity` are copied off the [`SolveJob`] so the reader can
-/// [`verify`](SolveResult::verify) without touching any store.
+/// `job`, `identity`, and its compact [`JobProof`] are copied off the
+/// [`SolveJob`] so the reader can [`verify`](SolveResult::verify) without
+/// touching any store or duplicating the continuation payload.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(bound(serialize = "E: Serialize", deserialize = "E: Deserialize<'de>"))]
 pub struct SolveResult<E: Entry> {
-    /// The job this answers; equals `identity.job_id()` and is the stream's
+    /// The job this answers; equals `proof.job_id()` and is the stream's
     /// `Nats-Msg-Id`.
     pub job: JobId,
-    /// The job's full context, echoed so the owner validates without a lookup.
+    /// The durable job context, echoed for routing and store comparisons.
     pub identity: JobIdentity,
+    /// The authenticated full solve context, compactly represented so this
+    /// result can verify `job` without carrying the continuation twice.
+    pub proof: JobProof,
     /// What the solve produced.
     pub outcome: SolveOutcome<E>,
     /// When the matcher finished the solve (absolute unix microseconds).
@@ -132,23 +136,27 @@ impl<E: Entry> SolveResult<E> {
         Self {
             job: job.id,
             identity: job.identity.clone(),
+            proof: job.proof(),
             outcome,
             solved_at_us,
         }
     }
 
-    /// Check that the echoed `job` id is the one its `identity` hashes to; a
-    /// mismatch means the envelope was corrupted or crossed with another job.
+    /// Check that the echoed identity agrees with the proof and that `job` is
+    /// the proof's digest. A mismatch means the envelope was corrupted or
+    /// crossed with another job.
     pub fn verify(&self) -> Result<(), ResultError> {
-        let computed = self.identity.job_id();
-        if self.job == computed {
-            Ok(())
-        } else {
-            Err(ResultError::IdMismatch {
+        if self.identity != self.proof.identity {
+            return Err(ResultError::IdentityMismatch);
+        }
+        let computed = self.proof.job_id();
+        if self.job != computed {
+            return Err(ResultError::IdMismatch {
                 claimed: self.job,
                 computed,
-            })
+            });
         }
+        Ok(())
     }
 
     /// The broker dedup key for the result stream: the job id hex.
@@ -178,9 +186,12 @@ postcard_wire!(SolveResult<E: Entry>);
 /// Why a [`SolveResult`] could not be trusted.
 #[derive(Debug, Error)]
 pub enum ResultError {
-    /// The echoed `job` id is not the id its `identity` hashes to.
-    #[error("result job id {claimed} does not match its identity's job id {computed}")]
+    /// The echoed `job` id is not the id its proof hashes to.
+    #[error("result job id {claimed} does not match its proof's job id {computed}")]
     IdMismatch { claimed: JobId, computed: JobId },
+    /// The public routing identity did not agree with the authenticated proof.
+    #[error("result identity does not match its job proof")]
+    IdentityMismatch,
     /// The bytes did not decode into a [`SolveResult`].
     #[error("could not decode solve result")]
     Decode(#[source] anyhow::Error),
@@ -218,13 +229,12 @@ mod tests {
     }
 
     fn sample_job(identity: JobIdentity) -> SolveJob<MockEntryId> {
-        SolveJob {
-            id: identity.job_id(),
+        SolveJob::new(
             identity,
-            lane: Lane::DEFAULT,
-            deadline_us: 1_726_000_000_000_000,
-            context: Continuation::Restart { fresh: Vec::new() },
-        }
+            Lane::DEFAULT,
+            1_726_000_000_000_000,
+            Continuation::Restart { fresh: Vec::new() },
+        )
     }
 
     fn every_outcome() -> Vec<SolveOutcome<MockEntryId>> {
@@ -418,17 +428,14 @@ mod tests {
     #[test]
     fn verify_catches_a_job_identity_mismatch() {
         let identity = sample_identity(7);
-        let forged = SolveResult::<MockEntryId> {
-            job: JobId(0),
-            identity: identity.clone(),
-            outcome: SolveOutcome::Unanchored,
-            solved_at_us: 0,
-        };
+        let job = sample_job(identity.clone());
+        let mut forged = SolveResult::new(&job, SolveOutcome::Unanchored, 0);
+        forged.job = JobId(0);
         // ResultError isn't PartialEq; match on the variant.
         match forged.verify() {
             Err(ResultError::IdMismatch { claimed, computed }) => {
                 assert_eq!(claimed, JobId(0));
-                assert_eq!(computed, identity.job_id());
+                assert_eq!(computed, job.id);
             }
             other => panic!("expected IdMismatch, got {other:?}"),
         }
@@ -441,6 +448,24 @@ mod tests {
     }
 
     #[test]
+    fn verify_catches_tampered_proof_fields() {
+        let job = sample_job(sample_identity(7));
+        let mut deadline_tampered = SolveResult::new(&job, SolveOutcome::Unanchored, 0);
+        deadline_tampered.proof.deadline_us += 1;
+        assert!(matches!(
+            deadline_tampered.verify(),
+            Err(ResultError::IdMismatch { .. })
+        ));
+
+        let mut identity_tampered = SolveResult::new(&job, SolveOutcome::Unanchored, 0);
+        identity_tampered.identity.graph = GraphVersion::new("other-graph").unwrap();
+        assert!(matches!(
+            identity_tampered.verify(),
+            Err(ResultError::IdentityMismatch)
+        ));
+    }
+
+    #[test]
     fn decode_verified_rejects_malformed_bytes() {
         let err = SolveResult::<MockEntryId>::decode_verified(&[0xff]);
         assert!(matches!(err, Err(ResultError::Decode(_))), "got {err:?}");
@@ -450,12 +475,8 @@ mod tests {
     fn partition_agrees_with_partition_of() {
         for vehicle in [1u64, 0xdead_beef, 0x1234_5678_9abc_def0, u64::MAX] {
             let identity = sample_identity(vehicle);
-            let result = SolveResult::<MockEntryId> {
-                job: identity.job_id(),
-                identity,
-                outcome: SolveOutcome::Unanchored,
-                solved_at_us: 0,
-            };
+            let job = sample_job(identity);
+            let result = SolveResult::new(&job, SolveOutcome::Unanchored, 0);
             let expected = partition::partition_of(VehicleId(vehicle)) as u16;
             assert_eq!(result.partition(), expected);
             assert!(result.partition() < partition::PARTITIONS as u16);
@@ -465,14 +486,9 @@ mod tests {
     #[test]
     fn msg_id_is_the_job_hex() {
         let identity = sample_identity(42);
-        let job_id = identity.job_id();
-        let result = SolveResult::<MockEntryId> {
-            job: job_id,
-            identity,
-            outcome: SolveOutcome::Unanchored,
-            solved_at_us: 0,
-        };
-        assert_eq!(result.msg_id(), job_id.to_string());
+        let job = sample_job(identity);
+        let result = SolveResult::new(&job, SolveOutcome::Unanchored, 0);
+        assert_eq!(result.msg_id(), job.id.to_string());
         assert_eq!(result.msg_id().len(), 32);
     }
 }

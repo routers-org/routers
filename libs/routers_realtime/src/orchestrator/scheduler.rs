@@ -10,6 +10,7 @@
 use alloc::collections::VecDeque;
 use core::time::Duration;
 use std::collections::{HashMap, HashSet};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use routers_network::Entry;
 use thiserror::Error;
@@ -20,8 +21,36 @@ use crate::event::{Payload, VehicleId};
 use crate::orchestrator::admission;
 use crate::protocol::ids::{JobId, ObservationId};
 use crate::protocol::job::JobIdentity;
-use crate::protocol::result::SolveResult;
 use crate::store::checkpoint::VehicleCheckpoint;
+
+/// A validated broker publication instant in non-negative Unix microseconds.
+///
+/// Keeping this as a newtype makes the replay-stable basis of a solve deadline
+/// mandatory once a raw delivery enters the scheduler.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PublishedAtMicros(i64);
+
+impl PublishedAtMicros {
+    /// Validate and convert a broker publication instant.
+    #[must_use]
+    pub fn from_system_time(value: SystemTime) -> Option<Self> {
+        let micros = value.duration_since(UNIX_EPOCH).ok()?.as_micros();
+        i64::try_from(micros).ok().map(Self)
+    }
+
+    /// Construct a publication instant already represented in Unix microseconds.
+    #[must_use]
+    pub const fn from_unix_micros(value: i64) -> Option<Self> {
+        if value < 0 { None } else { Some(Self(value)) }
+    }
+
+    /// Add a solve budget without wrapping the wire deadline.
+    #[must_use]
+    pub fn deadline_after(self, budget: Duration) -> i64 {
+        let budget_us = i64::try_from(budget.as_micros()).unwrap_or(i64::MAX);
+        self.0.saturating_add(budget_us)
+    }
+}
 
 /// What the scheduler knows about a vehicle's committed checkpoint.
 ///
@@ -60,13 +89,16 @@ impl<E: Entry> CheckpointState<E> {
 /// retires its raw delivery.
 ///
 /// The observation is not acknowledged until the work it drives has committed
-/// (or it is coalesced / suppressed / overflowed and the handle travels back
+/// (or it is coalesced / suppressed / backpressured and the handle travels back
 /// out in the [`Enqueue`] result).
 pub struct PendingObservation<H: AckHandle> {
     /// The observation's durable identity `(partition, sequence)`.
     pub id: ObservationId,
     /// The decoded observation payload.
     pub payload: Payload,
+    /// Stable broker publication time. Dispatch derives the absolute solve
+    /// deadline from this value so replay reconstructs the same authenticated job.
+    pub published_at: PublishedAtMicros,
     /// The handle that acknowledges this observation's raw delivery.
     pub handle: H,
     /// When the worker received it — used to measure queue-wait latency.
@@ -124,8 +156,6 @@ pub struct VehicleState<E: Entry, H: AckHandle> {
     /// `true` while a commit is being prepared/published; the vehicle is never
     /// evicted and a later deadline defers to the commit while this is set.
     pub committing: bool,
-    /// Results that arrived before the state that should consume them.
-    pub parked: Vec<SolveResult<E>>,
     /// The last time the vehicle saw activity — drives idle eviction.
     pub last_touch: Instant,
 }
@@ -138,7 +168,6 @@ impl<E: Entry, H: AckHandle> VehicleState<E, H> {
             pending: VecDeque::new(),
             active: None,
             committing: false,
-            parked: Vec::new(),
             last_touch: now,
         }
     }
@@ -179,14 +208,19 @@ pub enum Enqueue<H: AckHandle> {
     },
 }
 
-/// The outcome of parking an early result.
+/// A non-mutating decision about whether one observation can enter its
+/// vehicle's pending FIFO.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Park {
-    /// The result was stored for later replay.
-    Parked,
-    /// The buffer was full or the vehicle untracked; the result was dropped.
-    Dropped {
-        /// The park-buffer bound that was hit.
+pub enum EnqueueReadiness {
+    /// The observation may be appended.
+    Ready,
+    /// A loaded checkpoint already covers this input sequence.
+    Committed,
+    /// The same observation is already pending or active.
+    Coalesced,
+    /// The per-vehicle FIFO is full; retain the message at the broker and retry.
+    Backpressured {
+        /// The configured per-vehicle pending bound.
         limit: usize,
     },
 }
@@ -210,8 +244,6 @@ pub struct SchedulerStats {
     pub active: usize,
     /// Number of vehicles currently queued as ready.
     pub ready: usize,
-    /// Total parked results across all vehicles.
-    pub parked: usize,
     /// Number of vehicles with a commit in flight.
     pub committing: usize,
 }
@@ -219,8 +251,6 @@ pub struct SchedulerStats {
 /// Static limits for a [`Scheduler`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SchedulerConfig {
-    /// Most early results parked per vehicle before further ones are dropped.
-    pub parked_limit: usize,
     /// How long a vehicle may sit idle before [`Scheduler::evict_idle`] reclaims it.
     pub idle_ttl: Duration,
     /// Most observations a vehicle may hold pending before further ones overflow.
@@ -228,10 +258,9 @@ pub struct SchedulerConfig {
 }
 
 impl Default for SchedulerConfig {
-    /// 4 parked results, a 10-minute idle TTL, 256 pending per vehicle.
+    /// A 10-minute idle TTL and 256 pending observations per vehicle.
     fn default() -> Self {
         Self {
-            parked_limit: 4,
             idle_ttl: Duration::from_secs(10 * 60),
             pending_limit: 256,
         }
@@ -306,35 +335,22 @@ impl<E: Entry, H: AckHandle> Scheduler<E, H> {
     /// vehicle that becomes eligible is added to the ready queue.
     pub fn enqueue(&mut self, obs: PendingObservation<H>, now: Instant) -> Enqueue<H> {
         let vehicle = obs.payload.vehicle_id;
-        let limit = self.config.pending_limit;
+        match self.enqueue_readiness(&obs) {
+            EnqueueReadiness::Committed => return Enqueue::Committed(obs.handle),
+            EnqueueReadiness::Coalesced => return Enqueue::Coalesced(obs.handle),
+            EnqueueReadiness::Backpressured { limit } => {
+                return Enqueue::Overflow {
+                    handle: obs.handle,
+                    limit,
+                };
+            }
+            EnqueueReadiness::Ready => {}
+        }
         let state = self
             .vehicles
             .entry(vehicle)
             .or_insert_with(|| VehicleState::new(now));
         state.last_touch = now;
-
-        // Suppression is only decidable once a checkpoint is loaded.
-        if let CheckpointState::Present(cp) = &state.checkpoint
-            && obs.id.sequence <= cp.last_input.sequence
-        {
-            return Enqueue::Committed(obs.handle);
-        }
-
-        if state
-            .active
-            .as_ref()
-            .is_some_and(|a| a.observation == obs.id)
-            || state.pending.iter().any(|p| p.id == obs.id)
-        {
-            return Enqueue::Coalesced(obs.handle);
-        }
-
-        if state.pending.len() >= limit {
-            return Enqueue::Overflow {
-                handle: obs.handle,
-                limit,
-            };
-        }
 
         state.pending.push_back(obs);
         let depth = state.pending.len();
@@ -343,6 +359,34 @@ impl<E: Entry, H: AckHandle> Scheduler<E, H> {
             self.mark_ready(vehicle);
         }
         Enqueue::Queued { depth }
+    }
+
+    /// Inspect whether `obs` can enter the FIFO without taking ownership of its
+    /// acknowledgement handle.
+    #[must_use]
+    pub fn enqueue_readiness(&self, obs: &PendingObservation<H>) -> EnqueueReadiness {
+        let Some(state) = self.vehicles.get(&obs.payload.vehicle_id) else {
+            return EnqueueReadiness::Ready;
+        };
+        if let CheckpointState::Present(cp) = &state.checkpoint
+            && obs.id.sequence <= cp.last_input.sequence
+        {
+            return EnqueueReadiness::Committed;
+        }
+        if state
+            .active
+            .as_ref()
+            .is_some_and(|active| active.observation == obs.id)
+            || state.pending.iter().any(|pending| pending.id == obs.id)
+        {
+            return EnqueueReadiness::Coalesced;
+        }
+        if state.pending.len() >= self.config.pending_limit {
+            return EnqueueReadiness::Backpressured {
+                limit: self.config.pending_limit,
+            };
+        }
+        EnqueueReadiness::Ready
     }
 
     /// Pop the next ready vehicle in FIFO order, or `None` if none is ready.
@@ -483,27 +527,19 @@ impl<E: Entry, H: AckHandle> Scheduler<E, H> {
         Some(job)
     }
 
-    /// Park an early result for later replay, up to
-    /// [`SchedulerConfig::parked_limit`]; else [`Park::Dropped`].
-    pub fn park(&mut self, vehicle: VehicleId, result: SolveResult<E>, now: Instant) -> Park {
-        let limit = self.config.parked_limit;
-        let Some(state) = self.vehicles.get_mut(&vehicle) else {
-            return Park::Dropped { limit };
-        };
-        if state.parked.len() >= limit {
-            return Park::Dropped { limit };
+    /// Roll back an attempted commit that left no durable prepared record.
+    ///
+    /// The active job is removed, the head stays pending and becomes ready to
+    /// dispatch again against freshly restored checkpoint state.
+    pub fn rollback_commit(&mut self, vehicle: VehicleId) -> Option<ActiveJob> {
+        let state = self.vehicles.get_mut(&vehicle)?;
+        state.committing = false;
+        let job = state.active.take()?;
+        let eligible = state.is_eligible();
+        if eligible {
+            self.mark_ready(vehicle);
         }
-        state.parked.push(result);
-        state.last_touch = now;
-        Park::Parked
-    }
-
-    /// Drain and return the vehicle's parked results (empty if none/untracked).
-    pub fn take_parked(&mut self, vehicle: VehicleId) -> Vec<SolveResult<E>> {
-        self.vehicles
-            .get_mut(&vehicle)
-            .map(|s| core::mem::take(&mut s.parked))
-            .unwrap_or_default()
+        Some(job)
     }
 
     /// Remove and return every idle vehicle whose `last_touch` has aged past
@@ -533,7 +569,6 @@ impl<E: Entry, H: AckHandle> Scheduler<E, H> {
         };
         for state in self.vehicles.values() {
             stats.pending += state.pending.len();
-            stats.parked += state.parked.len();
             if state.active.is_some() {
                 stats.active += 1;
             }
@@ -582,7 +617,6 @@ mod tests {
     use super::*;
     use crate::orchestrator::admission::{Admission, AdmissionConfig};
     use crate::protocol::ids::{GraphVersion, RegionId, Revision, SCHEMA_VERSION, SegmentId};
-    use crate::protocol::result::SolveOutcome;
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     enum AckOp {
@@ -650,6 +684,8 @@ mod tests {
                     timestamp: DateTime::<Utc>::from_timestamp(0, 0).unwrap(),
                     point: Point::new(0.0, 0.0),
                 },
+                published_at: PublishedAtMicros::from_unix_micros(0)
+                    .expect("zero is a valid publication time"),
                 handle: TestAck {
                     seq,
                     log: self.log.clone(),
@@ -674,7 +710,7 @@ mod tests {
 
         fn job(&self, vehicle: u64, seq: u64, now: Instant) -> ActiveJob {
             let identity = self.identity(vehicle, seq);
-            let id = identity.job_id();
+            let id = identity.local_decision_id();
             ActiveJob {
                 id,
                 identity,
@@ -688,17 +724,6 @@ mod tests {
                     self.admission.try_admit(&self.region, 100).unwrap(),
                 ),
                 dispatched: now,
-            }
-        }
-
-        fn result(&self, vehicle: u64, seq: u64) -> SolveResult<MockEntryId> {
-            let identity = self.identity(vehicle, seq);
-            let job = identity.job_id();
-            SolveResult {
-                job,
-                identity,
-                outcome: SolveOutcome::Unanchored,
-                solved_at_us: 0,
             }
         }
 
@@ -983,37 +1008,23 @@ mod tests {
     }
 
     #[test]
-    fn parking_is_bounded_and_drainable() {
-        let fx = Fixture::new();
-        let mut sched = Scheduler::<MockEntryId, TestAck>::new(SchedulerConfig {
-            parked_limit: 2,
-            ..SchedulerConfig::default()
-        });
-        let now = fx.at(0);
-
-        feed(&mut sched, fx.obs(1, 1, now), now);
-        assert_eq!(sched.park(VehicleId(1), fx.result(1, 2), now), Park::Parked);
-        assert_eq!(sched.park(VehicleId(1), fx.result(1, 3), now), Park::Parked);
-        assert_eq!(
-            sched.park(VehicleId(1), fx.result(1, 4), now),
-            Park::Dropped { limit: 2 }
-        );
-
-        let drained = sched.take_parked(VehicleId(1));
-        assert_eq!(drained.len(), 2);
-        assert_eq!(sched.park(VehicleId(1), fx.result(1, 5), now), Park::Parked);
-    }
-
-    #[test]
-    fn parking_an_untracked_vehicle_drops() {
+    fn rollback_commit_keeps_the_raw_head_and_re_readies_it() {
         let fx = Fixture::new();
         let mut sched = scheduler(&fx);
         let now = fx.at(0);
-        assert_eq!(
-            sched.park(VehicleId(1), fx.result(1, 1), now),
-            Park::Dropped { limit: 4 }
-        );
-        assert!(sched.take_parked(VehicleId(1)).is_empty());
+
+        feed(&mut sched, fx.obs(1, 1, now), now);
+        sched.next_ready();
+        sched.activate(VehicleId(1), fx.job(1, 1, now)).unwrap();
+        sched.begin_commit(VehicleId(1)).unwrap();
+
+        let job = sched
+            .rollback_commit(VehicleId(1))
+            .expect("active commit rolls back");
+        assert_eq!(job.observation.sequence, 1);
+        assert_eq!(sched.head(VehicleId(1)).unwrap().id.sequence, 1);
+        assert_eq!(sched.next_ready(), Some(VehicleId(1)));
+        assert!(!sched.state(VehicleId(1)).unwrap().committing);
     }
 
     #[test]
