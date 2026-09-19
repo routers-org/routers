@@ -58,12 +58,24 @@
         gcloud = pkgs.google-cloud-sdk.withExtraComponents [
           pkgs.google-cloud-sdk.components.gke-gcloud-auth-plugin
         ];
-      in
-      {
-        devShells.default = pkgs.mkShell {
+
+        # RustRover is unfree, so it is resolved from its own nixpkgs
+        # instance: `nix develop` stays usable without `allowUnfree`, which
+        # only the `.#rustrover` shell below needs.
+        unfreePkgs = import nixpkgs {
+          inherit system;
+          config.allowUnfree = true;
+        };
+
+        # The IDE reads the toolchain from a path typed into its settings, so
+        # the shell links one at a fixed, per-checkout location that survives
+        # store-path churn.
+        ideToolchain = ".rustrover/toolchain";
+
+        mkShell' = extraPackages: pkgs.mkShell {
           buildInputs = libs;
 
-          packages = with pkgs; [
+          packages = extraPackages ++ (with pkgs; [
             bashInteractive
 
             # Rust toolchain (rustc/cargo/clippy/rustfmt + wasm targets).
@@ -108,7 +120,9 @@
             cmake
             perl
             rustPlatform.bindgenHook
-          ];
+
+            natscli
+          ]);
 
           env = {
             PROTOC = lib.getExe' pkgs.protobuf "protoc";
@@ -129,8 +143,31 @@
                 protoc-gen-buffa-packaging@0.6.0
 
             [ -d schema/src/proto ] || echo "run 'buf generate' before building"
+
+            # Stable toolchain paths for IDEs that cannot follow a store path
+            # (RustRover asks for both of these under Settings -> Rust).
+            mkdir -p ${ideToolchain}
+            # The indexer walks these under whatever umask the shell was
+            # started with, so make them traversable and readable outright.
+            chmod a+rx .rustrover ${ideToolchain}
+            echo "*" > .rustrover/.gitignore
+            ln -sfn "${rustToolchain}/bin" ${ideToolchain}/bin
+            ln -sfn "${rustToolchain}/lib" ${ideToolchain}/lib
+            if command -v rustrover > /dev/null; then
+              echo "RustRover, Settings -> Rust:"
+              echo "  toolchain location:    $PWD/${ideToolchain}/bin"
+              echo "  standard library:      $PWD/${ideToolchain}/lib/rustlib/src/rust/library"
+            fi
           '';
         };
+      in
+      {
+        devShells.default = mkShell' [ ];
+
+        # `nix develop .#rustrover` adds the IDE itself; launch it from the
+        # shell with `rustrover .` so it inherits PATH, PROTOC and the linker
+        # flags, then point Settings -> Rust at the paths printed on entry.
+        devShells.rustrover = mkShell' [ unfreePkgs.jetbrains.rust-rover ];
       }
     );
 }
