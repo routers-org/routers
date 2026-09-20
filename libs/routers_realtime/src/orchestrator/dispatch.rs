@@ -1,35 +1,10 @@
-//! Job builder and publisher: the orchestrator's dispatch step. (spec §3, §10)
+//! Job builder and publisher: the orchestrator's dispatch step.
 //!
-//! Dispatch is the moment a vehicle's next observation becomes a
-//! [`SolveJob`] on the wire. It does three things, in order, and nothing else:
-//!
-//! 1. **Builds a deterministic, immutable context.** [`build_context`] turns the
-//!    vehicle's committed checkpoint plus its head observation into a
-//!    [`Continuation`] (resume the retained trip, or restart it) and the
-//!    provenance a commit needs — the [`BaseState`] to compare-and-swap against
-//!    and the continuity [`SegmentId`]. Because the context is a pure function
-//!    of the checkpoint and the head, two orchestrators (or the same one
-//!    retrying) that see the same inputs mint byte-identical job bytes and the
-//!    same [`JobId`].
-//! 2. **Reserves admission before publishing.** A job's encoded size is charged
-//!    against the [`Admission`] controller *first*; only once a [`Permit`] is
-//!    held does the job reach a matcher queue. Work that cannot be admitted is
-//!    left waiting outside the solve plane (spec §3) — dispatch publishes
-//!    nothing and hands the reason back so the caller can record held demand.
-//! 3. **Publishes with acknowledgement, retrying an ambiguous outcome.** The
-//!    same bytes are (re)published under the job's [`JobId`] as `Nats-Msg-Id`. A
-//!    [`PublishError::Ambiguous`] outcome — the publish may or may not have
-//!    landed — is retried with those identical bytes so the broker's dedup
-//!    window collapses a double landing (spec §10, "job publish outcome
-//!    unknown"). The vehicle's state is never advanced on a failed publish; the
-//!    [`Permit`] is dropped, its credits released, and the caller re-dispatches
-//!    the identical job later.
-//!
-//! Dispatch does not touch the scheduler. On success it hands the caller a fully
-//! formed [`ActiveJob`] (permit included) plus the reset/segment provenance; the
-//! worker is what calls `scheduler.activate` and arms the deadline. Keeping that
-//! split means this module has no mutable state and stays a pure builder wrapped
-//! around one publish.
+//! Builds a deterministic, immutable solve context from a checkpoint and head
+//! observation, reserves admission credit before publishing, then republishes the
+//! identical bytes under the job's [`JobId`] on an ambiguous outcome so the broker
+//! dedups. A pure builder with no mutable state: the vehicle is never advanced on
+//! a failed publish, and the scheduler is left to the caller.
 
 use core::time::Duration;
 
@@ -53,36 +28,24 @@ use crate::region::resolver::Resolution;
 use crate::store::checkpoint::VehicleCheckpoint;
 use crate::topology::jobs::job_subject;
 
-/// The ceiling the doubling publish backoff never exceeds. Kept as a constant
-/// rather than a [`DispatchConfig`] field so the config stays the four knobs the
-/// shared contract fixes; the cap is a property of the retry loop, not a tuning
-/// dial callers vary.
+/// The ceiling the doubling publish backoff never exceeds.
 const BACKOFF_CAP: Duration = Duration::from_secs(2);
 
 /// Static configuration for a [`Dispatcher`].
-///
-/// The two publish knobs bound how hard an ambiguous publish is retried; the two
-/// continuity knobs are the thresholds [`build_context`] uses to decide a job
-/// must restart a vehicle's segment rather than resume it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct DispatchConfig {
-    /// How many publish attempts an ambiguous outcome may consume before dispatch
-    /// gives up (and the caller re-dispatches the identical job later).
+    /// How many publish attempts an ambiguous outcome may consume before dispatch gives up.
     pub attempts: u32,
-    /// The initial backoff between ambiguous-publish retries. It doubles each
-    /// retry up to an internal 2-second ceiling.
+    /// The initial backoff between ambiguous-publish retries; doubles each retry up to a 2 s ceiling.
     pub backoff: Duration,
-    /// The largest gap between the last committed observation and a new one that
-    /// still counts as the same journey; a larger gap forces a segment reset.
+    /// The largest time gap between the last committed observation and a new one that still counts as the same journey; a larger gap forces a segment reset.
     pub gap: Duration,
-    /// The largest straight-line jump (metres, haversine) between the last
-    /// committed observation and a new one that is not treated as a teleport.
+    /// The largest straight-line jump (metres, haversine) that is not treated as a teleport.
     pub jump_distance_m: f64,
 }
 
 impl Default for DispatchConfig {
-    /// The spec defaults: five publish attempts, a 100 ms initial backoff, a
-    /// 120-second continuity gap, and a 2 km teleport threshold.
+    /// The spec defaults: five attempts, 100 ms backoff, 120 s gap, 2 km teleport threshold.
     fn default() -> Self {
         Self {
             attempts: 5,
@@ -93,37 +56,26 @@ impl Default for DispatchConfig {
     }
 }
 
-/// The immutable solve context [`build_context`] derives for one observation:
-/// what the matcher should resume from, what a commit must compare against, and
-/// whether continuity was broken.
+/// The immutable solve context [`build_context`] derives for one observation.
 pub struct Built<E: Entry> {
     /// The resume/restart state the matcher solves from.
     pub continuation: Continuation<E>,
-    /// The committed state a commit compare-and-swaps against, or `None` for a
-    /// fresh vehicle with no checkpoint yet. Present even on a reset, because the
-    /// commit still races the *current* revision.
+    /// The committed state a commit compare-and-swaps against, or `None` for a fresh vehicle with no checkpoint yet.
     pub base: Option<BaseState>,
-    /// The continuity segment this job belongs to — the checkpoint's segment when
-    /// resuming, a fresh segment (the head observation's sequence) on a reset or
-    /// a brand-new vehicle.
+    /// The continuity segment this job belongs to.
     pub segment: SegmentId,
-    /// Why continuity was broken, if it was. `None` means the job continues the
-    /// existing segment.
+    /// Why continuity was broken; `None` means the job continues the existing segment.
     pub reset: Option<ResetReason>,
 }
 
-/// The [`Origin`] a payload represents: its position and its supplier timestamp
-/// in unix microseconds (the same units the wire and the matcher use).
+/// The [`Origin`] a payload represents: position and supplier timestamp in unix microseconds.
 fn origin_of(payload: &Payload) -> Origin {
     Origin::new(payload.point, payload.timestamp.timestamp_micros())
 }
 
-/// Whether the step from the last committed origin to `head` breaks continuity,
-/// and why. A gap in time is checked before a jump in space, so a stale-then-
-/// -teleported vehicle reports the gap (either way its segment restarts).
+/// Whether the step from the last committed origin to `head` breaks continuity, and why.
 fn continuity_break(last: &Origin, head: &Origin, cfg: &DispatchConfig) -> Option<ResetReason> {
-    // Saturating so a (suppressed upstream, `debug_assert`ed below) timestamp
-    // regression cannot overflow; a non-positive elapsed never trips the gap.
+    // A time gap is checked before a spatial jump, so a stale-then-teleported vehicle reports the gap.
     let elapsed_us = head.timestamp.saturating_sub(last.timestamp);
     if elapsed_us > cfg.gap.as_micros() as i64 {
         return Some(ResetReason::Gap);
@@ -137,24 +89,8 @@ fn continuity_break(last: &Origin, head: &Origin, cfg: &DispatchConfig) -> Optio
 /// Build the deterministic, immutable context for solving `head` (identified by
 /// `observation`) given the vehicle's committed `checkpoint`.
 ///
-/// The rules (spec §3, §8):
-///
-/// * **No checkpoint** (a fresh vehicle): [`Continuation::Restart`] from the head
-///   alone, no [`BaseState`], a segment valued as the head observation's
-///   sequence, and no reset.
-/// * **Checkpoint present, continuity broken** — the head is more than
-///   [`DispatchConfig::gap`] after, or more than [`DispatchConfig::jump_distance_m`]
-///   from, the last committed origin: restart from the head into a *new* segment,
-///   carrying the current [`BaseState`] (the commit still compare-and-swaps on
-///   the current revision) and the [`ResetReason`].
-/// * **Checkpoint present, continuous**: hand the retained trip and the committed
-///   history (its origins plus the head) to [`Continuation::reconcile`], which
-///   decides resume-versus-restart, keep the checkpoint's segment, and carry the
-///   current [`BaseState`].
-///
-/// Pure and clock-free: the same inputs always yield the same context (and hence
-/// the same [`JobId`]), which is what lets an ambiguous publish be retried
-/// byte-for-byte.
+/// Pure and clock-free: identical inputs always yield an identical context (and
+/// job id), which is what lets an ambiguous publish be retried byte-for-byte.
 pub fn build_context<E: Entry>(
     checkpoint: Option<&VehicleCheckpoint<E>>,
     observation: ObservationId,
@@ -162,8 +98,6 @@ pub fn build_context<E: Entry>(
     cfg: &DispatchConfig,
 ) -> Built<E> {
     let head_origin = origin_of(head);
-    // A fresh segment is always valued as the opening observation's sequence, so
-    // segments are deterministic without a shared counter.
     let fresh_segment = SegmentId::from(observation);
 
     let Some(checkpoint) = checkpoint else {
@@ -177,8 +111,7 @@ pub fn build_context<E: Entry>(
         };
     };
 
-    // The commit compares against exactly this revision/segment, on a reset or
-    // not — a racing commit must still be caught.
+    // The commit CASes on this revision even on a reset, so a racing commit is still caught.
     let current = BaseState {
         revision: checkpoint.revision,
         segment: checkpoint.segment,
@@ -202,8 +135,6 @@ pub fn build_context<E: Entry>(
         };
     }
 
-    // Continuous: let the library reconcile the retained trip with the committed
-    // history extended by the head, and keep the same segment.
     let mut history: Vec<Origin> = checkpoint.trip.origins().to_vec();
     history.push(head_origin);
     let continuation = Continuation::reconcile(Some(checkpoint.trip.clone()), &history);
@@ -216,39 +147,26 @@ pub fn build_context<E: Entry>(
     }
 }
 
-/// Why a [`Dispatcher::dispatch`] did not publish a job and record an active one.
-///
-/// Every variant leaves the vehicle's state untouched: on [`DispatchError::Held`]
-/// no permit was reserved, and on the publish/encode variants the permit is
-/// dropped (its credits released) before the error returns.
+/// Why a [`Dispatcher::dispatch`] did not publish a job. Every variant leaves the
+/// vehicle's state untouched and releases any reserved permit.
 #[derive(Debug, Error)]
 pub enum DispatchError {
-    /// A credit scope was at capacity, so the vehicle is left waiting outside the
-    /// matcher queues. The caller records held demand and retries later; nothing
-    /// was published.
+    /// A credit scope was at capacity; nothing was published and the caller retries later.
     #[error("admission held: {0}")]
     Held(HeldReason),
-    /// The resolved region was not among those the admission controller was built
-    /// for — a configuration mismatch, not backpressure.
+    /// The resolved region is not among those the admission controller was built for.
     #[error("region is not known to the admission controller")]
     UnknownRegion,
-    /// The job could not be encoded. Unreachable for an in-memory value (postcard
-    /// of these types is infallible), but surfaced rather than panicked.
+    /// The job could not be encoded.
     #[error("could not encode the solve job: {0}")]
     Encode(anyhow::Error),
-    /// The publish failed outright, or stayed ambiguous past the retry budget. The
-    /// permit was released; the caller re-dispatches the identical job later.
+    /// The publish failed outright, or stayed ambiguous past the retry budget; the permit was released.
     #[error("job publish failed: {0}")]
     Publish(#[source] PublishError),
 }
 
 /// A successfully dispatched job: the [`ActiveJob`] to attach to the vehicle (it
 /// owns the admission [`Permit`]) plus the provenance a commit later needs.
-///
-/// The caller records `job` with `scheduler.activate`, arms its deadline, and
-/// carries `reset`/`segment` into the commit so a broken segment emits its
-/// [`OutputKind::Reset`](crate::protocol::output::OutputKind::Reset) before the
-/// match.
 #[derive(Debug)]
 pub struct Dispatched {
     /// The single logical job now in flight for the vehicle.
@@ -257,16 +175,12 @@ pub struct Dispatched {
     pub reset: Option<ResetReason>,
     /// The continuity segment this job belongs to.
     pub segment: SegmentId,
-    /// `true` when the broker recognised the publish as a duplicate — the job was
-    /// already stored (an ambiguous publish that had in fact landed).
+    /// `true` when the broker recognised the publish as a duplicate that had already landed.
     pub duplicate: bool,
 }
 
-/// Builds and publishes solve jobs over a [`Publisher`].
-///
-/// Stateless apart from its `publisher` and `cfg`: every call to
-/// [`dispatch`](Self::dispatch) is self-contained, so one `Dispatcher` is shared
-/// by a process's partition workers without coordination.
+/// Builds and publishes solve jobs over a [`Publisher`]. Stateless, so one
+/// instance is shared by a process's partition workers without coordination.
 pub struct Dispatcher<P> {
     publisher: P,
     cfg: DispatchConfig,
@@ -285,17 +199,11 @@ impl<P> Dispatcher<P> {
 
     /// Build, admit, and publish the solve job for `head`.
     ///
-    /// `now` is the monotonic reference the returned [`ActiveJob`] deadlines and
-    /// dispatch time are measured from (the worker's local scheduling clock);
-    /// `now_us` is the absolute unix-microsecond wall clock the *matcher*
-    /// deadlines the job against. They are separate because the two consumers
-    /// keep separate clocks — the local deadline heap is monotonic, the wire
-    /// deadline is absolute.
-    ///
-    /// Returns [`Dispatched`] on success. On [`DispatchError::Held`] nothing was
-    /// published and no credit reserved; on the publish/encode errors the permit
-    /// is released and the vehicle state is left exactly as it was, ready to
-    /// re-dispatch the identical job (spec §10).
+    /// `now` is the monotonic reference for the returned [`ActiveJob`]'s deadline;
+    /// `now_us` is the absolute unix-microsecond deadline the matcher uses. On
+    /// [`DispatchError::Held`] nothing was published or reserved; on the other
+    /// errors the permit is released and the vehicle state is left ready to
+    /// re-dispatch the identical job.
     #[allow(clippy::too_many_arguments)]
     pub async fn dispatch<E, H>(
         &self,
@@ -336,13 +244,10 @@ impl<P> Dispatcher<P> {
         let deadline_us = now_us + resolution.budget.as_micros() as i64;
         let job = SolveJob::new(identity.clone(), resolution.lane, deadline_us, continuation);
 
-        // Encode once: the same bytes are what admission charges for, what the
-        // broker dedups on, and what every retry republishes.
         let bytes = job.encode().map_err(DispatchError::Encode)?;
         let byte_len = bytes.len() as u64;
 
-        // Reserve credit before anything reaches a matcher queue. A held request
-        // publishes nothing; the caller keeps the vehicle waiting.
+        // Reserve credit before anything reaches a matcher queue.
         let permit: Permit = match admission.try_admit(&resolution.region, byte_len) {
             Ok(permit) => permit,
             Err(AdmitError::Held(held)) => return Err(DispatchError::Held(held.reason)),
@@ -352,8 +257,7 @@ impl<P> Dispatcher<P> {
         let subject = job_subject(&resolution.graph, &resolution.region, resolution.lane);
         let msg_id = job.msg_id();
 
-        // Publish with acknowledgement. On any error return, `permit` drops here
-        // and releases its credit — the vehicle state stays as it was.
+        // On any error return, `permit` drops here and releases its credit.
         let duplicate = self
             .publish_bytes_with_retry(&subject, &msg_id, &bytes)
             .await?;
@@ -391,8 +295,6 @@ impl<P> Dispatcher<P> {
         let mut delay = self.cfg.backoff;
         let mut attempt: u32 = 1;
         loop {
-            // Fresh headers each attempt: a new send time, this build's schema,
-            // and the current trace context. The dedup key stays `msg_id`.
             let mut headers = outbound();
             stamp_schema(&mut headers);
 
@@ -406,12 +308,9 @@ impl<P> Dispatcher<P> {
             .await
             {
                 Ok(PublishOutcome::Acked { duplicate, .. }) => return Ok(duplicate),
-                // Known failure: nothing landed, so surface it and release credit.
                 Err(PublishError::Failed(cause)) => {
                     return Err(DispatchError::Publish(PublishError::Failed(cause)));
                 }
-                // Unknown outcome: a copy may already be stored. Retry the exact
-                // bytes so the broker dedups, until the attempt budget is spent.
                 Err(PublishError::Ambiguous(cause)) => {
                     if attempt >= self.cfg.attempts {
                         return Err(DispatchError::Publish(PublishError::Ambiguous(cause)));
@@ -446,7 +345,6 @@ mod tests {
 
     type Costing = CostingStrategies<DefaultEmissionCost, DefaultTransitionCost, MockEntryId>;
 
-    /// A trivial ack handle: dispatch never touches it, so it records nothing.
     struct NoAck;
 
     impl AckHandle for NoAck {
@@ -472,7 +370,6 @@ mod tests {
         RegionId::new("r1").unwrap()
     }
 
-    /// The budget every fixture resolution grants; deadlines derive from it.
     const BUDGET: Duration = Duration::from_millis(30_000);
 
     fn resolution() -> Resolution {
@@ -486,8 +383,6 @@ mod tests {
         }
     }
 
-    /// An admission controller that can hold `jobs` outstanding jobs in the
-    /// fixture region (a generous byte budget so only the job cap ever bites).
     fn admission(jobs: u64) -> Admission {
         let cfg = AdmissionConfig {
             region_jobs: jobs,
@@ -516,8 +411,6 @@ mod tests {
         }
     }
 
-    /// A staircase road (same shape the matched-diff test uses) that the
-    /// observation trace below anchors cleanly against.
     fn bent_road() -> MockNetwork {
         MockNetworkBuilder::new()
             .node(1, point!(x: -118.15, y: 34.15))
@@ -532,7 +425,6 @@ mod tests {
             .build()
     }
 
-    /// The first supplier stamp of the trace; observations march forward from it.
     const TRACE_START_US: i64 = 1_775_000_000_000_000;
 
     fn trace_origins() -> Vec<Origin> {
@@ -550,8 +442,6 @@ mod tests {
         .collect()
     }
 
-    /// Build a resumable [`Trip`] by pushing `origins` through a matcher on the
-    /// staircase network (the only way to mint a non-empty trip).
     fn trip_with(origins: &[Origin]) -> Trip<MockEntryId> {
         let net = bent_road();
         let costing = Costing::default();
@@ -564,8 +454,6 @@ mod tests {
         trip
     }
 
-    /// A committed checkpoint whose retained trip is the whole `trace_origins`
-    /// trace, at the given revision and segment.
     fn checkpoint(revision: u64, segment: u64) -> VehicleCheckpoint<MockEntryId> {
         VehicleCheckpoint {
             trip: trip_with(&trace_origins()),
@@ -582,8 +470,6 @@ mod tests {
         }
     }
 
-    /// The timestamp just after the last trace origin, and its position — the
-    /// natural continuation of the trace.
     fn continuing_head() -> Payload {
         let last = *trace_origins().last().unwrap();
         payload(
@@ -592,8 +478,6 @@ mod tests {
             last.timestamp + 5_000_000,
         )
     }
-
-    // ----- build_context (pure) -----
 
     #[test]
     fn fresh_vehicle_restarts_with_no_base() {
@@ -628,7 +512,6 @@ mod tests {
         let built = build_context(Some(&cp), obs, &head, &cfg);
 
         assert!(built.reset.is_none());
-        // Same segment as the checkpoint (continuity preserved), CASed on it.
         assert_eq!(built.segment, SegmentId(7));
         assert_eq!(
             built.base,
@@ -662,7 +545,7 @@ mod tests {
         let built = build_context(Some(&cp), obs, &head, &cfg);
 
         assert_eq!(built.reset, Some(ResetReason::Gap));
-        assert_eq!(built.segment, SegmentId(999)); // a fresh segment
+        assert_eq!(built.segment, SegmentId(999));
         assert_eq!(
             built.base,
             Some(BaseState {
@@ -697,8 +580,6 @@ mod tests {
         assert!(matches!(built.continuation, Continuation::Restart { .. }));
     }
 
-    // ----- dispatch (async, over MemoryBus) -----
-
     fn dispatcher(
         bus: &MemoryBus,
         cfg: DispatchConfig,
@@ -727,10 +608,8 @@ mod tests {
         assert!(!dispatched.duplicate);
         assert_eq!(dispatched.job.observation, head.id);
         assert_eq!(dispatched.job.id, dispatched.job.identity.job_id());
-        // The permit is retained in the active job.
         assert_eq!(adm.global().jobs, 1);
 
-        // Exactly one message, addressed by the job id, that verifies and decodes.
         let subject = job_subject(&res.graph, &res.region, res.lane);
         let published = bus.published(&subject);
         assert_eq!(published.len(), 1);
@@ -802,7 +681,6 @@ mod tests {
     #[tokio::test]
     async fn ambiguous_publish_retries_the_same_bytes_and_dedups() {
         let bus = MemoryBus::new();
-        // Zero backoff so the single retry does not stall the test.
         let cfg = DispatchConfig {
             backoff: Duration::ZERO,
             ..DispatchConfig::default()
@@ -895,7 +773,6 @@ mod tests {
             bus.published(&subject).is_empty(),
             "a failed publish stores nothing"
         );
-        // The permit dropped on the error return, so no credit leaked.
         assert_eq!(adm.global().jobs, 0);
         assert_eq!(adm.snapshot()[0].jobs, 0);
     }

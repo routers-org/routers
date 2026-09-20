@@ -1,10 +1,6 @@
-/// Loads and sorts the full dataset, then walks events in chronological
-/// order. Each event is validated and published, broker-acknowledged, through
-/// [`Ingress`] — the reference producer for the ingest contract
-/// (`routers_realtime::ingress` + `topology`). By default it feeds the live
-/// raw journal; with `--isolated <run>` it provisions and feeds a private
-/// `replay.<run>.` journal instead, so rematching history never injects
-/// historical work into the live deadline path.
+/// Loads and sorts the dataset, then publishes each event through [`Ingress`]
+/// in chronological order. By default it feeds the live journal;
+/// `--isolated <run>` feeds a private replay journal.
 extern crate alloc;
 
 use alloc::collections::BTreeMap;
@@ -58,23 +54,15 @@ struct Args {
     #[arg(long, env, default_value_t = 4)]
     streams: u64,
 
-    /// Replay into an isolated processing run instead of the live journal.
-    /// Subjects and streams are prefixed `replay.<run>.`, so the historical
-    /// events never enter the live deadline path and age out on their own.
-    /// `<run>` must be NATS-safe (`[A-Za-z0-9_-]+`).
+    /// Replay into an isolated run (subjects/streams prefixed `replay.<run>.`); `<run>` must be NATS-safe (`[A-Za-z0-9_-]+`).
     #[arg(long, env = "REPLAY_ISOLATED")]
     isolated: Option<String>,
 
-    /// Reject observations older than this before publishing (a humantime
-    /// duration, e.g. `7days`, `36h`). A historical backfill should pass a
-    /// large value — e.g. `--max-age 3650days` — so old rows are admitted
-    /// rather than dropped. Defaults to `IngressLimits::default()` (7 days).
+    /// Reject observations older than this before publishing (humantime, e.g. `7days`). Defaults to `IngressLimits::default()` (7 days).
     #[arg(long, env, value_parser = humantime::parse_duration)]
     max_age: Option<Duration>,
 
-    /// Reject observations whose timestamp is more than this far in the future
-    /// (a humantime duration, e.g. `5min`). Guards against clock skew, not
-    /// history. Defaults to `IngressLimits::default()` (5 minutes).
+    /// Reject observations more than this far in the future (humantime, e.g. `5min`); guards clock skew. Defaults to 5 minutes.
     #[arg(long, env, value_parser = humantime::parse_duration)]
     max_ahead: Option<Duration>,
 }
@@ -124,8 +112,6 @@ async fn main() -> anyhow::Result<()> {
 
     let context = jetstream::new(client);
 
-    // Age/skew limits: whatever the caller passed, otherwise the shared
-    // ingress defaults.
     let defaults = IngressLimits::default();
     let limits = IngressLimits {
         max_age: args.max_age.unwrap_or(defaults.max_age),

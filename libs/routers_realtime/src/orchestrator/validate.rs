@@ -1,38 +1,9 @@
-//! Orchestrator: the pure result reader and validator (spec §3, §8).
+//! Orchestrator: the pure result reader and validator.
 //!
-//! A partition worker reads solve results off its result plane and must decide,
-//! for each one, whether it is *the* answer to the vehicle's in-flight job, an
-//! answer that has arrived before the state that should consume it, an
-//! answer that is definitively obsolete, or a poisoned duplicate that must be
-//! kept out of the commit path. That decision is entirely a function of the
-//! vehicle's current state and the result envelope — no I/O, no clock — so it
-//! lives here as a pure function and the worker performs the side effects it
-//! implies (commit, park, ack-and-drop, quarantine-and-ack).
-//!
-//! # Why a result can outrun its state
-//!
-//! Results are addressed to the vehicle's partition and read by the one owner
-//! of that partition, but the owner rebuilds its per-vehicle state lazily: on
-//! recovery it replays the raw journal, and a result for a job it dispatched
-//! *before* a crash can be redelivered before replay has re-created the pending
-//! observation and re-dispatched that job. Such a result is not obsolete — it
-//! is early. The validator distinguishes "early" (park and revisit) from
-//! "obsolete" (older than or equal to the committed input, a closed segment, a
-//! stale base, or a foreign schema) so the worker never drops an answer it will
-//! still need, and never commits one it must not.
-//!
-//! # Why quarantine exists
-//!
-//! Determinism means the same job identity always hashes to the same [`JobId`],
-//! so a redelivered result for a job the worker has already committed carries
-//! the *same* id. That is harmless only if the bytes are identical, which this
-//! layer cannot check (it does not hold the prepared bytes). Rather than risk
-//! committing a second, possibly-divergent answer over a finalized one, a
-//! same-id result arriving once a commit is already in flight is quarantined —
-//! never committed, acknowledged so the broker stops redelivering it, and kept
-//! for diagnosis. Content comparison against the prepared bytes is the worker's
-//! job (it may then raise [`QuarantineReason::ConflictingContent`]); this pure
-//! function only sees identities.
+//! Classifies each solve result against the vehicle's current state as commit,
+//! park (early — replay has not re-created its job), reject (obsolete), or
+//! quarantine (a same-id redelivery whose bytes cannot be compared here). Pure
+//! and I/O-free: the worker performs the side effect the verdict implies.
 
 use core::cmp::Ordering;
 
@@ -47,38 +18,24 @@ use crate::protocol::result::SolveResult;
 use crate::store::checkpoint::VehicleCheckpoint;
 
 /// The validator's decision for one solve result against one vehicle's state.
-///
-/// The lifetime `'a` borrows the vehicle's [`ActiveJob`] into
-/// [`Verdict::Accept`] so the worker commits the very job it validated without
-/// a second lookup. It is deliberately *not* generic over the network entry
-/// type `E`: every variant is either entry-free or borrows the non-generic
-/// [`ActiveJob`], so an `E` parameter would be unused (see the module report's
-/// deviation note).
 #[derive(Debug)]
 pub enum Verdict<'a> {
-    /// The expected result for the vehicle's active job: commit it. Borrows the
-    /// active job so the worker commits exactly what was validated.
+    /// The expected result for the vehicle's active job: commit it.
     Accept {
         /// The in-flight job this result answers.
         job: &'a ActiveJob,
     },
     /// No active job yet for this observation, but it is newer than the last
-    /// committed input: replay has not reached it. Park (bounded) and revisit
-    /// when the job is dispatched.
+    /// committed input: replay has not reached it. Park and revisit when the job is dispatched.
     Park,
-    /// Definitively obsolete: at or below the committed input, from a closed
-    /// segment, a stale base, or a schema the vehicle no longer uses. Ack and
-    /// drop.
+    /// Definitively obsolete: ack and drop.
     Reject(RejectReason),
-    /// A same-identity result that must never reach the commit path: a second
-    /// answer for a job already being committed. Keep it for diagnosis.
+    /// A same-identity result that must never reach the commit path; kept for diagnosis.
     Quarantine(QuarantineReason),
 }
 
 impl Verdict<'_> {
-    /// A bounded, low-cardinality label for the verdict class, suitable as a
-    /// metric dimension. The finer reason lives on the inner enum's own
-    /// [`RejectReason::label`] / [`QuarantineReason::label`].
+    /// A bounded, low-cardinality label for the verdict class, suitable as a metric dimension.
     #[must_use]
     pub fn label(&self) -> &'static str {
         match self {
@@ -93,31 +50,24 @@ impl Verdict<'_> {
 /// Why a result is definitively obsolete and may be acknowledged and dropped.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RejectReason {
-    /// The result's observation is at or below the vehicle's last committed
-    /// input: its decision has already been made and superseded.
+    /// The result's observation is at or below the vehicle's last committed input.
     Committed,
-    /// The result resumes from a base the vehicle no longer holds — a different
-    /// revision/segment than the one currently in flight or committed.
+    /// The result resumes from a base the vehicle no longer holds.
     StaleBase {
         /// The base the vehicle expects (its in-flight job's base), if any.
         expected: Option<BaseState>,
         /// The base the result was solved against, if any.
         got: Option<BaseState>,
     },
-    /// The result belongs to a continuity segment the vehicle has since closed
-    /// (a reset opened a new one); its layers must not be committed.
+    /// The result belongs to a continuity segment the vehicle has since closed.
     SegmentClosed,
-    /// The result's vehicle does not map to the partition this worker owns — it
-    /// was addressed to the wrong reader.
+    /// The result's vehicle does not map to the partition this worker owns.
     WrongVehicle,
     /// The result was produced against a wire schema this build does not serve.
     Schema,
-    /// The echoed job id does not match the id its identity hashes to: a
-    /// corrupted or crossed envelope.
+    /// The echoed job id does not match the id its identity hashes to.
     IdMismatch,
-    /// The job for this exact observation has already been resolved and
-    /// committed (for example by the deadline handler firing a `Terminal`
-    /// before the real answer arrived).
+    /// The job for this exact observation has already been resolved and committed.
     ExpiredJob,
 }
 
@@ -137,18 +87,12 @@ impl RejectReason {
     }
 }
 
-/// Why a result is quarantined: kept out of the commit path but retained for
-/// diagnosis rather than dropped.
+/// Why a result is quarantined: kept out of the commit path but retained for diagnosis.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum QuarantineReason {
-    /// Same logical job identity as one already accepted, but different
-    /// semantic content. Raised by the worker after comparing against the
-    /// prepared bytes — the pure validator cannot see content, so it never
-    /// emits this itself.
+    /// Same logical job identity as one already accepted, but different semantic content. Raised by the worker, never by the pure validator.
     ConflictingContent,
-    /// A second result for a job whose commit is already in flight. The first
-    /// answer won; a same-id redelivery after prepare is safe to commit only if
-    /// byte-identical, which cannot be checked here, so it is quarantined.
+    /// A second result for a job whose commit is already in flight; its bytes cannot be compared here.
     DuplicateAfterCommit,
 }
 
@@ -164,32 +108,11 @@ impl QuarantineReason {
 }
 
 /// Classify one solve `result` against a `vehicle`'s current state on the
-/// partition `partition` this worker owns.
+/// `partition` this worker owns.
 ///
-/// The checks run in strict order so the most authoritative disqualifier wins:
-///
-/// 1. **Envelope integrity.** [`SolveResult::verify`] confirms the echoed id is
-///    the one the identity hashes to ([`RejectReason::IdMismatch`] otherwise),
-///    then the schema must be the one this build serves
-///    ([`RejectReason::Schema`]).
-/// 2. **Addressing.** The result's vehicle must map to `partition`
-///    ([`RejectReason::WrongVehicle`] otherwise).
-/// 3. **Segment continuity.** If a checkpoint is loaded and the result carries
-///    a base, its segment must equal the checkpoint's, else the segment has
-///    been closed by a reset ([`RejectReason::SegmentClosed`]).
-/// 4. **Job matching.** With an active job of the same id: accept it, unless a
-///    commit is already in flight ([`QuarantineReason::DuplicateAfterCommit`]).
-///    With an active job of a different id, compare observations — an older one
-///    is committed or stale, a newer one is early (park), an equal one with a
-///    different id means the base diverged ([`RejectReason::StaleBase`]).
-///    With no active job, an observation at or below the committed input is
-///    already decided (committed, or [`RejectReason::ExpiredJob`] for the exact
-///    committed head), and anything newer is early.
-///
-/// It is a pure function: the worker performs the commit / park / ack / retain
-/// the verdict implies. Content-level conflicts between two same-id results are
-/// the worker's to detect against the prepared bytes; this function only sees
-/// identities.
+/// Checks run in strict order — envelope integrity, addressing, segment
+/// continuity, then job matching — so the most authoritative disqualifier wins.
+/// Pure: the worker performs the commit / park / ack / retain the verdict implies.
 pub fn validate<'a, E, H>(
     vehicle: &'a VehicleState<E, H>,
     result: &SolveResult<E>,
@@ -199,8 +122,6 @@ where
     E: Entry,
     H: AckHandle,
 {
-    // 1. Envelope integrity. A crossed or corrupted id, or a schema this build
-    //    does not serve, is rejected before any state is consulted.
     if result.verify().is_err() {
         return Verdict::Reject(RejectReason::IdMismatch);
     }
@@ -208,27 +129,18 @@ where
         return Verdict::Reject(RejectReason::Schema);
     }
 
-    // 2. Addressing. A result whose vehicle does not map to this partition was
-    //    delivered to the wrong owner.
     if result.partition() != partition {
         return Verdict::Reject(RejectReason::WrongVehicle);
     }
 
-    // 3. Segment continuity. A loaded checkpoint fixes the vehicle's current
-    //    segment; a result carrying a base from a different segment belongs to
-    //    a generation the vehicle has closed. (A base-less result is left to
-    //    the observation checks below — it cannot name a stale segment.)
+    // A base-less result names no segment, so it is left to the observation checks below.
     if let (Some(cp), Some(base)) = (vehicle.checkpoint.present(), result.identity.base)
         && base.segment != cp.segment
     {
         return Verdict::Reject(RejectReason::SegmentClosed);
     }
 
-    // 4. Job matching.
     match &vehicle.active {
-        // The answer to the job in flight. Accept it — unless a commit is
-        // already in flight for it, in which case the first answer won and this
-        // same-id redelivery is quarantined (its bytes cannot be compared here).
         Some(active) if active.id == result.job => {
             if vehicle.committing {
                 Verdict::Quarantine(QuarantineReason::DuplicateAfterCommit)
@@ -236,26 +148,15 @@ where
                 Verdict::Accept { job: active }
             }
         }
-        // A different job is in flight. The result's place is decided by its
-        // observation relative to the active one.
         Some(active) => match result.identity.observation.cmp(&active.observation) {
-            // Older than the job in flight: already committed if it is at or
-            // below the last committed input, otherwise a stale base for a
-            // superseded observation.
             Ordering::Less => Verdict::Reject(older_reject(vehicle, active, result)),
-            // Newer than the job in flight: this owner must have dispatched it
-            // before a crash; replay will re-create it. Park until then.
+            // Newer than the in-flight job: this owner dispatched it before a crash; park until replay re-creates it.
             Ordering::Greater => Verdict::Park,
-            // The same observation but a different id: the base diverged (for
-            // example a new segment opened after state loss).
             Ordering::Equal => Verdict::Reject(RejectReason::StaleBase {
                 expected: active.identity.base,
                 got: result.identity.base,
             }),
         },
-        // No job in flight. A loaded checkpoint decides obsolescence; without
-        // one the vehicle has not been reconstructed yet, so the result is
-        // early.
         None => match vehicle.checkpoint.present() {
             Some(cp) => match result.identity.observation.cmp(&cp.last_input) {
                 Ordering::Less => Verdict::Reject(RejectReason::Committed),
@@ -267,10 +168,9 @@ where
     }
 }
 
-/// The reject reason for a result older than the vehicle's in-flight job: it is
-/// [`RejectReason::Committed`] when the result is at or below the last committed
-/// input, otherwise a [`RejectReason::StaleBase`] carrying the base the vehicle
-/// currently works from versus the one the result was solved against.
+/// The reject reason for a result older than the vehicle's in-flight job:
+/// [`RejectReason::Committed`] at or below the last committed input, else
+/// [`RejectReason::StaleBase`].
 fn older_reject<E, H>(
     vehicle: &VehicleState<E, H>,
     active: &ActiveJob,
@@ -291,15 +191,9 @@ where
     }
 }
 
-/// Count nothing but report the earliest layer a solve would rewrite: the
-/// smallest layer timestamp in `diff` at or below the checkpoint's finality
-/// watermark, or `None` when the checkpoint is absent, has no watermark, or the
-/// diff touches only unfinalized history.
-///
-/// Layers at or below [`VehicleCheckpoint::finalized_through`] are settled and
-/// must never be re-emitted by a later revision. The commit coordinator strips
-/// such layers before publishing; this separate query lets the worker observe
-/// and count them without a bundled return riding along the commit path.
+/// Report the earliest layer a solve would rewrite: the smallest layer timestamp
+/// in `diff` at or below the checkpoint's finality watermark, or `None` when the
+/// checkpoint is absent, has no watermark, or the diff touches only unfinalized history.
 #[must_use]
 pub fn finality_conflict<E: Entry>(
     checkpoint: Option<&VehicleCheckpoint<E>>,
@@ -335,8 +229,6 @@ mod tests {
     use crate::protocol::job::JobIdentity;
     use crate::protocol::result::{SolveOutcome, SolveResult};
 
-    /// A minimal [`AckHandle`]; the validator never acks, so it only needs to
-    /// exist as the vehicle's handle type.
     #[derive(Clone)]
     struct TestAck;
 
@@ -355,9 +247,6 @@ mod tests {
         }
     }
 
-    /// Shared setup: an admission controller (the only source of real
-    /// [`Permit`](crate::orchestrator::admission::Permit)s, which `ActiveJob`
-    /// needs) plus a region and a monotonic base instant.
     struct Fixture {
         admission: Admission,
         region: RegionId,
@@ -382,8 +271,6 @@ mod tests {
             }
         }
 
-        /// An identity for `vehicle` whose head is observation `seq`, resuming
-        /// from `base` (segment/revision) — `None` for a fresh vehicle.
         fn identity(&self, vehicle: u64, seq: u64, base: Option<BaseState>) -> JobIdentity {
             JobIdentity {
                 schema: SCHEMA_VERSION,
@@ -395,7 +282,6 @@ mod tests {
             }
         }
 
-        /// A well-formed result (id matches identity) for `vehicle`/`seq`.
         fn result(
             &self,
             vehicle: u64,
@@ -411,7 +297,6 @@ mod tests {
             }
         }
 
-        /// An active job for `vehicle` solving observation `seq` from `base`.
         fn job(&self, vehicle: u64, seq: u64, base: Option<BaseState>) -> ActiveJob {
             let identity = self.identity(vehicle, seq, base);
             ActiveJob {
@@ -425,8 +310,6 @@ mod tests {
             }
         }
 
-        /// A present checkpoint whose last committed input is `last_seq`, in
-        /// segment `segment`, finalized through `finalized`.
         fn checkpoint(
             &self,
             last_seq: u64,
@@ -445,8 +328,6 @@ mod tests {
             }
         }
 
-        /// A vehicle in a chosen state. All the levers the decision matrix
-        /// exercises are set here so each test reads as one row.
         fn vehicle(
             &self,
             checkpoint: CheckpointState<MockEntryId>,
@@ -464,8 +345,6 @@ mod tests {
         }
     }
 
-    /// The partition a validator must be told it owns for `vehicle` to be
-    /// addressed correctly.
     fn part(vehicle: u64) -> u16 {
         partition_of(VehicleId(vehicle)) as u16
     }
@@ -494,7 +373,6 @@ mod tests {
     #[test]
     fn accepts_a_resumed_job_when_segments_agree() {
         let fx = Fixture::new();
-        // Vehicle committed at segment 5; the in-flight job resumes from it.
         let checkpoint = CheckpointState::Present(fx.checkpoint(9, 5, None));
         let job = fx.job(1, 10, Some(base(9, 5)));
         let vehicle = fx.vehicle(checkpoint, Some(job), false);
@@ -541,8 +419,7 @@ mod tests {
     #[test]
     fn rejects_a_foreign_schema() {
         let fx = Fixture::new();
-        // Build an identity on a different schema; its id still matches so the
-        // envelope integrity check passes to the schema gate.
+        // Its id still hashes correctly, so validation reaches the schema gate.
         let mut identity = fx.identity(1, 10, None);
         identity.schema = crate::protocol::ids::SchemaVersion(SCHEMA_VERSION.0 + 1);
         let result = SolveResult::<MockEntryId> {
@@ -564,7 +441,6 @@ mod tests {
         let fx = Fixture::new();
         let vehicle = fx.vehicle(CheckpointState::Unloaded, None, false);
         let result = fx.result(1, 10, None);
-        // Any partition other than the vehicle's own.
         let wrong = part(1) ^ 1;
 
         assert!(matches!(
@@ -576,7 +452,7 @@ mod tests {
     #[test]
     fn rejects_a_result_from_a_closed_segment() {
         let fx = Fixture::new();
-        // Checkpoint is in segment 5; the result resumes from segment 4.
+        // The checkpoint is in segment 5; the result resumes from the closed segment 4.
         let checkpoint = CheckpointState::Present(fx.checkpoint(9, 5, None));
         let vehicle = fx.vehicle(checkpoint, None, false);
         let result = fx.result(1, 10, Some(base(9, 4)));
@@ -590,8 +466,7 @@ mod tests {
     #[test]
     fn parks_an_early_result_with_no_active_job() {
         let fx = Fixture::new();
-        // Checkpoint committed input 9; the result is for a newer observation
-        // whose job replay has not re-dispatched yet.
+        // A newer observation whose job replay has not re-dispatched yet.
         let checkpoint = CheckpointState::Present(fx.checkpoint(9, 5, None));
         let vehicle = fx.vehicle(checkpoint, None, false);
         let result = fx.result(1, 20, Some(base(9, 5)));
@@ -617,8 +492,7 @@ mod tests {
     #[test]
     fn parks_a_future_result_while_an_older_job_is_in_flight() {
         let fx = Fixture::new();
-        // Active job solves observation 10; a result for observation 20 is a
-        // job this owner dispatched before a crash — park it.
+        // A result newer than the in-flight job: dispatched before a crash, so park it.
         let job = fx.job(1, 10, None);
         let vehicle = fx.vehicle(CheckpointState::Unloaded, Some(job), false);
         let result = fx.result(1, 20, None);
@@ -632,7 +506,6 @@ mod tests {
     #[test]
     fn rejects_a_committed_result_with_no_active_job() {
         let fx = Fixture::new();
-        // Committed input is 9; a result at exactly 8 is already superseded.
         let checkpoint = CheckpointState::Present(fx.checkpoint(9, 5, None));
         let vehicle = fx.vehicle(checkpoint, None, false);
         let result = fx.result(1, 8, Some(base(9, 5)));
@@ -646,9 +519,7 @@ mod tests {
     #[test]
     fn rejects_the_already_resolved_committed_head() {
         let fx = Fixture::new();
-        // The result is for the exact observation the checkpoint last committed
-        // (9) with no job in flight: that job already resolved (e.g. by the
-        // deadline handler).
+        // The exact committed observation with no job in flight: that job already resolved.
         let checkpoint = CheckpointState::Present(fx.checkpoint(9, 5, None));
         let vehicle = fx.vehicle(checkpoint, None, false);
         let result = fx.result(1, 9, Some(base(9, 5)));
@@ -662,8 +533,7 @@ mod tests {
     #[test]
     fn rejects_a_stale_base_for_an_older_uncommitted_observation() {
         let fx = Fixture::new();
-        // Active job solves observation 10; a result for observation 8 that is
-        // still above the committed input (5) is a stale base, not committed.
+        // A result older than the in-flight job but still above the committed input: stale, not committed.
         let checkpoint = CheckpointState::Present(fx.checkpoint(5, 3, None));
         let job = fx.job(1, 10, Some(base(5, 3)));
         let vehicle = fx.vehicle(checkpoint, Some(job), false);
@@ -681,8 +551,7 @@ mod tests {
     #[test]
     fn rejects_committed_when_an_older_result_is_at_or_below_the_input() {
         let fx = Fixture::new();
-        // Active job at 10, committed input at 8; a result at exactly 8 is
-        // committed even though a different job is in flight.
+        // A result at the committed input is committed even though a different job is in flight.
         let checkpoint = CheckpointState::Present(fx.checkpoint(8, 3, None));
         let job = fx.job(1, 10, Some(base(8, 3)));
         let vehicle = fx.vehicle(checkpoint, Some(job), false);
@@ -697,8 +566,7 @@ mod tests {
     #[test]
     fn rejects_a_diverged_base_at_the_same_observation() {
         let fx = Fixture::new();
-        // Same observation as the active job, but a different base (a new
-        // segment opened after state loss) makes it a different id.
+        // Same observation as the active job, but a different base makes it a different id.
         let job = fx.job(1, 10, Some(base(9, 5)));
         let vehicle = fx.vehicle(CheckpointState::Unloaded, Some(job), false);
         let result = fx.result(1, 10, Some(base(9, 6)));
@@ -712,7 +580,6 @@ mod tests {
         }
     }
 
-    /// Every reject/quarantine reason has a distinct, stable label.
     #[test]
     fn labels_are_distinct_and_stable() {
         let rejects = [
@@ -781,7 +648,6 @@ mod tests {
     fn finality_conflict_finds_the_earliest_offender() {
         let fx = Fixture::new();
         let checkpoint = fx.checkpoint(9, 5, Some(100));
-        // Two layers at or below the watermark (100): 40 and 80; 40 is earliest.
         let d = diff(&[80, 200, 40, 300]);
         assert_eq!(finality_conflict(Some(&checkpoint), &d), Some(40));
     }
@@ -798,10 +664,8 @@ mod tests {
     fn finality_conflict_none_without_a_watermark_or_checkpoint() {
         let fx = Fixture::new();
         let d = diff(&[1, 2, 3]);
-        // No finality watermark set.
         let checkpoint = fx.checkpoint(9, 5, None);
         assert_eq!(finality_conflict(Some(&checkpoint), &d), None);
-        // No checkpoint at all.
         assert_eq!(finality_conflict(None, &d), None);
     }
 }
