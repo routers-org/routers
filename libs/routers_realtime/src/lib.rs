@@ -6,7 +6,7 @@
 //! coupling: [`ingress`] publishes observations, an [`orchestrator`] owns each
 //! vehicle's continuity and commits output, a [`matcher`] solves jobs
 //! statelessly, and the [`materializer`] applies committed output to the served
-//! view. See `README.md` for the map from spec component to code.
+//! view.
 //!
 //! Everything that talks to NATS or Valkey sits behind an adapter trait and is
 //! exercised by in-memory fakes; no broker or store exists in the test sandbox.
