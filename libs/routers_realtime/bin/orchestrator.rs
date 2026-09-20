@@ -21,17 +21,18 @@ use clap::Parser;
 use tracing::{error, info};
 
 use routers_codec::osm::OsmEntryId;
-use routers_realtime::bus::jetstream::{JetStreamPublisher, JetStreamSource};
-use routers_realtime::lifecycle::Shutdown;
+use routers_realtime::bus::jetstream::{JetStreamAck, JetStreamPublisher, JetStreamSource};
+use routers_realtime::lifecycle::{DrainReason, Shutdown};
 use routers_realtime::matcher::pull::RawBytes;
 use routers_realtime::metrics::Metrics;
 use routers_realtime::orchestrator::admission::{Admission, AdmissionConfig};
 use routers_realtime::orchestrator::commit::{CommitConfig, Committer};
 use routers_realtime::orchestrator::dispatch::{DispatchConfig, Dispatcher};
-use routers_realtime::orchestrator::recovery::{expected_start, recover_partition};
+use routers_realtime::orchestrator::recovery::{RecoveryReport, recover_partition};
 use routers_realtime::orchestrator::scheduler::SchedulerConfig;
+use routers_realtime::orchestrator::sharded::{partition_routes, raw_replay_start, route};
 use routers_realtime::orchestrator::worker::{PartitionWorker, WorkerConfig, WorkerStats};
-use routers_realtime::partition::PARTITIONS;
+use routers_realtime::partition::{PARTITIONS, ShardCount, ShardId};
 use routers_realtime::protocol::job::SolveJob;
 use routers_realtime::protocol::output::CommittedOutput;
 use routers_realtime::protocol::result::SolveResult;
@@ -40,17 +41,38 @@ use routers_realtime::secret::SecretUrl;
 use routers_realtime::store::valkey::{ValkeyCheckpointStore, ValkeyConfig, ValkeyEndpoint};
 use routers_realtime::topology::{
     JobsConfig, OutputConfig, RawConfig, ResultsConfig, ensure_job_stream, ensure_output_stream,
-    ensure_raw_stream, ensure_result_stream, raw_consumer, raw_stream_index, result_consumer,
+    ensure_raw_stream, ensure_result_stream, raw_shard_consumer, raw_stream_index,
+    result_shard_consumer,
 };
 
 /// The network entry type the fleet solves against.
 type E = OsmEntryId;
 
-/// Each pod opens one raw and one result source per owned partition. The
-/// broker-side `max_ack_pending` limit remains the bound on unacknowledged
-/// ownership; this larger request amortises continuous-pull control traffic
-/// without letting a worker claim more deliveries concurrently.
+/// Each sharded durable opens one raw and one result source. Broker-side
+/// `max_ack_pending` and the bounded internal queues remain the ownership
+/// bound; this request only amortises continuous-pull control traffic.
 const PARTITION_SOURCE_BATCH: NonZeroUsize = NonZeroUsize::new(64).unwrap();
+
+/// One long-lived task owned by the process supervisor.
+enum TaskExit {
+    Worker {
+        partition: u16,
+        result: anyhow::Result<WorkerStats>,
+    },
+    Router {
+        plane: &'static str,
+        shard: ShardId,
+        result: anyhow::Result<()>,
+    },
+}
+
+/// Validated broker/fleet geometry used for the lifetime of this process.
+struct RuntimeLayout {
+    partitions: RangeInclusive<u64>,
+    shards: ShardCount,
+    owned_shards: RangeInclusive<ShardId>,
+    queue_capacity: NonZeroUsize,
+}
 
 /// "start-end" (inclusive), or a single partition.
 fn parse_partitions(s: &str) -> core::result::Result<RangeInclusive<u64>, String> {
@@ -103,6 +125,14 @@ struct Args {
     #[arg(long, env, default_value_t = 4)]
     streams: u64,
 
+    /// Fixed number of broker consumer shards. Must divide 1024 and divide evenly across raw streams.
+    #[arg(long, env, default_value_t = 64)]
+    shards: u16,
+
+    /// Bounded deliveries waiting for each partition worker from each shared durable.
+    #[arg(long, env, default_value_t = 8)]
+    shard_queue_capacity: usize,
+
     /// How long the raw journal retains an event — the bound on how far recovery can rewind.
     #[arg(long, env, value_parser = humantime::parse_duration, default_value = "15m")]
     raw_retention: Duration,
@@ -123,8 +153,9 @@ struct Args {
     #[arg(long, env, value_parser = humantime::parse_duration, default_value = "15m")]
     output_retention: Duration,
 
-    /// How long an unclaimed solve job lives on the work queue (its deadline should expire first).
-    #[arg(long, env, value_parser = humantime::parse_duration, default_value = "60s")]
+    /// How long an unacknowledged solve job remains on the work queue. Zero
+    /// retains it until a matcher publishes and acknowledges a result.
+    #[arg(long, env, value_parser = humantime::parse_duration, default_value = "0s")]
     jobs_ttl: Duration,
 
     /// How long a committed checkpoint survives without a fresh commit.
@@ -208,6 +239,37 @@ fn owned_partitions(args: &Args) -> Result<RangeInclusive<u64>> {
     Ok(start..=end)
 }
 
+/// Validate the fixed shard layout before opening any external connection.
+fn runtime_layout(args: &Args) -> Result<RuntimeLayout> {
+    let partitions = owned_partitions(args)?;
+    let shards = ShardCount::new(args.shards).map_err(anyhow::Error::msg)?;
+    shards
+        .validate_streams(args.streams)
+        .map_err(anyhow::Error::msg)?;
+    if let Some(fleet) = args.fleet {
+        anyhow::ensure!(
+            u64::from(shards.get()) % fleet == 0,
+            "consumer shards ({}) must divide evenly across fleet replicas ({fleet})",
+            shards.get()
+        );
+    }
+    let owned_shards = shards
+        .owned_shards(&partitions)
+        .map_err(anyhow::Error::msg)?;
+    let queue_capacity = NonZeroUsize::new(args.shard_queue_capacity)
+        .context("shard queue capacity must be non-zero")?;
+    anyhow::ensure!(
+        args.raw_max_ack_pending > 0,
+        "raw max_ack_pending must be positive"
+    );
+    Ok(RuntimeLayout {
+        partitions,
+        shards,
+        owned_shards,
+        queue_capacity,
+    })
+}
+
 /// The static per-worker configuration derived from the CLI args.
 fn worker_config(args: &Args, partition: u16) -> WorkerConfig {
     WorkerConfig {
@@ -252,6 +314,10 @@ async fn main() -> Result<()> {
     let args = Args::parse();
     info!("orchestrator started: {args:?}");
 
+    // Shard, stream, and fleet geometry is wire/control-plane configuration.
+    // Refuse an ambiguous layout before touching NATS or Valkey.
+    let layout = runtime_layout(&args)?;
+
     let shutdown = Shutdown::from_signals();
 
     // The context is cloned per publisher, sharing one multiplexed connection.
@@ -276,7 +342,8 @@ async fn main() -> Result<()> {
         max_ack_pending: args.raw_max_ack_pending,
         ack_wait: args.raw_ack_wait,
     };
-    let mut raw_streams = Vec::with_capacity(args.streams as usize);
+    let stream_count = usize::try_from(args.streams).context("raw stream count overflow")?;
+    let mut raw_streams = Vec::with_capacity(stream_count);
     for index in 0..args.streams {
         raw_streams.push(ensure_raw_stream(&context, index, args.streams, &raw_cfg).await?);
     }
@@ -318,23 +385,41 @@ async fn main() -> Result<()> {
     let output_publisher =
         JetStreamPublisher::<CommittedOutput<E>>::new(context.clone(), args.ack_timeout);
 
-    let owned = owned_partitions(&args)?;
     info!(
-        "orchestrating partitions {:?} across {} raw stream(s)",
-        owned, args.streams
+        partitions = ?layout.partitions,
+        shards = layout.shards.get(),
+        streams = args.streams,
+        queue_capacity = layout.queue_capacity.get(),
+        "orchestrator layout validated"
     );
 
-    let mut handles = Vec::new();
-    for partition in owned.clone() {
-        let partition = partition as u16;
+    let partitions = layout
+        .partitions
+        .clone()
+        .map(u16::try_from)
+        .collect::<core::result::Result<Vec<_>, _>>()
+        .context("owned partition does not fit its wire identifier")?;
+    let shard_start = layout.owned_shards.start().get();
+    let shard_end = layout.owned_shards.end().get();
+    let owned_shards = (shard_start..=shard_end)
+        .map(|number| {
+            layout
+                .shards
+                .shard(number)
+                .expect("validated owned shard range")
+        })
+        .collect::<Vec<_>>();
 
-        // Recover before creating the raw consumer: it reports the frontier to resume just past.
-        let committer = Committer::new(
-            store.clone(),
-            output_publisher.clone(),
-            CommitConfig::default(),
-        );
-        let report = recover_partition(&store, &committer, partition)
+    // Recover every partition before any shared raw durable is opened. That
+    // gives each shard a complete set of store-backed replay seams.
+    let recovery_committer = Committer::new(
+        store.clone(),
+        output_publisher.clone(),
+        CommitConfig::default(),
+    );
+    let mut reports = HashMap::<u16, RecoveryReport>::with_capacity(partitions.len());
+    for &partition in &partitions {
+        let report = recover_partition(&store, &recovery_committer, partition)
             .await
             .with_context(|| format!("could not recover partition {partition}"))?;
         info!(
@@ -345,29 +430,86 @@ async fn main() -> Result<()> {
             prepared_failed = report.prepared_failed.len(),
             "partition recovered"
         );
+        reports.insert(partition, report);
+    }
 
-        // Resume at `frontier + 1` (or stream head); `raw_consumer` verifies the deliver policy matches.
-        let raw_stream =
-            &raw_streams[raw_stream_index(u64::from(partition), args.streams) as usize];
-        let raw = raw_consumer(
-            raw_stream,
-            u64::from(partition),
+    let (raw_routes, mut raw_sources) = partition_routes::<RawBytes, JetStreamAck>(
+        partitions.iter().copied(),
+        layout.queue_capacity,
+    );
+    let (result_routes, mut result_sources) = partition_routes::<SolveResult<E>, JetStreamAck>(
+        partitions.iter().copied(),
+        layout.queue_capacity,
+    );
+
+    // Reconcile every durable before spawning work. Continuous pull streams
+    // are opened inside supervised router tasks after workers are ready.
+    let mut prepared_shards = Vec::with_capacity(owned_shards.len());
+    for shard in owned_shards {
+        let shard_partitions = layout.shards.partitions(shard).collect::<Vec<_>>();
+        let stream_index = raw_stream_index(u64::from(shard_partitions[0]), args.streams);
+        let start = raw_replay_start(
+            shard_partitions
+                .iter()
+                .map(|partition| reports[partition].frontier),
+        );
+
+        let raw_consumer = raw_shard_consumer(
+            &raw_streams[usize::try_from(stream_index).context("raw stream index overflow")?],
+            stream_index,
+            layout.shards,
+            shard,
+            &shard_partitions,
             &raw_cfg,
-            expected_start(report.frontier),
+            start,
         )
         .await?;
-        let raw = JetStreamSource::<RawBytes>::from_consumer(&raw, PARTITION_SOURCE_BATCH)
-            .await
-            .with_context(|| format!("could not open raw source for partition {partition}"))?;
+        let result_consumer = result_shard_consumer(
+            &result_stream,
+            layout.shards,
+            shard,
+            &shard_partitions,
+            &results_cfg,
+        )
+        .await?;
+        let shard_raw_routes = shard_partitions
+            .iter()
+            .map(|partition| (*partition, raw_routes[partition].clone()))
+            .collect();
+        let shard_result_routes = shard_partitions
+            .iter()
+            .map(|partition| (*partition, result_routes[partition].clone()))
+            .collect();
+        prepared_shards.push((
+            shard,
+            raw_consumer,
+            shard_raw_routes,
+            result_consumer,
+            shard_result_routes,
+        ));
+    }
 
-        let results = result_consumer(&result_stream, u64::from(partition), &results_cfg).await?;
-        let results =
-            JetStreamSource::<SolveResult<E>>::from_consumer(&results, PARTITION_SOURCE_BATCH)
-                .await
-                .with_context(|| {
-                    format!("could not open result source for partition {partition}")
-                })?;
+    // Only router-owned senders keep channels open from here onward.
+    drop(raw_routes);
+    drop(result_routes);
 
+    let mut tasks = tokio::task::JoinSet::new();
+    for &partition in &partitions {
+        let report = reports
+            .remove(&partition)
+            .expect("every owned partition was recovered");
+        let raw = raw_sources
+            .remove(&partition)
+            .expect("every owned partition has a raw route");
+        let results = result_sources
+            .remove(&partition)
+            .expect("every owned partition has a result route");
+
+        let committer = Committer::new(
+            store.clone(),
+            output_publisher.clone(),
+            CommitConfig::default(),
+        );
         let dispatcher = Dispatcher::new(job_publisher.clone(), dispatch_config(&args));
         let worker = PartitionWorker::new(
             worker_config(&args, partition),
@@ -382,26 +524,113 @@ async fn main() -> Result<()> {
             shutdown.clone(),
         )
         .with_metrics(metrics.clone());
-        handles.push((partition, tokio::spawn(worker.run())));
+        tasks.spawn(async move {
+            TaskExit::Worker {
+                partition,
+                result: worker.run().await,
+            }
+        });
+    }
+    debug_assert!(reports.is_empty());
+    debug_assert!(raw_sources.is_empty());
+    debug_assert!(result_sources.is_empty());
+
+    for (shard, raw_consumer, shard_raw_routes, result_consumer, shard_result_routes) in
+        prepared_shards
+    {
+        let raw_shutdown = shutdown.clone();
+        tasks.spawn(async move {
+            let result = async {
+                let source = JetStreamSource::<RawBytes>::from_consumer(
+                    &raw_consumer,
+                    PARTITION_SOURCE_BATCH,
+                )
+                .await
+                .with_context(|| format!("could not open raw source for shard {shard}"))?;
+                route(source, shard_raw_routes, raw_shutdown).await
+            }
+            .await;
+            TaskExit::Router {
+                plane: "raw",
+                shard,
+                result,
+            }
+        });
+
+        let result_shutdown = shutdown.clone();
+        tasks.spawn(async move {
+            let result = async {
+                let source = JetStreamSource::<SolveResult<E>>::from_consumer(
+                    &result_consumer,
+                    PARTITION_SOURCE_BATCH,
+                )
+                .await
+                .with_context(|| format!("could not open result source for shard {shard}"))?;
+                route(source, shard_result_routes, result_shutdown).await
+            }
+            .await;
+            TaskExit::Router {
+                plane: "result",
+                shard,
+                result,
+            }
+        });
     }
 
-    // A failed worker exits the process non-zero, but only after every peer drains.
+    // Any unexpected task exit initiates a fleet-local drain. Join every task
+    // so workers can persist their safe frontiers and unacked routed messages
+    // return to their durable instead of being silently abandoned.
     let mut failed = false;
-    for (partition, handle) in handles {
-        match handle.await {
-            Ok(Ok(stats)) => log_stats(partition, &stats),
-            Ok(Err(err)) => {
+    while let Some(joined) = tasks.join_next().await {
+        match joined {
+            Ok(TaskExit::Worker {
+                partition,
+                result: Ok(stats),
+            }) => {
+                if !shutdown.is_triggered() {
+                    failed = true;
+                    shutdown.trigger(DrainReason::Fatal);
+                    error!(partition, "partition worker stopped before shutdown");
+                }
+                log_stats(partition, &stats);
+            }
+            Ok(TaskExit::Worker {
+                partition,
+                result: Err(err),
+            }) => {
                 failed = true;
+                shutdown.trigger(DrainReason::Fatal);
                 error!(partition, "partition worker failed: {err:#}");
+            }
+            Ok(TaskExit::Router {
+                plane,
+                shard,
+                result: Ok(()),
+            }) => {
+                if !shutdown.is_triggered() {
+                    failed = true;
+                    shutdown.trigger(DrainReason::Fatal);
+                    error!(plane, %shard, "consumer router stopped before shutdown");
+                }
+            }
+            Ok(TaskExit::Router {
+                plane,
+                shard,
+                result: Err(err),
+            }) => {
+                failed = true;
+                shutdown.trigger(DrainReason::Fatal);
+                error!(plane, %shard, "consumer router failed: {err:#}");
             }
             Err(join_err) => {
                 failed = true;
-                error!(partition, "partition worker panicked: {join_err}");
+                shutdown.trigger(DrainReason::Fatal);
+                error!("orchestrator task panicked: {join_err}");
             }
         }
     }
 
-    anyhow::ensure!(!failed, "one or more partition workers failed");
+    anyhow::ensure!(!failed, "one or more orchestrator tasks failed");
     Ok(())
 }
 
@@ -478,6 +707,44 @@ mod tests {
     }
 
     #[test]
+    fn runtime_layout_requires_aligned_shards_streams_and_fleet() {
+        let valid = args(&["--pod-name", "orchestrator-1", "--fleet", "4"]);
+        let layout = runtime_layout(&valid).unwrap();
+        assert_eq!(layout.shards.get(), 64);
+        assert_eq!(layout.partitions, 256..=511);
+        assert_eq!(layout.owned_shards.start().get(), 16);
+        assert_eq!(layout.owned_shards.end().get(), 31);
+
+        assert!(runtime_layout(&args(&["--pod-name", "orchestrator-1", "--fleet", "3"])).is_err());
+        assert!(
+            runtime_layout(&args(&[
+                "--pod-name",
+                "orchestrator-1",
+                "--fleet",
+                "4",
+                "--shards",
+                "32",
+                "--streams",
+                "64",
+            ]))
+            .is_err()
+        );
+        assert!(
+            runtime_layout(&args(&["--pod-name", "orchestrator-1", "--fleet", "128",])).is_err()
+        );
+        assert!(runtime_layout(&args(&["--partitions", "10-20"])).is_err());
+        assert!(
+            runtime_layout(&args(&[
+                "--partitions",
+                "0-15",
+                "--shard-queue-capacity",
+                "0",
+            ]))
+            .is_err()
+        );
+    }
+
+    #[test]
     fn explicit_partitions_win_over_identity() {
         let parsed = args(&["--partitions", "10-20"]);
         assert_eq!(owned_partitions(&parsed).unwrap(), 10..=20);
@@ -510,6 +777,12 @@ mod tests {
             "--admit-global-jobs",
             "10",
         ]);
+
+        assert_eq!(
+            parsed.jobs_ttl,
+            Duration::ZERO,
+            "the default must not age unanswered jobs out"
+        );
 
         let dispatch = dispatch_config(&parsed);
         assert_eq!(dispatch.gap, Duration::from_secs(30));

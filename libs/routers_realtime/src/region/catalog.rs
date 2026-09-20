@@ -88,7 +88,8 @@ pub struct Region {
     pub resource_class: String,
     /// The replica scaling envelope.
     pub replicas: Replicas,
-    /// The per-job deadline budget, serialised as whole milliseconds (`freshness_budget_ms`).
+    /// The per-job freshness target budget, serialised as whole milliseconds
+    /// (`freshness_budget_ms`).
     #[serde(rename = "freshness_budget_ms", with = "duration_ms")]
     pub freshness_budget: Duration,
 }
@@ -178,7 +179,7 @@ pub enum CatalogError {
     /// A region listed one of its own owned cells as an overlap fallback.
     #[error("region {region:?} lists cell {cell:?} as both coverage and overlap")]
     OverlapOwnCell { region: String, cell: String },
-    /// A region had a zero freshness budget, which cannot yield a job deadline.
+    /// A region had a zero freshness budget, which cannot yield a useful target.
     #[error("region {0:?} has a zero freshness budget")]
     ZeroFreshnessBudget(String),
 }

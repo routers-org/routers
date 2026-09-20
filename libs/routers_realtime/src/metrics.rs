@@ -8,6 +8,7 @@
 //! [`telemetry`](crate::telemetry) installs a provider the meter is a no-op.
 
 use alloc::sync::Arc;
+use core::time::Duration;
 
 use opentelemetry::metrics::{Counter, Gauge, Histogram, Meter, ObservableGauge};
 use opentelemetry::{KeyValue, global};
@@ -58,6 +59,7 @@ pub struct Metrics {
     suppressed_observations: Counter<u64>,
     deferred_observations: Counter<u64>,
     poison_observations: Counter<u64>,
+    raw_acks: Counter<u64>,
 
     dispatch_held: Counter<u64>,
     jobs_claimed: Counter<u64>,
@@ -86,6 +88,8 @@ pub struct Metrics {
     matcher_solves_in_flight: Gauge<u64>,
     result_publish_seconds: Histogram<f64>,
     job_round_trip_seconds: Histogram<f64>,
+    freshness_target_lateness_seconds: Histogram<f64>,
+    freshness_target_missed: Counter<u64>,
     graph_ready: Gauge<u64>,
     vehicles_tracked: Gauge<u64>,
     pending_observations: Gauge<u64>,
@@ -135,6 +139,10 @@ impl Metrics {
         let poison_observations = meter
             .u64_counter("poison_observations")
             .with_description("Unusable raw messages acknowledged and dropped.")
+            .build();
+        let raw_acks = meter
+            .u64_counter("raw_acks")
+            .with_description("Raw JetStream deliveries successfully acknowledged, by disposition.")
             .build();
         let dispatch_held = meter
             .u64_counter("dispatch_held")
@@ -258,6 +266,18 @@ impl Metrics {
             .with_unit("s")
             .with_boundaries(SECONDS_BUCKETS.to_vec())
             .build();
+        let freshness_target_lateness_seconds = meter
+            .f64_histogram("freshness_target_lateness_seconds")
+            .with_description(
+                "How far a matcher claim was past the job's freshness target; zero means within target.",
+            )
+            .with_unit("s")
+            .with_boundaries(SECONDS_BUCKETS.to_vec())
+            .build();
+        let freshness_target_missed = meter
+            .u64_counter("freshness_target_missed")
+            .with_description("Matcher claims made after the job freshness target, by region.")
+            .build();
         let vehicles_tracked = meter
             .u64_gauge("vehicles_tracked")
             .with_description("Vehicles the scheduler currently holds state for.")
@@ -282,6 +302,7 @@ impl Metrics {
             suppressed_observations,
             deferred_observations,
             poison_observations,
+            raw_acks,
             dispatch_held,
             jobs_claimed,
             job_bytes,
@@ -305,6 +326,8 @@ impl Metrics {
             matcher_solves_in_flight,
             result_publish_seconds,
             job_round_trip_seconds,
+            freshness_target_lateness_seconds,
+            freshness_target_missed,
             graph_ready,
             vehicles_tracked,
             pending_observations,
@@ -343,6 +366,13 @@ impl Metrics {
     /// One unusable raw message was dropped, by reason.
     pub fn poison(&self, reason: &str) {
         self.poison_observations.add(1, &[reason_attr(reason)]);
+    }
+
+    /// One raw delivery was successfully acknowledged after its disposition
+    /// became durable. `disposition` is drawn from a fixed internal alphabet.
+    pub fn raw_acked(&self, disposition: &str) {
+        self.raw_acks
+            .add(1, &[KeyValue::new("disposition", disposition.to_owned())]);
     }
 
     /// One dispatch was held back by admission (or a transient fault), by region.
@@ -477,6 +507,18 @@ impl Metrics {
     pub fn round_trip_seconds(&self, region: &str, outcome: &str, secs: f64) {
         self.job_round_trip_seconds
             .record(secs, &[region_attr(region), outcome_attr(outcome)]);
+    }
+
+    /// Record a matcher claim against its authenticated freshness target. This
+    /// is an SLA observation, not a refusal: overdue jobs are still solved.
+    pub fn freshness_target(&self, region: &str, target_us: i64, claimed_at_us: i64) {
+        let late_us = claimed_at_us.saturating_sub(target_us).max(0);
+        let late_secs = Duration::from_micros(late_us as u64).as_secs_f64();
+        self.freshness_target_lateness_seconds
+            .record(late_secs, &[region_attr(region)]);
+        if late_us > 0 {
+            self.freshness_target_missed.add(1, &[region_attr(region)]);
+        }
     }
 
     /// One partition's scheduler depth: tracked vehicles, queued observations, jobs in flight.
@@ -696,6 +738,7 @@ mod tests {
         m.suppressed("committed");
         m.deferred("duplicate_owned");
         m.poison("bad-schema");
+        m.raw_acked("poison");
         m.held("syd");
         m.dispatched("syd", 0);
         m.job_bytes("syd", 1_234);
@@ -717,6 +760,7 @@ mod tests {
         m.matcher_handlers_in_flight("syd", 16);
         m.matcher_solves_in_flight("syd", 2);
         m.round_trip_seconds("syd", "solved", 0.2);
+        m.freshness_target("syd", 1_000_000, 1_250_000);
         m.depth("c0", 1, 2, 3);
         m.result_publish_seconds(0.003);
         m.graph_ready("syd", 1);
@@ -729,6 +773,7 @@ mod tests {
             "suppressed_observations",
             "deferred_observations",
             "poison_observations",
+            "raw_acks",
             "dispatch_held",
             "jobs_claimed",
             "job_bytes",
@@ -752,6 +797,8 @@ mod tests {
             "matcher_solves_in_flight",
             "result_publish_seconds",
             "job_round_trip_seconds",
+            "freshness_target_lateness_seconds",
+            "freshness_target_missed",
             "graph_ready",
             "vehicles_tracked",
             "pending_observations",
@@ -770,6 +817,7 @@ mod tests {
         m.dispatched("syd", 2);
         m.completion("reset", "gap");
         m.solve_seconds("mel", "unanchored", 0.01);
+        m.raw_acked("committed");
 
         let collected = rig.collect();
 
@@ -784,6 +832,9 @@ mod tests {
         let solve = &collected["solve_seconds"];
         assert!(solve.contains(&("region".to_owned(), "mel".to_owned())));
         assert!(solve.contains(&("outcome".to_owned(), "unanchored".to_owned())));
+
+        let raw_acks = &collected["raw_acks"];
+        assert!(raw_acks.contains(&("disposition".to_owned(), "committed".to_owned())));
     }
 
     #[test]
@@ -795,6 +846,7 @@ mod tests {
         m.queued();
         m.suppressed("x");
         m.poison("x");
+        m.raw_acked("committed");
         m.held("r");
         m.dispatched("r", 255);
         m.job_bytes("r", 1);
@@ -803,7 +855,7 @@ mod tests {
         m.quarantined("x");
         m.rejected("x");
         m.commit_seconds("terminal", 0.1);
-        m.completion("terminal", "deadline_expired");
+        m.completion("terminal", "internal");
         m.frontier_lag("c1", 1);
         m.oldest_pending_seconds(1.0);
         m.solve_seconds("r", "solved", 0.1);
@@ -814,6 +866,7 @@ mod tests {
         m.matcher_handlers_in_flight("r", 2);
         m.matcher_solves_in_flight("r", 1);
         m.result_publish_seconds(0.1);
+        m.freshness_target("r", 1, 2);
         m.graph_ready("r", 0);
         m.materialized("terminal");
 

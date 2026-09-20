@@ -5,7 +5,7 @@
 //! machine is deterministic. A vehicle has at most one logical job in flight;
 //! per-vehicle order holds because the next observation is not dispatched until
 //! the head commits and is popped. Ready vehicles wait in a fair FIFO, and the
-//! `committing` flag arbitrates — a prepared commit always wins over a timeout.
+//! `committing` flag prevents duplicate results from racing a prepared commit.
 
 use alloc::collections::VecDeque;
 use core::time::Duration;
@@ -25,7 +25,7 @@ use crate::store::checkpoint::VehicleCheckpoint;
 
 /// A validated broker publication instant in non-negative Unix microseconds.
 ///
-/// Keeping this as a newtype makes the replay-stable basis of a solve deadline
+/// Keeping this as a newtype makes the replay-stable basis of a freshness target
 /// mandatory once a raw delivery enters the scheduler.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PublishedAtMicros(i64);
@@ -44,9 +44,9 @@ impl PublishedAtMicros {
         if value < 0 { None } else { Some(Self(value)) }
     }
 
-    /// Add a solve budget without wrapping the wire deadline.
+    /// Add a freshness budget without wrapping the wire target.
     #[must_use]
-    pub fn deadline_after(self, budget: Duration) -> i64 {
+    pub fn freshness_target_after(self, budget: Duration) -> i64 {
         let budget_us = i64::try_from(budget.as_micros()).unwrap_or(i64::MAX);
         self.0.saturating_add(budget_us)
     }
@@ -97,7 +97,7 @@ pub struct PendingObservation<H: AckHandle> {
     /// The decoded observation payload.
     pub payload: Payload,
     /// Stable broker publication time. Dispatch derives the absolute solve
-    /// deadline from this value so replay reconstructs the same authenticated job.
+    /// freshness target from this value so replay reconstructs the same authenticated job.
     pub published_at: PublishedAtMicros,
     /// The handle that acknowledges this observation's raw delivery.
     pub handle: H,
@@ -127,8 +127,6 @@ pub struct ActiveJob {
     pub identity: JobIdentity,
     /// The head observation this job is solving.
     pub observation: ObservationId,
-    /// When the job's deadline fires (a monotonic instant, not wall-clock).
-    pub deadline: Instant,
     /// The job's encoded size in bytes — what the admission permit reserved.
     pub bytes: u64,
     /// The admission state held for the lifetime of this scheduler entry.
@@ -154,7 +152,7 @@ pub struct VehicleState<E: Entry, H: AckHandle> {
     /// The one logical job in flight, if any.
     pub active: Option<ActiveJob>,
     /// `true` while a commit is being prepared/published; the vehicle is never
-    /// evicted and a later deadline defers to the commit while this is set.
+    /// evicted and duplicate results defer to the commit while this is set.
     pub committing: bool,
     /// The last time the vehicle saw activity — drives idle eviction.
     pub last_touch: Instant,
@@ -456,7 +454,7 @@ impl<E: Entry, H: AckHandle> Scheduler<E, H> {
         self.vehicles.get(&vehicle).and_then(|s| s.active.as_ref())
     }
 
-    /// The vehicle's active job for in-place update (e.g. re-arming a deadline).
+    /// The vehicle's active job for in-place updates.
     pub fn active_mut(&mut self, vehicle: VehicleId) -> Option<&mut ActiveJob> {
         self.vehicles
             .get_mut(&vehicle)
@@ -718,7 +716,6 @@ mod tests {
                     partition: 7,
                     sequence: seq,
                 },
-                deadline: now + Duration::from_secs(30),
                 bytes: 100,
                 reservation: JobReservation::Admitted(
                     self.admission.try_admit(&self.region, 100).unwrap(),

@@ -49,9 +49,6 @@ pub enum SolveOutcome<E: Entry> {
         got: GraphVersion,
     },
 
-    /// The job's deadline had already passed when the matcher dequeued it.
-    DeadlineExpired,
-
     /// The decoded job exceeded the matcher's size bound.
     Oversized { bytes: usize, limit: usize },
 
@@ -69,7 +66,6 @@ impl<E: Entry> SolveOutcome<E> {
             SolveOutcome::Disconnected => "disconnected",
             SolveOutcome::UnsupportedCoverage { .. } => "unsupported_coverage",
             SolveOutcome::VersionMismatch { .. } => "version_mismatch",
-            SolveOutcome::DeadlineExpired => "deadline_expired",
             SolveOutcome::Oversized { .. } => "oversized",
             SolveOutcome::Internal { .. } => "internal",
         }
@@ -101,7 +97,6 @@ impl<E: Entry> SolveOutcome<E> {
             SolveOutcome::Disconnected => Some(TerminalReason::Disconnected),
             SolveOutcome::UnsupportedCoverage { .. } => Some(TerminalReason::UnsupportedCoverage),
             SolveOutcome::VersionMismatch { .. } => Some(TerminalReason::VersionMismatch),
-            SolveOutcome::DeadlineExpired => Some(TerminalReason::DeadlineExpired),
             SolveOutcome::Oversized { .. } => Some(TerminalReason::Internal),
             SolveOutcome::Internal { .. } => Some(TerminalReason::Internal),
         }
@@ -257,7 +252,6 @@ mod tests {
                 expected: GraphVersion::new("europe-2026-09").unwrap(),
                 got: GraphVersion::new("europe-2026-08").unwrap(),
             },
-            SolveOutcome::DeadlineExpired,
             SolveOutcome::Oversized {
                 bytes: 5 << 20,
                 limit: 4 << 20,
@@ -301,13 +295,6 @@ mod tests {
                 true,
                 Some(TerminalReason::VersionMismatch),
             ),
-            SolveOutcome::DeadlineExpired => (
-                "deadline_expired",
-                false,
-                false,
-                true,
-                Some(TerminalReason::DeadlineExpired),
-            ),
             SolveOutcome::Oversized { .. } => (
                 "oversized",
                 false,
@@ -344,7 +331,7 @@ mod tests {
             assert!(!(outcome.is_success() && outcome.is_nominal()));
             kinds.insert(kind);
         }
-        assert_eq!(kinds.len(), 8, "every variant has a distinct kind label");
+        assert_eq!(kinds.len(), 7, "every variant has a distinct kind label");
     }
 
     #[test]
@@ -450,10 +437,10 @@ mod tests {
     #[test]
     fn verify_catches_tampered_proof_fields() {
         let job = sample_job(sample_identity(7));
-        let mut deadline_tampered = SolveResult::new(&job, SolveOutcome::Unanchored, 0);
-        deadline_tampered.proof.deadline_us += 1;
+        let mut target_tampered = SolveResult::new(&job, SolveOutcome::Unanchored, 0);
+        target_tampered.proof.freshness_target_us += 1;
         assert!(matches!(
-            deadline_tampered.verify(),
+            target_tampered.verify(),
             Err(ResultError::IdMismatch { .. })
         ));
 

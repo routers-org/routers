@@ -29,6 +29,7 @@ use routers_realtime::{
     secret::SecretUrl,
     topology,
 };
+use serde::Serialize;
 use tokio::sync::mpsc;
 use tokio::task::{JoinError, JoinSet};
 use tokio::time::Instant;
@@ -52,6 +53,12 @@ struct Args {
     #[arg(short, env, long, default_value_t = 1.0)]
     speed: f64,
 
+    /// Publish at this fixed fleet-wide rate (events/second), independent of
+    /// timestamps. This is useful for repeatable capacity tests and cannot be
+    /// combined with an explicit `--speed`.
+    #[arg(long, env, conflicts_with = "speed")]
+    rate: Option<f64>,
+
     /// The number of times to replay the input file.
     /// Defaults to 1, but a higher value can be used for saturation testing.
     #[arg(short, env, long, default_value_t = 1)]
@@ -70,6 +77,11 @@ struct Args {
     /// Replay into an isolated run (subjects/streams prefixed `replay.<run>.`); `<run>` must be NATS-safe (`[A-Za-z0-9_-]+`).
     #[arg(long, env = "REPLAY_ISOLATED")]
     isolated: Option<String>,
+
+    /// Also write the final machine-readable run summary to this JSON file.
+    /// The same JSON object is always emitted on stdout.
+    #[arg(long, env)]
+    summary_json: Option<PathBuf>,
 }
 
 // 2026-04-01 03:40:02 UTC, or 2026-04-01 03:40:02.123456 UTC
@@ -132,7 +144,7 @@ async fn main() -> anyhow::Result<()> {
     };
     ingress.ensure_streams(args.streams, &raw_cfg).await?;
 
-    let df = LazyCsvReader::new(args.file)
+    let df = LazyCsvReader::new(args.file.clone())
         .with_has_header(true)
         .finish()?
         .sort([EVENT_TIME_COL], SortMultipleOptions::default())
@@ -158,7 +170,17 @@ async fn main() -> anyhow::Result<()> {
 
     debug!("loaded {n:>7} events spanning {timespan_s:.1} s");
 
-    let flood = args.speed <= 0.0;
+    let rate = args
+        .rate
+        .map(|rate| {
+            anyhow::ensure!(
+                rate.is_finite() && rate > 0.0,
+                "--rate must be a positive finite number"
+            );
+            Ok::<_, anyhow::Error>(rate)
+        })
+        .transpose()?;
+    let flood = rate.is_none() && args.speed <= 0.0;
     let speed = if flood { f64::INFINITY } else { args.speed };
     let realtime_s = if flood { 0.0 } else { timespan_s / speed };
 
@@ -175,7 +197,9 @@ async fn main() -> anyhow::Result<()> {
     );
     let pg = multi.add(pb);
 
-    if flood {
+    if let Some(rate) = rate {
+        pg.set_message(format!("[fixed-rate] rate={rate:.1} event/s"));
+    } else if flood {
         pg.set_message("[flood-mode] speed=∞x".to_string());
     } else {
         pg.set_message(format!(
@@ -199,7 +223,7 @@ async fn main() -> anyhow::Result<()> {
 
     // A lane that exits early (broker failure) is captured here.
     let mut early: Option<Result<anyhow::Result<LaneReport>, JoinError>> = None;
-
+    let replay_started = Instant::now();
     'walk: for iteration in 0..args.loops {
         pg.reset();
 
@@ -207,10 +231,13 @@ async fn main() -> anyhow::Result<()> {
         let rows = rows_of(&df).context("could not deserialize rows from dataframe")?;
 
         let start = Instant::now();
-        for (time, payload) in rows {
+        for (offset_index, (time, payload)) in rows.enumerate() {
             pg.inc(1);
 
-            let offset = Duration::from_micros(time - min).div_f64(speed);
+            let offset = rate.map_or_else(
+                || Duration::from_micros(time - min).div_f64(speed),
+                |rate| Duration::from_secs_f64(offset_index as f64 / rate),
+            );
             tokio::time::sleep_until(start + offset).await;
 
             // Route by vehicle so its observations stay on one lane and cannot transpose.
@@ -247,7 +274,22 @@ async fn main() -> anyhow::Result<()> {
         return Err(error);
     }
 
-    report_totals(&totals);
+    let summary = ReplaySummary::new(
+        &args,
+        n as u64,
+        totals.attempted,
+        rate,
+        replay_started.elapsed().as_secs_f64(),
+        totals,
+    );
+    report_totals(&summary);
+    let machine = serde_json::to_string(&summary).context("could not encode replay summary")?;
+    println!("{machine}");
+    if let Some(path) = &args.summary_json {
+        tokio::fs::write(path, format!("{machine}\n"))
+            .await
+            .with_context(|| format!("could not write replay summary to {}", path.display()))?;
+    }
 
     Ok(())
 }
@@ -263,6 +305,7 @@ fn lane_of(vehicle: VehicleId, lanes: usize) -> usize {
 async fn run_lane(ingress: Ingress, mut rx: mpsc::Receiver<Payload>) -> anyhow::Result<LaneReport> {
     let mut report = LaneReport::default();
     while let Some(payload) = rx.recv().await {
+        report.attempted += 1;
         // Await each publish before the next: revisions are assigned in send order, so receive order must be preserved.
         match ingress.publish(&payload, bus::wallclock()).await {
             Ok(ack) => {
@@ -285,6 +328,8 @@ async fn run_lane(ingress: Ingress, mut rx: mpsc::Receiver<Payload>) -> anyhow::
 /// The running tally one lane reports back. All bounded labels — no vehicle id or coordinate ever enters it.
 #[derive(Debug, Default)]
 struct LaneReport {
+    /// Observations actually received by a lane for a publish attempt.
+    attempted: u64,
     /// Observations the broker acknowledged (duplicates included).
     published: u64,
     /// Of `published`, those the broker collapsed onto an earlier identical send.
@@ -296,6 +341,7 @@ struct LaneReport {
 impl LaneReport {
     /// Fold another lane's tally into this one.
     fn merge(&mut self, other: LaneReport) {
+        self.attempted += other.attempted;
         self.published += other.published;
         self.duplicates += other.duplicates;
         for (kind, count) in other.rejected {
@@ -323,27 +369,82 @@ fn absorb(
 }
 
 /// Log the aggregate outcome of a run; bounded to fixed labels, never a vehicle id or coordinate.
-fn report_totals(totals: &LaneReport) {
-    if totals.duplicates == 0 {
+#[derive(Debug, Serialize)]
+struct ReplaySummary {
+    /// Input rows selected from the CSV before replay loops.
+    input_rows: u64,
+    /// Observations a lane actually submitted to ingress, including validation
+    /// rejections and broker-acknowledged duplicates.
+    raw_attempted: u64,
+    /// Raw publications acknowledged by JetStream, duplicates included.
+    raw_published: u64,
+    /// Acknowledged publications deduplicated by JetStream.
+    raw_duplicates: u64,
+    /// Input data faults by bounded admission kind.
+    raw_rejected: BTreeMap<&'static str, u64>,
+    /// Requested loop count.
+    loops: usize,
+    /// Publish lanes used after normalising `--lanes 0` to one.
+    lanes: usize,
+    /// Raw stream count requested for this run.
+    streams: u64,
+    /// Fixed requested event rate, if fixed-rate mode was selected.
+    fixed_rate_events_per_second: Option<f64>,
+    /// Event-time multiplier, or `null` in flood/fixed-rate mode.
+    speed_multiplier: Option<f64>,
+    /// Whether this was an isolated replay journal.
+    isolated: bool,
+    /// Full wall time through lane drain and broker acknowledgements.
+    elapsed_seconds: f64,
+}
+
+impl ReplaySummary {
+    fn new(
+        args: &Args,
+        input_rows: u64,
+        raw_attempted: u64,
+        rate: Option<f64>,
+        elapsed_seconds: f64,
+        totals: LaneReport,
+    ) -> Self {
+        Self {
+            input_rows,
+            raw_attempted,
+            raw_published: totals.published,
+            raw_duplicates: totals.duplicates,
+            raw_rejected: totals.rejected,
+            loops: args.loops,
+            lanes: args.lanes.max(1),
+            streams: args.streams,
+            fixed_rate_events_per_second: rate,
+            speed_multiplier: (rate.is_none() && args.speed > 0.0).then_some(args.speed),
+            isolated: args.isolated.is_some(),
+            elapsed_seconds,
+        }
+    }
+}
+
+fn report_totals(summary: &ReplaySummary) {
+    if summary.raw_duplicates == 0 {
         info!(
             "replay complete: {} observation(s) published",
-            totals.published
+            summary.raw_published
         );
     } else {
         info!(
             "replay complete: {} observation(s) published ({} broker duplicate(s))",
-            totals.published, totals.duplicates,
+            summary.raw_published, summary.raw_duplicates,
         );
     }
 
-    if totals.rejected.is_empty() {
+    if summary.raw_rejected.is_empty() {
         info!("no observations rejected");
         return;
     }
 
-    let total: u64 = totals.rejected.values().sum();
+    let total: u64 = summary.raw_rejected.values().sum();
     warn!("{total} observation(s) rejected by validation");
-    for (kind, count) in &totals.rejected {
+    for (kind, count) in &summary.raw_rejected {
         warn!("  {kind}: {count}");
     }
 }
@@ -448,15 +549,49 @@ mod tests {
     }
 
     #[test]
+    fn fixed_rate_is_accepted_with_the_default_speed() {
+        let args = Args::try_parse_from([
+            "replay",
+            "--file",
+            "in.csv",
+            "--nats",
+            "nats://localhost:4222",
+            "--rate",
+            "250",
+        ])
+        .expect("the default --speed must not conflict with --rate");
+        assert_eq!(args.rate, Some(250.0));
+    }
+
+    #[test]
+    fn fixed_rate_rejects_an_explicit_speed() {
+        let error = Args::try_parse_from([
+            "replay",
+            "--file",
+            "in.csv",
+            "--nats",
+            "nats://localhost:4222",
+            "--speed",
+            "2",
+            "--rate",
+            "250",
+        ])
+        .expect_err("--rate and an explicit --speed are mutually exclusive");
+        assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
     fn lane_report_merge_folds_tallies() {
         let mut totals = LaneReport::default();
         let mut a = LaneReport {
+            attempted: 13,
             published: 10,
             duplicates: 2,
             ..Default::default()
         };
         *a.rejected.entry("too_old").or_default() += 3;
         let mut b = LaneReport {
+            attempted: 6,
             published: 5,
             duplicates: 1,
             ..Default::default()
@@ -467,6 +602,7 @@ mod tests {
         totals.merge(a);
         totals.merge(b);
 
+        assert_eq!(totals.attempted, 19);
         assert_eq!(totals.published, 15);
         assert_eq!(totals.duplicates, 3);
         assert_eq!(totals.rejected.get("too_old"), Some(&7));

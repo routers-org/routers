@@ -231,8 +231,8 @@ impl<P> Dispatcher<P> {
 
     /// Build, admit, and publish the solve job for `head`.
     ///
-    /// `now` is the monotonic reference for the returned [`ActiveJob`]'s deadline;
-    /// `now_us` is the absolute unix-microsecond deadline the matcher uses. On
+    /// `now_us` is the absolute unix-microsecond freshness target the matcher
+    /// observes. On
     /// [`DispatchError::Held`] nothing was published or reserved; on the other
     /// errors the permit is released and the vehicle state is left ready to
     /// re-dispatch the identical job.
@@ -245,7 +245,7 @@ impl<P> Dispatcher<P> {
         resolution: &Resolution,
         admission: &Admission,
         now: Instant,
-        now_us: i64,
+        _now_us: i64,
     ) -> Result<Dispatched, DispatchError>
     where
         E: Entry,
@@ -273,8 +273,13 @@ impl<P> Dispatcher<P> {
             graph: resolution.graph.clone(),
             region: resolution.region.clone(),
         };
-        let deadline_us = head.published_at.deadline_after(resolution.budget);
-        let job = SolveJob::new(identity.clone(), resolution.lane, deadline_us, continuation);
+        let freshness_target_us = head.published_at.freshness_target_after(resolution.budget);
+        let job = SolveJob::new(
+            identity.clone(),
+            resolution.lane,
+            freshness_target_us,
+            continuation,
+        );
 
         let bytes = job.encode().map_err(DispatchError::Encode)?;
         let byte_len = bytes.len() as u64;
@@ -299,7 +304,6 @@ impl<P> Dispatcher<P> {
                 id: job.id,
                 identity,
                 observation: head.id,
-                deadline: now + remaining_until(deadline_us, now_us),
                 bytes: byte_len,
                 reservation: JobReservation::Admitted(permit),
                 dispatched: now,
@@ -354,14 +358,6 @@ impl<P> Dispatcher<P> {
             }
         }
     }
-}
-
-/// Translate an absolute broker-age deadline back to the worker's monotonic
-/// clock. An already-expired job fires immediately.
-fn remaining_until(deadline_us: i64, now_us: i64) -> Duration {
-    u64::try_from(deadline_us.saturating_sub(now_us))
-        .map(Duration::from_micros)
-        .unwrap_or(Duration::ZERO)
 }
 
 #[cfg(test)]
@@ -693,7 +689,10 @@ mod tests {
         let decoded = SolveJob::<MockEntryId>::decode_verified(bytes).expect("decode + verify");
         assert_eq!(decoded.id, dispatched.job.id);
         assert_eq!(decoded.lane, Lane(2));
-        assert_eq!(decoded.deadline_us, now_us + BUDGET.as_micros() as i64);
+        assert_eq!(
+            decoded.freshness_target_us,
+            now_us + BUDGET.as_micros() as i64
+        );
         assert_eq!(decoded.head(), Some(&origin_of(&head.payload)));
         assert!(matches!(decoded.context, Continuation::Restart { .. }));
     }
@@ -813,7 +812,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stamped_raw_rebuilds_the_same_job_id_and_deadline_after_redelivery() {
+    async fn stamped_raw_rebuilds_the_same_job_id_and_freshness_target_after_redelivery() {
         let bus = MemoryBus::new();
         let dispatcher = dispatcher(&bus, DispatchConfig::default());
         let adm = admission(10);
@@ -858,7 +857,7 @@ mod tests {
         assert_eq!(records.len(), 1);
         let job = SolveJob::<MockEntryId>::decode(&records[0].2).expect("job decodes");
         assert_eq!(
-            job.deadline_us,
+            job.freshness_target_us,
             published_us + i64::try_from(BUDGET.as_micros()).unwrap()
         );
     }

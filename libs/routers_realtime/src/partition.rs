@@ -6,11 +6,124 @@
 //! Nothing in this module may change without a coordinated id-space
 //! migration.
 
+use core::fmt;
+use core::ops::RangeInclusive;
+
 use crate::event::VehicleId;
 
 /// How many partitions the vehicle id space divides into. Fixed: subjects,
 /// consumer names, and partition-to-pod assignment are all derived from it.
 pub const PARTITIONS: u64 = 1024;
+
+/// The durable-consumer shard number. It is deliberately distinct from a
+/// partition: a shard is only a broker/control-plane grouping and never a
+/// vehicle-routing decision.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ShardId(u16);
+
+impl ShardId {
+    /// The stable numeric shard identifier used in durable names.
+    #[must_use]
+    pub const fn get(self) -> u16 {
+        self.0
+    }
+}
+
+impl fmt::Display for ShardId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+/// A validated, fixed count of contiguous consumer shards.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ShardCount(u16);
+
+impl ShardCount {
+    /// Validate a fleet-wide shard count. A divisor keeps every shard equally
+    /// sized and makes a partition range's ownership unambiguous.
+    pub fn new(count: u16) -> Result<Self, String> {
+        let count = u64::from(count);
+        if count == 0 || count > PARTITIONS || !PARTITIONS.is_multiple_of(count) {
+            return Err(format!(
+                "shards must be a non-zero divisor of {PARTITIONS}, got {count}"
+            ));
+        }
+        Ok(Self(count as u16))
+    }
+
+    /// Number of consumer shards.
+    #[must_use]
+    pub const fn get(self) -> u16 {
+        self.0
+    }
+
+    /// Partitions represented by one shard.
+    #[must_use]
+    pub const fn width(self) -> u16 {
+        (PARTITIONS as u16) / self.0
+    }
+
+    /// The shard that owns `partition`.
+    #[must_use]
+    pub const fn shard_of(self, partition: u16) -> ShardId {
+        ShardId(partition / self.width())
+    }
+
+    /// Resolve a numeric shard identifier within this layout.
+    #[must_use]
+    pub const fn shard(self, number: u16) -> Option<ShardId> {
+        if number < self.0 {
+            Some(ShardId(number))
+        } else {
+            None
+        }
+    }
+
+    /// The complete, contiguous partition range for `shard`.
+    #[must_use]
+    pub const fn partitions(self, shard: ShardId) -> RangeInclusive<u16> {
+        let start = shard.0 * self.width();
+        start..=start + self.width() - 1
+    }
+
+    /// Validate the raw-stream layout. Requiring both layouts to divide the
+    /// fixed partition space means a raw shard is always wholly on one stream.
+    pub fn validate_streams(self, streams: u64) -> Result<(), String> {
+        if streams == 0 || streams > PARTITIONS || !PARTITIONS.is_multiple_of(streams) {
+            return Err(format!(
+                "streams must be a non-zero divisor of {PARTITIONS}, got {streams}"
+            ));
+        }
+        if u64::from(self.0) % streams != 0 {
+            return Err(format!(
+                "shards ({}) must divide evenly across streams ({streams})",
+                self.0
+            ));
+        }
+        Ok(())
+    }
+
+    /// Every shard wholly contained in an owned partition range. Refusing a
+    /// partial shard prevents two replicas from attaching to one durable.
+    pub fn owned_shards(
+        self,
+        range: &RangeInclusive<u64>,
+    ) -> Result<RangeInclusive<ShardId>, String> {
+        let start = *range.start();
+        let end = *range.end();
+        if end >= PARTITIONS {
+            return Err(format!("partition {end} outside 0..{PARTITIONS}"));
+        }
+        let width = u64::from(self.width());
+        if !start.is_multiple_of(width) || !(end + 1).is_multiple_of(width) {
+            return Err(format!(
+                "owned partitions {start}-{end} split a shard of {width}; align replica ownership to shard boundaries"
+            ));
+        }
+        Ok(ShardId((start / width) as u16)..=ShardId((end / width) as u16))
+    }
+}
 
 /// FNV-1a 64. Stable by construction, which `DefaultHasher` is not: its
 /// algorithm may change between Rust releases, and the fleet has to agree
@@ -85,5 +198,32 @@ mod tests {
                 "partition {partition} took {count} of an expected ~{per_partition}"
             );
         }
+    }
+
+    #[test]
+    fn shards_route_deterministically_and_cover_every_partition_once() {
+        let shards = ShardCount::new(64).unwrap();
+        let mut seen = [0_u8; PARTITIONS as usize];
+        for number in 0..shards.get() {
+            let shard = ShardId(number);
+            for partition in shards.partitions(shard) {
+                assert_eq!(shards.shard_of(partition), shard);
+                seen[usize::from(partition)] += 1;
+            }
+        }
+        assert!(seen.iter().all(|count| *count == 1));
+    }
+
+    #[test]
+    fn shard_and_stream_layout_rejects_ambiguous_ownership() {
+        assert!(ShardCount::new(63).is_err());
+        let shards = ShardCount::new(64).unwrap();
+        assert!(shards.validate_streams(4).is_ok());
+        assert!(shards.validate_streams(3).is_err());
+        assert!(shards.validate_streams(8).is_ok());
+        assert!(shards.owned_shards(&(0..=255)).is_ok());
+        assert!(shards.owned_shards(&(1..=255)).is_err());
+        assert_eq!(shards.shard(63), Some(ShardId(63)));
+        assert_eq!(shards.shard(64), None);
     }
 }

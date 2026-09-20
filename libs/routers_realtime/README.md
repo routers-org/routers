@@ -32,8 +32,8 @@ orchestrator -- solve jobs (per graph + region) --> matcher
 
 ### JetStream planes
 
-- Raw observations use `events.raw.p.<partition>` and `EVENTS-RAW-<index>`. They use limits retention: acknowledgements advance consumers but do not delete the replay journal.
-- Solve jobs use `solve.v1.g.<graph>.r.<region>.q.<lane>` and one work-queue stream per region. Matcher replicas for the same graph and region share a durable consumer, so the broker load-balances each job once.
+- Raw observations use `events.raw.p.<partition>` and `EVENTS-RAW-<index>`. They use limits retention: acknowledgements advance consumers but do not delete the replay journal. Orchestrators group contiguous partitions into a fixed number of shared, explicit-ack durable consumers (64 by default), then route each delivery through a bounded partition-local queue; workers remain the sole acknowledgement owners.
+- Solve jobs use `solve.v1.g.<graph>.r.<region>.q.<lane>` and one work-queue stream per region. Matcher replicas for the same graph and region share a durable consumer, so the broker load-balances each job once. By default an unacknowledged job is retained and redelivered until a matcher publishes-and-acknowledges its result; claimed handler and CPU capacity are bounded separately.
 - Results use `solve-result.v1.p.<partition>` in `SOLVE-RESULTS` and are read by the owning orchestrator partition.
 - Committed output uses `events.matched.v1.p.<partition>` in `EVENTS-MATCHED`; materializers consume it durably and observers may tail it.
 
@@ -41,7 +41,7 @@ Subject names, stream names, partition routing, postcard field order, and protoc
 
 ## Durability and state machines
 
-An orchestrator has exclusive ownership of every vehicle partition it runs. It rebuilds each partition before opening its raw consumer, then resumes strictly after the durable raw frontier. A vehicle checkpoint contains the retained match state, revision, segment, finality watermark, graph, schema, and region.
+An orchestrator has exclusive ownership of every vehicle partition it runs. It rebuilds every partition in an owned consumer shard before opening that shard's raw durable, then resumes from the earliest member frontier. Partitions already further ahead suppress the resulting replay locally. A vehicle checkpoint contains the retained match state, revision, segment, finality watermark, graph, schema, and region.
 
 A commit is a recoverable three-step state machine:
 
@@ -52,6 +52,12 @@ A commit is a recoverable three-step state machine:
 The prepared record is either `Prepared` (publication still required) or `Published` (only promotion remains) and has no TTL. Recovery re-drives either state, so a crash at any point cannot silently lose a committed output. The materializer persists output before acknowledging it; its merge function is idempotent, so redelivery is safe.
 
 Continuity decisions and materialized history also use explicit enums: a matched result continues or resets a segment, terminal outcomes record why a segment closed, and finalized layers cannot be rewritten. The ingestion path does not impose a fleet-wide wall-clock “future” or “too old” classification: replayed distributed events remain valid input; continuity is evaluated per vehicle by its ordered state.
+
+### Freshness and replay capacity
+
+Each dispatched job carries an authenticated freshness target derived from the raw broker publication timestamp plus the region's `freshness_budget_ms`. The target is part of the deterministic job proof and therefore preserves the same job ID across raw redelivery, which keeps JetStream de-duplication safe. It is an SLA measurement, not a correctness cutoff: an overdue job is still solved and committed. Matchers record claim lateness in `freshness_target_lateness_seconds` and count misses in `freshness_target_missed_total`; the bundled Grafana dashboard exposes both without treating misses as drops.
+
+`replay --rate <events/s>` supplies a fixed fleet-wide enqueue schedule independent of input timestamps, while preserving same-vehicle lane order. It is intended for repeatable capacity runs over arbitrarily aged data. Replay bounds every publish attempt across both the send and JetStream acknowledgement, and emits one JSON summary on stdout (optionally also `--summary-json <path>`) containing actual raw enqueue attempts, broker-acknowledged publications, duplicates, validation rejections, pacing, and elapsed time.
 
 ## Local development
 
@@ -79,7 +85,7 @@ The normal test suite uses the memory bus and memory checkpoint store; it does n
 
 Each binary accepts its main connection values from flags or the corresponding uppercase environment variables emitted by Clap (for example `--nats` / `NATS` and `--valkey` / `VALKEY`). NATS and Valkey URLs may carry credentials. They are parsed as [`secret::SecretUrl`]: diagnostics show only scheme, host, and port. Valkey endpoints use `stable-id=URL` (for example `primary=redis://valkey:6379`); rendezvous placement hashes the stable ID, so rotating a URL or its credentials does not remap vehicles. Plaintext URL access is confined to client construction. Do not place these URLs in command output, support bundles, or hand-written logs.
 
-The orchestrator reconciles raw, job, result, and output streams before it starts workers. All orchestrator replicas must agree on the partition mapping, raw-stream count, catalog, retention, and the complete Valkey checkpoint fleet. Each partition must be owned by exactly one live orchestrator. StatefulSet ordinal assignment (`--pod-name` plus `--fleet`) derives contiguous ownership; an explicit `--partitions` range is available for controlled deployments.
+The orchestrator reconciles raw, job, result, and output streams before it starts workers. All orchestrator replicas must agree on the partition mapping, raw-stream count, consumer-shard count, catalog, retention, and the complete Valkey checkpoint fleet. Each partition must be owned by exactly one live orchestrator. StatefulSet ordinal assignment (`--pod-name` plus `--fleet`) derives contiguous ownership; the fleet count must divide the shard count, and the shard count must divide 1024 and divide evenly across raw streams. Durable names contain the stable shard layout, not the pod ordinal, so an aligned replica-count change moves ownership without resetting broker frontiers. Because old and new ordinal layouts can overlap while both are live, change the fleet count through a coordinated drain and restart, not an in-place overlapping scale-up. An explicit `--partitions` range is available for controlled deployments but must align to whole consumer shards.
 
 Matcher replicas are scoped to one catalog region and its pinned graph. Their shared `(graph, region)` durable consumer is intentional: matching replicas with the same configuration share work. Materializer replicas similarly share `--consumer-name` when they are intended to share work; choose distinct names to replay independently. Every process that reads or writes a Valkey fleet must receive the same unordered set of stable node IDs; connection URLs may rotate independently.
 

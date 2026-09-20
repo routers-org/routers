@@ -56,6 +56,10 @@ spec:
               value: {{ .Values.orchestrator.replicas | quote }}
             - name: STREAMS
               value: {{ .Values.streams | quote }}
+            - name: SHARDS
+              value: {{ .Values.orchestrator.shards | quote }}
+            - name: SHARD_QUEUE_CAPACITY
+              value: {{ .Values.orchestrator.shardQueueCapacity | quote }}
             - name: RUST_LOG
               value: {{ .Values.orchestrator.rustLog | quote }}
             {{- if .Values.infra.telemetry.otlpUrl }}

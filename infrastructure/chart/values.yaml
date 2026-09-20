@@ -87,13 +87,19 @@ matcher:
     limits:
       memory: 3072Mi
 
-# Vehicle-partitioned fleet; replicas must divide 1024 (StatefulSet ordinals).
+# Vehicle-partitioned fleet. Consumer shards are stable broker ownership units;
+# replicas may change only among divisors of `shards` so no pod splits a shard.
 orchestrator:
   image:
     repository: routers-orchestrator
     tag: latest
     pullPolicy: Never
   replicas: 4
+  # Fixed fleet-wide consumer layout. Changing this creates a new durable-name
+  # namespace and intentionally replays from persisted partition frontiers.
+  shards: 64
+  # Deliveries buffered for each partition on each shared durable route.
+  shardQueueCapacity: 8
   rustLog: info
   # Rendered verbatim; every flag has a clap UPPER_SNAKE env name (NATS, GAP, ...).
   env: {}

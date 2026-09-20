@@ -31,7 +31,7 @@
     {
       "id": 2,
       "title": "Throughput (per second)",
-      "description": "Each stage of the pipeline as a rate. Broker sequence rates are authoritative plane ingress; raw deliveries includes retries, so a gap there exposes redelivery amplification.",
+      "description": "Each stage of the pipeline as a rate. Broker sequence rates are authoritative plane ingress; raw deliveries include retries, so gaps between publish, delivery, and ack expose queueing or redelivery amplification.",
       "type": "timeseries",
       "gridPos": {
         "x": 0,
@@ -71,6 +71,14 @@
         {
           "expr": "sum(rate(offered_observations_total[$__rate_interval]))",
           "legendFormat": "raw deliveries",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "expr": "sum(rate(raw_acks_total[$__rate_interval]))",
+          "legendFormat": "raw acked",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -1850,6 +1858,85 @@
         {
           "expr": "sum(rate(otelcol_receiver_accepted_metric_points_total[$__rate_interval]))",
           "legendFormat": "metric points accepted",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
+      ],
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      }
+    },
+    {
+      "id": 34,
+      "title": "Freshness SLA at matcher claim",
+      "description": "Raw publication age is measured when a matcher claims a job. Misses remain solvable work; this panel separates an SLA breach from correctness or capacity loss.",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 0,
+        "y": 75,
+        "w": 24,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 0
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "missed targets/s"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "short"
+              },
+              {
+                "id": "custom.axisPlacement",
+                "value": "right"
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(freshness_target_lateness_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "p50 lateness (s)",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(freshness_target_lateness_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "p95 lateness (s)",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "expr": "sum(rate(freshness_target_missed_total[$__rate_interval]))",
+          "legendFormat": "missed targets/s",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"

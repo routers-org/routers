@@ -129,8 +129,8 @@ fn jetstream_published_at(unix_nanos: i128) -> Option<SystemTime> {
 }
 
 /// A [`Publisher`] over a JetStream [`Context`](jetstream::Context). Each
-/// publish stamps `Nats-Msg-Id` for dedup; an ack timeout is
-/// [`PublishError::Ambiguous`], any other error [`PublishError::Failed`].
+/// publish stamps `Nats-Msg-Id` for dedup; an end-to-end send/ack timeout is
+/// [`PublishError::Ambiguous`], any definite transport error [`PublishError::Failed`].
 pub struct JetStreamPublisher<T> {
     context: jetstream::Context,
     ack_timeout: Duration,
@@ -171,20 +171,24 @@ impl<T: Wire + Send + Sync + 'static> Publisher<T> for JetStreamPublisher<T> {
     ) -> Result<PublishOutcome, PublishError> {
         stamp_msg_id(&mut headers, msg_id);
 
-        let pending = self
-            .context
-            .publish_with_headers(subject.to_owned(), headers, bytes.to_vec().into())
-            .await
-            .map_err(|err| PublishError::Failed(anyhow!("jetstream publish failed: {err}")))?;
+        let operation = async {
+            let pending = self
+                .context
+                .publish_with_headers(subject.to_owned(), headers, bytes.to_vec().into())
+                .await
+                .map_err(|err| PublishError::Failed(anyhow!("jetstream publish failed: {err}")))?;
+            pending
+                .into_future()
+                .await
+                .map_err(|err| PublishError::Failed(anyhow!("jetstream publish ack failed: {err}")))
+        };
 
-        match tokio::time::timeout(self.ack_timeout, pending.into_future()).await {
+        match tokio::time::timeout(self.ack_timeout, operation).await {
             Err(_elapsed) => Err(PublishError::Ambiguous(anyhow!(
-                "publish ack timed out after {:?}",
+                "publish send or acknowledgement timed out after {:?}",
                 self.ack_timeout
             ))),
-            Ok(Err(err)) => Err(PublishError::Failed(anyhow!(
-                "jetstream publish ack failed: {err}"
-            ))),
+            Ok(Err(err)) => Err(err),
             Ok(Ok(ack)) => Ok(PublishOutcome::Acked {
                 sequence: ack.sequence,
                 duplicate: ack.duplicate,

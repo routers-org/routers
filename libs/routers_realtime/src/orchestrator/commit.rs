@@ -133,9 +133,6 @@ impl<E: Entry> Decision<E> {
             SolveOutcome::VersionMismatch { .. } => {
                 Self::terminal(job, identity, TerminalReason::VersionMismatch, segment)
             }
-            SolveOutcome::DeadlineExpired => {
-                Self::terminal(job, identity, TerminalReason::DeadlineExpired, segment)
-            }
             SolveOutcome::Oversized { .. } | SolveOutcome::Internal { .. } => {
                 Self::terminal(job, identity, TerminalReason::Internal, segment)
             }
@@ -826,10 +823,6 @@ mod tests {
                     got: GraphVersion::new("g2").unwrap(),
                 },
                 TerminalReason::VersionMismatch,
-            ),
-            (
-                SolveOutcome::DeadlineExpired,
-                TerminalReason::DeadlineExpired,
             ),
             (
                 SolveOutcome::Oversized {

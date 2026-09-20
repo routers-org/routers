@@ -25,9 +25,11 @@ pub const JOB_PREFIX: &str = "solve.v1";
 /// Retention and delivery knobs for the regional job plane.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct JobsConfig {
-    /// How long an unclaimed job lives before it ages out.
+    /// How long an unacknowledged job lives before it ages out. Zero means it
+    /// is retained until acknowledged.
     pub max_age: Duration,
-    /// How many times a job is redelivered before the broker gives up.
+    /// How many times a job is redelivered before the broker gives up. A
+    /// negative value means unlimited redelivery.
     pub max_deliver: i64,
     /// How long the broker waits for an ack before redelivering.
     pub ack_wait: Duration,
@@ -38,8 +40,14 @@ pub struct JobsConfig {
 impl Default for JobsConfig {
     fn default() -> Self {
         Self {
-            max_age: Duration::from_secs(60),
-            max_deliver: 3,
+            // Freshness is measured at the matcher; it is not a retention
+            // policy. Retain an unanswered job until it is acked so replayed
+            // backlog cannot silently strand its raw observation active.
+            max_age: Duration::ZERO,
+            // Bounded concurrent handler/CPU capacity lives in PullConfig.
+            // Delivery itself is retried until a matcher publishes-and-acks a
+            // result, rather than disappearing after an arbitrary wall time.
+            max_deliver: -1,
             ack_wait: Duration::from_secs(30),
             // This durable is shared by all replicas in a region. Sixty-four
             // covers the catalog's default eight replicas at eight slots each
@@ -187,6 +195,14 @@ mod tests {
             job_consumer_filter(&graph(), &region()),
             "solve.v1.g.europe-2026-09.r.syd.q.>"
         );
+    }
+
+    #[test]
+    fn defaults_retain_unanswered_work_for_redelivery() {
+        let cfg = JobsConfig::default();
+        assert_eq!(cfg.max_age, Duration::ZERO);
+        assert!(cfg.max_deliver < 0, "negative means unlimited delivery");
+        assert!(cfg.max_ack_pending > 0, "claiming remains capacity bounded");
     }
 
     #[test]

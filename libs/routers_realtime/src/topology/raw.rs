@@ -15,7 +15,7 @@ use async_nats::jetstream::{
 };
 
 use super::{create_or_update_stream, duplicate_window};
-use crate::partition::PARTITIONS;
+use crate::partition::{PARTITIONS, ShardCount, ShardId};
 
 /// Subject prefix for partitioned raw events: `events.raw.p.<partition>`.
 pub const RAW_PREFIX: &str = "events.raw.p";
@@ -27,7 +27,7 @@ pub struct RawConfig {
     pub streams: u64,
     /// How long a raw message is retained before ageing out.
     pub max_age: Duration,
-    /// Unacknowledged messages a partition's consumer may hold.
+    /// Per-partition unacknowledged allowance within its shard consumer.
     pub max_ack_pending: i64,
     /// How long the broker waits for an ack before redelivering.
     pub ack_wait: Duration,
@@ -38,13 +38,111 @@ impl Default for RawConfig {
         Self {
             streams: 4,
             max_age: Duration::from_secs(15 * 60),
-            // One consumer exists per partition. Keeping this equal to the
-            // partition source batch makes NATS, rather than the client
-            // buffer, own excess backlog.
+            // This is a per-partition allowance. A sharded durable multiplies
+            // it by its number of filtered partitions below.
             max_ack_pending: 8,
             ack_wait: Duration::from_secs(60),
         }
     }
+}
+
+/// The durable consumer owning one shard's raw events on one raw stream.
+///
+/// `partitions` must all be in this stream; the caller's validated shard plan
+/// enforces that. A single delivery policy applies to the durable, so recovery
+/// recreates it at the earliest member-partition seam. Workers suppress the
+/// harmless replay before their own persisted frontier.
+pub async fn raw_shard_consumer(
+    stream: &jetstream::stream::Stream,
+    stream_index: u64,
+    shard_count: ShardCount,
+    shard: ShardId,
+    partitions: &[u16],
+    config: &RawConfig,
+    start: Option<u64>,
+) -> anyhow::Result<PullConsumer> {
+    anyhow::ensure!(
+        !partitions.is_empty(),
+        "raw shard {shard} has no partitions"
+    );
+    anyhow::ensure!(
+        shard_count.partitions(shard).eq(partitions.iter().copied()),
+        "raw shard {shard} does not contain exactly the configured partitions"
+    );
+    anyhow::ensure!(
+        partitions.iter().all(
+            |partition| raw_stream_index(u64::from(*partition), config.streams) == stream_index
+        ),
+        "raw shard {shard} crosses or does not belong to stream {stream_index}"
+    );
+    let name = raw_shard_consumer_name(stream_index, shard_count, shard);
+    let deliver_policy = match start {
+        Some(start_sequence) => {
+            if let Err(err) = stream.delete_consumer(&name).await
+                && !is_consumer_not_found(&err)
+            {
+                return Err(anyhow::Error::new(err)).with_context(|| {
+                    format!("could not delete raw shard consumer {name} before moving it")
+                });
+            }
+            DeliverPolicy::ByStartSequence { start_sequence }
+        }
+        None => DeliverPolicy::All,
+    };
+    let partition_count = i64::try_from(partitions.len())
+        .context("raw shard partition count does not fit max_ack_pending")?;
+    let max_ack_pending = config
+        .max_ack_pending
+        .checked_mul(partition_count)
+        .filter(|pending| *pending > 0)
+        .context("raw shard max_ack_pending must be positive and not overflow")?;
+    let filters = partitions
+        .iter()
+        .map(|partition| raw_subject(u64::from(*partition)))
+        .collect();
+    let mut consumer = stream
+        .get_or_create_consumer(
+            &name,
+            pull::Config {
+                durable_name: Some(name.clone()),
+                filter_subjects: filters,
+                ack_policy: AckPolicy::Explicit,
+                max_ack_pending,
+                ack_wait: config.ack_wait,
+                deliver_policy,
+                ..Default::default()
+            },
+        )
+        .await
+        .with_context(|| format!("could not create raw shard consumer {name}"))?;
+    let actual = consumer
+        .info()
+        .await
+        .with_context(|| format!("could not read raw shard consumer {name}"))?
+        .config
+        .deliver_policy;
+    if actual != deliver_policy {
+        anyhow::bail!(
+            "raw shard consumer {name} has deliver policy {actual:?}, expected {deliver_policy:?}"
+        );
+    }
+    Ok(consumer)
+}
+
+/// Stable raw durable name for a shard layout.
+///
+/// The shard count distinguishes deliberate layout migrations, while the lack
+/// of a pod ordinal lets replica-count changes move a shard without losing its
+/// broker frontier.
+pub fn raw_shard_consumer_name(
+    stream_index: u64,
+    shard_count: ShardCount,
+    shard: ShardId,
+) -> String {
+    format!(
+        "orchestrator-raw-n{}-s{stream_index}-sh{shard}",
+        shard_count.get()
+    )
 }
 
 /// The raw-event subject of one partition.
@@ -189,5 +287,15 @@ mod tests {
     #[test]
     fn default_delivery_window_is_partition_bounded() {
         assert_eq!(RawConfig::default().max_ack_pending, 8);
+    }
+
+    #[test]
+    fn sharded_durable_name_is_replica_independent_and_layout_scoped() {
+        let shards = ShardCount::new(64).unwrap();
+        let shard = shards.shard(7).unwrap();
+        assert_eq!(
+            raw_shard_consumer_name(0, shards, shard),
+            "orchestrator-raw-n64-s0-sh7"
+        );
     }
 }
