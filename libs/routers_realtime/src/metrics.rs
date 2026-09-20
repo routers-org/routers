@@ -1,1 +1,1 @@
-//! Bounded-label metrics. (T30)
+//! Bounded-label metrics.

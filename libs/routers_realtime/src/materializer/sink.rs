@@ -1,1 +1,1 @@
-//! Materializer: sink. (T28)
+//! Materializer sink.

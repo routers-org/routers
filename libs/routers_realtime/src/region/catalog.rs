@@ -1,1 +1,1 @@
-//! The versioned region catalog. (T06)
+//! The versioned region catalog.

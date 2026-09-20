@@ -1,1 +1,1 @@
-//! Valkey implementation of `CheckpointStore`. (T11)
+//! Valkey implementation of `CheckpointStore`.

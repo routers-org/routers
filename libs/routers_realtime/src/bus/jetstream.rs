@@ -1,1 +1,1 @@
-//! JetStream implementations of the bus adapters. (T32, T35)
+//! JetStream implementations of the bus adapters.

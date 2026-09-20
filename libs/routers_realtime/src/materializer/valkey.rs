@@ -1,1 +1,1 @@
-//! Materializer: valkey. (T28)
+//! Valkey materializer sink.

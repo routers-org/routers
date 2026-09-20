@@ -1,1 +1,1 @@
-//! Materializer: memory. (T28)
+//! In-memory materializer sink.

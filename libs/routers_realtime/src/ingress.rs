@@ -1,1 +1,1 @@
-//! Ingress validation and idempotent publication. (T29)
+//! Ingress validation and idempotent publication.

@@ -1,1 +1,1 @@
-//! Bus adapter traits: publication, consumption, acknowledgement. (T12)
+//! Bus adapter traits for publication, consumption, and acknowledgement.

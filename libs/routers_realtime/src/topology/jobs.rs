@@ -1,22 +1,11 @@
-//! Regional solve-job plane. (T05)
+//! Regional solve-job plane.
 //!
-//! Solve jobs are addressed by three tokens: the graph version they must be
-//! solved against, the region whose matchers own the ground, and a priority
-//! lane. The subject is `solve.v1.g.<graph>.r.<region>.q.<lane>`, versioned in
-//! its second token so a future contract can run a parallel subject space.
-//!
-//! One stream per region (`SOLVE-JOBS-<region>`) captures every graph and lane
-//! for that region, and it is a
-//! [`WorkQueue`](async_nats::jetstream::stream::RetentionPolicy::WorkQueue):
-//! a job is claimed once, by one matcher replica, and deleted on ack. Every
-//! replica serving a `(graph, region)` shares a single durable pull consumer
-//! (`matchers-g<graph>-r<region>`) whose filter narrows the region stream to
-//! that graph, so the broker load-balances jobs across the replicas without
-//! any two solving the same job.
-//!
-//! Because `graph` and `region` are validated NATS tokens (they cannot contain
-//! `.`), the subject splits unambiguously and [`parse_job_subject`] can
-//! recover the triple a job was addressed with.
+//! Jobs are addressed by `(graph version, region, priority lane)` on the
+//! subject `solve.v1.g.<graph>.r.<region>.q.<lane>`. One
+//! [`WorkQueue`](async_nats::jetstream::stream::RetentionPolicy::WorkQueue)
+//! stream per region claims each job once; replicas serving a `(graph, region)`
+//! share a durable pull consumer whose filter narrows the region stream to that
+//! graph, so the broker load-balances without any two solving the same job.
 
 use core::time::Duration;
 
@@ -36,14 +25,11 @@ pub const JOB_PREFIX: &str = "solve.v1";
 /// Retention and delivery knobs for the regional job plane.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct JobsConfig {
-    /// How long an unclaimed job lives before it ages out — its useful
-    /// lifetime, past which its deadline has expired anyway.
+    /// How long an unclaimed job lives before it ages out.
     pub max_age: Duration,
-    /// How many times a job is redelivered before the broker gives up. Bounds
-    /// a poison job's blast radius while still tolerating replica churn.
+    /// How many times a job is redelivered before the broker gives up.
     pub max_deliver: i64,
-    /// How long the broker waits for an ack before redelivering — sized to a
-    /// solve's worst case, so a slow (not crashed) matcher is not double-served.
+    /// How long the broker waits for an ack before redelivering.
     pub ack_wait: Duration,
     /// Unclaimed-but-delivered jobs the consumer may hold across all replicas.
     pub max_ack_pending: i64,
@@ -88,9 +74,8 @@ pub fn job_consumer_filter(graph: &GraphVersion, region: &RegionId) -> String {
     format!("{JOB_PREFIX}.g.{graph}.r.{region}.q.>")
 }
 
-/// Recover the `(graph, region, lane)` a job subject addressed, validating
-/// each token. Returns [`None`] for anything that is not a well-formed job
-/// subject — a wildcard filter, a foreign plane, or an unsafe token.
+/// Recover the `(graph, region, lane)` a job subject addressed, validating each
+/// token. Returns [`None`] for anything not a well-formed job subject.
 pub fn parse_job_subject(subject: &str) -> Option<(GraphVersion, RegionId, Lane)> {
     let parts: [&str; 8] = subject.split('.').collect::<Vec<_>>().try_into().ok()?;
     match parts {
@@ -105,12 +90,6 @@ pub fn parse_job_subject(subject: &str) -> Option<(GraphVersion, RegionId, Lane)
 }
 
 /// Idempotently reconcile a region's job stream.
-///
-/// Work-queue retention on
-/// [`File`](async_nats::jetstream::stream::StorageType::File) storage: a job is
-/// claimed once and deleted on ack. The `duplicate_window` lets an ambiguous
-/// re-publish under the same [`Nats-Msg-Id`](crate::protocol::ids::headers::MSG_ID)
-/// collapse rather than double-enqueue.
 pub async fn ensure_job_stream(
     context: &jetstream::Context,
     region: &RegionId,
@@ -133,10 +112,6 @@ pub async fn ensure_job_stream(
 }
 
 /// The shared durable pull consumer for the matchers of one `(graph, region)`.
-/// Explicit ack with bounded redelivery: a claimed job is redelivered up to
-/// [`JobsConfig::max_deliver`] times if unacked within
-/// [`JobsConfig::ack_wait`], so a crashed replica's work is picked up by
-/// another without a poison job looping forever.
 pub async fn job_consumer(
     stream: &jetstream::stream::Stream,
     graph: &GraphVersion,

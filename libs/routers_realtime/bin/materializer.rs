@@ -1,3 +1,1 @@
-fn main() {
-    // Wired in T28.
-}
+fn main() {}

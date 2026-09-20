@@ -1,1 +1,1 @@
-//! Checkpoint records and the `CheckpointStore` trait. (T10)
+//! Checkpoint records and the `CheckpointStore` trait.

@@ -1,1 +1,1 @@
-//! In-memory bus for tests. (T12)
+//! In-memory bus for tests.

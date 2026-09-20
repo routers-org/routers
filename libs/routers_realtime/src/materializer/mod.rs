@@ -1,4 +1,4 @@
-//! Downstream materializer. (T28)
+//! Downstream materializer.
 
 pub mod consumer;
 pub mod memory;

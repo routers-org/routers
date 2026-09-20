@@ -1,10 +1,7 @@
-//! Identities and versions shared by every plane. (T01)
-//!
-//! Every control-plane message is addressed by the newtypes here. They exist
-//! as distinct types — rather than bare integers or strings — so a partition
-//! sequence can never be handed where a revision is meant, and so the values
-//! that become NATS subject tokens or `Nats-Msg-Id` dedup keys are validated
-//! once, at construction, and stay well-formed thereafter.
+//! Identities and versions shared by every plane. The newtypes here are
+//! distinct types so a sequence can never be handed where a revision is meant,
+//! and values that become NATS tokens or dedup keys are validated at
+//! construction and stay well-formed thereafter.
 
 use core::fmt;
 use core::str::FromStr;
@@ -13,16 +10,13 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-/// The wire schema this build speaks. Stamped onto every message so a peer on
-/// an older or newer contract is detected rather than silently mis-decoded.
+/// The wire schema this build speaks, stamped onto every message.
 pub const SCHEMA_VERSION: SchemaVersion = SchemaVersion(1);
 
-/// Something a value could not become because it would not be safe on the
-/// wire (as a NATS token or a hex identity).
+/// Something a value could not become because it would not be safe on the wire.
 #[derive(Clone, Debug, PartialEq, Eq, Error)]
 pub enum IdError {
-    /// The token held a character outside `[A-Za-z0-9_-]`; it could split a
-    /// subject or match a wildcard.
+    /// The token held a character outside `[A-Za-z0-9_-]`.
     #[error("token is not NATS-safe (needs [A-Za-z0-9_-]+): {0:?}")]
     UnsafeToken(String),
     /// The token was empty; an empty subject segment is not addressable.
@@ -34,8 +28,7 @@ pub enum IdError {
 }
 
 /// Declare a fixed-size integer identity: a transparent newtype that prints as
-/// its inner value and orders by it. Used for the identities that are already
-/// a single number on the wire.
+/// its inner value.
 macro_rules! plain_id {
     ($(#[$meta:meta])* $name:ident($inner:ty)) => {
         $(#[$meta])*
@@ -59,22 +52,20 @@ plain_id! {
 
 plain_id! {
     /// A committed decision's ordinal: the raw stream sequence of the
-    /// observation that triggered it. Higher revisions supersede lower ones
-    /// for the same (vehicle, timestamp), so an out-of-order re-emission
-    /// resolves deterministically.
+    /// observation that triggered it. Higher revisions supersede lower ones for
+    /// the same (vehicle, timestamp).
     Revision(u64)
 }
 
 plain_id! {
-    /// A continuity generation for one vehicle. Opened by an observation and
-    /// valued as that observation's sequence, so segments are deterministic
-    /// without a shared counter; a new segment begins only on a reset.
+    /// A continuity generation for one vehicle, valued as its opening
+    /// observation's sequence so segments are deterministic without a shared
+    /// counter.
     SegmentId(u64)
 }
 
 plain_id! {
-    /// A priority lane within a region's solve-job plane. Lane `0` is the
-    /// default; higher lanes exist so latency-sensitive traffic can overtake.
+    /// A priority lane within a region's solve-job plane; lane `0` is the default.
     Lane(u8)
 }
 
@@ -89,9 +80,8 @@ impl Default for Lane {
     }
 }
 
-/// A raw observation's durable identity: the JetStream stream sequence of its
-/// raw message, qualified by partition. Partitions map to fixed streams, so
-/// `(partition, sequence)` is unique across the fleet.
+/// A raw observation's durable identity: its JetStream stream sequence
+/// qualified by partition, unique across the fleet.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct ObservationId {
     pub partition: u16,
@@ -113,14 +103,14 @@ impl From<ObservationId> for Revision {
 
 impl From<ObservationId> for SegmentId {
     /// A fresh vehicle's first segment is valued as its opening observation's
-    /// sequence (see [`SegmentId`]).
+    /// sequence.
     fn from(id: ObservationId) -> Self {
         SegmentId(id.sequence)
     }
 }
 
 /// Declare a 128-bit hash identity: prints and parses as 32 lowercase hex
-/// characters, which is exactly what the broker sees as a `Nats-Msg-Id`.
+/// characters.
 macro_rules! hex_id {
     ($(#[$meta:meta])* $name:ident) => {
         $(#[$meta])*
@@ -149,23 +139,20 @@ macro_rules! hex_id {
 }
 
 hex_id! {
-    /// Deterministic 128-bit job identity: the first 16 bytes of the SHA-256
-    /// of a job's `JobIdentity` (T02). Identical context bytes yield the same
-    /// id, so an ambiguous re-publish carries the same `Nats-Msg-Id` and the
-    /// broker dedups it.
+    /// Deterministic 128-bit job identity: the first 16 bytes of the SHA-256 of
+    /// a job's `JobIdentity`, so an ambiguous re-publish carries the same id and dedups.
     JobId
 }
 
 hex_id! {
     /// Identity of one committed output, derived from its job so it too is
-    /// deterministic and self-deduping on the matched plane.
+    /// deterministic and self-deduping.
     OutputId
 }
 
 impl OutputId {
     /// The output identity for a job: the first 16 bytes of
-    /// `sha256(job_id_be_bytes ∥ b"output")`. Derived rather than random so a
-    /// retried commit republishes byte-identical output the broker can dedup.
+    /// `sha256(job_id_be_bytes ∥ b"output")`.
     pub fn for_job(job: JobId) -> OutputId {
         OutputId(digest128(&[
             job.0.to_be_bytes().as_slice(),
@@ -174,9 +161,8 @@ impl OutputId {
     }
 }
 
-/// A NATS-token-safe newtype backed by a validated string. The inner value is
-/// guaranteed to match `[A-Za-z0-9_-]+`, so it is safe to interpolate into a
-/// subject without splitting it or tripping a wildcard.
+/// A NATS-token-safe newtype backed by a validated string matching
+/// `[A-Za-z0-9_-]+`, so it is safe to interpolate into a subject.
 macro_rules! token_id {
     ($(#[$meta:meta])* $name:ident) => {
         $(#[$meta])*
@@ -211,20 +197,17 @@ macro_rules! token_id {
 }
 
 token_id! {
-    /// Identifies the road-network snapshot a solve ran against. Part of a
-    /// job's subject, so it must be a NATS-safe token.
+    /// Identifies the road-network snapshot a solve ran against; a NATS-safe subject token.
     GraphVersion
 }
 
 token_id! {
-    /// Identifies a solve region (a shard grouping matchers subscribe to).
-    /// Part of a job's subject and stream name, so it must be NATS-safe.
+    /// Identifies a solve region (a shard grouping); a NATS-safe subject and stream token.
     RegionId
 }
 
 /// Whether `s` is safe to use as a single NATS subject token: non-empty and
-/// made only of `[A-Za-z0-9_-]`. Rejects `.`, `*`, `>`, and whitespace — the
-/// characters that would split a subject or act as a wildcard.
+/// made only of `[A-Za-z0-9_-]`.
 pub fn token_safe(s: &str) -> bool {
     !s.is_empty()
         && s.bytes()
@@ -232,8 +215,7 @@ pub fn token_safe(s: &str) -> bool {
 }
 
 /// SHA-256 over the concatenation of `parts`, keeping the first 16 bytes as a
-/// big-endian `u128`. The shared basis for every deterministic identity here;
-/// T02 uses it for `JobIdentity::job_id`.
+/// big-endian `u128`. The shared basis for every deterministic identity here.
 pub fn digest128(parts: &[&[u8]]) -> u128 {
     let mut hasher = Sha256::new();
     for part in parts {
@@ -245,8 +227,8 @@ pub fn digest128(parts: &[&[u8]]) -> u128 {
     u128::from_be_bytes(head)
 }
 
-/// Message-header names and the helpers that stamp and read them on an
-/// [`async_nats::HeaderMap`]. Centralised so every plane spells them the same.
+/// Message-header names and the helpers that stamp and read them, centralised so
+/// every plane spells them the same.
 pub mod headers {
     use core::time::Duration;
 
@@ -261,8 +243,7 @@ pub mod headers {
     pub const RECEIVED_AT_MS: &str = "x-routers-received-at-ms";
     /// When the message was published (unix millis); shared with `bus::trace`.
     pub const SENT_AT_MS: &str = "x-routers-sent-at-ms";
-    /// The broker's dedup key: job/result use the [`super::JobId`] hex,
-    /// committed output the [`super::OutputId`] hex, raw `<vehicle>:<ts_us>`.
+    /// The broker's dedup key (`Nats-Msg-Id`).
     pub const MSG_ID: &str = "Nats-Msg-Id";
 
     /// Stamp this build's [`SCHEMA_VERSION`] onto `headers`.
@@ -290,8 +271,7 @@ pub mod headers {
         headers.get(MSG_ID).map(|value| value.as_str())
     }
 
-    /// Stamp the ingress receipt time as unix millis. A time before the epoch
-    /// (not reachable in practice) records as `0`.
+    /// Stamp the ingress receipt time as unix millis; a time before the epoch records as `0`.
     pub fn stamp_received_at(headers: &mut HeaderMap, at: SystemTime) {
         let millis = at
             .duration_since(UNIX_EPOCH)
@@ -326,7 +306,6 @@ mod tests {
             assert_eq!(text.len(), 32, "{text} should be 32 chars");
             assert_eq!(text, text.to_lowercase(), "{text} should be lowercase");
             assert_eq!(JobId::from_str(&text).unwrap(), job);
-            // The same hex is a valid OutputId too.
             assert_eq!(OutputId::from_str(&text).unwrap(), OutputId(raw));
         }
     }
@@ -360,8 +339,6 @@ mod tests {
 
     #[test]
     fn digest128_known_answer() {
-        // sha256("") = e3b0c442...b855; the first 16 bytes are the JobId of an
-        // empty pre-image.
         let empty = digest128(&[]);
         assert_eq!(format!("{empty:032x}"), "e3b0c44298fc1c149afbf4c8996fb924");
         assert_eq!(JobId(empty).to_string(), "e3b0c44298fc1c149afbf4c8996fb924");
@@ -369,13 +346,10 @@ mod tests {
 
     #[test]
     fn digest128_hashes_the_concatenation() {
-        // Parts are concatenated without a delimiter, so the split point does
-        // not matter — only the joined bytes do.
         assert_eq!(
             digest128(&[b"foo".as_slice(), b"bar".as_slice()]),
             digest128(&[b"foobar".as_slice()])
         );
-        // Different joined bytes hash differently.
         assert_ne!(
             digest128(&[b"foobar".as_slice()]),
             digest128(&[b"foobaz".as_slice()])
@@ -390,9 +364,7 @@ mod tests {
             b"output".as_slice(),
         ]));
         assert_eq!(OutputId::for_job(job), expected);
-        // Deterministic: same job, same output.
         assert_eq!(OutputId::for_job(job), OutputId::for_job(job));
-        // Distinct jobs yield distinct outputs.
         assert_ne!(OutputId::for_job(job), OutputId::for_job(JobId(job.0 ^ 1)));
     }
 

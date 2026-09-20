@@ -1,1 +1,1 @@
-//! Graph artifact manifests and checksum verification. (T08)
+//! Graph artifact manifests and checksum verification.

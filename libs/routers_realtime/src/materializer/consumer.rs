@@ -1,1 +1,1 @@
-//! Materializer: consumer. (T28)
+//! Materializer consumer.
