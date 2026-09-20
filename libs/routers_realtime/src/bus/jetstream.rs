@@ -7,6 +7,7 @@
 
 use core::future::IntoFuture;
 use core::marker::PhantomData;
+use core::num::NonZeroUsize;
 use core::time::Duration;
 
 use anyhow::anyhow;
@@ -269,13 +270,25 @@ impl<T> JetStreamSource<T> {
         }
     }
 
-    /// Open the continuous message stream of `consumer` and wrap it.
+    /// Open a continuous message stream for `consumer` and wrap it.
+    ///
+    /// `max_messages_per_batch` is deliberately explicit. The async-nats
+    /// default is large enough that fleets with many partition consumers can
+    /// claim far more messages than their workers can process before
+    /// `AckWait`, amplifying load through avoidable redeliveries.
     ///
     /// # Errors
     ///
     /// Returns any error from establishing the pull-consumer message stream.
-    pub async fn from_consumer(consumer: &PullConsumer) -> anyhow::Result<Self> {
-        let messages = consumer.messages().await?;
+    pub async fn from_consumer(
+        consumer: &PullConsumer,
+        max_messages_per_batch: NonZeroUsize,
+    ) -> anyhow::Result<Self> {
+        let messages = consumer
+            .stream()
+            .max_messages_per_batch(max_messages_per_batch.get())
+            .messages()
+            .await?;
         Ok(Self::new(messages))
     }
 }

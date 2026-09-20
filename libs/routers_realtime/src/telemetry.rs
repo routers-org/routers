@@ -3,8 +3,8 @@
 
 use core::time::Duration;
 
-use opentelemetry::global;
 use opentelemetry::trace::TracerProvider as _;
+use opentelemetry::{KeyValue, global};
 use opentelemetry_sdk::Resource;
 use opentelemetry_sdk::metrics::SdkMeterProvider;
 use opentelemetry_sdk::metrics::periodic_reader_with_async_runtime::PeriodicReader;
@@ -42,6 +42,17 @@ impl Drop for Telemetry {
 pub fn init(service: &'static str) -> Telemetry {
     global::set_text_map_propagator(TraceContextPropagator::new());
 
+    // Prometheus identifies cumulative OTLP counters by their resource. Without
+    // an instance id, replicas (and replacement pods) collapse into one series,
+    // making counter resets look like impossible throughput spikes.
+    let instance = std::env::var("POD_NAME")
+        .or_else(|_| std::env::var("HOSTNAME"))
+        .unwrap_or_else(|_| format!("pid-{}", std::process::id()));
+    let resource = Resource::builder()
+        .with_service_name(service)
+        .with_attribute(KeyValue::new("service.instance.id", instance))
+        .build();
+
     let provider = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
         .is_ok()
         .then(|| {
@@ -63,7 +74,7 @@ pub fn init(service: &'static str) -> Telemetry {
 
             let provider = SdkTracerProvider::builder()
                 .with_span_processor(processor)
-                .with_resource(Resource::builder().with_service_name(service).build())
+                .with_resource(resource.clone())
                 .build();
 
             global::set_tracer_provider(provider.clone());
@@ -85,7 +96,7 @@ pub fn init(service: &'static str) -> Telemetry {
 
             let provider = SdkMeterProvider::builder()
                 .with_reader(reader)
-                .with_resource(Resource::builder().with_service_name(service).build())
+                .with_resource(resource)
                 .build();
 
             global::set_meter_provider(provider.clone());

@@ -49,9 +49,13 @@ spec:
             - "/shards"
             - "--health-addr"
             - {{ printf "0.0.0.0:%v" $.Values.matcher.healthPort | quote }}
-            {{- if $.Values.matcher.slots }}
-            - "--slots"
-            - {{ $.Values.matcher.slots | quote }}
+            {{- if $.Values.matcher.maxInFlight }}
+            - "--max-in-flight"
+            - {{ $.Values.matcher.maxInFlight | quote }}
+            {{- end }}
+            {{- if $.Values.matcher.solveSlots }}
+            - "--solve-slots"
+            - {{ $.Values.matcher.solveSlots | quote }}
             {{- end }}
             - "--max-candidates"
             - {{ $.Values.matcher.maxCandidates | quote }}
@@ -61,6 +65,10 @@ spec:
             - {{ $arg | quote }}
             {{- end }}
           env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
             - name: RUST_LOG
               value: {{ $.Values.matcher.rustLog | quote }}
             {{- if $.Values.infra.telemetry.otlpUrl }}

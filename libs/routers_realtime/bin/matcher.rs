@@ -1,15 +1,16 @@
 //! The regional matcher worker binary.
 //!
 //! One matcher serves exactly one region: it loads that region's pinned graph
-//! before pulling any job, then pulls solve jobs only as fast as it has CPU
-//! slots, solves each, and publishes the result before acknowledging the job so
-//! a crash never loses work. This binary is only the wiring around the reusable
+//! before pulling any job, then bounds end-to-end handlers separately from the
+//! CPU solve stage and publishes each result before acknowledging the job so a
+//! crash never loses work. This binary is only the wiring around the reusable
 //! pieces in [`routers_realtime::matcher`].
 
 // A binary crate has no `extern crate alloc`, so `std::sync::Arc` is the only spelling.
 #![allow(clippy::std_instead_of_alloc)]
 
 use core::net::SocketAddr;
+use core::num::NonZeroUsize;
 use core::time::Duration;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -79,10 +80,14 @@ fn health_router(readiness: ReadinessWatcher) -> Router {
         .with_state(HealthState { readiness })
 }
 
-/// The default solve-slot count: one per available core, since a solve is
-/// CPU-bound. Falls back to a single slot when parallelism is unknown.
-fn default_slots() -> usize {
-    std::thread::available_parallelism().map_or(1, |n| n.get())
+/// The default end-to-end handler capacity.
+fn default_max_in_flight() -> NonZeroUsize {
+    PullConfig::default().max_in_flight
+}
+
+/// The default CPU solve capacity.
+fn default_solve_slots() -> NonZeroUsize {
+    PullConfig::default().solve_slots
 }
 
 /// Validate a `--region` value as a NATS-safe [`RegionId`].
@@ -111,10 +116,15 @@ struct Args {
     #[arg(long)]
     shard_dir: PathBuf,
 
-    /// The most solves to run concurrently (and jobs claimed-but-unanswered).
-    /// Defaults to the available parallelism.
-    #[arg(long, default_value_t = default_slots())]
-    slots: usize,
+    /// The most jobs claimed but not yet answered, including publication and
+    /// acknowledgement I/O.
+    #[arg(long, default_value_t = default_max_in_flight())]
+    max_in_flight: NonZeroUsize,
+
+    /// The most CPU-bound solves to run concurrently. Defaults to the
+    /// available parallelism.
+    #[arg(long, default_value_t = default_solve_slots())]
+    solve_slots: NonZeroUsize,
 
     /// Address for the Kubernetes liveness and readiness HTTP endpoints.
     #[arg(long, default_value = DEFAULT_HEALTH_ADDR)]
@@ -220,9 +230,10 @@ async fn main() -> anyhow::Result<()> {
     );
 
     let cfg = PullConfig {
-        slots: args.slots,
+        max_in_flight: args.max_in_flight,
+        solve_slots: args.solve_slots,
         fetch_wait: FETCH_WAIT,
-        max_batch: args.slots,
+        max_batch: args.max_in_flight.get(),
         validate: ValidateConfig {
             max_decoded_bytes: args.max_decoded_bytes,
             min_remaining: ValidateConfig::DEFAULT_MIN_REMAINING,
@@ -234,7 +245,8 @@ async fn main() -> anyhow::Result<()> {
     info!(
         region = %loaded.region.id,
         graph = %loaded.region.graph,
-        slots = args.slots,
+        max_in_flight = args.max_in_flight.get(),
+        solve_slots = args.solve_slots.get(),
         "matcher ready; pulling jobs"
     );
 
@@ -288,7 +300,8 @@ mod tests {
         assert_eq!(args.region, RegionId::new("syd").unwrap());
         assert_eq!(args.shard_dir, PathBuf::from("/var/lib/routers/shards"));
 
-        assert_eq!(args.slots, default_slots());
+        assert_eq!(args.max_in_flight, default_max_in_flight());
+        assert_eq!(args.solve_slots, default_solve_slots());
         assert_eq!(args.grace, Duration::from_secs(20));
         assert_eq!(
             args.max_decoded_bytes,
@@ -302,7 +315,9 @@ mod tests {
     fn parses_the_full_optional_set() {
         let mut argv = base();
         argv.extend([
-            "--slots",
+            "--max-in-flight",
+            "48",
+            "--solve-slots",
             "8",
             "--health-addr",
             "127.0.0.1:9191",
@@ -316,7 +331,8 @@ mod tests {
 
         let args = Args::parse_from(argv);
 
-        assert_eq!(args.slots, 8);
+        assert_eq!(args.max_in_flight, NonZeroUsize::new(48).unwrap());
+        assert_eq!(args.solve_slots, NonZeroUsize::new(8).unwrap());
         assert_eq!(args.health_addr, "127.0.0.1:9191".parse().unwrap());
         assert_eq!(args.grace, Duration::from_secs(45));
         assert_eq!(args.max_decoded_bytes, 1 << 20);
@@ -335,6 +351,15 @@ mod tests {
     #[test]
     fn requires_the_mandatory_arguments() {
         assert!(Args::try_parse_from(["matcher"]).is_err());
+    }
+
+    #[test]
+    fn rejects_zero_concurrency_limits() {
+        for flag in ["--max-in-flight", "--solve-slots"] {
+            let mut argv = base();
+            argv.extend([flag, "0"]);
+            assert!(Args::try_parse_from(argv).is_err(), "{flag} accepted zero");
+        }
     }
 
     #[test]

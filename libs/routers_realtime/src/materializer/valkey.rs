@@ -240,6 +240,38 @@ struct WritePlan {
     metadata: Vec<HashMutation>,
 }
 
+/// The two hashes that form one compare-and-set input snapshot.
+struct StoredSnapshot<E: Entry> {
+    meta: std::collections::HashMap<String, String>,
+    layers: BTreeMap<i64, StoredLayer<E>>,
+    retractions: BTreeMap<i64, Revision>,
+}
+
+/// Decoded contents of one segment HASH.
+struct StoredSegment<E: Entry> {
+    layers: BTreeMap<i64, StoredLayer<E>>,
+    retractions: BTreeMap<i64, Revision>,
+}
+
+/// Metadata fields needed to merge one output and construct its CAS write.
+fn snapshot_fields(segment: SegmentId) -> [String; 5] {
+    [
+        STATE_VERSION_FIELD.into(),
+        "current_segment".into(),
+        "current_revision".into(),
+        finalized_field(segment),
+        last_revision_field(segment),
+    ]
+}
+
+/// Only layer-changing outputs need the potentially large segment HASH.
+fn needs_segment_state<E: Entry>(kind: &OutputKind<E>) -> bool {
+    matches!(
+        kind,
+        OutputKind::Matched { .. } | OutputKind::Retraction { .. }
+    )
+}
+
 impl WritePlan {
     fn is_empty(&self) -> bool {
         self.layers.is_empty() && self.metadata.is_empty()
@@ -316,17 +348,10 @@ async fn apply_plan(
     Ok(applied == 1)
 }
 
-/// One segment's layers, loaded from its HASH.
-async fn load_layers<E: Entry + DeserializeOwned>(
-    conn: &mut MultiplexedConnection,
-    vehicle: VehicleId,
-    segment: SegmentId,
-) -> Result<(BTreeMap<i64, StoredLayer<E>>, BTreeMap<i64, Revision>), ValkeyError> {
-    let raw: std::collections::HashMap<String, Vec<u8>> = redis::cmd("HGETALL")
-        .arg(segment_key(vehicle, segment))
-        .query_async(conn)
-        .await?;
-
+/// Decode one segment HASH into live layers and retraction tombstones.
+fn decode_layers<E: Entry + DeserializeOwned>(
+    raw: std::collections::HashMap<String, Vec<u8>>,
+) -> Result<StoredSegment<E>, ValkeyError> {
     let mut layers = BTreeMap::new();
     let mut retractions = BTreeMap::new();
     for (field, bytes) in raw {
@@ -343,18 +368,60 @@ async fn load_layers<E: Entry + DeserializeOwned>(
         };
         layers.insert(timestamp, postcard::from_bytes(&bytes)?);
     }
-    Ok((layers, retractions))
+    Ok(StoredSegment {
+        layers,
+        retractions,
+    })
 }
 
-/// The vehicle's metadata HASH, read as plain strings.
-async fn read_meta(
+/// Load the versioned metadata before the segment HASH in one network round
+/// trip. Redis executes the pipelined commands in order; if another writer
+/// advances the version after the first read, the later CAS rejects this
+/// snapshot exactly as it did when these were separate round trips.
+async fn load_snapshot<E: Entry + DeserializeOwned>(
     conn: &mut MultiplexedConnection,
     vehicle: VehicleId,
-) -> Result<std::collections::HashMap<String, String>, ValkeyError> {
-    Ok(redis::cmd("HGETALL")
-        .arg(meta_key(vehicle))
-        .query_async(conn)
-        .await?)
+    segment: SegmentId,
+    include_segment: bool,
+) -> Result<StoredSnapshot<E>, ValkeyError> {
+    let fields = snapshot_fields(segment);
+    let metadata_key = meta_key(vehicle);
+    let (values, raw): (
+        Vec<Option<String>>,
+        std::collections::HashMap<String, Vec<u8>>,
+    ) = if include_segment {
+        let mut pipeline = redis::pipe();
+        pipeline
+            // This must remain first: the CAS version makes a later mixed
+            // snapshot retry instead of overwriting concurrent state.
+            .cmd("HMGET")
+            .arg(&metadata_key)
+            .arg(&fields)
+            .cmd("HGETALL")
+            .arg(segment_key(vehicle, segment));
+        pipeline.query_async(conn).await?
+    } else {
+        let values = redis::cmd("HMGET")
+            .arg(&metadata_key)
+            .arg(&fields)
+            .query_async(conn)
+            .await?;
+        (values, std::collections::HashMap::new())
+    };
+    let meta = fields
+        .into_iter()
+        .zip(values)
+        .filter_map(|(field, value)| value.map(|value| (field, value)))
+        .collect();
+    let StoredSegment {
+        layers,
+        retractions,
+    } = decode_layers(raw)?;
+    Ok(StoredSnapshot {
+        meta,
+        layers,
+        retractions,
+    })
 }
 
 impl<E: Entry + DeserializeOwned> Sink<E> for ValkeySink {
@@ -370,9 +437,18 @@ impl<E: Entry + DeserializeOwned> Sink<E> for ValkeySink {
         for _ in 0..CAS_RETRIES {
             // Read the version first; see `state_version` for why this order
             // makes a mixed read harmless rather than a lost update.
-            let meta = read_meta(&mut conn, vehicle).await?;
+            let StoredSnapshot {
+                meta,
+                layers,
+                retractions,
+            } = load_snapshot::<E>(
+                &mut conn,
+                vehicle,
+                segment,
+                needs_segment_state(&output.kind),
+            )
+            .await?;
             let version = state_version(&meta)?;
-            let (layers, retractions) = load_layers::<E>(&mut conn, vehicle, segment).await?;
             let had_current = meta.contains_key("current_segment");
             let current_segment = meta
                 .get("current_segment")
@@ -504,6 +580,10 @@ impl<E: Entry + DeserializeOwned> Sink<E> for ValkeySink {
 mod tests {
     use super::*;
 
+    use crate::event::MatchedDiff;
+    use crate::protocol::output::{ResetReason, TerminalReason};
+    use routers_network::mock::MockEntryId;
+
     /// Minimal model of the script's version gate. The real mutation is Lua;
     /// this lets adversarial ordering remain an ordinary unit test.
     fn cas<T>(version: &mut u64, expected: u64, mutation: impl FnOnce() -> T) -> Option<T> {
@@ -539,6 +619,48 @@ mod tests {
         assert!(APPLY_LUA.contains("unknown materializer mutation target"));
         assert_eq!(finalized_field(SegmentId(7)), "finalized_through:7");
         assert_eq!(last_revision_field(SegmentId(7)), "last_revision:7");
+    }
+
+    #[test]
+    fn snapshot_fields_are_minimal_and_segment_scoped() {
+        assert_eq!(
+            snapshot_fields(SegmentId(7)),
+            [
+                "state_version",
+                "current_segment",
+                "current_revision",
+                "finalized_through:7",
+                "last_revision:7",
+            ]
+        );
+    }
+
+    #[test]
+    fn only_layer_mutations_load_the_segment_hash() {
+        let matched = OutputKind::<MockEntryId>::Matched {
+            diff: MatchedDiff {
+                revision: 1,
+                downgraded: false,
+                layers: Vec::new(),
+            },
+            finalized_through: None,
+        };
+        let retraction = OutputKind::<MockEntryId>::Retraction {
+            timestamps: vec![1],
+        };
+        let terminal = OutputKind::<MockEntryId>::Terminal {
+            reason: TerminalReason::Unanchored,
+            closes_segment: false,
+        };
+        let reset = OutputKind::<MockEntryId>::Reset {
+            reason: ResetReason::Gap,
+            new_segment: SegmentId(2),
+        };
+
+        assert!(needs_segment_state(&matched));
+        assert!(needs_segment_state(&retraction));
+        assert!(!needs_segment_state(&terminal));
+        assert!(!needs_segment_state(&reset));
     }
 
     #[test]

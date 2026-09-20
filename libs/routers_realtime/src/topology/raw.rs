@@ -38,7 +38,10 @@ impl Default for RawConfig {
         Self {
             streams: 4,
             max_age: Duration::from_secs(15 * 60),
-            max_ack_pending: 2048,
+            // One consumer exists per partition. Keeping this equal to the
+            // partition source batch makes NATS, rather than the client
+            // buffer, own excess backlog.
+            max_ack_pending: 8,
             ack_wait: Duration::from_secs(60),
         }
     }
@@ -181,5 +184,10 @@ mod tests {
     fn stream_names_are_indexed() {
         assert_eq!(raw_stream_name(0), "EVENTS-RAW-0");
         assert_eq!(raw_stream_name(3), "EVENTS-RAW-3");
+    }
+
+    #[test]
+    fn default_delivery_window_is_partition_bounded() {
+        assert_eq!(RawConfig::default().max_ack_pending, 8);
     }
 }

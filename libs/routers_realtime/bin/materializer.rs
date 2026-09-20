@@ -5,6 +5,7 @@
 //! owns none of the orchestrator's state: the output plane alone defines the
 //! served view.
 
+use core::num::NonZeroUsize;
 use core::ops::RangeInclusive;
 
 use anyhow::Context as _;
@@ -28,6 +29,10 @@ use routers_realtime::topology;
 
 /// The entry type the fleet solves against.
 type E = OsmEntryId;
+
+/// The materializer has one shared pull loop, so a moderate batch amortizes
+/// broker requests without allowing an unbounded client-side claim.
+const SOURCE_BATCH: NonZeroUsize = NonZeroUsize::new(128).unwrap();
 
 /// Parse an inclusive partition range: "start-end", or a single partition.
 fn parse_partitions(spec: &str) -> Result<RangeInclusive<u64>, String> {
@@ -127,7 +132,7 @@ async fn main() -> anyhow::Result<()> {
     )
     .await?;
     let pull = build_consumer(&stream, &args.consumer_name, args.partitions).await?;
-    let source = JetStreamSource::<CommittedOutput<E>>::from_consumer(&pull)
+    let source = JetStreamSource::<CommittedOutput<E>>::from_consumer(&pull, SOURCE_BATCH)
         .await
         .context("could not start the output pull")?;
 

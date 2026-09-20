@@ -41,7 +41,10 @@ impl Default for JobsConfig {
             max_age: Duration::from_secs(60),
             max_deliver: 3,
             ack_wait: Duration::from_secs(30),
-            max_ack_pending: 2048,
+            // This durable is shared by all replicas in a region. Sixty-four
+            // covers the catalog's default eight replicas at eight slots each
+            // without allowing a stalled fleet to preclaim thousands of jobs.
+            max_ack_pending: 64,
         }
     }
 }
@@ -217,5 +220,10 @@ mod tests {
                 "{subject:?} should not parse"
             );
         }
+    }
+
+    #[test]
+    fn default_delivery_window_matches_the_regional_capacity_envelope() {
+        assert_eq!(JobsConfig::default().max_ack_pending, 64);
     }
 }

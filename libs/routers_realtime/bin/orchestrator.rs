@@ -10,6 +10,7 @@
 extern crate alloc;
 
 use alloc::sync::Arc;
+use core::num::NonZeroUsize;
 use core::ops::RangeInclusive;
 use core::time::Duration;
 use std::collections::HashMap;
@@ -44,6 +45,12 @@ use routers_realtime::topology::{
 
 /// The network entry type the fleet solves against.
 type E = OsmEntryId;
+
+/// Each pod opens one raw and one result source per owned partition. The
+/// broker-side `max_ack_pending` limit remains the bound on unacknowledged
+/// ownership; this larger request amortises continuous-pull control traffic
+/// without letting a worker claim more deliveries concurrently.
+const PARTITION_SOURCE_BATCH: NonZeroUsize = NonZeroUsize::new(64).unwrap();
 
 /// "start-end" (inclusive), or a single partition.
 fn parse_partitions(s: &str) -> core::result::Result<RangeInclusive<u64>, String> {
@@ -101,7 +108,7 @@ struct Args {
     raw_retention: Duration,
 
     /// Unacknowledged raw events each partition's consumer may hold; the stream buffers, nothing is dropped.
-    #[arg(long, env, default_value_t = 2048)]
+    #[arg(long, env, default_value_t = 8)]
     raw_max_ack_pending: i64,
 
     /// How long the broker waits for a raw ack before redelivering.
@@ -349,14 +356,17 @@ async fn main() -> Result<()> {
             expected_start(report.frontier),
         )
         .await?;
-        let raw = JetStreamSource::<RawBytes>::from_consumer(&raw)
+        let raw = JetStreamSource::<RawBytes>::from_consumer(&raw, PARTITION_SOURCE_BATCH)
             .await
             .with_context(|| format!("could not open raw source for partition {partition}"))?;
 
         let results = result_consumer(&result_stream, u64::from(partition), &results_cfg).await?;
-        let results = JetStreamSource::<SolveResult<E>>::from_consumer(&results)
-            .await
-            .with_context(|| format!("could not open result source for partition {partition}"))?;
+        let results =
+            JetStreamSource::<SolveResult<E>>::from_consumer(&results, PARTITION_SOURCE_BATCH)
+                .await
+                .with_context(|| {
+                    format!("could not open result source for partition {partition}")
+                })?;
 
         let dispatcher = Dispatcher::new(job_publisher.clone(), dispatch_config(&args));
         let worker = PartitionWorker::new(
