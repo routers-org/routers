@@ -33,6 +33,10 @@ spec:
               value: {{ .Values.infra.kv.url | quote }}
             - name: CONSUMER_NAME
               value: {{ .Values.materializer.consumerName | quote }}
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
             {{- if .Values.materializer.partitions }}
             - name: PARTITIONS
               value: {{ .Values.materializer.partitions | quote }}

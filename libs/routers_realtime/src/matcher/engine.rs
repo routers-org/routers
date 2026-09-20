@@ -143,7 +143,7 @@ impl<N: Network> Engine<N> {
         if trip.is_empty() {
             span.record("outcome", "no_anchor");
             span.record("severity", "nominal");
-            warn!("{vehicle_id}: no anchored layers to solve");
+            debug!("{vehicle_id}: no anchored layers to solve");
             return SolveOutcome::Unanchored;
         }
 
@@ -151,7 +151,11 @@ impl<N: Network> Engine<N> {
             let (outcome, severity) = classify(&err);
             span.record("outcome", outcome);
             span.record("severity", severity);
-            error!("{vehicle_id}: unable to solve trip");
+            if severity == "nominal" {
+                debug!("{vehicle_id}: unable to solve trip: {err}");
+            } else {
+                error!("{vehicle_id}: unable to solve trip: {err}");
+            }
             return terminal_outcome(err);
         }
 

@@ -37,7 +37,10 @@ impl Default for ResultsConfig {
     fn default() -> Self {
         Self {
             max_age: Duration::from_secs(10 * 60),
-            max_ack_pending: 2048,
+            // Results are consumed by one durable per partition; a small
+            // broker-side window prevents 1,024 consumers from collectively
+            // claiming an unbounded working set.
+            max_ack_pending: 8,
             ack_wait: Duration::from_secs(30),
         }
     }
@@ -108,5 +111,10 @@ mod tests {
     fn stream_name_is_stable() {
         assert_eq!(RESULT_STREAM, "SOLVE-RESULTS");
         assert_eq!(RESULT_PREFIX, "solve-result.v1.p");
+    }
+
+    #[test]
+    fn default_delivery_window_is_partition_bounded() {
+        assert_eq!(ResultsConfig::default().max_ack_pending, 8);
     }
 }

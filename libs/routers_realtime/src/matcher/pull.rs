@@ -1,19 +1,26 @@
-//! Matcher capacity-bound pull loop: claim only as much work as there is CPU
-//! budget to answer, solve it, and answer every job.
+//! Matcher capacity-bound pull loop: claim only as much work as there is
+//! end-to-end handler capacity to answer, separately bound CPU solves, and
+//! answer every job.
 //!
 //! A region's matchers share one work-queue consumer; the loop never fetches
-//! more than its free [`PullConfig::slots`] so it does not park work a peer
-//! could take. Every claimed job is answered, never silently dropped, and
-//! [`ResultPublisher::publish_then_ack`] never acks a job until the broker holds
-//! the result, so an unanswered job is redelivered (its msg-id dedups the retry).
+//! more than its free [`PullConfig::max_in_flight`] so it does not park work a
+//! peer could take. A separate [`PullConfig::solve_slots`] limit admits work to
+//! the blocking CPU stage without serialising validation, publication, or
+//! acknowledgement. Every claimed job is answered, never silently dropped,
+//! and [`ResultPublisher::publish_then_ack`] never acks a job until the broker
+//! holds the result, so an unanswered job is redelivered (its msg-id dedups the
+//! retry).
 
 use alloc::sync::Arc;
+use core::num::NonZeroUsize;
+use core::sync::atomic::{AtomicUsize, Ordering};
 use core::time::Duration;
 use std::collections::HashSet;
 
 use futures::stream::{FuturesUnordered, StreamExt};
 use routers_network::Network;
 use routers_shard::Geohash;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tracing::{debug, warn};
 use web_time::UNIX_EPOCH;
 
@@ -46,13 +53,16 @@ impl Wire for RawBytes {
 /// How the pull loop bounds and paces the work it claims.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PullConfig {
-    /// The most solves in flight at once — one per core. Also the ceiling on
-    /// jobs claimed but unanswered on this replica.
-    pub slots: usize,
+    /// The most claimed-but-unanswered jobs on this replica, including jobs
+    /// validating, waiting for CPU, solving, publishing, or acknowledging.
+    pub max_in_flight: NonZeroUsize,
+    /// The most CPU-bound solves run concurrently. This limit is held only
+    /// while [`Engine::solve_blocking`] is executing.
+    pub solve_slots: NonZeroUsize,
     /// How long a fetch waits for a batch to fill before returning what it has.
     pub fetch_wait: Duration,
-    /// The most jobs to claim in a single fetch; capped at the free slots each
-    /// call. Defaults to [`slots`](Self::slots).
+    /// The most jobs to claim in a single fetch; capped at the free handler
+    /// capacity each call. Defaults to [`max_in_flight`](Self::max_in_flight).
     pub max_batch: usize,
     /// The wire/semantic bounds applied to every job before it is solved.
     pub validate: ValidateConfig,
@@ -63,11 +73,12 @@ pub struct PullConfig {
 
 impl Default for PullConfig {
     fn default() -> Self {
-        let slots = std::thread::available_parallelism().map_or(1, |n| n.get());
+        let solve_slots = std::thread::available_parallelism().unwrap_or(NonZeroUsize::MIN);
         Self {
-            slots,
+            max_in_flight: NonZeroUsize::new(32).expect("32 is non-zero"),
+            solve_slots,
             fetch_wait: Duration::from_secs(1),
-            max_batch: slots,
+            max_batch: 32,
             validate: ValidateConfig::default(),
             grace: Duration::from_secs(25),
         }
@@ -162,10 +173,12 @@ where
 {
     /// Pull, solve, and answer jobs until `shutdown` is triggered.
     ///
-    /// While free slots exist it fetches up to `min(free, max_batch)` jobs into
-    /// an in-flight set; when full it only drains completions. On shutdown it
-    /// stops fetching, waits up to [`PullConfig::grace`] for in-flight solves,
-    /// then returns the run's [`PullStats`].
+    /// While free handler capacity exists it fetches up to
+    /// `min(free, max_batch)` jobs into an in-flight set; when full it only
+    /// drains completions. At most [`PullConfig::solve_slots`] handlers enter
+    /// the CPU-bound solve stage concurrently. On shutdown it stops fetching,
+    /// waits up to [`PullConfig::grace`] for in-flight handlers, then returns
+    /// the run's [`PullStats`].
     pub async fn run(self) -> PullStats {
         let Self {
             engine,
@@ -181,50 +194,88 @@ where
 
         let region = Arc::new(region);
         let cells = Arc::new(cells);
+        let solve_limiter = Arc::new(SolveLimiter::new(cfg.solve_slots));
 
         metrics.graph_ready(region.id.as_str(), 1);
+        metrics.matcher_handlers_in_flight(region.id.as_str(), 0);
+        metrics.matcher_solves_in_flight(region.id.as_str(), 0);
 
         let mut stats = PullStats::default();
         let mut in_flight = FuturesUnordered::new();
 
         while !shutdown.is_triggered() {
-            let free = cfg.slots.saturating_sub(in_flight.len());
+            let free = cfg.max_in_flight.get().saturating_sub(in_flight.len());
             if free == 0 {
                 // At capacity: make room only by finishing work, or stop.
                 tokio::select! {
                     biased;
                     () = shutdown.triggered() => break,
-                    Some(done) = in_flight.next() => record(done, &mut stats),
+                    Some(done) = in_flight.next() => {
+                        record(done, &mut stats);
+                        metrics.matcher_handlers_in_flight(
+                            region.id.as_str(),
+                            in_flight.len() as u64,
+                        );
+                    },
                 }
                 continue;
             }
 
             let want = free.min(cfg.max_batch.max(1));
-            tokio::select! {
-                biased;
-                // Fetch first: a pending fetch has consumed nothing, so losing the race is lossless.
-                batch = consumer.fetch(want, cfg.fetch_wait) => match batch {
-                    Ok(deliveries) => {
-                        stats.fetched += deliveries.len() as u64;
-                        for delivery in deliveries {
-                            in_flight.push(handle_one(
-                                delivery,
-                                Arc::clone(&engine),
-                                publisher.clone(),
-                                Arc::clone(&region),
-                                Arc::clone(&cells),
-                                cfg.validate,
-                                metrics.clone(),
-                                drain.begin(),
-                            ));
-                        }
+            // Keep the same fetch future alive while solves finish. Once a
+            // JetStream pull reaches the broker, dropping its future can
+            // orphan delivered messages until `AckWait`; polling completions
+            // inside this loop overlaps broker I/O without cancelling it.
+            let fetch_started = bus::wallclock();
+            let fetch = consumer.fetch(want, cfg.fetch_wait);
+            tokio::pin!(fetch);
+            let batch = loop {
+                tokio::select! {
+                    biased;
+                    () = shutdown.triggered() => break None,
+                    batch = &mut fetch => break Some(batch),
+                    Some(done) = in_flight.next(), if !in_flight.is_empty() => {
+                        record(done, &mut stats);
+                        metrics.matcher_handlers_in_flight(
+                            region.id.as_str(),
+                            in_flight.len() as u64,
+                        );
                     }
-                    Err(error) => warn!(%error, "job fetch failed; retrying"),
-                },
-                Some(done) = in_flight.next(), if !in_flight.is_empty() => {
-                    record(done, &mut stats);
                 }
-                () = shutdown.triggered() => break,
+            };
+            let Some(batch) = batch else {
+                break;
+            };
+            let fetch_seconds = bus::wallclock()
+                .duration_since(fetch_started)
+                .map_or(0.0, |elapsed| elapsed.as_secs_f64());
+            metrics.job_fetch(
+                region.id.as_str(),
+                fetch_seconds,
+                batch
+                    .as_ref()
+                    .ok()
+                    .map(|deliveries| deliveries.len() as u64),
+            );
+            match batch {
+                Ok(deliveries) => {
+                    stats.fetched += deliveries.len() as u64;
+                    for delivery in deliveries {
+                        in_flight.push(handle_one(
+                            delivery,
+                            Arc::clone(&engine),
+                            publisher.clone(),
+                            Arc::clone(&region),
+                            Arc::clone(&cells),
+                            Arc::clone(&solve_limiter),
+                            cfg.validate,
+                            metrics.clone(),
+                            drain.begin(),
+                        ));
+                    }
+                    metrics.matcher_handlers_in_flight(region.id.as_str(), in_flight.len() as u64);
+                }
+                Err(error) => warn!(%error, "job fetch failed; retrying"),
             }
         }
 
@@ -237,12 +288,19 @@ where
                     biased;
                     Some(done) = in_flight.next(), if !in_flight.is_empty() => {
                         record(done, &mut stats);
+                        metrics.matcher_handlers_in_flight(
+                            region.id.as_str(),
+                            in_flight.len() as u64,
+                        );
                     }
                     outcome = &mut quiesce => break matches!(outcome, QuiesceOutcome::Drained),
                 }
             }
         };
 
+        drop(in_flight);
+        metrics.matcher_handlers_in_flight(region.id.as_str(), 0);
+        metrics.matcher_solves_in_flight(region.id.as_str(), 0);
         metrics.graph_ready(region.id.as_str(), 0);
 
         stats
@@ -259,6 +317,53 @@ enum Handled {
     Solved,
     /// The result could not be published; the job was left for redelivery.
     PublishFailed,
+}
+
+/// CPU admission shared by every handler in one pull loop. Its permit guard
+/// owns the in-flight gauge transition, including cancellation paths.
+struct SolveLimiter {
+    semaphore: Arc<Semaphore>,
+    active: AtomicUsize,
+}
+
+impl SolveLimiter {
+    fn new(slots: NonZeroUsize) -> Self {
+        Self {
+            semaphore: Arc::new(Semaphore::new(slots.get())),
+            active: AtomicUsize::new(0),
+        }
+    }
+
+    async fn acquire(self: &Arc<Self>, metrics: &Metrics, region: &Arc<Region>) -> SolvePermit {
+        let permit = Arc::clone(&self.semaphore)
+            .acquire_owned()
+            .await
+            .expect("the matcher never closes its solve semaphore");
+        let active = self.active.fetch_add(1, Ordering::Relaxed) + 1;
+        metrics.matcher_solves_in_flight(region.id.as_str(), active as u64);
+        SolvePermit {
+            limiter: Arc::clone(self),
+            _permit: permit,
+            metrics: metrics.clone(),
+            region: Arc::clone(region),
+        }
+    }
+}
+
+/// RAII solve admission so cancellation releases both the semaphore and gauge.
+struct SolvePermit {
+    limiter: Arc<SolveLimiter>,
+    _permit: OwnedSemaphorePermit,
+    metrics: Metrics,
+    region: Arc<Region>,
+}
+
+impl Drop for SolvePermit {
+    fn drop(&mut self) {
+        let active = self.limiter.active.fetch_sub(1, Ordering::Relaxed) - 1;
+        self.metrics
+            .matcher_solves_in_flight(self.region.id.as_str(), active as u64);
+    }
 }
 
 /// Fold one completed handler's disposition into the running totals.
@@ -281,6 +386,7 @@ async fn handle_one<N, H, P>(
     publisher: ResultPublisher<P>,
     region: Arc<Region>,
     cells: Arc<HashSet<Geohash>>,
+    solve_limiter: Arc<SolveLimiter>,
     validate: ValidateConfig,
     metrics: Metrics,
     _guard: InFlight,
@@ -335,15 +441,27 @@ where
             let job_id = job.id;
             let identity = job.identity.clone();
             let proof = job.proof();
-            let started = bus::wallclock();
-            let outcome = engine.solve_blocking(job).await;
-            let solved_at = bus::wallclock();
-            bus::span_between("solve_seconds", started, solved_at);
-            if let Ok(elapsed) = solved_at.duration_since(started) {
-                metrics.solve_seconds(region.id.as_str(), outcome.kind(), elapsed.as_secs_f64());
-            }
-            metrics.result(region.id.as_str(), outcome.kind());
-
+            let outcome = {
+                // The permit deliberately excludes validation and result I/O:
+                // only the CPU-bound blocking solve consumes solve capacity.
+                let permit_wait_started = bus::wallclock();
+                let _permit = solve_limiter.acquire(&metrics, &region).await;
+                if let Ok(elapsed) = bus::wallclock().duration_since(permit_wait_started) {
+                    metrics.solve_permit_wait_seconds(region.id.as_str(), elapsed.as_secs_f64());
+                }
+                let solve_started = bus::wallclock();
+                let outcome = engine.solve_blocking(job).await;
+                let solved_at = bus::wallclock();
+                bus::span_between("solve_seconds", solve_started, solved_at);
+                if let Ok(elapsed) = solved_at.duration_since(solve_started) {
+                    metrics.solve_seconds(
+                        region.id.as_str(),
+                        outcome.kind(),
+                        elapsed.as_secs_f64(),
+                    );
+                }
+                outcome
+            };
             let result = SolveResult {
                 job: job_id,
                 identity,
@@ -392,6 +510,7 @@ mod tests {
 
     use alloc::sync::Arc;
     use core::num::{NonZeroU8, NonZeroU32};
+    use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
     use core::time::Duration;
 
     use async_nats::HeaderMap;
@@ -400,7 +519,9 @@ mod tests {
     use routers_transition::{Continuation, Origin};
 
     use crate::bus::Wire;
-    use crate::bus::adapter::{Publisher, Source};
+    use crate::bus::adapter::{
+        AckHandle, Consumer, Delivery, PublishError, PublishOutcome, Publisher, Source,
+    };
     use crate::bus::memory::{MemoryBus, MemoryConsumer, MemoryPublisher};
     use crate::event::{self, VehicleId};
     use crate::lifecycle::{Drain, DrainReason, Shutdown};
@@ -500,11 +621,12 @@ mod tests {
     }
 
     /// Tight timings so the tests never sleep for real.
-    fn config(slots: usize) -> PullConfig {
+    fn config(max_in_flight: usize) -> PullConfig {
         PullConfig {
-            slots,
+            max_in_flight: NonZeroUsize::new(max_in_flight).expect("test capacity is non-zero"),
+            solve_slots: NonZeroUsize::new(max_in_flight).expect("test capacity is non-zero"),
             fetch_wait: Duration::from_millis(20),
-            max_batch: slots,
+            max_batch: max_in_flight,
             validate: ValidateConfig::default(),
             grace: Duration::from_secs(5),
         }
@@ -515,6 +637,152 @@ mod tests {
             attempts: 5,
             backoff: Duration::from_millis(1),
             nak_delay: Duration::from_millis(20),
+        }
+    }
+
+    #[derive(Clone)]
+    struct BlockingPublisher {
+        arrivals: Arc<AtomicUsize>,
+        sequence: Arc<AtomicU64>,
+        rendezvous: Arc<tokio::sync::Barrier>,
+    }
+
+    impl BlockingPublisher {
+        fn new(concurrent_publishes: usize) -> Self {
+            Self {
+                arrivals: Arc::new(AtomicUsize::new(0)),
+                sequence: Arc::new(AtomicU64::new(0)),
+                rendezvous: Arc::new(tokio::sync::Barrier::new(concurrent_publishes + 1)),
+            }
+        }
+    }
+
+    impl Publisher<SolveResult<MockEntryId>> for BlockingPublisher {
+        async fn publish_bytes(
+            &self,
+            _subject: &str,
+            _msg_id: &str,
+            _headers: HeaderMap,
+            _bytes: &[u8],
+        ) -> Result<PublishOutcome, PublishError> {
+            self.arrivals.fetch_add(1, Ordering::Relaxed);
+            self.rendezvous.wait().await;
+            Ok(PublishOutcome::Acked {
+                sequence: self.sequence.fetch_add(1, Ordering::Relaxed) + 1,
+                duplicate: false,
+            })
+        }
+    }
+
+    #[derive(Default)]
+    struct FetchProbe {
+        second_started: AtomicBool,
+        cancelled: AtomicBool,
+        acked: AtomicUsize,
+        release_second: tokio::sync::Notify,
+    }
+
+    struct ProbeAck {
+        sequence: u64,
+        probe: Arc<FetchProbe>,
+    }
+
+    impl AckHandle for ProbeAck {
+        async fn ack(self) -> anyhow::Result<()> {
+            self.probe.acked.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+
+        async fn nak(self, _delay: Option<Duration>) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        fn sequence(&self) -> u64 {
+            self.sequence
+        }
+
+        fn deliveries(&self) -> u32 {
+            1
+        }
+    }
+
+    struct CancellationGuard {
+        probe: Arc<FetchProbe>,
+        armed: bool,
+    }
+
+    impl Drop for CancellationGuard {
+        fn drop(&mut self) {
+            if self.armed {
+                self.probe.cancelled.store(true, Ordering::Relaxed);
+            }
+        }
+    }
+
+    struct CancellationSensitiveConsumer {
+        calls: usize,
+        jobs: [Vec<u8>; 2],
+        probe: Arc<FetchProbe>,
+    }
+
+    impl CancellationSensitiveConsumer {
+        fn new(first: &SolveJob<MockEntryId>, second: &SolveJob<MockEntryId>) -> Self {
+            Self {
+                calls: 0,
+                jobs: [first.encode().unwrap(), second.encode().unwrap()],
+                probe: Arc::new(FetchProbe::default()),
+            }
+        }
+
+        fn delivery(&self, index: usize) -> Delivery<RawBytes, ProbeAck> {
+            let sequence = index as u64 + 1;
+            Delivery {
+                item: RawBytes(self.jobs[index].clone()),
+                handle: ProbeAck {
+                    sequence,
+                    probe: Arc::clone(&self.probe),
+                },
+                subject: job_subject(
+                    &GraphVersion::new(GRAPH).unwrap(),
+                    &RegionId::new(REGION).unwrap(),
+                    Lane::DEFAULT,
+                ),
+                msg_id: None,
+                headers: HeaderMap::new(),
+                sent_at: None,
+                redelivered: false,
+            }
+        }
+    }
+
+    impl Consumer<RawBytes> for CancellationSensitiveConsumer {
+        type Handle = ProbeAck;
+
+        async fn fetch(
+            &mut self,
+            _max: usize,
+            _wait: Duration,
+        ) -> anyhow::Result<Vec<Delivery<RawBytes, Self::Handle>>> {
+            let call = self.calls;
+            self.calls += 1;
+            match call {
+                0 => Ok(vec![self.delivery(0)]),
+                1 => {
+                    let probe = Arc::clone(&self.probe);
+                    probe.second_started.store(true, Ordering::Relaxed);
+                    let mut guard = CancellationGuard {
+                        probe: Arc::clone(&probe),
+                        armed: true,
+                    };
+                    probe.release_second.notified().await;
+                    guard.armed = false;
+                    Ok(vec![self.delivery(1)])
+                }
+                _ => {
+                    core::future::pending::<()>().await;
+                    unreachable!("the pull loop shuts down before a third batch")
+                }
+            }
         }
     }
 
@@ -568,6 +836,18 @@ mod tests {
         panic!("condition was never met");
     }
 
+    #[test]
+    fn default_config_separates_handler_and_cpu_capacity() {
+        let cfg = PullConfig::default();
+
+        assert_eq!(cfg.max_in_flight, NonZeroUsize::new(32).unwrap());
+        assert_eq!(
+            cfg.solve_slots,
+            std::thread::available_parallelism().unwrap_or(NonZeroUsize::MIN)
+        );
+        assert_eq!(cfg.max_batch, cfg.max_in_flight.get());
+    }
+
     #[tokio::test]
     async fn solves_valid_jobs_and_acks_them() {
         let bus = MemoryBus::new();
@@ -600,6 +880,91 @@ mod tests {
         assert!(stats.drained);
         assert_eq!(bus.published(RESULTS).len(), 2, "one result per job");
         assert_eq!(bus.acked_count(&job_filter()), 2, "both jobs acked");
+    }
+
+    #[tokio::test]
+    async fn solve_slots_do_not_serialize_result_io() {
+        const HANDLERS: usize = 4;
+
+        let bus = MemoryBus::new();
+        let shutdown = Shutdown::new();
+        for vehicle in 1..=HANDLERS as u64 {
+            publish_job(&bus, &restart_job(vehicle, i64::MAX)).await;
+        }
+
+        let publisher = BlockingPublisher::new(HANDLERS);
+        let arrivals = Arc::clone(&publisher.arrivals);
+        let rendezvous = Arc::clone(&publisher.rendezvous);
+        let mut cfg = config(HANDLERS);
+        cfg.solve_slots = NonZeroUsize::MIN;
+        let pull = PullLoop::new(
+            engine(),
+            bus.consumer::<RawBytes>(&job_filter()),
+            ResultPublisher::new(publisher, fast_publish()),
+            region(),
+            served_cells(),
+            cfg,
+            shutdown.clone(),
+            Drain::new(),
+        );
+
+        let run = async {
+            let driver = async {
+                // All handlers must pass through the single solve slot and
+                // reach publication before any publisher is released.
+                rendezvous.wait().await;
+                wait_until(|| bus.acked_count(&job_filter()) == HANDLERS).await;
+                shutdown.trigger(DrainReason::Operator);
+            };
+            tokio::join!(pull.run(), driver).0
+        };
+        let stats = tokio::time::timeout(Duration::from_secs(2), run)
+            .await
+            .expect("result I/O was serialised behind the solve permit");
+
+        assert_eq!(arrivals.load(Ordering::Relaxed), HANDLERS);
+        assert_eq!(stats.solved, HANDLERS as u64);
+        assert!(stats.drained);
+    }
+
+    #[tokio::test]
+    async fn a_solve_completion_does_not_cancel_an_accepted_fetch() {
+        let bus = MemoryBus::new();
+        let shutdown = Shutdown::new();
+        let first = restart_job(1, i64::MAX);
+        let second = restart_job(2, i64::MAX);
+        let consumer = CancellationSensitiveConsumer::new(&first, &second);
+        let probe = Arc::clone(&consumer.probe);
+        let publisher =
+            ResultPublisher::new(bus.publisher::<SolveResult<MockEntryId>>(), fast_publish());
+        let pull = PullLoop::new(
+            engine(),
+            consumer,
+            publisher,
+            region(),
+            served_cells(),
+            config(2),
+            shutdown.clone(),
+            Drain::new(),
+        );
+
+        let driver = async {
+            wait_until(|| probe.second_started.load(Ordering::Relaxed)).await;
+            wait_until(|| probe.acked.load(Ordering::Relaxed) >= 1).await;
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            assert!(
+                !probe.cancelled.load(Ordering::Relaxed),
+                "a completion must not drop an already-started broker fetch"
+            );
+            probe.release_second.notify_one();
+            wait_until(|| probe.acked.load(Ordering::Relaxed) == 2).await;
+            shutdown.trigger(DrainReason::Operator);
+        };
+
+        let (stats, ()) = tokio::join!(pull.run(), driver);
+        assert_eq!(stats.fetched, 2);
+        assert_eq!(stats.solved, 2);
+        assert!(!probe.cancelled.load(Ordering::Relaxed));
     }
 
     #[tokio::test]

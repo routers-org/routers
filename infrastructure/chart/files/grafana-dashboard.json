@@ -1,7 +1,7 @@
 {
   "title": "Routers Realtime",
   "uid": "routers-realtime",
-  "version": 8,
+  "version": 10,
   "refresh": "5s",
   "time": {
     "from": "now-15m",
@@ -31,7 +31,7 @@
     {
       "id": 2,
       "title": "Throughput (per second)",
-      "description": "Each stage of the pipeline as a rate. Offered is the replay rate; gaps between lines are backlog or drops.",
+      "description": "Each stage of the pipeline as a rate. Broker sequence rates are authoritative plane ingress; raw deliveries includes retries, so a gap there exposes redelivery amplification.",
       "type": "timeseries",
       "gridPos": {
         "x": 0,
@@ -61,8 +61,16 @@
       },
       "targets": [
         {
+          "expr": "sum(rate(nats_stream_last_seq{stream_name=~\"EVENTS-RAW-.*\"}[$__rate_interval]))",
+          "legendFormat": "raw published",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
           "expr": "sum(rate(offered_observations_total[$__rate_interval]))",
-          "legendFormat": "offered (raw read)",
+          "legendFormat": "raw deliveries",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -78,7 +86,23 @@
         },
         {
           "expr": "sum(rate(jobs_claimed_total[$__rate_interval]))",
-          "legendFormat": "jobs dispatched",
+          "legendFormat": "jobs dispatched (app)",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "expr": "sum(rate(nats_stream_last_seq{stream_name=~\"SOLVE-JOBS-.*\"}[$__rate_interval]))",
+          "legendFormat": "jobs published (broker)",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "expr": "sum(rate(nats_stream_last_seq{stream_name=\"SOLVE-RESULTS\"}[$__rate_interval]))",
+          "legendFormat": "results published (broker)",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -94,7 +118,15 @@
         },
         {
           "expr": "sum(rate(completions_total[$__rate_interval]))",
-          "legendFormat": "committed",
+          "legendFormat": "decisions committed",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "expr": "sum(rate(nats_stream_last_seq{stream_name=\"EVENTS-MATCHED\"}[$__rate_interval]))",
+          "legendFormat": "matched published (broker)",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -117,7 +149,7 @@
     {
       "id": 3,
       "title": "Backlog",
-      "description": "How far behind the pipeline is. Oldest pending is wall-clock lag; the counts are scheduler depth and admission state.",
+      "description": "How far behind the pipeline is. Oldest pending is wall-clock lag after broker claim; the counts include scheduler, admission, and matcher pool occupancy.",
       "type": "timeseries",
       "gridPos": {
         "x": 12,
@@ -214,6 +246,22 @@
         {
           "expr": "max(frontier_lag)",
           "legendFormat": "frontier lag (raw seqs)",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "expr": "sum(matcher_handlers_in_flight)",
+          "legendFormat": "matcher handlers",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "expr": "sum(matcher_solves_in_flight)",
+          "legendFormat": "matcher solves",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -486,7 +534,7 @@
     {
       "id": 9,
       "title": "Solve time",
-      "description": "Matcher CPU time per job. Rising with a flat event rate means the carried trip is growing.",
+      "description": "Admitted matcher solve wall time and the wait for a CPU solve permit. Permit wait with full solve occupancy means CPU admission is working; solve time excludes that wait.",
       "type": "timeseries",
       "gridPos": {
         "x": 0,
@@ -533,7 +581,23 @@
         },
         {
           "expr": "histogram_quantile(0.99, sum by (le, region) (rate(solve_seconds_bucket[$__rate_interval])))",
-          "legendFormat": "{{region}} p99",
+          "legendFormat": "{{region}} solve p99",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "expr": "histogram_quantile(0.50, sum by (le, region) (rate(solve_permit_wait_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "{{region}} permit wait p50",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, region) (rate(solve_permit_wait_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "{{region}} permit wait p95",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -548,7 +612,7 @@
     {
       "id": 10,
       "title": "Queue wait",
-      "description": "Time a job sat on the solve plane before a matcher claimed it. Redelivered claims are JetStream retries after ack_wait.",
+      "description": "Broker residence before each stage claimed work. Raw wait identifies orchestrator ingress lag; solve wait identifies matcher lag. Redelivered solve claims are JetStream retries after ack_wait.",
       "type": "timeseries",
       "gridPos": {
         "x": 8,
@@ -595,7 +659,31 @@
         },
         {
           "expr": "histogram_quantile(0.99, sum by (le, delivery) (rate(queue_wait_seconds_bucket[$__rate_interval])))",
-          "legendFormat": "{{delivery}} p99",
+          "legendFormat": "solve {{delivery}} p99",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(raw_queue_wait_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "raw p50",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(raw_queue_wait_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "raw p95",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(raw_queue_wait_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "raw p99",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -758,7 +846,7 @@
     {
       "id": 13,
       "title": "Result publish",
-      "description": "Matcher publish to broker acknowledgement.",
+      "description": "Matcher result publication and pull-fetch latency to the broker. High publish time consumes handler capacity; high fetch time leaves handler capacity idle.",
       "type": "timeseries",
       "gridPos": {
         "x": 6,
@@ -805,7 +893,15 @@
         },
         {
           "expr": "histogram_quantile(0.99, sum by (le) (rate(result_publish_seconds_bucket[$__rate_interval])))",
-          "legendFormat": "p99",
+          "legendFormat": "publish p99",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, region, outcome) (rate(job_fetch_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "{{region}} fetch {{outcome}} p95",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
@@ -1314,7 +1410,7 @@
       },
       "targets": [
         {
-          "expr": "sum(jetstream_server_total_message_bytes) / sum(jetstream_server_max_storage)",
+          "expr": "sum(nats_server_total_message_bytes) / sum(nats_server_max_storage)",
           "legendFormat": "used",
           "datasource": {
             "type": "prometheus",
@@ -1360,7 +1456,7 @@
       },
       "targets": [
         {
-          "expr": "sum by (stream_name) (jetstream_stream_total_bytes)",
+          "expr": "sum by (stream_name) (nats_stream_total_bytes)",
           "legendFormat": "{{stream_name}}",
           "datasource": {
             "type": "prometheus",
@@ -1406,7 +1502,7 @@
       },
       "targets": [
         {
-          "expr": "sum by (stream_name) (deriv(jetstream_stream_total_bytes[5m]))",
+          "expr": "sum by (stream_name) (deriv(nats_stream_total_bytes[5m]))",
           "legendFormat": "{{stream_name}}",
           "datasource": {
             "type": "prometheus",
@@ -1452,7 +1548,7 @@
       },
       "targets": [
         {
-          "expr": "sum by (stream_name) (jetstream_stream_total_bytes) / sum by (stream_name) (jetstream_stream_total_messages)",
+          "expr": "sum by (stream_name) (nats_stream_total_bytes) / sum by (stream_name) (nats_stream_total_messages)",
           "legendFormat": "{{stream_name}}",
           "datasource": {
             "type": "prometheus",
@@ -1498,7 +1594,7 @@
       },
       "targets": [
         {
-          "expr": "sum by (stream_name) (jetstream_consumer_num_pending)",
+          "expr": "sum by (stream_name) (nats_consumer_num_pending)",
           "legendFormat": "{{stream_name}} pending",
           "datasource": {
             "type": "prometheus",
@@ -1506,7 +1602,7 @@
           }
         },
         {
-          "expr": "sum by (stream_name) (jetstream_consumer_num_ack_pending)",
+          "expr": "sum by (stream_name) (nats_consumer_num_ack_pending)",
           "legendFormat": "{{stream_name}} unacked",
           "datasource": {
             "type": "prometheus",
@@ -1552,7 +1648,7 @@
       },
       "targets": [
         {
-          "expr": "sum by (stream_name) (jetstream_consumer_num_redelivered)",
+          "expr": "sum by (stream_name) (nats_consumer_num_redelivered)",
           "legendFormat": "{{stream_name}}",
           "datasource": {
             "type": "prometheus",

@@ -77,7 +77,13 @@ pub struct Metrics {
     oldest_pending_age_seconds: Gauge<f64>,
 
     solve_seconds: Histogram<f64>,
+    solve_permit_wait_seconds: Histogram<f64>,
+    raw_queue_wait_seconds: Histogram<f64>,
     queue_wait_seconds: Histogram<f64>,
+    job_fetch_seconds: Histogram<f64>,
+    job_fetch_batch_size: Histogram<u64>,
+    matcher_handlers_in_flight: Gauge<u64>,
+    matcher_solves_in_flight: Gauge<u64>,
     result_publish_seconds: Histogram<f64>,
     job_round_trip_seconds: Histogram<f64>,
     graph_ready: Gauge<u64>,
@@ -193,7 +199,21 @@ impl Metrics {
             .build();
         let solve_seconds = meter
             .f64_histogram("solve_seconds")
-            .with_description("CPU time a matcher spent solving one job, by outcome.")
+            .with_description("Wall time spent executing one admitted matcher solve, by outcome.")
+            .with_unit("s")
+            .with_boundaries(SECONDS_BUCKETS.to_vec())
+            .build();
+        let solve_permit_wait_seconds = meter
+            .f64_histogram("solve_permit_wait_seconds")
+            .with_description("Time a validated matcher job waited for CPU solve admission.")
+            .with_unit("s")
+            .with_boundaries(SECONDS_BUCKETS.to_vec())
+            .build();
+        let raw_queue_wait_seconds = meter
+            .f64_histogram("raw_queue_wait_seconds")
+            .with_description(
+                "Time a raw observation waited in JetStream before an orchestrator claimed it.",
+            )
             .with_unit("s")
             .with_boundaries(SECONDS_BUCKETS.to_vec())
             .build();
@@ -202,6 +222,25 @@ impl Metrics {
             .with_description("Time a job waited on the solve plane before a matcher claimed it.")
             .with_unit("s")
             .with_boundaries(SECONDS_BUCKETS.to_vec())
+            .build();
+        let job_fetch_seconds = meter
+            .f64_histogram("job_fetch_seconds")
+            .with_description("Wall time for one matcher pull request to return.")
+            .with_unit("s")
+            .with_boundaries(SECONDS_BUCKETS.to_vec())
+            .build();
+        let job_fetch_batch_size = meter
+            .u64_histogram("job_fetch_batch_size")
+            .with_description("Jobs returned by one successful matcher pull request.")
+            .with_boundaries(vec![0.0, 1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 64.0, 128.0])
+            .build();
+        let matcher_handlers_in_flight = meter
+            .u64_gauge("matcher_handlers_in_flight")
+            .with_description("Claimed matcher jobs not yet answered, by region.")
+            .build();
+        let matcher_solves_in_flight = meter
+            .u64_gauge("matcher_solves_in_flight")
+            .with_description("CPU-bound matcher solves currently executing, by region.")
             .build();
         let result_publish_seconds = meter
             .f64_histogram("result_publish_seconds")
@@ -257,7 +296,13 @@ impl Metrics {
             frontier_lag,
             oldest_pending_age_seconds,
             solve_seconds,
+            solve_permit_wait_seconds,
+            raw_queue_wait_seconds,
             queue_wait_seconds,
+            job_fetch_seconds,
+            job_fetch_batch_size,
+            matcher_handlers_in_flight,
+            matcher_solves_in_flight,
             result_publish_seconds,
             job_round_trip_seconds,
             graph_ready,
@@ -375,6 +420,18 @@ impl Metrics {
             .record(secs, &[region_attr(region), outcome_attr(outcome)]);
     }
 
+    /// How long a validated job waited for one of this replica's CPU solve permits.
+    pub fn solve_permit_wait_seconds(&self, region: &str, secs: f64) {
+        self.solve_permit_wait_seconds
+            .record(secs, &[region_attr(region)]);
+    }
+
+    /// How long a raw observation waited in JetStream before an orchestrator claimed it.
+    pub fn raw_queue_wait_seconds(&self, partition_class: &str, secs: f64) {
+        self.raw_queue_wait_seconds
+            .record(secs, &[class_attr(partition_class)]);
+    }
+
     /// How long a job waited on the solve plane before it was claimed, by region and delivery attempt.
     pub fn queue_wait_seconds(&self, region: &str, redelivered: bool, secs: f64) {
         let delivery = if redelivered { "redelivered" } else { "first" };
@@ -382,6 +439,33 @@ impl Metrics {
             secs,
             &[region_attr(region), KeyValue::new("delivery", delivery)],
         );
+    }
+
+    /// Observe one matcher pull request and, on success, the batch it returned.
+    pub fn job_fetch(&self, region: &str, secs: f64, batch_size: Option<u64>) {
+        let outcome = if batch_size.is_some() {
+            "success"
+        } else {
+            "error"
+        };
+        self.job_fetch_seconds
+            .record(secs, &[region_attr(region), outcome_attr(outcome)]);
+        if let Some(batch_size) = batch_size {
+            self.job_fetch_batch_size
+                .record(batch_size, &[region_attr(region)]);
+        }
+    }
+
+    /// Record this replica's claimed-but-unanswered matcher handlers.
+    pub fn matcher_handlers_in_flight(&self, region: &str, handlers: u64) {
+        self.matcher_handlers_in_flight
+            .record(handlers, &[region_attr(region)]);
+    }
+
+    /// Record this replica's currently executing CPU-bound solves.
+    pub fn matcher_solves_in_flight(&self, region: &str, solves: u64) {
+        self.matcher_solves_in_flight
+            .record(solves, &[region_attr(region)]);
     }
 
     /// How long publishing one result took, end to broker acknowledgement.
@@ -626,7 +710,12 @@ mod tests {
         m.frontier_lag("c0", 3);
         m.oldest_pending_seconds(2.5);
         m.solve_seconds("syd", "solved", 0.02);
+        m.solve_permit_wait_seconds("syd", 0.004);
+        m.raw_queue_wait_seconds("c0", 0.25);
         m.queue_wait_seconds("syd", false, 0.005);
+        m.job_fetch("syd", 0.003, Some(8));
+        m.matcher_handlers_in_flight("syd", 16);
+        m.matcher_solves_in_flight("syd", 2);
         m.round_trip_seconds("syd", "solved", 0.2);
         m.depth("c0", 1, 2, 3);
         m.result_publish_seconds(0.003);
@@ -654,7 +743,13 @@ mod tests {
             "frontier_lag",
             "oldest_pending_age_seconds",
             "solve_seconds",
+            "solve_permit_wait_seconds",
+            "raw_queue_wait_seconds",
             "queue_wait_seconds",
+            "job_fetch_seconds",
+            "job_fetch_batch_size",
+            "matcher_handlers_in_flight",
+            "matcher_solves_in_flight",
             "result_publish_seconds",
             "job_round_trip_seconds",
             "graph_ready",
@@ -712,7 +807,12 @@ mod tests {
         m.frontier_lag("c1", 1);
         m.oldest_pending_seconds(1.0);
         m.solve_seconds("r", "solved", 0.1);
+        m.solve_permit_wait_seconds("r", 0.1);
+        m.raw_queue_wait_seconds("c1", 0.1);
         m.queue_wait_seconds("r", true, 0.1);
+        m.job_fetch("r", 0.1, Some(2));
+        m.matcher_handlers_in_flight("r", 2);
+        m.matcher_solves_in_flight("r", 1);
         m.result_publish_seconds(0.1);
         m.graph_ready("r", 0);
         m.materialized("terminal");

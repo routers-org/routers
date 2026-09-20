@@ -69,8 +69,10 @@ matcher:
   healthPort: 9091
   targetCPUUtilizationPercentage: 80
   rustLog: info
-  # Empty keeps the binary default (one slot per core); else rendered as --slots.
-  slots: ""
+  # Empty values keep the binary defaults: 32 end-to-end handlers and one
+  # CPU-bound solve per available core.
+  maxInFlight: ""
+  solveSlots: ""
   # Bounds on the carried match state; 0 disables either cap.
   maxCandidates: 16
   windowLayers: 32

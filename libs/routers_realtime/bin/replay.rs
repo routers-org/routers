@@ -16,7 +16,7 @@ use async_nats::{ConnectOptions, ServerAddr, jetstream};
 use clap::Parser;
 use fnv_rs::{Fnv64, FnvHasher};
 use geo::Point;
-use indicatif::{ProgressBar, ProgressState, ProgressStyle};
+use indicatif::{ProgressBar, ProgressDrawTarget, ProgressState, ProgressStyle};
 use indicatif_log_bridge::LogWrapper;
 use itertools::izip;
 use log::{debug, info, warn};
@@ -103,7 +103,7 @@ async fn main() -> anyhow::Result<()> {
     let logger = env_logger::Builder::from_default_env().build();
     let level = logger.filter();
 
-    let multi = indicatif::MultiProgress::new();
+    let multi = indicatif::MultiProgress::with_draw_target(ProgressDrawTarget::stderr_with_hz(10));
     LogWrapper::new(multi.clone(), logger).try_init().unwrap();
     log::set_max_level(level);
 

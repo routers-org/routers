@@ -373,8 +373,14 @@ where
     /// disposition, then drive any newly-ready vehicle.
     async fn on_raw(&mut self, delivery: Delivery<RawBytes, RS::Handle>) {
         self.stats.observed += 1;
-        self.metrics
-            .observed(&Metrics::partition_class(self.cfg.partition));
+        let partition_class = Metrics::partition_class(self.cfg.partition);
+        self.metrics.observed(&partition_class);
+        if let Some(sent_at) = delivery.sent_at
+            && let Ok(elapsed) = crate::bus::wallclock().duration_since(sent_at)
+        {
+            self.metrics
+                .raw_queue_wait_seconds(&partition_class, elapsed.as_secs_f64());
+        }
         let now = Instant::now();
         let reader = self.reader;
         let envelope = RawEnvelope {
@@ -956,10 +962,6 @@ where
                 }
             },
         };
-        let Ok(permit) = self.admission.try_admit(&region, 0) else {
-            warn!(vehicle = vehicle.0, %cell, "unserved cell and admission full; cannot advance");
-            return;
-        };
         debug!(vehicle = vehicle.0, %cell, "committing unsupported-coverage terminal");
         self.commit_local_terminal(
             vehicle,
@@ -970,7 +972,7 @@ where
             },
             checkpoint,
             TerminalReason::UnsupportedCoverage,
-            JobReservation::Admitted(permit),
+            JobReservation::SyntheticTerminal,
         )
         .await;
     }
@@ -2237,7 +2239,7 @@ freshness_budget_ms = 30000
     }
 
     #[tokio::test(start_paused = true)]
-    async fn an_unserved_point_yields_one_terminal_and_leaves_admission_at_zero() {
+    async fn an_unserved_point_bypasses_exhausted_admission() {
         let vehicle = 1u64;
         let partition = partition_for(vehicle);
         let bus = MemoryBus::new();
@@ -2247,7 +2249,14 @@ freshness_budget_ms = 30000
         publish_raw(&bus, partition, vehicle, 1_775_000_000_000_000).await;
 
         let catalog = Arc::new(unserved_catalog());
-        let admission = admission_for(&catalog);
+        let admission = Admission::new(
+            AdmissionConfig {
+                global_jobs: 0,
+                region_jobs: 0,
+                ..AdmissionConfig::default()
+            },
+            catalog.regions.iter().map(|region| &region.id),
+        );
         let admission_probe = admission.clone();
         let report = clean_report(partition);
         let worker = build_worker_with(
