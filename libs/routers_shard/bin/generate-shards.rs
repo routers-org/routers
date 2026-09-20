@@ -1,14 +1,22 @@
+// `core::io::ErrorKind` is unstable, so `std::io::ErrorKind` is the only stable
+// path and `clippy::std_instead_of_core` cannot be followed here.
+#![allow(clippy::std_instead_of_core)]
+
 use clap::{Args as ClapArgs, Parser};
 use geo::Point;
 use log::{debug, error, info};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use web_time::{SystemTime, UNIX_EPOCH};
 
 extern crate alloc;
-use alloc::collections::BTreeSet;
+use alloc::collections::BTreeMap;
 
 use routers_codec::osm::{OsmEdgeMetadata, OsmEntryId, OsmNetwork};
 use routers_network::edge::Weight;
-use routers_shard::{GeohashStrategy, ShardSource, ShardedNetwork};
+use routers_shard::{
+    Artifact, ArtifactError, GeohashStrategy, MANIFEST_FILENAME, Manifest, ShardSource,
+    ShardedNetwork, sha256_hex, token_safe,
+};
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -20,6 +28,12 @@ struct Args {
     /// The precision of the geohash strategy to use.
     #[arg(short, long, env, default_value = "4")]
     precision: u8,
+
+    /// The graph snapshot version these shards are built for (a NATS-safe token,
+    /// e.g. `sydney-2026-09-01`). Recorded in `manifest.json` so a matcher rejects
+    /// a bundle built for a different graph.
+    #[arg(long, env = "GRAPH_VERSION")]
+    graph_version: String,
 
     /// Metres of cross-boundary buffer admitted around each shard.
     #[arg(long, env = "PADDING_DISTANCE", default_value = "1000.0")]
@@ -35,12 +49,6 @@ struct Args {
     /// workspace's `target/shard_cache` (what the chart mounts).
     #[arg(short, long, env = "SHARD_OUTPUT_DIR")]
     output: Option<PathBuf>,
-
-    /// The name of the manifest file to write. An existing manifest is
-    /// merged into, not replaced, so several regions can share one output
-    /// directory.
-    #[arg(short, long, env = "MANIFEST_FILENAME", default_value = "manifest.txt")]
-    manifest_filename: String,
 }
 
 #[derive(ClapArgs, Debug)]
@@ -60,6 +68,14 @@ fn main() {
 
     let args = Args::parse();
     info!("generate-shards starting: {:?}", args);
+
+    if !token_safe(&args.graph_version) {
+        error!(
+            "graph version {:?} is not a NATS-safe token (needs [A-Za-z0-9_-]+)",
+            args.graph_version
+        );
+        std::process::exit(1);
+    }
 
     let out_dir = args.output.unwrap_or_else(|| {
         // `cargo run` sets CARGO_MANIFEST_DIR to libs/routers_shard, so the
@@ -109,42 +125,55 @@ fn main() {
     let total = partition.len();
     info!("writing {total} shards to {out_dir:?}");
 
+    let built_at = rfc3339_utc(now());
     let mut built = Vec::with_capacity(total);
+    let mut artifacts: BTreeMap<String, Artifact> = BTreeMap::new();
     let mut failed = Vec::new();
     for (i, net) in partition.enumerate() {
         let name = format!("{}.shard.rt", net.owned);
+        let cell = net.owned.to_string();
         debug!("[{} / {total}] {net:?}", i + 1);
-        match net.save_to_file(&out_dir.join(&name)) {
-            Ok(()) => built.push(name),
-            Err(e) => {
-                error!("[{} / {total}] failed to save {name}: {e}", i + 1);
-                failed.push((name, e));
+        let path = out_dir.join(&name);
+        if let Err(e) = net.save_to_file(&path) {
+            error!("[{} / {total}] failed to save {name}: {e}", i + 1);
+            failed.push((name, e));
+            continue;
+        }
+        built.push(name.clone());
+        match artifact_metadata(&path) {
+            Ok((sha256, bytes)) => {
+                artifacts.insert(
+                    cell,
+                    Artifact {
+                        file: name,
+                        sha256,
+                        bytes,
+                        graph: args.graph_version.clone(),
+                        precision: args.precision,
+                        nodes: net.num_nodes() as u64,
+                        edges: net.num_edges() as u64,
+                        built_at: built_at.clone(),
+                    },
+                );
             }
+            Err(e) => error!("[{} / {total}] failed to checksum {name}: {e}", i + 1),
         }
     }
 
-    // Merge into any existing manifest: the output directory is shared by
-    // every region generated into it, and a rerun must not duplicate lines.
-    let manifest = out_dir.join(args.manifest_filename);
-    let mut names: BTreeSet<String> = match std::fs::read_to_string(&manifest) {
-        Ok(existing) => existing
-            .lines()
-            .map(str::trim)
-            .filter(|l| !l.is_empty())
-            .map(str::to_owned)
-            .collect(),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => BTreeSet::new(),
-        Err(e) => panic!("read existing manifest {manifest:?}: {e}"),
+    // This JSON document is the one contract shared by generator and runtime.
+    let manifest_path = out_dir.join(MANIFEST_FILENAME);
+    let mut manifest = match Manifest::load(&out_dir) {
+        Ok(manifest) => manifest,
+        Err(ArtifactError::MissingManifest { .. }) => Manifest::new(BTreeMap::new()),
+        Err(error) => panic!("load existing manifest {manifest_path:?}: {error}"),
     };
-    let before = names.len();
-    names.extend(built.iter().cloned());
-    let mut contents = names.iter().cloned().collect::<Vec<_>>().join("\n");
-    contents.push('\n');
-    std::fs::write(&manifest, contents).expect("write manifest");
+    let before = manifest.artifacts.len();
+    manifest.merge(Manifest::new(artifacts));
+    write_manifest_atomically(&manifest_path, &manifest);
     info!(
-        "manifest {manifest:?}: {} entries ({} new)",
-        names.len(),
-        names.len() - before
+        "manifest {manifest_path:?}: {} entries ({} new)",
+        manifest.artifacts.len(),
+        manifest.artifacts.len() - before
     );
 
     info!(
@@ -152,6 +181,58 @@ fn main() {
         failed.len(),
         built.len()
     );
+}
+
+/// Serialise `doc` and replace `path` atomically (sibling temp file + rename), so
+/// a crashed run leaves the previous manifest intact.
+fn write_manifest_atomically(path: &Path, manifest: &Manifest) {
+    let json = serde_json::to_string_pretty(manifest).expect("serialise manifest");
+    let tmp = path.with_file_name(format!("{MANIFEST_FILENAME}.tmp.{}", std::process::id()));
+    std::fs::write(&tmp, json).unwrap_or_else(|e| panic!("write {tmp:?}: {e}"));
+    std::fs::rename(&tmp, path).unwrap_or_else(|e| panic!("rename {tmp:?} -> {path:?}: {e}"));
+}
+
+/// The shared SHA-256 and byte length of a bundle.
+fn artifact_metadata(path: &Path) -> std::io::Result<(String, u64)> {
+    Ok((sha256_hex(path)?, std::fs::metadata(path)?.len()))
+}
+
+/// The current wall-clock time, isolated so the `disallowed_methods` allow (the
+/// workspace bans `SystemTime::now`, but `web_time` re-exports `std` here) is scoped.
+#[allow(clippy::disallowed_methods)]
+fn now() -> SystemTime {
+    SystemTime::now()
+}
+
+/// Format a `SystemTime` as an RFC 3339 UTC timestamp (`YYYY-MM-DDTHH:MM:SSZ`);
+/// a pre-epoch time (not reachable here) formats as the epoch.
+fn rfc3339_utc(time: SystemTime) -> String {
+    let secs = time
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let days = (secs / 86_400) as i64;
+    let seconds_of_day = secs % 86_400;
+    let hour = seconds_of_day / 3_600;
+    let minute = (seconds_of_day % 3_600) / 60;
+    let second = seconds_of_day % 60;
+    let (year, month, day) = civil_from_days(days);
+    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z")
+}
+
+/// Convert days since 1970-01-01 to a proleptic-Gregorian `(year, month, day)`
+/// (Howard Hinnant's `civil_from_days`).
+fn civil_from_days(days: i64) -> (i64, u32, u32) {
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097; // [0, 146096]
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365; // [0, 399]
+    let year = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
+    let mp = (5 * doy + 2) / 153; // [0, 11]
+    let day = (doy - (153 * mp + 2) / 5 + 1) as u32; // [1, 31]
+    let month = (if mp < 10 { mp + 3 } else { mp - 9 }) as u32; // [1, 12]
+    (year + i64::from(month <= 2), month, day)
 }
 
 // Thin wrapper around the network to allow iterating over the values

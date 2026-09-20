@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1.7
 FROM rust:1.96-slim AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -7,8 +8,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /build
 COPY . .
 
-RUN cargo build --release --bin matcher -p routers_realtime
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/build/target,sharing=locked \
+    cargo build --release --bin matcher -p routers_realtime \
+    && cp target/release/matcher /matcher
 
 FROM gcr.io/distroless/cc-debian12
-COPY --from=builder /build/target/release/matcher /matcher
+COPY --from=builder /matcher /matcher
 ENTRYPOINT ["/matcher"]

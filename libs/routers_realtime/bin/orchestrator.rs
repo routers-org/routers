@@ -1,42 +1,77 @@
+//! The partition orchestrator.
+//!
+//! One orchestrator process owns a disjoint slice of the vehicle partition
+//! space and runs one
+//! [`PartitionWorker`]
+//! per owned partition, with no cross-partition sharing. This binary is only
+//! wiring: connect NATS and Valkey, reconcile every plane before any worker
+//! reads, recover each partition, and spawn the workers.
+
+extern crate alloc;
+
+use alloc::sync::Arc;
+use core::num::NonZeroUsize;
 use core::ops::RangeInclusive;
-use std::time::Duration;
+use core::time::Duration;
+use std::collections::HashMap;
 
-use routers_realtime::event::VehicleId;
-use scc::HashCache;
-use scc::hash_cache::Entry;
-
-use routers_codec::osm::OsmEntryId;
-use routers_realtime::{
-    bus::{self, Wire},
-    event::{MatchContext, MatchReply, MatchedEvent, Payload, RawEvent},
-    ingest,
-    partition::{self, PARTITIONS},
-    store::RedisStore,
-};
-use routers_transition::matcher::Trip;
-use routers_transition::{Continuation, Origin};
-
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context as _, Result};
 use async_nats::{ConnectOptions, ServerAddr, jetstream};
 use clap::Parser;
-use futures::StreamExt;
-use geo::{Distance, Haversine};
-use log::{debug, error, info};
-use tokio::sync::{mpsc, oneshot};
-use tokio::time::{Instant, timeout_at};
-use tracing::{Instrument, field, info_span, warn};
-use url::Url;
+use tracing::{error, info};
 
+use routers_codec::osm::OsmEntryId;
+use routers_realtime::bus::jetstream::{JetStreamAck, JetStreamPublisher, JetStreamSource};
+use routers_realtime::lifecycle::{DrainReason, Shutdown};
+use routers_realtime::matcher::pull::RawBytes;
+use routers_realtime::metrics::Metrics;
+use routers_realtime::orchestrator::admission::{Admission, AdmissionConfig};
+use routers_realtime::orchestrator::commit::{CommitConfig, Committer};
+use routers_realtime::orchestrator::dispatch::{DispatchConfig, Dispatcher};
+use routers_realtime::orchestrator::recovery::{RecoveryReport, recover_partition};
+use routers_realtime::orchestrator::scheduler::SchedulerConfig;
+use routers_realtime::orchestrator::sharded::{partition_routes, raw_replay_start, route};
+use routers_realtime::orchestrator::worker::{PartitionWorker, WorkerConfig, WorkerStats};
+use routers_realtime::partition::{PARTITIONS, ShardCount, ShardId};
+use routers_realtime::protocol::job::SolveJob;
+use routers_realtime::protocol::output::CommittedOutput;
+use routers_realtime::protocol::result::SolveResult;
+use routers_realtime::region::catalog::Catalog;
+use routers_realtime::secret::SecretUrl;
+use routers_realtime::store::valkey::{ValkeyCheckpointStore, ValkeyConfig, ValkeyEndpoint};
+use routers_realtime::topology::{
+    JobsConfig, OutputConfig, RawConfig, ResultsConfig, ensure_job_stream, ensure_output_stream,
+    ensure_raw_stream, ensure_result_stream, raw_shard_consumer, raw_stream_index,
+    result_shard_consumer,
+};
+
+/// The network entry type the fleet solves against.
 type E = OsmEntryId;
 
-/// One durable raw event handed to a worker, with the wall-clock stamps the
-/// partition forwarder captured: when it was queued (for channel-residency
-/// timing) and its wire send time (for end-to-end timing).
-struct Dispatch {
-    queued_at: web_time::SystemTime,
-    sent_at: Option<web_time::SystemTime>,
-    payload: Payload,
-    message: jetstream::Message,
+/// Each sharded durable opens one raw and one result source. Broker-side
+/// `max_ack_pending` and the bounded internal queues remain the ownership
+/// bound; this request only amortises continuous-pull control traffic.
+const PARTITION_SOURCE_BATCH: NonZeroUsize = NonZeroUsize::new(64).unwrap();
+
+/// One long-lived task owned by the process supervisor.
+enum TaskExit {
+    Worker {
+        partition: u16,
+        result: anyhow::Result<WorkerStats>,
+    },
+    Router {
+        plane: &'static str,
+        shard: ShardId,
+        result: anyhow::Result<()>,
+    },
+}
+
+/// Validated broker/fleet geometry used for the lifetime of this process.
+struct RuntimeLayout {
+    partitions: RangeInclusive<u64>,
+    shards: ShardCount,
+    owned_shards: RangeInclusive<ShardId>,
+    queue_capacity: NonZeroUsize,
 }
 
 /// "start-end" (inclusive), or a single partition.
@@ -61,124 +96,115 @@ fn parse_partitions(s: &str) -> core::result::Result<RangeInclusive<u64>, String
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 struct Args {
-    /// URL of the NATS server
+    /// URL of the NATS server.
     #[arg(short, env, long)]
-    nats: Url,
+    nats: SecretUrl,
 
-    /// Valkey primaries, comma-separated. Vehicles are spread across them by
-    /// rendezvous hash, so the order carries no meaning and every binary that
-    /// touches the history must be given the same set.
+    /// Valkey primaries as stable-id=URL, comma-separated. Stable ids must not
+    /// change when credentials or network addresses rotate.
     #[arg(short, env, long, value_delimiter = ',')]
-    redis: Vec<Url>,
+    valkey: Vec<ValkeyEndpoint>,
 
-    /// The vehicle partitions this pod owns, as an inclusive range
-    /// ("0-255"). Assignment is static: give every pod a disjoint slice and
-    /// cover 0-1023 between them. Alternatively, derive the slice from a
-    /// StatefulSet identity via --pod-name and --fleet.
+    /// Path to the region catalog (TOML): regions, graph versions, and cell coverage.
+    #[arg(short, env, long)]
+    catalog: std::path::PathBuf,
+
+    /// The vehicle partitions this pod owns, as an inclusive range ("0-255"); or derive from --pod-name and --fleet.
     #[arg(short, env, long, value_parser = parse_partitions, conflicts_with_all = ["pod_name", "fleet"])]
     partitions: Option<RangeInclusive<u64>>,
 
-    /// This pod's StatefulSet name (e.g. `orchestrator-3`): the trailing
-    /// ordinal picks its slice of the partition space. Pair with --fleet.
+    /// This pod's StatefulSet name (e.g. `orchestrator-3`); the trailing ordinal picks its slice. Pair with --fleet.
     #[arg(long, env = "POD_NAME", requires = "fleet")]
     pod_name: Option<String>,
 
-    /// Total pods in the StatefulSet. Every pod must be given the same
-    /// value, or their slices overlap or leave gaps.
+    /// Total pods in the StatefulSet; every pod must be given the same value.
     #[arg(long, env, requires = "pod_name")]
     fleet: Option<u64>,
 
-    /// How many raw streams the partition space divides across, fleet-wide.
-    /// Fixed config: revisions are stream sequences, so remapping partitions
-    /// to different streams is a migration, not a tuning knob.
+    /// How many raw streams the partition space divides across, fleet-wide (fixed config, not a tuning knob).
     #[arg(long, env, default_value_t = 4)]
     streams: u64,
 
-    /// Unacknowledged events each partition's consumer may hold — the
-    /// backlog knob. Under saturation the stream buffers and this throttles
-    /// delivery; nothing is dropped.
-    #[arg(long, env, default_value_t = 2048)]
-    max_ack_pending: i64,
+    /// Fixed number of broker consumer shards. Must divide 1024 and divide evenly across raw streams.
+    #[arg(long, env, default_value_t = 64)]
+    shards: u16,
 
-    /// How long the broker waits for an ack before redelivering an event.
-    /// Generous: the pipeline retries transient failures inline, and a
-    /// redelivered duplicate is dropped by the lane gate or deduplicated
-    /// downstream by revision.
-    #[arg(long, env, value_parser = humantime::parse_duration, default_value = "60s")]
-    ack_wait: Duration,
+    /// Bounded deliveries waiting for each partition worker from each shared durable.
+    #[arg(long, env, default_value_t = 8)]
+    shard_queue_capacity: usize,
 
-    /// How long the matched stream retains emissions. Nothing consumes it
-    /// destructively; size it for the reconciler's worst lag.
+    /// How long the raw journal retains an event — the bound on how far recovery can rewind.
     #[arg(long, env, value_parser = humantime::parse_duration, default_value = "15m")]
-    matched_retention: Duration,
+    raw_retention: Duration,
 
-    /// The subject prefix matchers serve requests on. Each request routes to
-    /// `<prefix>.<geohash>` — the geographic shard of the event's position —
-    /// so this pod's vehicles reach whichever matchers own the ground beneath
-    /// them. The orchestrator itself stays geography-blind beyond this.
-    #[arg(long = "match-prefix", env, default_value = "events.match")]
-    match_prefix: String,
+    /// Unacknowledged raw events each partition's consumer may hold; the stream buffers, nothing is dropped.
+    #[arg(long, env, default_value_t = 8)]
+    raw_max_ack_pending: i64,
 
-    /// How long to wait for a matcher's reply before re-driving the request.
-    #[arg(long, env, value_parser = humantime::parse_duration, default_value = "5s")]
-    solve_timeout: Duration,
+    /// How long the broker waits for a raw ack before redelivering.
+    #[arg(long, env, value_parser = humantime::parse_duration, default_value = "60s")]
+    raw_ack_wait: Duration,
 
-    /// Re-drives after the first attempt before the pipeline backs off and
-    /// starts over. Replies are idempotent downstream (layers merge by
-    /// timestamp and resolve by revision), so a duplicate solve from a late
-    /// reply is convergence, not conflict.
-    #[arg(long, env, default_value_t = 3)]
-    solve_retries: usize,
+    /// How long the solve-result plane retains a result before it ages out.
+    #[arg(long, env, value_parser = humantime::parse_duration, default_value = "10m")]
+    results_retention: Duration,
 
-    /// The number of history entries a vehicle's context draws from.
-    #[arg(short, long = "context-window", env, default_value = "10")]
-    context_window: usize,
+    /// How long committed matched output is retained for materialisers and observers to catch up.
+    #[arg(long, env, value_parser = humantime::parse_duration, default_value = "15m")]
+    output_retention: Duration,
 
-    /// Points older than this will be discarded from history, regardless
-    /// of if it's within the KV store, or not.
+    /// How long an unacknowledged solve job remains on the work queue. Zero
+    /// retains it until a matcher publishes and acknowledges a result.
+    #[arg(long, env, value_parser = humantime::parse_duration, default_value = "0s")]
+    jobs_ttl: Duration,
+
+    /// How long a committed checkpoint survives without a fresh commit.
+    #[arg(long, env, value_parser = humantime::parse_duration, default_value = "10m")]
+    checkpoint_ttl: Duration,
+
+    /// Most solve jobs that may be outstanding across the whole process.
+    #[arg(long, env, default_value_t = 4096)]
+    admit_global_jobs: u64,
+
+    /// Most solve-job bytes that may be outstanding across the whole process.
+    #[arg(long, env, default_value_t = 512 * 1024 * 1024)]
+    admit_global_bytes: u64,
+
+    /// Default per-region ceiling on outstanding solve jobs.
+    #[arg(long, env, default_value_t = 1024)]
+    admit_region_jobs: u64,
+
+    /// Default per-region ceiling on outstanding solve-job bytes.
+    #[arg(long, env, default_value_t = 128 * 1024 * 1024)]
+    admit_region_bytes: u64,
+
+    /// The largest time gap between committed observations that still continues one journey; a larger gap resets the segment.
     #[arg(long, env, value_parser = humantime::parse_duration, default_value = "120s")]
     gap: Duration,
 
-    /// Consecutive points further away than this will be treated as a "teleport",
-    /// and dropped along with everything older.
-    #[arg(long, env, default_value = "2000")]
+    /// The largest straight-line jump (metres) not treated as a teleport.
+    #[arg(long, env, default_value_t = 2_000.0)]
     jump_distance: f64,
 
-    /// How many workers to fan vehicles across. Each vehicle is pinned to one
-    /// by hash, so its events stay ordered on a worker that owns their trip
-    /// and history lanes outright — the maps need no locks. A worker holds
-    /// its lane for a whole solve round trip, so this is the pod's in-flight
-    /// solve bound; workers are tokio tasks, priced accordingly.
-    #[arg(short, env, long, default_value = "64")]
-    workers: usize,
+    /// Most early solve results parked per vehicle before further ones are dropped.
+    #[arg(long, env, default_value_t = 4)]
+    parked_limit: usize,
 
-    /// Vehicles each worker keeps trip and history lanes for, before the
-    /// least recently used is evicted.
-    ///
-    /// Vehicles are hash-spread across workers, so the fleet-wide bound is
-    /// this times `workers`. Size it above the concurrent vehicles the owned
-    /// partitions carry: evicting a live vehicle costs a Valkey re-warm and a
-    /// trip restart. Rounded up to a power of two.
-    #[arg(long, env, default_value_t = 1024)]
-    vehicle_cache: usize,
+    /// How long a vehicle may sit idle before its checkpoint is evicted from the worker's local map.
+    #[arg(long, env, value_parser = humantime::parse_duration, default_value = "10m")]
+    idle_ttl: Duration,
 
-    /// The number of events to keep in each vehicle's durable Valkey tail —
-    /// the failover recovery source.
-    #[arg(long, env, default_value_t = 25)]
-    history: usize,
+    /// How long shutdown waits for in-flight commits to quiesce before the worker returns.
+    #[arg(long, env, value_parser = humantime::parse_duration, default_value = "20s")]
+    grace: Duration,
 
-    /// Batch size for Valkey tail writes.
-    #[arg(long, env, default_value_t = 128)]
-    batch_size: usize,
-
-    /// Batch timeout for Valkey tail writes.
-    #[arg(long, env, value_parser = humantime::parse_duration, default_value = "20ms")]
-    batch_timeout: Duration,
+    /// How long a publish waits for the broker's ack before being retried byte-identically.
+    #[arg(long, env, value_parser = humantime::parse_duration, default_value = "5s")]
+    ack_timeout: Duration,
 }
 
-/// The slice of the partition space this pod owns: explicit, or derived from
-/// its StatefulSet identity — contiguous ordinal blocks, the last pod taking
-/// the remainder.
+/// The slice of the partition space this pod owns; explicit, or derived from its
+/// StatefulSet identity (contiguous ordinal blocks, last pod takes the remainder).
 fn owned_partitions(args: &Args) -> Result<RangeInclusive<u64>> {
     if let Some(partitions) = &args.partitions {
         return Ok(partitions.clone());
@@ -213,539 +239,418 @@ fn owned_partitions(args: &Args) -> Result<RangeInclusive<u64>> {
     Ok(start..=end)
 }
 
-/// How one event left the pipeline: fully processed, or deliberately
-/// dropped. Either way it is acknowledged — transient failures never reach
-/// this type, they retry inside the pipeline.
-enum Processed {
-    Done,
-    Dropped(&'static str),
+/// Validate the fixed shard layout before opening any external connection.
+fn runtime_layout(args: &Args) -> Result<RuntimeLayout> {
+    let partitions = owned_partitions(args)?;
+    let shards = ShardCount::new(args.shards).map_err(anyhow::Error::msg)?;
+    shards
+        .validate_streams(args.streams)
+        .map_err(anyhow::Error::msg)?;
+    if let Some(fleet) = args.fleet {
+        anyhow::ensure!(
+            u64::from(shards.get()) % fleet == 0,
+            "consumer shards ({}) must divide evenly across fleet replicas ({fleet})",
+            shards.get()
+        );
+    }
+    let owned_shards = shards
+        .owned_shards(&partitions)
+        .map_err(anyhow::Error::msg)?;
+    let queue_capacity = NonZeroUsize::new(args.shard_queue_capacity)
+        .context("shard queue capacity must be non-zero")?;
+    anyhow::ensure!(
+        args.raw_max_ack_pending > 0,
+        "raw max_ack_pending must be positive"
+    );
+    Ok(RuntimeLayout {
+        partitions,
+        shards,
+        owned_shards,
+        queue_capacity,
+    })
 }
 
-/// Everything one worker owns: its vehicles' trip and history lanes, plus
-/// handles to the stores and the bus. Workers share nothing, so a vehicle's
-/// events serialize on its worker with no locks anywhere.
-struct Worker {
-    kv: RedisStore<RawEvent>,
-    client: async_nats::Client,
-    stream: jetstream::Context,
-    archive: mpsc::Sender<(RawEvent, oneshot::Sender<()>)>,
-    match_prefix: String,
+/// The static per-worker configuration derived from the CLI args.
+fn worker_config(args: &Args, partition: u16) -> WorkerConfig {
+    WorkerConfig {
+        scheduler: SchedulerConfig {
+            idle_ttl: args.idle_ttl,
+            ..SchedulerConfig::default()
+        },
+        parked_limit: args.parked_limit,
+        dispatch: dispatch_config(args),
+        commit: CommitConfig::default(),
+        grace: args.grace,
+        ..WorkerConfig::new(partition)
+    }
+}
 
-    gap: chrono::TimeDelta,
-    jump_distance: f64,
-    context_window: usize,
-    solve_timeout: Duration,
-    solve_retries: usize,
+/// The dispatcher's continuity/publish knobs from the CLI args.
+fn dispatch_config(args: &Args) -> DispatchConfig {
+    DispatchConfig {
+        gap: args.gap,
+        jump_distance_m: args.jump_distance,
+        ..DispatchConfig::default()
+    }
+}
 
-    trips: HashCache<VehicleId, Trip<E>>,
-    histories: HashCache<VehicleId, Vec<RawEvent>>,
+/// The admission controller's ceilings from the CLI args.
+fn admission_config(args: &Args) -> AdmissionConfig {
+    AdmissionConfig {
+        global_jobs: args.admit_global_jobs,
+        global_bytes: args.admit_global_bytes,
+        region_jobs: args.admit_region_jobs,
+        region_bytes: args.admit_region_bytes,
+        overrides: HashMap::new(),
+    }
 }
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn main() -> Result<()> {
     let _telemetry = routers_realtime::telemetry::init("routers-orchestrator");
+    // Built after telemetry so instruments bind to the installed meter.
+    let metrics = Metrics::new();
 
     let args = Args::parse();
-    info!("orchestrator started: {:?}", args);
+    info!("orchestrator started: {args:?}");
 
-    let nats_url = ServerAddr::from_url(args.nats.clone()).context("could not create NATS url")?;
+    // Shard, stream, and fleet geometry is wire/control-plane configuration.
+    // Refuse an ambiguous layout before touching NATS or Valkey.
+    let layout = runtime_layout(&args)?;
 
+    let shutdown = Shutdown::from_signals();
+
+    let nats_url =
+        ServerAddr::from_url(args.nats.connection_url()).context("could not create NATS url")?;
     let client = ConnectOptions::new()
         .name("OrchestratorService")
         .connect(nats_url)
         .await
         .context("could not connect to NATS")?;
-    let stream = jetstream::new(client.clone());
+    let context = jetstream::new(client);
 
-    ingest::matched_stream(&stream, args.matched_retention).await?;
+    let catalog = Arc::new(
+        Catalog::load(&args.catalog)
+            .with_context(|| format!("could not load catalog from {}", args.catalog.display()))?,
+    );
 
-    let gap = chrono::Duration::from_std(args.gap).context("gap out of range")?;
+    // Reconcile every plane before any worker reads.
+    let raw_cfg = RawConfig {
+        streams: args.streams,
+        max_age: args.raw_retention,
+        max_ack_pending: args.raw_max_ack_pending,
+        ack_wait: args.raw_ack_wait,
+    };
+    let stream_count = usize::try_from(args.streams).context("raw stream count overflow")?;
+    let mut raw_streams = Vec::with_capacity(stream_count);
+    for index in 0..args.streams {
+        raw_streams.push(ensure_raw_stream(&context, index, args.streams, &raw_cfg).await?);
+    }
 
-    // Connected once, then cloned per worker: the clone shares the multiplexed
-    // sockets, so the pod holds one connection per primary rather than one per
-    // primary per worker.
-    let store = RedisStore::<RawEvent>::new(&args.redis)
-        .await
-        .context("could not connect to redis store")?;
+    let results_cfg = ResultsConfig {
+        max_age: args.results_retention,
+        ..ResultsConfig::default()
+    };
+    let result_stream = ensure_result_stream(&context, &results_cfg).await?;
 
-    // The sole durable writer of raw tails, batched like the historian this
-    // pipeline absorbed. A failed flush retries until Valkey returns — the
-    // tail is the failover recovery source, so acks wait on it.
-    let (archive_tx, mut archive_rx) = mpsc::channel::<(RawEvent, oneshot::Sender<()>)>(8192);
+    let output_cfg = OutputConfig {
+        max_age: args.output_retention,
+    };
+    ensure_output_stream(&context, &output_cfg).await?;
+
+    let jobs_cfg = JobsConfig {
+        max_age: args.jobs_ttl,
+        ..JobsConfig::default()
+    };
+    for region in &catalog.regions {
+        ensure_job_stream(&context, &region.id, &jobs_cfg).await?;
+    }
+
+    let store = ValkeyCheckpointStore::connect(ValkeyConfig {
+        checkpoint_ttl: args.checkpoint_ttl,
+        ..ValkeyConfig::new(args.valkey.clone())
+    })
+    .await
+    .context("could not connect to the Valkey checkpoint store")?;
+    let admission = Admission::new(
+        admission_config(&args),
+        catalog.regions.iter().map(|r| &r.id),
+    );
+
+    // Register process-scoped admission gauges once, not per worker.
+    let _admission_gauges = admission.register_gauges(&metrics);
+
+    // Publishers are shared by every partition and retry ambiguous publishes.
+    let job_publisher = JetStreamPublisher::<SolveJob<E>>::new(context.clone(), args.ack_timeout);
+    let output_publisher =
+        JetStreamPublisher::<CommittedOutput<E>>::new(context.clone(), args.ack_timeout);
+
+    info!(
+        partitions = ?layout.partitions,
+        shards = layout.shards.get(),
+        streams = args.streams,
+        queue_capacity = layout.queue_capacity.get(),
+        "orchestrator layout validated"
+    );
+
+    let partitions = layout
+        .partitions
+        .clone()
+        .map(u16::try_from)
+        .collect::<core::result::Result<Vec<_>, _>>()
+        .context("owned partition does not fit its wire identifier")?;
+    let shard_start = layout.owned_shards.start().get();
+    let shard_end = layout.owned_shards.end().get();
+    let owned_shards = (shard_start..=shard_end)
+        .map(|number| {
+            layout
+                .shards
+                .shard(number)
+                .expect("validated owned shard range")
+        })
+        .collect::<Vec<_>>();
+
+    // Recover every partition before any shared raw durable is opened. That
+    // gives each shard a complete set of store-backed replay seams.
+    let recovery_committer = Committer::new(
+        store.clone(),
+        output_publisher.clone(),
+        CommitConfig::default(),
+    );
+    let mut reports = HashMap::<u16, RecoveryReport>::with_capacity(partitions.len());
+    for &partition in &partitions {
+        let report = recover_partition(&store, &recovery_committer, partition)
+            .await
+            .with_context(|| format!("could not recover partition {partition}"))?;
+        info!(
+            partition,
+            frontier = ?report.frontier,
+            prepared_found = report.prepared_found,
+            prepared_finished = report.prepared_finished,
+            prepared_failed = report.prepared_failed.len(),
+            "partition recovered"
+        );
+        reports.insert(partition, report);
+    }
+
+    let (raw_routes, mut raw_sources) = partition_routes::<RawBytes, JetStreamAck>(
+        partitions.iter().copied(),
+        layout.queue_capacity,
+    );
+    let (result_routes, mut result_sources) = partition_routes::<SolveResult<E>, JetStreamAck>(
+        partitions.iter().copied(),
+        layout.queue_capacity,
+    );
+
+    // Reconcile every durable before spawning work. Continuous pull streams
+    // are opened inside supervised router tasks after workers are ready.
+    let mut prepared_shards = Vec::with_capacity(owned_shards.len());
+    for shard in owned_shards {
+        let shard_partitions = layout.shards.partitions(shard).collect::<Vec<_>>();
+        let stream_index = raw_stream_index(u64::from(shard_partitions[0]), args.streams);
+        let start = raw_replay_start(
+            shard_partitions
+                .iter()
+                .map(|partition| reports[partition].frontier),
+        );
+
+        let raw_consumer = raw_shard_consumer(
+            &raw_streams[usize::try_from(stream_index).context("raw stream index overflow")?],
+            stream_index,
+            layout.shards,
+            shard,
+            &shard_partitions,
+            &raw_cfg,
+            start,
+        )
+        .await?;
+        let result_consumer = result_shard_consumer(
+            &result_stream,
+            layout.shards,
+            shard,
+            &shard_partitions,
+            &results_cfg,
+        )
+        .await?;
+        let shard_raw_routes = shard_partitions
+            .iter()
+            .map(|partition| (*partition, raw_routes[partition].clone()))
+            .collect();
+        let shard_result_routes = shard_partitions
+            .iter()
+            .map(|partition| (*partition, result_routes[partition].clone()))
+            .collect();
+        prepared_shards.push((
+            shard,
+            raw_consumer,
+            shard_raw_routes,
+            result_consumer,
+            shard_result_routes,
+        ));
+    }
+
+    // Only router-owned senders keep channels open from here onward.
+    drop(raw_routes);
+    drop(result_routes);
+
+    let mut tasks = tokio::task::JoinSet::new();
+    for &partition in &partitions {
+        let report = reports
+            .remove(&partition)
+            .expect("every owned partition was recovered");
+        let raw = raw_sources
+            .remove(&partition)
+            .expect("every owned partition has a raw route");
+        let results = result_sources
+            .remove(&partition)
+            .expect("every owned partition has a result route");
+
+        let committer = Committer::new(
+            store.clone(),
+            output_publisher.clone(),
+            CommitConfig::default(),
+        );
+        let dispatcher = Dispatcher::new(job_publisher.clone(), dispatch_config(&args));
+        let worker = PartitionWorker::new(
+            worker_config(&args, partition),
+            catalog.clone(),
+            admission.clone(),
+            store.clone(),
+            dispatcher,
+            committer,
+            raw,
+            results,
+            &report,
+            shutdown.clone(),
+        )
+        .with_metrics(metrics.clone());
+        tasks.spawn(async move {
+            TaskExit::Worker {
+                partition,
+                result: worker.run().await,
+            }
+        });
+    }
+    debug_assert!(reports.is_empty());
+    debug_assert!(raw_sources.is_empty());
+    debug_assert!(result_sources.is_empty());
+
+    for (shard, raw_consumer, shard_raw_routes, result_consumer, shard_result_routes) in
+        prepared_shards
     {
-        let mut kv = store.clone();
-        let (history, batch_size, batch_timeout) =
-            (args.history, args.batch_size, args.batch_timeout);
+        let raw_shutdown = shutdown.clone();
+        tasks.spawn(async move {
+            let result = async {
+                let source = JetStreamSource::<RawBytes>::from_consumer(
+                    &raw_consumer,
+                    PARTITION_SOURCE_BATCH,
+                )
+                .await
+                .with_context(|| format!("could not open raw source for shard {shard}"))?;
+                route(source, shard_raw_routes, raw_shutdown).await
+            }
+            .await;
+            TaskExit::Router {
+                plane: "raw",
+                shard,
+                result,
+            }
+        });
 
-        tokio::spawn(async move {
-            let mut batch: Vec<RawEvent> = Vec::with_capacity(batch_size);
-            let mut completions: Vec<oneshot::Sender<()>> = Vec::with_capacity(batch_size);
-
-            while let Some((event, done)) = archive_rx.recv().await {
-                batch.clear();
-                completions.clear();
-                batch.push(event);
-                completions.push(done);
-
-                let deadline = Instant::now() + batch_timeout;
-                while batch.len() < batch_size {
-                    match timeout_at(deadline, archive_rx.recv()).await {
-                        Ok(Some((event, done))) => {
-                            batch.push(event);
-                            completions.push(done);
-                        }
-                        Ok(None) | Err(_) => break,
-                    }
-                }
-
-                let mut attempt: u32 = 0;
-                while let Err(err) = kv
-                    .write_many(&batch, history)
-                    .instrument(info_span!("archive", events = batch.len()))
-                    .await
-                {
-                    attempt += 1;
-                    error!("archive write failed (attempt {attempt}): {err}");
-                    tokio::time::sleep(
-                        (Duration::from_millis(250) * attempt).min(Duration::from_secs(5)),
-                    )
-                    .await;
-                }
-
-                for done in completions.drain(..) {
-                    let _ = done.send(());
-                }
+        let result_shutdown = shutdown.clone();
+        tasks.spawn(async move {
+            let result = async {
+                let source = JetStreamSource::<SolveResult<E>>::from_consumer(
+                    &result_consumer,
+                    PARTITION_SOURCE_BATCH,
+                )
+                .await
+                .with_context(|| format!("could not open result source for shard {shard}"))?;
+                route(source, shard_result_routes, result_shutdown).await
+            }
+            .await;
+            TaskExit::Router {
+                plane: "result",
+                shard,
+                result,
             }
         });
     }
 
-    let mut handles = Vec::with_capacity(args.workers);
-    let mut txs = Vec::with_capacity(args.workers);
-
-    for _ in 0..args.workers {
-        let (tx, mut rx) = mpsc::channel::<Dispatch>(1024);
-        txs.push(tx);
-
-        let mut worker = Worker {
-            kv: store.clone(),
-            client: client.clone(),
-            stream: stream.clone(),
-            archive: archive_tx.clone(),
-            match_prefix: args.match_prefix.clone(),
-            gap,
-            jump_distance: args.jump_distance,
-            context_window: args.context_window,
-            solve_timeout: args.solve_timeout,
-            solve_retries: args.solve_retries,
-            trips: HashCache::with_capacity(0, args.vehicle_cache),
-            histories: HashCache::with_capacity(0, args.vehicle_cache),
-        };
-
-        handles.push(tokio::spawn(async move {
-            while let Some(Dispatch {
-                queued_at,
-                sent_at,
-                payload,
-                message,
-            }) = rx.recv().await
-            {
-                bus::span_between("worker_wait", queued_at, bus::wallclock());
-
-                let vehicle_id = payload.vehicle_id;
-                let revision = message
-                    .info()
-                    .map(|info| info.stream_sequence)
-                    .unwrap_or_default();
-
-                let span = info_span!(
-                    "orchestrate",
-                    continuation = field::Empty,
-                    fresh = field::Empty,
-                    cut = field::Empty,
-                    attempts = field::Empty,
-                );
-
-                // Never drop, never reorder: a transient failure backs off
-                // and starts the event over, holding this vehicle's lane
-                // (and, via max_ack_pending, eventually the partition) —
-                // saturation builds a backlog in the stream instead.
-                let mut attempt: u32 = 0;
-                let outcome = loop {
-                    match worker
-                        .process(&payload, revision, sent_at)
-                        .instrument(span.clone())
-                        .await
-                    {
-                        Ok(outcome) => break outcome,
-                        Err(err) => {
-                            attempt += 1;
-                            warn!("{vehicle_id}: pipeline attempt {attempt} failed: {err:#}");
-                            tokio::time::sleep(
-                                (Duration::from_millis(250) * attempt).min(Duration::from_secs(5)),
-                            )
-                            .await;
-                        }
-                    }
-                };
-
-                if let Processed::Dropped(reason) = outcome {
-                    debug!("{vehicle_id}: event dropped ({reason})");
+    // Any unexpected task exit initiates a fleet-local drain. Join every task
+    // so workers can persist their safe frontiers and unacked routed messages
+    // return to their durable instead of being silently abandoned.
+    let mut failed = false;
+    while let Some(joined) = tasks.join_next().await {
+        match joined {
+            Ok(TaskExit::Worker {
+                partition,
+                result: Ok(stats),
+            }) => {
+                if !shutdown.is_triggered() {
+                    failed = true;
+                    shutdown.trigger(DrainReason::Fatal);
+                    error!(partition, "partition worker stopped before shutdown");
                 }
-
-                if let Err(err) = message.ack().await {
-                    error!("{vehicle_id}: could not ack event: {err}");
+                log_stats(partition, &stats);
+            }
+            Ok(TaskExit::Worker {
+                partition,
+                result: Err(err),
+            }) => {
+                failed = true;
+                shutdown.trigger(DrainReason::Fatal);
+                error!(partition, "partition worker failed: {err:#}");
+            }
+            Ok(TaskExit::Router {
+                plane,
+                shard,
+                result: Ok(()),
+            }) => {
+                if !shutdown.is_triggered() {
+                    failed = true;
+                    shutdown.trigger(DrainReason::Fatal);
+                    error!(plane, %shard, "consumer router stopped before shutdown");
                 }
             }
-        }));
-    }
-
-    // One forwarder per owned partition: pull the durable consumer, decode,
-    // and pin to the vehicle's worker. Poison messages (undecodable) are
-    // acked away — redelivering them can never succeed.
-    let owned = owned_partitions(&args)?;
-    let mut forwarders = Vec::new();
-    for partition in owned.clone() {
-        let index = ingest::stream_index(partition, args.streams);
-        let raw = ingest::raw_stream(&stream, index, args.streams).await?;
-        let consumer =
-            ingest::partition_consumer(&raw, partition, args.max_ack_pending, args.ack_wait)
-                .await?;
-
-        let txs = txs.clone();
-        forwarders.push(tokio::spawn(async move {
-            let mut messages = match consumer.messages().await {
-                Ok(messages) => messages,
-                Err(err) => {
-                    error!("partition {partition}: could not pull: {err}");
-                    return;
-                }
-            };
-
-            while let Some(next) = messages.next().await {
-                let message = match next {
-                    Ok(message) => message,
-                    Err(err) => {
-                        error!("partition {partition}: pull error: {err}");
-                        continue;
-                    }
-                };
-
-                bus::inbound(message.subject.as_str(), message.headers.as_ref());
-                let sent_at = bus::last_sent_at();
-
-                let payload = match Payload::decode(&message.payload) {
-                    Ok(payload) => payload,
-                    Err(err) => {
-                        warn!("partition {partition}: acking poison event: {err}");
-                        let _ = message.ack().await;
-                        continue;
-                    }
-                };
-
-                // The stable path (not `DefaultHasher`): worker pinning is
-                // the same per-vehicle spread the partition scheme derives,
-                // so the two never disagree on a Rust release boundary.
-                let worker = partition::mix(payload.vehicle_id.0) as usize % txs.len();
-
-                let dispatch = Dispatch {
-                    queued_at: bus::wallclock(),
-                    sent_at,
-                    payload,
-                    message,
-                };
-                if txs[worker].send(dispatch).await.is_err() {
-                    return;
-                }
+            Ok(TaskExit::Router {
+                plane,
+                shard,
+                result: Err(err),
+            }) => {
+                failed = true;
+                shutdown.trigger(DrainReason::Fatal);
+                error!(plane, %shard, "consumer router failed: {err:#}");
             }
-        }));
+            Err(join_err) => {
+                failed = true;
+                shutdown.trigger(DrainReason::Fatal);
+                error!("orchestrator task panicked: {join_err}");
+            }
+        }
     }
 
-    info!(
-        "consuming partitions {:?} across {} stream(s)",
-        owned, args.streams
-    );
-
-    for forwarder in forwarders {
-        forwarder.await.ok();
-    }
-
-    // Dropping the senders drains each worker before the process exits.
-    drop(txs);
-    for handle in handles {
-        handle.await.ok();
-    }
-
+    anyhow::ensure!(!failed, "one or more orchestrator tasks failed");
     Ok(())
 }
 
-impl Worker {
-    /// Run one event through the pipeline: warm and gate the history lane,
-    /// build the context, solve over req/res, durably publish the emission,
-    /// commit the resume state, durably archive the raw tail — then the
-    /// caller acks. Errors are transients: the caller retries the whole
-    /// pipeline, and every step tolerates being re-run (the publish carries
-    /// the same revision, the archive tolerates a duplicate append).
-    async fn process(
-        &mut self,
-        payload: &Payload,
-        revision: u64,
-        sent_at: Option<web_time::SystemTime>,
-    ) -> Result<Processed> {
-        let vehicle_id = payload.vehicle_id;
-
-        // Warm the lane once per vehicle per ownership — the only Valkey
-        // read, off the per-event hot path.
-        if self.histories.get(&vehicle_id).is_none() {
-            let mut warmed = self
-                .kv
-                .get_many(&vehicle_id, self.context_window * 3)
-                .instrument(info_span!("lane_warm"))
-                .await
-                .context("could not warm history lane")?;
-            warmed.sort_by_key(|event| event.timestamp);
-
-            match self.histories.entry(vehicle_id) {
-                Entry::Occupied(mut entry) => {
-                    entry.put(warmed);
-                }
-                Entry::Vacant(entry) => {
-                    entry.put_entry(warmed);
-                }
-            }
-        }
-
-        // The lane gate: supplier timestamps are per-vehicle monotonic, so a
-        // regression is stale data — and a redelivery of an event whose ack
-        // was lost lands here too, making re-processing idempotent.
-        let history = {
-            let guard = self.histories.get(&vehicle_id).expect("lane warmed above");
-            guard.get().clone()
-        };
-        if let Some(last) = history.last()
-            && payload.timestamp <= last.timestamp
-        {
-            return Ok(Processed::Dropped("stale_or_duplicate"));
-        }
-
-        let context = self.create_context(history, payload);
-
-        // Route to the ground beneath the event: the matcher owning the
-        // head's shard solves it, degrading a foreign resume itself.
-        let subject = format!(
-            "{}.{}",
-            self.match_prefix,
-            routers_realtime::event::shard_of(payload.point)
-        );
-
-        // The vehicle's lane holds through the round trip: its next event
-        // cannot overtake this one, so a stale solve can never overwrite a
-        // fresh trip. Other vehicles overlap on other workers.
-        let Some(reply) = solve(
-            &self.client,
-            &subject,
-            &context,
-            self.solve_timeout,
-            self.solve_retries,
-        )
-        .await
-        else {
-            anyhow::bail!("no matcher reply after retries");
-        };
-
-        if let MatchReply::Solved { mut diff, trip } = reply {
-            // The revision is the ingest stream sequence: broker-assigned,
-            // monotonic per vehicle, and identical across re-drives — the
-            // total order competing solves resolve by.
-            diff.revision = revision;
-
-            let matched = MatchedEvent { vehicle_id, diff };
-            let bytes = matched.encode().context("could not encode emission")?;
-
-            let subject = ingest::matched_subject(partition::partition_of(vehicle_id));
-            self.stream
-                .publish_with_headers(subject, bus::outbound(), bytes.into())
-                .instrument(info_span!("publish_matched"))
-                .await
-                .context("could not publish emission")?
-                .await
-                .context("emission unacknowledged")?;
-
-            if let Some(sent_at) = sent_at {
-                bus::span_between("event_to_match", sent_at, bus::wallclock());
-            }
-
-            // Commit after the durable publish: a crash in between re-drives
-            // the whole event, never strands a trip ahead of its emissions.
-            match self.trips.entry(vehicle_id) {
-                Entry::Occupied(mut entry) => {
-                    entry.put(trip);
-                }
-                Entry::Vacant(entry) => {
-                    entry.put_entry(trip);
-                }
-            }
-        }
-
-        // The raw tail is the failover recovery source: durably written
-        // before the ack, batched with everyone else's events.
-        let event = RawEvent {
-            vehicle_id,
-            point: payload.point,
-            timestamp: payload.timestamp,
-        };
-
-        let (done, flushed) = oneshot::channel();
-        self.archive
-            .send((event.clone(), done))
-            .await
-            .map_err(|_| anyhow!("archive writer gone"))?;
-        flushed
-            .instrument(info_span!("archive_wait"))
-            .await
-            .map_err(|_| anyhow!("archive writer dropped the batch"))?;
-
-        // Only now does the event enter the lane: everything behind the gate
-        // is durably recorded, so a redelivery can trust the drop.
-        if let Some(mut guard) = self.histories.get(&vehicle_id) {
-            let lane = guard.get_mut();
-            lane.push(event);
-
-            let bound = self.context_window * 3;
-            if lane.len() > bound {
-                let excess = lane.len() - bound;
-                lane.drain(..excess);
-            }
-        }
-
-        Ok(Processed::Done)
-    }
-
-    /// Assemble the vehicle's match context from its (oldest-first) history
-    /// lane and the live event: gap/teleport cut, then reconcile against the
-    /// committed trip.
-    fn create_context(&self, mut entries: Vec<RawEvent>, payload: &Payload) -> MatchContext<E> {
-        let Payload {
-            vehicle_id,
-            timestamp,
-            point,
-        } = *payload;
-
-        entries.retain(|event| event.timestamp <= timestamp);
-        entries.sort_by_key(|event| std::cmp::Reverse(event.timestamp));
-        entries.truncate(self.context_window);
-
-        let fetched = entries.len();
-        let context = entries
-            .into_iter()
-            .inspect(|v| debug!("event: {:?}", v))
-            .scan((point, timestamp), |(prev_p, prev_ts), event: RawEvent| {
-                let duration = (*prev_ts - event.timestamp).abs();
-                let distance = Haversine.distance(*prev_p, event.point);
-
-                if duration <= self.gap && distance <= self.jump_distance {
-                    *prev_p = event.point;
-                    *prev_ts = event.timestamp;
-                    Some(event)
-                } else {
-                    None
-                }
-            })
-            .collect::<Vec<_>>();
-
-        let cut = fetched - context.len();
-        if cut > 0 {
-            info_span!("history_cut", reason = "gap_or_teleport").in_scope(|| {});
-        }
-
-        let mut history: Vec<RawEvent> = std::iter::once(RawEvent {
-            vehicle_id,
-            point,
-            timestamp,
-        })
-        .chain(context)
-        .collect();
-
-        history.sort_by_key(|event| event.timestamp);
-        history.dedup_by_key(|event| event.timestamp);
-
-        let origins = history
-            .into_iter()
-            .map(|event| Origin::new(event.point, event.timestamp.timestamp_micros()))
-            .collect::<Vec<_>>();
-
-        let previous = self.trips.get(&vehicle_id).map(|trip| trip.get().clone());
-        let continuation =
-            info_span!("reconcile").in_scope(|| Continuation::reconcile(previous, &origins));
-
-        let span = tracing::Span::current();
-        span.record("cut", cut);
-        match &continuation {
-            Continuation::Resume { fresh, .. } => {
-                span.record("continuation", "resume");
-                span.record("fresh", fresh.len());
-            }
-            Continuation::Restart { fresh } => {
-                span.record("continuation", "restart");
-                span.record("fresh", fresh.len());
-            }
-        }
-
-        MatchContext {
-            vehicle_id,
-            continuation,
-        }
-    }
-}
-
-/// Ask a matcher for one context's solve, re-driving on timeout or transport
-/// error. `None` when every attempt failed; the caller treats that as a
-/// transient and starts the event over — nothing is dropped.
-async fn solve(
-    client: &async_nats::Client,
-    subject: &str,
-    context: &MatchContext<E>,
-    timeout: Duration,
-    retries: usize,
-) -> Option<MatchReply<E>> {
-    let payload = match context.encode() {
-        Ok(payload) => payload,
-        Err(err) => {
-            error!("could not encode match context: {err:#}");
-            return None;
-        }
-    };
-
-    for attempt in 0..=retries {
-        if attempt > 0 {
-            tokio::time::sleep(Duration::from_millis(250) * attempt as u32).await;
-        }
-
-        let request = client.request_with_headers(
-            subject.to_string(),
-            bus::outbound(),
-            payload.clone().into(),
-        );
-
-        match tokio::time::timeout(timeout, request).await {
-            Ok(Ok(message)) => {
-                tracing::Span::current().record("attempts", attempt as u64 + 1);
-
-                match MatchReply::<E>::decode(&message.payload) {
-                    Ok(reply) => return Some(reply),
-                    // A decode failure is a version skew, not a transient:
-                    // re-driving it would only re-fail.
-                    Err(err) => {
-                        error!("undecodable reply: {err:#}");
-                        return None;
-                    }
-                }
-            }
-            Ok(Err(err)) => warn!("solve request failed (attempt {attempt}): {err}"),
-            Err(_) => warn!("solve request timed out (attempt {attempt})"),
-        }
-    }
-
-    None
+/// Log one partition worker's exit summary. Every field is a bounded, label-free
+/// count, so it is safe to emit at `info`.
+fn log_stats(partition: u16, stats: &WorkerStats) {
+    info!(
+        partition,
+        observed = stats.observed,
+        queued = stats.queued,
+        dispatched = stats.dispatched,
+        accepted = stats.accepted,
+        committed = stats.committed,
+        terminal = stats.terminal,
+        resets = stats.resets,
+        conflicts = stats.conflicts,
+        poison = stats.poison,
+        frontier = stats.frontier,
+        "partition worker stopped"
+    );
 }
 
 #[cfg(test)]
@@ -757,8 +662,10 @@ mod tests {
             "orchestrator",
             "--nats",
             "nats://localhost",
-            "--redis",
-            "redis://localhost",
+            "--valkey",
+            "primary=redis://localhost",
+            "--catalog",
+            "/tmp/catalog.toml",
         ];
         Args::parse_from(base.iter().copied().chain(extra.iter().copied()))
     }
@@ -797,5 +704,100 @@ mod tests {
             owned_partitions(&args(&["--pod-name", "orchestrator-4", "--fleet", "4"])).is_err()
         );
         assert!(owned_partitions(&args(&[])).is_err());
+    }
+
+    #[test]
+    fn runtime_layout_requires_aligned_shards_streams_and_fleet() {
+        let valid = args(&["--pod-name", "orchestrator-1", "--fleet", "4"]);
+        let layout = runtime_layout(&valid).unwrap();
+        assert_eq!(layout.shards.get(), 64);
+        assert_eq!(layout.partitions, 256..=511);
+        assert_eq!(layout.owned_shards.start().get(), 16);
+        assert_eq!(layout.owned_shards.end().get(), 31);
+
+        assert!(runtime_layout(&args(&["--pod-name", "orchestrator-1", "--fleet", "3"])).is_err());
+        assert!(
+            runtime_layout(&args(&[
+                "--pod-name",
+                "orchestrator-1",
+                "--fleet",
+                "4",
+                "--shards",
+                "32",
+                "--streams",
+                "64",
+            ]))
+            .is_err()
+        );
+        assert!(
+            runtime_layout(&args(&["--pod-name", "orchestrator-1", "--fleet", "128",])).is_err()
+        );
+        assert!(runtime_layout(&args(&["--partitions", "10-20"])).is_err());
+        assert!(
+            runtime_layout(&args(&[
+                "--partitions",
+                "0-15",
+                "--shard-queue-capacity",
+                "0",
+            ]))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn explicit_partitions_win_over_identity() {
+        let parsed = args(&["--partitions", "10-20"]);
+        assert_eq!(owned_partitions(&parsed).unwrap(), 10..=20);
+    }
+
+    #[test]
+    fn valkey_urls_split_on_commas() {
+        // A comma-separated value splits into one URL per entry; this second
+        // `--valkey` occurrence adds two to the base helper's single URL.
+        let parsed = args(&["--valkey", "a=redis://a:6379,b=redis://b:6379"]);
+        assert_eq!(parsed.valkey.len(), 3);
+    }
+
+    /// The config derivations thread the CLI knobs into the right nested config,
+    /// and keep the worker's mirror of the dispatch knobs in step with the
+    /// dispatcher the worker is handed.
+    #[test]
+    fn config_derivation_threads_the_knobs() {
+        let parsed = args(&[
+            "--gap",
+            "30s",
+            "--jump-distance",
+            "1500",
+            "--parked-limit",
+            "9",
+            "--idle-ttl",
+            "3m",
+            "--grace",
+            "7s",
+            "--admit-global-jobs",
+            "10",
+        ]);
+
+        assert_eq!(
+            parsed.jobs_ttl,
+            Duration::ZERO,
+            "the default must not age unanswered jobs out"
+        );
+
+        let dispatch = dispatch_config(&parsed);
+        assert_eq!(dispatch.gap, Duration::from_secs(30));
+        assert_eq!(dispatch.jump_distance_m, 1500.0);
+
+        let worker = worker_config(&parsed, 5);
+        assert_eq!(worker.partition, 5);
+        assert_eq!(worker.parked_limit, 9);
+        assert_eq!(worker.scheduler.idle_ttl, Duration::from_secs(180));
+        assert_eq!(worker.grace, Duration::from_secs(7));
+        // The worker's mirror of the dispatch knobs matches the dispatcher's.
+        assert_eq!(worker.dispatch, dispatch);
+
+        let admission = admission_config(&parsed);
+        assert_eq!(admission.global_jobs, 10);
+        assert_eq!(admission.region_jobs, 1024);
     }
 }

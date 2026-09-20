@@ -1,0 +1,56 @@
+# Materializer: tails the committed-output plane and applies it to the kv served view.
+{{- if .Values.materializer.enabled }}
+{{- include "routers.validate" . }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: materializer
+  labels:
+    {{- include "routers.labels" . | nindent 4 }}
+    app: materializer
+spec:
+  replicas: {{ .Values.materializer.replicas }}
+  selector:
+    matchLabels:
+      app: materializer
+  template:
+    metadata:
+      labels:
+        {{- include "routers.labels" . | nindent 8 }}
+        app: materializer
+    spec:
+      {{- with (include "routers.podSpecCommon" (dict "root" $ "service" .Values.materializer) | trim) }}
+      {{- . | nindent 6 }}
+      {{- end }}
+      containers:
+        - name: materializer
+          image: {{ include "routers.image" (dict "registry" .Values.image.registry "image" .Values.materializer.image) | quote }}
+          imagePullPolicy: {{ .Values.materializer.image.pullPolicy }}
+          env:
+            - name: NATS
+              value: {{ .Values.infra.eventBus.url | quote }}
+            - name: VALKEY
+              value: {{ .Values.infra.kv.url | quote }}
+            - name: CONSUMER_NAME
+              value: {{ .Values.materializer.consumerName | quote }}
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            {{- if .Values.materializer.partitions }}
+            - name: PARTITIONS
+              value: {{ .Values.materializer.partitions | quote }}
+            {{- end }}
+            - name: RUST_LOG
+              value: {{ .Values.materializer.rustLog | quote }}
+            {{- if .Values.infra.telemetry.otlpUrl }}
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ .Values.infra.telemetry.otlpUrl | quote }}
+            {{- end }}
+            {{- range $name, $value := .Values.materializer.env }}
+            - name: {{ $name }}
+              value: {{ $value | quote }}
+            {{- end }}
+          resources:
+            {{- toYaml .Values.materializer.resources | nindent 12 }}
+{{- end }}

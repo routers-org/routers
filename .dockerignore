@@ -3,20 +3,28 @@ target/
 .github/
 .idea/
 .vscode/
-.env
-.DS_Store
-
-# Local dev artefacts
 .work/
-conformance/external/
+.paseo/
+.env*
+.DS_Store
+**/*.swp
 
-# Large fixtures — Dockerfiles don't need them
+# Not compiled into any image
+conformance/external/
+benches/snapshots/
+libs/routers_fixtures/resources/
+libs/routers_viewer/assets/
+libs/routers_tz/data/*
+!libs/routers_tz/data/prebuilt/
+
 *.csv
 *.csv.zip
 *.wkt
 *.geojson
+*.parquet
+*.snap
 *.rt
 *.osm.pbf
-
-# Editor/OS junk
-**/*.swp
+README.md
+CHANGELOG.md
+LICENSE

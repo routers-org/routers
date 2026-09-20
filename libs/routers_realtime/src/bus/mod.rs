@@ -1,14 +1,24 @@
+//! The message bus: how framed bytes cross NATS.
+//!
+//! [`Wire`] frames everything before it reaches a broker — control-plane
+//! messages as postcard, boundary messages as protobuf — so the
+//! [`topology`](crate::topology) names and their payloads stay separable.
+//! Delivery sits behind the [`adapter`] traits so no business logic touches a
+//! live connection in a test.
+
+pub mod adapter;
+pub mod jetstream;
+pub mod memory;
 mod nats;
 mod trace;
 
-pub use nats::NATSSink;
 pub use nats::NATSStream;
-pub use trace::{inbound, last_sent_at, outbound, span_between, wallclock};
+pub use trace::{inbound, outbound, span_between, wallclock};
 
 /// How a message crosses the bus.
 ///
 /// Rust-internal messages (the match control plane) use postcard via
-/// [`postcard_wire!`]; boundary messages the wider world produces or
+/// `postcard_wire!`; boundary messages the wider world produces or
 /// consumes (the raw ingest surface) encode as protobuf against the
 /// `routers.realtime.v1` schema, so any language can speak them.
 pub trait Wire: Sized {

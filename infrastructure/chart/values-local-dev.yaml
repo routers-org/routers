@@ -1,22 +1,16 @@
-# Local Development Chart Configuration.
-# Debug logging + local-hostPath shard cache + in-cluster infra addresses
-# assumed to live in the `routers-dev` devstack namespace of the same cluster
-# (see `infrastructure/dev/`). The routers release itself lives in
-# `routers` by default.
-
+# Local devstack: in-cluster infra in the routers-dev namespace, hostPath shards.
 infra:
-  nats:
+  eventBus:
     url: nats://nats.routers-dev.svc.cluster.local:4222
-  valkey:
-    url: redis://valkey-primary.routers-dev.svc.cluster.local:6379
-  otlp:
-    url: http://otel-collector-opentelemetry-collector.routers-dev.svc.cluster.local:4318
+  kv:
+    # Stable rendezvous id separated from the rotatable connection URL.
+    url: primary=redis://valkey-primary.routers-dev.svc.cluster.local:6379
+  telemetry:
+    otlpUrl: http://otel-collector-opentelemetry-collector.routers-dev.svc.cluster.local:4318
 
 shardCache:
   mode: hostPath
-  # Overridden per-invocation by the Justfile so relative paths become absolute
-  # against the developer's checkout. If invoking helm directly, pass an
-  # absolute path via `--set shardCache.hostPath=<abs-dir>`.
+  # Overridden by the Justfile so a relative path resolves against the checkout.
   hostPath: ./target/shard_cache
 
 matcher:
@@ -24,6 +18,8 @@ matcher:
 
 orchestrator:
   rustLog: info
-  # A single-node devstack has no room for a real fleet; one pod owns the
-  # whole partition space.
+  # One pod owns the whole partition space on a single-node devstack.
   replicas: 1
+
+materializer:
+  rustLog: info

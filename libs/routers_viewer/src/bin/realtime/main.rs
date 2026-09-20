@@ -18,7 +18,7 @@ use clap::Parser;
 use log::info;
 use routers_codec::osm::OsmEntryId;
 use routers_realtime::bus::NATSStream;
-use routers_realtime::event::MatchedEvent;
+use routers_realtime::protocol::CommittedOutput;
 
 use crate::app::RealtimeApp;
 
@@ -31,9 +31,9 @@ struct Args {
     #[arg(short, env, long)]
     nats: String,
 
-    /// The inbound NATS subject to subscribe to, for matched vehicle events
-    /// (e.g. `events.matched.*`).
-    #[arg(short, env, long)]
+    /// The inbound NATS subject to subscribe to, for committed matched output
+    /// (the whole matched plane, `events.matched.v1.>`).
+    #[arg(short, env, long, default_value = "events.matched.v1.>")]
     inbound_subject: String,
 
     /// Maximum path points retained per vehicle, across all matched
@@ -64,7 +64,7 @@ async fn main() -> Result<()> {
         .subscribe(args.inbound_subject)
         .await
         .context("could not subscribe to NATS subject")?;
-    let source = NATSStream::<MatchedEvent<E>>::new(subscriber);
+    let source = NATSStream::<CommittedOutput<E>>::new(subscriber);
 
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()

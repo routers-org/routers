@@ -1,8 +1,7 @@
 //! Trace context over the NATS hop, carried in message headers so the event
 //! payloads stay untouched.
 
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use core::time::Duration;
 
 use web_time::{SystemTime, UNIX_EPOCH};
 
@@ -18,14 +17,6 @@ use opentelemetry::{Context, KeyValue, global};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 const SENT_AT: &str = "x-routers-sent-at-ms";
-static LAST_SENT_AT: AtomicU64 = AtomicU64::new(0);
-
-pub fn last_sent_at() -> Option<SystemTime> {
-    match LAST_SENT_AT.load(Ordering::Relaxed) {
-        0 => None,
-        millis => Some(UNIX_EPOCH + Duration::from_millis(millis)),
-    }
-}
 
 pub fn wallclock() -> SystemTime {
     now()
@@ -82,16 +73,14 @@ pub fn outbound() -> HeaderMap {
     headers
 }
 
-pub fn inbound(subject: &str, headers: Option<&HeaderMap>) {
-    let Some(headers) = headers else { return };
-    let Some(sent_at) = headers
+/// Continue an inbound message's trace, record its queue-wait span, and return
+/// the producer's send time from `x-routers-sent-at-ms` (`None` if unstamped).
+pub fn inbound(subject: &str, headers: Option<&HeaderMap>) -> Option<SystemTime> {
+    let headers = headers?;
+    let sent_at = headers
         .get(SENT_AT)
-        .and_then(|value| value.as_str().parse::<u64>().ok())
-    else {
-        return;
-    };
-
-    LAST_SENT_AT.store(sent_at, Ordering::Relaxed);
+        .and_then(|value| value.as_str().parse::<u64>().ok())?;
+    let send_time = UNIX_EPOCH + Duration::from_millis(sent_at);
 
     let parent = global::get_text_map_propagator(|propagator| {
         propagator.extract_with_context(&Context::current(), &HeadersRef(headers))
@@ -100,10 +89,12 @@ pub fn inbound(subject: &str, headers: Option<&HeaderMap>) {
     let tracer = global::tracer_provider().tracer("routers_realtime");
     tracer
         .span_builder("queue_wait")
-        .with_start_time(UNIX_EPOCH + Duration::from_millis(sent_at))
+        .with_start_time(send_time)
         .with_attributes([KeyValue::new("subject", subject.to_string())])
         .start_with_context(&tracer, &parent)
         .end();
+
+    Some(send_time)
 }
 
 /// Count a message the stream had to discard, as a zero-duration marker

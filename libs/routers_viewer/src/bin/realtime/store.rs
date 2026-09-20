@@ -1,50 +1,52 @@
-use alloc::collections::{BTreeMap, VecDeque};
+use alloc::collections::VecDeque;
 use core::time::Duration;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use web_time::Instant;
 
 use geo::Point;
-use routers_realtime::event::{MatchedDiff, MatchedEvent, VehicleId};
+use routers_realtime::event::VehicleId;
+use routers_realtime::materializer::{SegmentState, merge, target_segment};
+use routers_realtime::protocol::CommittedOutput;
+use routers_realtime::protocol::ids::SegmentId;
 
 use crate::E;
 
-/// A vehicle's matched history, merged from diff emissions: one geometry
-/// segment per observation timestamp. Overlapping emissions supersede per
-/// layer — re-emission is convergence, not conflict — so the trace heals as
-/// later solves refine earlier layers.
-pub struct VehicleTrace {
-    /// Observation timestamp → the geometry driven into that observation
-    /// (its inbound road path, then its matched position).
-    layers: BTreeMap<i64, Vec<Point>>,
+/// One segment of a vehicle's matched history. The shared materializer reducer
+/// establishes its finality, revision, and retraction semantics; this viewer
+/// only applies its local rendering-capacity bound afterwards.
+pub struct SegmentTrace {
+    state: SegmentState<E>,
     pub last_seen: Instant,
 }
 
-impl VehicleTrace {
+impl SegmentTrace {
     fn new() -> Self {
         Self {
-            layers: BTreeMap::new(),
+            state: SegmentState::new(),
             last_seen: Instant::now(),
         }
     }
 
-    fn merge(&mut self, diff: &MatchedDiff<E>, capacity: usize) {
-        for layer in &diff.layers {
-            let mut segment = layer.path.clone();
-            segment.push(layer.position);
-            self.layers.insert(layer.timestamp, segment);
+    fn apply(&mut self, output: &CommittedOutput<E>, capacity: usize) {
+        merge(&mut self.state, output);
+        while self.state.layers.len() > capacity {
+            self.state.layers.pop_first();
         }
+        self.touch();
+    }
 
-        // Bound by observation count, trimming the oldest.
-        while self.layers.len() > capacity {
-            self.layers.pop_first();
-        }
-
+    fn touch(&mut self) {
         self.last_seen = Instant::now();
     }
 
-    /// The full tail as one point sequence, oldest observation first.
+    /// The segment as one point sequence, oldest observation first.
     pub fn flattened(&self) -> Vec<Point> {
-        self.layers.values().flatten().copied().collect()
+        self.state
+            .layers
+            .values()
+            .flat_map(|stored| stored.layer.path.iter().chain([&stored.layer.position]))
+            .copied()
+            .collect()
     }
 }
 
@@ -54,13 +56,14 @@ pub struct StoreStats {
     pub total_events: u64,
 }
 
-/// Merged matched history per vehicle. Memory is bounded on both axes:
-/// each vehicle retains at most `capacity` observations, and vehicles that
-/// go quiet for longer than `idle_ttl` are evicted entirely.
+/// Resolved traces per `(vehicle, segment)`. A reset opens a new segment, so
+/// the line breaks instead of jumping. Memory is bounded on both axes: each
+/// segment keeps at most `capacity` observations, and segments quiet for
+/// longer than `idle_ttl` are evicted.
 pub struct TraceStore {
     capacity: usize,
     idle_ttl: Duration,
-    pub traces: HashMap<VehicleId, VehicleTrace>,
+    pub traces: HashMap<(VehicleId, SegmentId), SegmentTrace>,
     event_bucket: VecDeque<Instant>,
     total_events: u64,
 }
@@ -76,23 +79,17 @@ impl TraceStore {
         }
     }
 
-    pub fn ingest(&mut self, result: MatchedEvent<E>) {
+    pub fn ingest(&mut self, output: CommittedOutput<E>) {
         let now = Instant::now();
 
         self.event_bucket.push_back(now);
         self.total_events += 1;
 
-        if result.diff.layers.is_empty() {
-            return;
-        }
-
-        // Layers merge by observation timestamp, so the newest one is the
-        // vehicle's current position, which the plugin marks with the head
-        // dot.
+        let key = (output.vehicle_id, target_segment(&output));
         self.traces
-            .entry(result.vehicle_id)
-            .or_insert_with(VehicleTrace::new)
-            .merge(&result.diff, self.capacity);
+            .entry(key)
+            .or_insert_with(SegmentTrace::new)
+            .apply(&output, self.capacity);
     }
 
     pub fn evict_idle(&mut self) {
@@ -117,11 +114,94 @@ impl TraceStore {
             .iter()
             .filter(|t| now.duration_since(**t) < Duration::from_secs(1))
             .count();
+        let vehicles: HashSet<VehicleId> =
+            self.traces.keys().map(|(vehicle, _)| *vehicle).collect();
 
         StoreStats {
-            vehicle_count: self.traces.len(),
+            vehicle_count: vehicles.len(),
             events_per_sec: recent,
             total_events: self.total_events,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use geo::Point;
+    use routers_codec::osm::OsmEntryId;
+    use routers_network::{DirectionAwareEdgeId, Edge};
+    use routers_realtime::event::MatchedLayer;
+    use routers_realtime::protocol::ids::{JobId, ObservationId, Revision};
+    use routers_realtime::protocol::output::{OutputKind, ResetReason};
+
+    fn output(revision: u64, segment: u64, kind: OutputKind<E>) -> CommittedOutput<E> {
+        CommittedOutput::new(
+            JobId(u128::from(revision)),
+            VehicleId(1),
+            ObservationId {
+                partition: 0,
+                sequence: revision,
+            },
+            Revision(revision),
+            SegmentId(segment),
+            kind,
+        )
+    }
+
+    fn matched(revision: u64, segment: u64, timestamp: i64) -> CommittedOutput<E> {
+        output(
+            revision,
+            segment,
+            OutputKind::Matched {
+                diff: routers_realtime::event::MatchedDiff {
+                    revision,
+                    downgraded: false,
+                    layers: vec![MatchedLayer {
+                        timestamp,
+                        edge: Edge {
+                            source: OsmEntryId::node(1),
+                            target: OsmEntryId::node(2),
+                            weight: 1,
+                            id: DirectionAwareEdgeId::new(OsmEntryId::node(3)),
+                        },
+                        position: Point::new(151.2, -33.8),
+                        path: Vec::new(),
+                    }],
+                },
+                finalized_through: None,
+            },
+        )
+    }
+
+    #[test]
+    fn trace_store_uses_the_materializer_reducer_for_tombstones_and_resets() {
+        let mut store = TraceStore::new(10, Duration::from_secs(60));
+        store.ingest(matched(7, 1, 100));
+        store.ingest(output(
+            8,
+            1,
+            OutputKind::Retraction {
+                timestamps: vec![100],
+            },
+        ));
+        // The shared reducer's tombstone prevents an out-of-order stale match
+        // from reviving a path the viewer had already removed.
+        store.ingest(matched(7, 1, 100));
+
+        let trace = &store.traces[&(VehicleId(1), SegmentId(1))];
+        assert!(trace.flattened().is_empty());
+
+        // Reset output carries its destination separately from `output.segment`.
+        store.ingest(output(
+            9,
+            1,
+            OutputKind::Reset {
+                reason: ResetReason::Gap,
+                new_segment: SegmentId(2),
+            },
+        ));
+        assert!(store.traces.contains_key(&(VehicleId(1), SegmentId(2))));
     }
 }

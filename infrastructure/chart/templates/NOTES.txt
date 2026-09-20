@@ -1,18 +1,23 @@
-routers-realtime installed in namespace {{ .Values.namespace }}.
+routers-realtime installed as {{ .Release.Name }} in namespace {{ .Release.Namespace }}.
 
-Rendered for {{ len .Values.shards }} shard(s): {{ join ", " .Values.shards }}
-
-What was deployed:
-  - Matcher services ({{ .Values.matcher.replicas }} replica(s) per shard{{ if .Values.matcher.autoscaling.enabled }}, HPA to {{ .Values.matcher.autoscaling.maxReplicas }}{{ end }})
-  - Orchestrator fleet ({{ .Values.orchestrator.replicas }} pods slicing 1024 vehicle partitions across {{ .Values.streams }} stream(s))
+Deployed:
+{{- range $region := .Values.catalog.regions }}
+  - matcher-{{ $region.id }} (graph {{ $region.graph }}, coverage {{ join ", " $region.coverage }}){{ if ne (int $region.replicas.min) (int $region.replicas.max) }}, HPA {{ $region.replicas.min }}-{{ $region.replicas.max }}{{ end }}
+{{- end }}
+  - orchestrator fleet: {{ .Values.orchestrator.replicas }} pod(s) over 1024 partitions, {{ .Values.streams }} raw stream(s)
+{{- if .Values.materializer.enabled }}
+  - materializer: {{ .Values.materializer.replicas }} replica(s), consumer "{{ .Values.materializer.consumerName }}"{{ if .Values.materializer.partitions }}, partitions {{ .Values.materializer.partitions }}{{ end }}
+{{- end }}
 {{- if .Values.grafanaDashboard.enabled }}
-  - Grafana Dashboard
+  - grafana dashboard ConfigMap
 {{- end }}
 
-Pre-existing dependencies that this chart does NOT install:
-  - NATS (JetStream enabled, server 2.10+) at {{ .Values.infra.nats.url }}
-  - Valkey at {{ .Values.infra.valkey.url }}
-{{- if .Values.infra.otlp.url }}
-  - OTLP collector at {{ .Values.infra.otlp.url }} (spanmetrics -> Prometheus)
+Planes: events.raw.p.<p>, solve.v1.g.<graph>.r.<region>.q.<lane>, solve-result.v1.p.<p>, events.matched.v1.p.<p>
+
+Depends on (not installed by this chart):
+  - event bus (NATS JetStream, 2.10+) at {{ .Values.infra.eventBus.url }}
+  - kv store (Valkey) at {{ .Values.infra.kv.url }}
+{{- if .Values.infra.telemetry.otlpUrl }}
+  - OTLP collector at {{ .Values.infra.telemetry.otlpUrl }}
 {{- end }}
   - kube-prometheus-stack (consumes the dashboard ConfigMap)

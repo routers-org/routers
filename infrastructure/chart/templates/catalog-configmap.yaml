@@ -1,0 +1,11 @@
+# The region catalog, rendered to TOML and mounted read-only into orchestrator and matcher pods.
+{{- include "routers.validate" . }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-catalog
+  labels:
+    {{- include "routers.labels" . | nindent 4 }}
+data:
+  catalog.toml: |
+{{ include "routers.catalog.toml" . | trim | indent 4 }}

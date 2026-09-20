@@ -1,10 +1,11 @@
 mod matcher "matcher"
 mod orchestrator "orchestrator"
+mod materializer "materializer"
 
 mod chart "chart"
 mod dev "dev"
 
-build: matcher::build orchestrator::build
+build: matcher::build orchestrator::build materializer::build
 
 bringup: chart::bringup
 

@@ -33,9 +33,12 @@ itertools = { workspace = true }
 # CLI, for the `generate-shards` binary only (native).
 clap = { workspace = true, features = ["derive", "env"], optional = true }
 env_logger = { workspace = true, optional = true }
+# Artifact manifests are shared by the generator and every runtime loader.
+sha2 = "0.10"
+serde_json = { workspace = true }
 
 # Serialization
-serde = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
 postcard = { workspace = true }
 
 # `web_time::Instant` is a `std::time::Instant` drop-in; std on every target

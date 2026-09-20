@@ -3,14 +3,13 @@ use geo::Point;
 use routers_network::{Edge, Entry, Network};
 use routers_shard::{Geohash, GeohashStrategy, ShardingStrategy};
 use routers_transition::candidate::CollapsedPath;
-use routers_transition::matcher::{Continuation, Origin, Trip};
+use routers_transition::matcher::Origin;
 use serde::{Deserialize, Serialize};
 
 use buffa::Message;
 use schema::proto::routers::realtime::v1 as proto;
 
-use crate::bus::{Wire, postcard_wire};
-use crate::store::Storable;
+use crate::bus::Wire;
 
 /// Declare a compact wire identifier. The upstream string ids are stepped
 /// down to these at the ingest boundary (see the replay binary), so the
@@ -27,8 +26,8 @@ macro_rules! wire_id {
             }
         }
 
-        impl std::fmt::Display for $name {
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        impl core::fmt::Display for $name {
+            fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
                 write!(f, "{}", self.0)
             }
         }
@@ -39,39 +38,6 @@ wire_id! {
     /// Identifies one vehicle across its events, history, and matches:
     /// the FNV-1a 64-bit hash of the upstream string id.
     VehicleId
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(bound(serialize = "E: Serialize", deserialize = "E: Deserialize<'de>"))]
-pub struct MatchContext<E: Entry> {
-    pub continuation: Continuation<E>,
-    pub vehicle_id: VehicleId,
-}
-
-/// The matcher's answer to one [`MatchContext`], returned on the request's
-/// reply inbox. Correlation is the inbox itself; the orchestrator that asked
-/// already knows the vehicle.
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(bound(serialize = "E: Serialize", deserialize = "E: Deserialize<'de>"))]
-pub enum MatchReply<E: Entry> {
-    /// Solved: the emission, and the trip cut at its convergence point — the
-    /// resume state the orchestrator commits for the vehicle's next event.
-    Solved { diff: MatchedDiff<E>, trip: Trip<E> },
-
-    /// Nothing to emit: no anchored layers, or a nominal solve failure. The
-    /// orchestrator keeps its previous resume state; the event still enters
-    /// the raw history, so the next context carries it regardless.
-    NoMatch,
-}
-
-/// One vehicle's emission on the matched subject: what the reconciler (and
-/// any observer, e.g. the realtime viewer) consumes. The resume state stays
-/// on the control plane — nothing here carries a trip.
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(bound(serialize = "E: Serialize", deserialize = "E: Deserialize<'de>"))]
-pub struct MatchedEvent<E: Entry> {
-    pub vehicle_id: VehicleId,
-    pub diff: MatchedDiff<E>,
 }
 
 /// One layer of matched history: the observation's identity (its timestamp),
@@ -167,11 +133,6 @@ pub struct Payload {
     pub point: Point,
 }
 
-// The match control plane is Rust-internal: postcard on the wire.
-postcard_wire!(MatchContext<E: Entry>);
-postcard_wire!(MatchReply<E: Entry>);
-postcard_wire!(MatchedEvent<E: Entry>);
-
 /// The ingest surface crosses the bus as protobuf
 /// (`routers.realtime.v1.Payload`), so producers in any language can
 /// publish raw events against the schema.
@@ -219,27 +180,6 @@ impl From<proto::Payload> for Payload {
     }
 }
 
-impl Payload {
-    pub fn as_event(&self) -> RawEvent {
-        RawEvent {
-            vehicle_id: self.vehicle_id,
-            point: self.point,
-            timestamp: self.timestamp,
-        }
-    }
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct RawEvent {
-    pub vehicle_id: VehicleId,
-    pub point: Point,
-
-    /// When the observation was made. Serialized as microseconds since the
-    /// Unix epoch on the wire.
-    #[serde(with = "chrono::serde::ts_microseconds")]
-    pub timestamp: DateTime<Utc>,
-}
-
 /// The fleet's geographic shard precision. One source of truth: matcher
 /// subjects, storage tags, and shard files must all agree on it.
 pub const SHARD_PRECISION: u8 = 4;
@@ -249,19 +189,6 @@ pub const SHARD_PRECISION: u8 = 4;
 /// shard they loaded.
 pub fn shard_of(point: Point) -> Geohash {
     GeohashStrategy::with_precision(SHARD_PRECISION).locate(point)
-}
-
-impl Storable for RawEvent {
-    type ShardId = Geohash;
-    type Key = VehicleId;
-
-    fn shard_id(&self) -> Self::ShardId {
-        shard_of(self.point)
-    }
-
-    fn key(&self) -> Self::Key {
-        self.vehicle_id
-    }
 }
 
 #[cfg(test)]

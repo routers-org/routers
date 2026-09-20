@@ -89,6 +89,8 @@ jobs:
             file: infrastructure/orchestrator/Dockerfile
           - name: matcher
             file: infrastructure/matcher/Dockerfile
+          - name: materializer
+            file: infrastructure/materializer/Dockerfile
           - name: timezone
             file: infrastructure/timezone/Dockerfile
       fail-fast: false
@@ -154,6 +156,8 @@ jobs:
           context: .
           file: ${{ matrix.file }}
           push: true
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,scope=${{ matrix.name }},mode=max
           tags: |
             ${{ env.IMAGE }}:latest
             ${{ env.IMAGE }}:${{ env.TAG }}

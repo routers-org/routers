@@ -56,3 +56,13 @@ wasm-e2e-wasmtime: wasm-build wasm-shards
 
 # Full E2E across both consumers.
 wasm-e2e: wasm-e2e-node wasm-e2e-wasmtime
+
+# === Service images ===
+
+# Regenerate the protobuf schema code the crates compile against.
+schema:
+    buf generate
+
+# Build the realtime images; the Dockerfiles share one cargo cache, so only the first build is cold.
+build: schema
+    just infra build

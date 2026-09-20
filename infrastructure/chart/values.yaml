@@ -1,88 +1,54 @@
-# Default values for routers-realtime.
-# The release namespace is controlled by `helm -n <ns>`; templates use .Release.Namespace.
+# Default values for routers-realtime. Namespace comes from `helm -n <ns>`.
 
-# One matcher deployment per geographic shard. Orchestrators are not
-# geographic — they partition on vehicle id (see `orchestrator.replicas`).
-# Here's a suitable default for Sydney.
-shards:
-  - r3gq
-  - r3gr
-  - r3gw
-  - r3gx
-  - r652
-  - r658
+# Region topology, rendered verbatim to TOML and mounted read-only into every
+# orchestrator and matcher (field names are the binaries' catalog fields).
+catalog:
+  version: 1
+  routing_version: 1
+  regions:
+      # graph must equal the --graph-version the shards were built with;
+      # coverage cells are disjoint across regions, one <cell>.shard.rt each.
+    - id: sydney
+      graph: sydney-local
+      coverage:
+        - r3gq
+        - r3gr
+      overlap: []
+      lanes: 1
+      resource_class: cpu-8
+      replicas:
+        min: 1
+        max: 8
+      freshness_budget_ms: 30000
 
-# How many raw JetStream streams the 1024 vehicle partitions divide across,
-# fleet-wide. Wire law, not a tuning knob: revisions are stream sequences,
-# and remapping partitions to different streams is a migration.
+# Raw JetStream stream count the 1024 partitions divide across (wire law).
 streams: 4
 
-# External infra references. Environment-specific values must be supplied via
-# an overlay file (`-f values-<env>.yaml`) or `--set`; the chart intentionally
-# does not ship real defaults so a bare `helm install` fails fast rather than
-# silently pointing at the wrong cluster.
-infra:
-  nats:
-    # Client connection URL used by matcher and orchestrator. Must have
-    # JetStream enabled (NATS server 2.10+: the orchestrator's filtered
-    # work-queue consumers need it).
-    url: ""
-  valkey:
-    # Valkey primaries, comma-separated. Vehicles spread across them by
-    # rendezvous hash, so the order carries no meaning — but every consumer
-    # must be given the same set.
-    url: ""
-  otlp:
-    # OTLP endpoint (http/protobuf) the matcher and orchestrator export
-    # spans to — an opentelemetry-collector whose spanmetrics pipeline is
-    # what Prometheus scrapes (see infrastructure/dev). Leave empty to
-    # disable span export; the services fall back to plain logging.
-    url: ""
-
-# Shard precision passed to the matcher. Ensure shards are generated for this
-# precision level.
-#
-# The orchestrator does NOT read this: it derives an event's shard with the
-# compiled `event::SHARD_PRECISION`, because the subject it routes to must be
-# decided identically by every pod whether or not it holds chart values. So
-# this has to agree with that constant, or requests address subjects no
-# matcher serves. The terraform capacity module asserts the equality.
+# Geohash cell precision; validated against the compiled event::SHARD_PRECISION.
 shardPrecision: 4
 
-# Registry (or registry/project) prefix prepended to every service's
-# `image.repository`. Empty renders bare image names, which is what a local
-# cluster with pre-built images wants; GKE sets an Artifact Registry path so
-# the per-service repository/tag pairs need no duplication.
+# External dependencies; supply real URLs via an overlay (-f values-<env>.yaml).
+infra:
+  eventBus:
+    url: ""
+  kv:
+    url: ""
+  telemetry:
+    otlpUrl: ""
+
+# Registry prefix prepended to every image.repository; empty renders bare names.
 image:
   registry: ""
 
-# Pull secrets for every pod. Not needed for Artifact Registry, where the node
-# service account authenticates.
 imagePullSecrets: []
 
-# Identity the pods run as. Required for `shardCache.mode: gcsfuse`, which
-# reaches GCS through Workload Identity: annotate the account with
-# `iam.gke.io/gcp-service-account` and GKE exchanges its token for the Google
-# one, so no service account key exists to leak. Left off, pods keep the
-# namespace default and local dev behaves as before.
+# Pod identity; `create` + the gcp-service-account annotation drive gcsfuse WI.
 serviceAccount:
   create: false
-  # Defaults to the chart name when created and left empty.
   name: ""
   annotations: {}
 
-# Source for the {shard}.shard.rt files mounted read-only into every
-# matcher pod. Three modes:
-#
-#   mode: hostPath  → bind-mount a directory from the node filesystem.
-#   mode: pvc       → mount a PersistentVolumeClaim.
-#   mode: gcsfuse   → mount a GCS bucket through the GKE CSI driver.
-#
-# `gcsfuse` is what GKE uses: adding a shard needs no volume work, only a new
-# object in the bucket. `pvc` would need ReadOnlyMany, which GCE persistent
-# disks cannot provide across zones.
-#
-# Override hostPath via -f or --set, if necessary.
+# Source for the <cell>.shard.rt files and manifest.json mounted at /shards.
 shardCache:
   mode: hostPath
   hostPath: /var/lib/routers/shards-cache
@@ -90,73 +56,53 @@ shardCache:
     claimName: routers-shards
   gcs:
     bucket: ""
-    # `implicit-dirs` lets a flat bucket present as a directory. The file
-    # cache matters: a matcher reads its whole shard file at startup, so a
-    # restart would otherwise re-read it over the network.
     mountOptions: implicit-dirs,file-cache:max-size-mb:-1,metadata-cache:ttl-secs:-1
 
-# Each service's `env` map is rendered verbatim into the container: keys are
-# the binaries' clap-derived env names (see `--help` of each bin), so a knob
-# added to a binary needs no template change to become deployable.
+# One matcher Deployment per region, configured through args (no clap env).
+# Capacity is authoritative in catalog.regions[].replicas; the chart derives
+# the Deployment floor and, when min < max, its HPA bounds from that value.
 matcher:
   image:
     repository: routers-matcher
     tag: latest
     pullPolicy: Never
-  # Matchers queue-subscribe their shard subject, so replicas divide the
-  # load; scale per shard density, or let the HPA do it.
-  replicas: 1
-  autoscaling:
-    enabled: false
-    minReplicas: 1
-    maxReplicas: 8
-    targetCPUUtilizationPercentage: 80
-  rustLog: debug
-  env:
-    # Concurrent solves per matcher. Solving is CPU-bound, so this is sized
-    # to actually cover the node's cores under load.
-    WORKERS: "10"
-  # Matching is CPU-bound and wants a compute-optimised shape of its own, so
-  # in a multi-pool cluster this pins matchers to that pool and tolerates the
-  # taint keeping everything else off it.
+  healthPort: 9091
+  targetCPUUtilizationPercentage: 80
+  rustLog: info
+  # Empty values keep the binary defaults: 32 end-to-end handlers and one
+  # CPU-bound solve per available core.
+  maxInFlight: ""
+  solveSlots: ""
+  # Bounds on the carried match state; 0 disables either cap.
+  maxCandidates: 16
+  windowLayers: 32
+  extraArgs: []
+  env: {}
   nodeSelector: {}
   tolerations: []
   resources:
     requests:
       cpu: 1000m
       memory: 256Mi
-    # No CPU limit: matching is CPU-bound (per-boundary weighing fans across
-    # rayon), and a CFS cap freezes every worker and the rayon pool together
-    # in 100ms throttle windows — the same stall spiral the valkey nano
-    # preset caused. The request still guarantees scheduling; memory still
-    # bounds the pod.
     limits:
       memory: 3072Mi
 
+# Vehicle-partitioned fleet. Consumer shards are stable broker ownership units;
+# replicas may change only among divisors of `shards` so no pod splits a shard.
 orchestrator:
   image:
     repository: routers-orchestrator
     tag: latest
     pullPolicy: Never
-  # The vehicle-partitioned fleet: each pod derives a disjoint slice of the
-  # 1024 partitions from its StatefulSet ordinal. Re-scaling re-slices the
-  # space — do it with the fleet quiesced, or accept a short double-ownership
-  # window (wasteful, not wrong: emissions dedup by revision).
   replicas: 4
+  # Fixed fleet-wide consumer layout. Changing this creates a new durable-name
+  # namespace and intentionally replays from persisted partition frontiers.
+  shards: 64
+  # Deliveries buffered for each partition on each shared durable route.
+  shardQueueCapacity: 8
   rustLog: info
-  env:
-    # Worker lanes per orchestrator: each vehicle is pinned to one, and a
-    # lane holds through a whole solve round trip — this is the pod's
-    # in-flight solve bound. Workers are tokio tasks, priced accordingly.
-    WORKERS: "64"
-    # History entries a vehicle's context draws from — also the resume
-    # overlap horizon: a vehicle may go this many events without a committed
-    # result before reconcile loses the overlap and restarts it.
-    CONTEXT_WINDOW: "25"
-    # Vehicles each worker keeps trip and history lanes for. The fleet-wide
-    # bound is this × WORKERS per pod; size it above the concurrent vehicles
-    # the pod's partitions carry, or live vehicles thrash the Valkey re-warm.
-    VEHICLE_CACHE: "4096"
+  # Rendered verbatim; every flag has a clap UPPER_SNAKE env name (NATS, GAP, ...).
+  env: {}
   nodeSelector: {}
   tolerations: []
   resources:
@@ -164,9 +110,29 @@ orchestrator:
       cpu: 500m
       memory: 256Mi
     limits:
-      # Headroom for the per-vehicle trip and history lanes and the worker
-      # channels — memory-limit reclaim stalls would masquerade as latency.
       memory: 1024Mi
+
+# Tails the committed-output plane and applies it to the kv served view.
+materializer:
+  enabled: true
+  image:
+    repository: routers-materializer
+    tag: latest
+    pullPolicy: Never
+  replicas: 1
+  consumerName: materializer
+  # Empty tails the whole plane; a range like "0-511" narrows the filter.
+  partitions: ""
+  rustLog: info
+  env: {}
+  nodeSelector: {}
+  tolerations: []
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      memory: 512Mi
 
 grafanaDashboard:
   enabled: true

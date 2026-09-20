@@ -1,10 +1,5 @@
-# The orchestrator fleet is vehicle-partitioned, not geographic: a
-# StatefulSet whose pods each derive a disjoint slice of the 1024 vehicle
-# partitions from their ordinal (POD_NAME + FLEET; see the binary's
-# --pod-name/--fleet). Scaling the fleet re-slices the space, so change
-# `orchestrator.replicas` with the fleet quiesced or accept a window of
-# double-ownership — which revisions make wasteful, not wrong.
-{{- include "routers.validate" . -}}
+# Vehicle-partitioned orchestrator fleet: a StatefulSet whose ordinals slice the 1024 partitions.
+{{- include "routers.validate" . }}
 apiVersion: v1
 kind: Service
 metadata:
@@ -33,6 +28,8 @@ spec:
       app: orchestrator
   template:
     metadata:
+      annotations:
+        checksum/catalog: {{ include "routers.catalog.toml" . | sha256sum }}
       labels:
         {{- include "routers.labels" . | nindent 8 }}
         app: orchestrator
@@ -46,9 +43,11 @@ spec:
           imagePullPolicy: {{ .Values.orchestrator.image.pullPolicy }}
           env:
             - name: NATS
-              value: {{ .Values.infra.nats.url | quote }}
-            - name: REDIS
-              value: {{ .Values.infra.valkey.url | quote }}
+              value: {{ .Values.infra.eventBus.url | quote }}
+            - name: VALKEY
+              value: {{ .Values.infra.kv.url | quote }}
+            - name: CATALOG
+              value: "/etc/routers/catalog.toml"
             - name: POD_NAME
               valueFrom:
                 fieldRef:
@@ -57,18 +56,28 @@ spec:
               value: {{ .Values.orchestrator.replicas | quote }}
             - name: STREAMS
               value: {{ .Values.streams | quote }}
+            - name: SHARDS
+              value: {{ .Values.orchestrator.shards | quote }}
+            - name: SHARD_QUEUE_CAPACITY
+              value: {{ .Values.orchestrator.shardQueueCapacity | quote }}
             - name: RUST_LOG
               value: {{ .Values.orchestrator.rustLog | quote }}
+            {{- if .Values.infra.telemetry.otlpUrl }}
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ .Values.infra.telemetry.otlpUrl | quote }}
+            {{- end }}
             {{- range $name, $value := .Values.orchestrator.env }}
             - name: {{ $name }}
               value: {{ $value | quote }}
             {{- end }}
-            {{- if .Values.infra.otlp.url }}
-            # Spans exported here become Prometheus series via the
-            # collector's spanmetrics pipeline; unset, telemetry degrades
-            # to plain structured logs.
-            - name: OTEL_EXPORTER_OTLP_ENDPOINT
-              value: {{ .Values.infra.otlp.url | quote }}
-            {{- end }}
+          volumeMounts:
+            - name: catalog
+              mountPath: /etc/routers/catalog.toml
+              subPath: catalog.toml
+              readOnly: true
           resources:
             {{- toYaml .Values.orchestrator.resources | nindent 12 }}
+      volumes:
+        - name: catalog
+          configMap:
+            name: {{ .Release.Name }}-catalog

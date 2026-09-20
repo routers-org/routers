@@ -3,7 +3,7 @@ use core::fmt;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-/// Index of a layer in a [`Trellis`].
+/// Index of a layer in a [`Trellis`](crate::Trellis).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct LayerId(pub u32);
