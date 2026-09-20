@@ -1,43 +1,10 @@
-//! Orchestrator: the partition worker loop (spec §3, §8, §9).
+//! Orchestrator: the single-task partition worker loop.
 //!
-//! Everything the other ten orchestrator modules do — read raw, schedule,
-//! admit, dispatch, validate results, commit, track the frontier, arm and fire
-//! deadlines, recover — is *state and pure logic*. This module is the single
-//! task that owns that state for one partition and drives those pieces over the
-//! [`bus::adapter`](crate::bus::adapter) traits and the
-//! [`CheckpointStore`]. It holds the partition's [`Scheduler`] (its
-//! `HashMap<VehicleId, VehicleState>`), its [`FrontierTracker`], and its
-//! [`Deadlines`] heap, and `select!`s over four inputs — raw deliveries, result
-//! deliveries, deadline ticks, and a periodic housekeeping tick — plus the
-//! shutdown signal. There is no cross-partition sharing: one worker, one
-//! partition, one task.
-//!
-//! # Ordering guarantees
-//!
-//! * **One active job per vehicle.** The scheduler enforces a single logical
-//!   [`ActiveJob`](crate::orchestrator::scheduler::ActiveJob) per vehicle; the
-//!   worker never dispatches a second while one is in flight.
-//! * **Per-vehicle FIFO.** A vehicle's observations are solved in the raw
-//!   sequence order the reader queued them; the head is not popped until its
-//!   commit (or terminal) is durable.
-//! * **Sequential commits within the partition.** Commits run *inline* on this
-//!   one task, so they never overlap. The deadline path and the result path both
-//!   funnel through [`PartitionWorker::commit_decision`]; the scheduler's
-//!   `committing` flag plus the store's [`PrepareOutcome::Busy`](crate::store::checkpoint::PrepareOutcome::Busy)
-//!   arbitration make the first to prepare win, so a real result always beats a
-//!   later timeout for the same observation. (A future refinement could overlap
-//!   commits *across* vehicles with a `JoinSet`; because the bus adapter futures
-//!   are deliberately not `Send`, that is left as a follow-up and not built
-//!   here.)
-//!
-//! # A note on the adapter seam
-//!
-//! `bus::adapter` futures are not `Send`, so the worker keeps every source,
-//! publisher, and ack on this single task — it never spawns them. The raw plane
-//! arrives as undecoded [`RawBytes`] alongside the delivery's `HeaderMap`, so
-//! the schema header travels with each raw message: the worker hands those
-//! headers to the reader, which poisons a stamped `x-routers-schema` mismatch
-//! and treats an empty map as "no schema stamped".
+//! One worker owns one partition's state and `select!`s over raw deliveries,
+//! result deliveries, deadline ticks, and a housekeeping tick. Invariants: one
+//! active job per vehicle, per-vehicle FIFO on the raw sequence, and commits run
+//! inline on this task so they never overlap. The `bus::adapter` futures are not
+//! `Send`, so every source, publisher, and ack stays on this one task.
 
 use alloc::collections::VecDeque;
 use alloc::sync::Arc;
@@ -73,11 +40,6 @@ use crate::region::resolver::{Pin, Resolver};
 use crate::store::checkpoint::{CheckpointStore, PartitionFrontier, VehicleCheckpoint};
 
 /// Static configuration for a [`PartitionWorker`].
-///
-/// The nested configs are handed to the modules the worker composes; the four
-/// [`Duration`] knobs pace the loop itself. `dispatch` and `commit` mirror the
-/// configs the already-built [`Dispatcher`]/[`Committer`] were constructed with,
-/// so a caller that wants the whole worker described by one value has it.
 #[derive(Clone, Debug)]
 pub struct WorkerConfig {
     /// The partition this worker owns.
@@ -124,7 +86,7 @@ impl WorkerConfig {
 }
 
 /// A running tally of what a worker has processed, for the caller's exit log and
-/// the metrics layer. Every counter is a bounded, label-free number.
+/// the metrics layer.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct WorkerStats {
     /// Raw deliveries seen.
@@ -149,9 +111,7 @@ pub struct WorkerStats {
     pub rejected: u64,
     /// Same-identity results quarantined out of the commit path.
     pub quarantined: u64,
-    /// Vehicles retired to the quarantine set after a permanent commit fault
-    /// (an encode/decode error that would spin on retry); never dispatched
-    /// again this process lifetime.
+    /// Vehicles retired to the quarantine set after a permanent commit fault.
     pub quarantined_vehicles: u64,
     /// Commits made durable (matched or terminal alike).
     pub committed: u64,
@@ -165,9 +125,7 @@ pub struct WorkerStats {
     pub frontier: u64,
 }
 
-/// The per-vehicle provenance the worker keeps for the job currently in flight,
-/// so a commit (real result or deadline terminal) has the region/graph/segment
-/// and compare-and-swap base it needs without re-resolving or re-deriving them.
+/// The per-vehicle provenance the worker keeps for the job currently in flight.
 #[derive(Clone)]
 struct ActiveMeta {
     /// The reset the commit must emit first, if continuity broke.
@@ -184,24 +142,15 @@ struct ActiveMeta {
 
 /// A reset a restore reported, held until the first commit after the worker
 /// re-acquires the vehicle applies it.
-///
-/// It carries the stored revision alongside the reason so a `Reset { StateLost }`
-/// commit compare-and-swaps against the *stale* checkpoint the store still holds
-/// (the vehicle resumes with `base: None`, but the store is not empty). Without
-/// this the prepare would see a `Conflict` and the vehicle would loop.
 #[derive(Clone, Copy)]
 struct PendingReset {
-    /// Why continuity was broken (only ever [`ResetReason::StateLost`] today —
-    /// gap/teleport resets are detected at dispatch with a live checkpoint).
+    /// Why continuity was broken.
     reason: ResetReason,
-    /// The revision the reset's commit must compare-and-swap against, or `None`
-    /// when the store held nothing.
+    /// The revision the reset's commit must compare-and-swap against, or `None`.
     prior: Option<Revision>,
 }
 
-/// The worker's own owned projection of [`Verdict`], taken so the immutable
-/// borrow of the vehicle state ends before the worker mutates itself to act on
-/// the decision (commit / park / ack / retain).
+/// The worker's own owned projection of [`Verdict`].
 enum ResultVerdict {
     /// Commit this result as the answer to the active job.
     Accept,
@@ -214,9 +163,6 @@ enum ResultVerdict {
 }
 
 impl From<Verdict<'_>> for ResultVerdict {
-    /// Drop the borrow the pure validator returns, keeping only the class the
-    /// worker acts on. The `Accept` job reference is not needed here — the worker
-    /// commits from its own [`ActiveMeta`] provenance, not the borrowed job.
     fn from(verdict: Verdict<'_>) -> Self {
         match verdict {
             Verdict::Accept { .. } => ResultVerdict::Accept,
@@ -239,12 +185,6 @@ enum DispatchOutcome {
 }
 
 /// The single-task partition worker.
-///
-/// Generic over the network entry type `E`, the [`CheckpointStore`] `S`, the two
-/// publishers (`JP` for jobs, `OP` for committed output), and the two sources
-/// (`RS` for the raw plane as [`RawBytes`], `XS` for results). Production wires
-/// JetStream and Valkey; tests (and T31's harness) drive the memory bus and
-/// store.
 pub struct PartitionWorker<E, S, JP, OP, RS, XS>
 where
     E: Entry,
@@ -263,23 +203,15 @@ where
     scheduler: Scheduler<E, RS::Handle>,
     tracker: FrontierTracker,
     deadlines: Deadlines,
-    /// Vehicles whose commit is stuck (a store `Busy`/`Conflict`, a publish
-    /// fault, or a recovery-time prepared commit that could not finish) mapped
-    /// to the next instant to retry them.
+    /// Vehicles whose commit is stuck, mapped to the next retry instant.
     blocked: HashMap<VehicleId, Instant>,
-    /// Vehicles whose last dispatch was admission-held, keeping a [`Waiting`]
-    /// demand guard alive until they dispatch. (The scheduler has no field to
-    /// park this on, so the worker owns it — see the module report.)
+    /// Admission-held vehicles retaining a [`Waiting`] guard until dispatch.
     held: HashMap<VehicleId, Waiting>,
     /// Per-vehicle provenance for the job currently in flight.
     active_meta: HashMap<VehicleId, ActiveMeta>,
-    /// A pending `Reset { StateLost }` a restore reported, applied to the first
-    /// commit after re-acquiring the vehicle, with the stale revision its commit
-    /// must compare-and-swap against.
+    /// A pending `Reset { StateLost }`, applied on the next commit.
     pending_reset: HashMap<VehicleId, PendingReset>,
-    /// Vehicles retired after a permanent commit fault (an encode/decode error a
-    /// retry would only reproduce): never restored, dispatched, or retried again
-    /// this process lifetime. Bounded by the number of distinct poison commits.
+    /// Vehicles retired after a permanent commit fault.
     quarantined: HashSet<VehicleId>,
     shutdown: Shutdown,
     drain: Drain,
@@ -298,12 +230,8 @@ where
 {
     /// Build a worker for a partition the caller has *already recovered*.
     ///
-    /// The caller (T35 / the harness) has run
-    /// [`recover_partition`](crate::orchestrator::recovery::recover_partition)
-    /// and created `raw` starting at `report.frontier + 1`. The worker seeds its
-    /// [`FrontierTracker`] from `report.frontier` and marks
-    /// `report.prepared_failed` as blocked so those vehicles never dispatch a new
-    /// revision until their surviving prepared commit is finished.
+    /// The caller must create `raw` starting at `report.frontier + 1`; the worker
+    /// seeds its frontier from `report.frontier` and blocks `report.prepared_failed`.
     #[allow(clippy::too_many_arguments)]
     #[must_use]
     pub fn new(
@@ -358,12 +286,6 @@ where
     }
 
     /// Run the partition until shutdown, returning the run's [`WorkerStats`].
-    ///
-    /// One biased `select!` loop: shutdown wins, then a raw delivery, then a
-    /// result delivery, then the soonest armed deadline, then the housekeeping
-    /// tick. On shutdown it stops consuming, quiesces any in-flight commit
-    /// (immediate, since commits run inline), persists the frontier once more,
-    /// and returns. Prepared-but-unpublished records are left for recovery.
     pub async fn run(mut self) -> anyhow::Result<WorkerStats> {
         let mut tick = interval(self.cfg.tick);
         tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
@@ -391,8 +313,7 @@ where
             }
         }
 
-        // Commits run inline, so nothing is truly outstanding; the quiesce is a
-        // formality that returns immediately.
+        // Commits run inline, so the quiesce returns immediately.
         let _ = self.drain.quiesce(self.cfg.grace).await;
         let _ = self
             .store
@@ -436,8 +357,7 @@ where
                 }
                 let seq = handle.sequence();
                 let _ = handle.ack().await;
-                // A coalesced duplicate is not terminal: the in-flight original
-                // owns its sequence's completion.
+                // A coalesced duplicate is not terminal; the original owns its completion.
                 if reason != SuppressReason::Coalesced {
                     self.tracker.complete(seq);
                 }
@@ -462,8 +382,6 @@ where
             ResultVerdict::Accept => {
                 self.stats.accepted += 1;
                 let Some(meta) = self.active_meta.get(&vehicle).cloned() else {
-                    // No provenance for an accepted result should be impossible;
-                    // drop defensively rather than commit with a guessed base.
                     if let Some(handle) = handle {
                         let _ = handle.ack().await;
                     }
@@ -531,9 +449,6 @@ where
     async fn on_deadlines(&mut self) {
         let now = Instant::now();
         for (vehicle, job) in self.deadlines.pop_expired(now) {
-            // Reuse the pure deadline arbitration over the real vehicle state, so
-            // the `committing` flag it reads is the scheduler's own — an untracked
-            // vehicle has no live job to terminate, so its timer is ignored.
             let expiry = self
                 .scheduler
                 .state(vehicle)
@@ -595,30 +510,24 @@ where
 
     /// Acquire, resolve, and dispatch one vehicle's head observation.
     async fn try_dispatch(&mut self, vehicle: VehicleId) -> DispatchOutcome {
-        // A quarantined vehicle carries a poison commit that a retry only
-        // reproduces; it never dispatches again this process lifetime.
         if self.quarantined.contains(&vehicle) {
             return DispatchOutcome::Skipped;
         }
         if self.blocked.contains_key(&vehicle) {
             return DispatchOutcome::Skipped;
         }
-        // Eligible = has a head and no active job (a committing vehicle always
-        // has an active job, so this also excludes it).
+        // Eligible = has a head and no active job.
         if self.scheduler.active(vehicle).is_some() || self.scheduler.head(vehicle).is_none() {
             return DispatchOutcome::Skipped;
         }
 
         let now = Instant::now();
 
-        // Lazily restore the vehicle on its first touch after acquiring the
-        // partition (one store read per acquisition).
         if !self.scheduler.checkpoint(vehicle).is_loaded() {
             match restore_vehicle(&self.store, vehicle, self.cfg.partition, &self.committer).await {
                 Ok(restored) => {
                     if let Some(reason) = restored.reset {
-                        // Carry the stored revision so the reset's commit CASes
-                        // against the stale checkpoint the store still holds.
+                        // Carry the stored revision so the reset's commit CASes against the stale checkpoint.
                         self.pending_reset.insert(
                             vehicle,
                             PendingReset {
@@ -630,9 +539,6 @@ where
                     self.scheduler.set_checkpoint(vehicle, restored.checkpoint);
                 }
                 Err(error) => {
-                    // A surviving prepared commit could not finish, or a store
-                    // read failed: block and retry rather than dispatch over
-                    // unresolved state.
                     warn!(vehicle = vehicle.0, %error, "restore failed; blocking vehicle");
                     self.blocked.insert(vehicle, now + self.cfg.blocked_retry);
                     return DispatchOutcome::Skipped;
@@ -685,11 +591,7 @@ where
             Ok(d) => {
                 let pending = self.pending_reset.remove(&vehicle);
                 let reset = d.reset.or(pending.map(|p| p.reason));
-                // Prefer the job's own base (a normal resume); fall back to the
-                // restore's stored `prior` so a state-lost reset's commit CASes
-                // against the stale revision instead of `None` (which would
-                // Conflict and loop). A gap/teleport reset already carries the
-                // live checkpoint's base, so the fallback only bites on state loss.
+                // Fall back to the restore's stored `prior` so a state-lost reset CASes against the stale revision, not `None`.
                 let expected_base = d
                     .job
                     .identity
@@ -709,7 +611,6 @@ where
                     },
                 );
                 if self.scheduler.activate(vehicle, d.job).is_err() {
-                    // The eligibility check above rules this out; guard anyway.
                     self.active_meta.remove(&vehicle);
                     return DispatchOutcome::Skipped;
                 }
@@ -731,9 +632,6 @@ where
                 DispatchOutcome::Held
             }
             Err(error) => {
-                // A publish/encode/unknown-region fault: leave the vehicle state
-                // untouched (the identical job re-dispatches later) and stop
-                // draining this round.
                 warn!(vehicle = vehicle.0, %error, "dispatch failed; will retry");
                 self.held
                     .insert(vehicle, self.admission.hold(&resolution.region));
@@ -761,8 +659,7 @@ where
             return;
         };
 
-        // Arbitration point: the first to prepare wins. A vehicle already
-        // committing (a prepared commit beat this) drops the attempt.
+        // Arbitration point: the first to prepare wins.
         if self.scheduler.begin_commit(vehicle).is_err() {
             if let Some(handle) = result_handle {
                 let _ = handle.ack().await;
@@ -824,10 +721,7 @@ where
                 self.stats.frontier = self.tracker.frontier();
             }
             Err(CommitError::Conflict { actual }) => {
-                // A concurrent decision won the race. Reload the checkpoint and
-                // block the vehicle; the tick retry drains it (the committing
-                // flag can only be cleared by finishing, so recovery — not an
-                // in-line re-dispatch — resolves it).
+                // A concurrent decision won the race; reload and block for the tick retry.
                 self.stats.conflicts += 1;
                 warn!(
                     vehicle = vehicle.0,
@@ -842,13 +736,9 @@ where
                 self.blocked.insert(vehicle, now + self.cfg.blocked_retry);
             }
             Err(error) if is_permanent_commit_error(&error) => {
-                // An encode/decode fault is deterministic: retrying only
-                // reproduces it. Quarantine the vehicle rather than spin.
                 self.quarantine_vehicle(vehicle, &error);
             }
             Err(error) => {
-                // Busy (a prepared commit exists) or a publish/store fault: the
-                // prepared record survives. Block and retry `finish_prepared`.
                 warn!(vehicle = vehicle.0, %error, "commit incomplete; blocking vehicle");
                 self.blocked.insert(vehicle, now + self.cfg.blocked_retry);
             }
@@ -857,12 +747,7 @@ where
 
     /// Retire a vehicle whose commit failed with a permanent encode/decode fault.
     ///
-    /// Such a fault is deterministic — the same prepared bytes will not decode,
-    /// the same output will not encode — so blocked-retry would loop forever. The
-    /// vehicle is logged at error, dropped from the blocked and pending sets, and
-    /// added to the quarantine set so it is never dispatched or retried again
-    /// this process lifetime. Its head observation is left un-acked: the worker
-    /// cannot make it durable, and advancing the frontier past it would lose it.
+    /// The head observation is left un-acked, so the frontier never advances past it.
     fn quarantine_vehicle(&mut self, vehicle: VehicleId, error: &CommitError<S::Error>) {
         error!(
             vehicle = vehicle.0,
@@ -879,20 +764,8 @@ where
 
     /// Commit an `UnsupportedCoverage` terminal for a vehicle no region serves.
     ///
-    /// There is no job to dispatch, but the scheduler can only advance past a
-    /// head through a live [`ActiveJob`], so the worker reserves a zero-byte
-    /// permit and activates a synthetic job first, then commits the terminal
-    /// through the ordinary path.
-    ///
-    /// An unserved point resolves to no region, so the synthetic job has none of
-    /// its own to bill. A vehicle with a committed checkpoint is billed to that
-    /// checkpoint's region (keeping its provenance coherent); a fresh, unserved
-    /// vehicle has no region at all and falls back to the **first catalog region**
-    /// as a documented, arbitrary billing choice (the zero-byte permit is a
-    /// bookkeeping placeholder, never a real solve). Either way the permit is
-    /// released on every path: an early return before `try_admit` reserves
-    /// nothing, an `activate` failure drops the job (and with it the permit), and
-    /// a successful commit releases it when the finished job is dropped.
+    /// A synthetic zero-byte permit and job stand in so the scheduler can advance
+    /// past the head; the permit is released on every exit path.
     async fn commit_unserved(
         &mut self,
         vehicle: VehicleId,
@@ -935,12 +808,7 @@ where
             region: region.clone(),
         };
         let job_id = identity.job_id();
-        // When the checkpoint is absent because the vehicle was state-lost, the
-        // store still holds the stale revision a restore reported. Fall the
-        // expected base back to that `prior` (mirroring `try_dispatch`) so the
-        // terminal's CAS targets the stale revision and actually lands, instead
-        // of `None` — which would `Conflict` and leave the vehicle blocked with
-        // the `UnsupportedCoverage` terminal silently dropped.
+        // Fall back to the stored `prior` so a state-lost terminal CASes against the stale revision, not `None`.
         let expected_base = base
             .map(|b| b.revision)
             .or_else(|| self.pending_reset.get(&vehicle).and_then(|p| p.prior));
@@ -967,9 +835,6 @@ where
             self.active_meta.remove(&vehicle);
             return;
         }
-        // Consume the state-lost reset: its `prior` has now been folded into the
-        // terminal's CAS above, so leaving it would mis-target a later commit
-        // against a revision this terminal is about to supersede.
         self.pending_reset.remove(&vehicle);
 
         debug!(vehicle = vehicle.0, %cell, "committing unsupported-coverage terminal");
@@ -1012,8 +877,6 @@ where
                     {
                         Ok(_) => self.resolve_blocked(vehicle, now).await,
                         Err(error) if is_permanent_commit_error(&error) => {
-                            // The prepared bytes will never decode: quarantine
-                            // rather than retry the same poison record forever.
                             self.quarantine_vehicle(vehicle, &error);
                         }
                         Err(error) => {
@@ -1022,9 +885,6 @@ where
                         }
                     }
                 }
-                // No prepared record: either a conflict staged nothing, or the
-                // commit was already promoted. Advance past the head so the
-                // vehicle stops stalling.
                 None => self.resolve_blocked(vehicle, now).await,
             }
         }
@@ -1065,14 +925,8 @@ where
     }
 
     /// Classify one result by reusing the pure
-    /// [`validate::validate`](crate::orchestrator::validate::validate) over the
-    /// vehicle's real state, then project its borrow-carrying [`Verdict`] into the
-    /// worker's owned [`ResultVerdict`] so the borrow ends before the worker acts.
-    ///
-    /// The `committing` flag the validator reads is the scheduler's own, not a
-    /// proxy through the blocked set. An untracked vehicle has no state yet, so it
-    /// is validated against a detached empty state: the envelope checks still run,
-    /// and a well-formed early result parks (a no-op for an untracked vehicle).
+    /// [`validate::validate`](crate::orchestrator::validate::validate), projecting
+    /// its borrow-carrying [`Verdict`] into the worker's owned [`ResultVerdict`].
     fn result_verdict(
         &self,
         vehicle: VehicleId,
@@ -1089,16 +943,12 @@ where
     }
 }
 
-/// Whether a commit failed permanently — an encode or decode fault a retry would
-/// only reproduce. Such a vehicle is quarantined rather than blocked-retried.
+/// Whether a commit failed permanently — an encode or decode fault a retry would only reproduce.
 fn is_permanent_commit_error<SE>(error: &CommitError<SE>) -> bool {
     matches!(error, CommitError::Decode(_) | CommitError::Encode(_))
 }
 
-/// A detached, empty [`VehicleState`] used to validate a result for a vehicle the
-/// scheduler is not yet tracking (a redelivery that outran raw replay). It has no
-/// checkpoint, job, or commit in flight, so validation runs only the envelope
-/// checks and then parks — exactly what an untracked vehicle warrants.
+/// A detached, empty [`VehicleState`] for validating a result for an untracked vehicle.
 fn detached_state<E: Entry, H: AckHandle>(now: Instant) -> VehicleState<E, H> {
     VehicleState {
         checkpoint: CheckpointState::Unloaded,
@@ -1110,8 +960,7 @@ fn detached_state<E: Entry, H: AckHandle>(now: Instant) -> VehicleState<E, H> {
     }
 }
 
-/// The `(reset, segment)` a decision carries, read without consuming it so the
-/// worker can assert the segment invariant before [`commit::plan`] takes it.
+/// The `(reset, segment)` a decision carries, read without consuming it.
 fn decision_reset_segment<E: Entry>(decision: &Decision<E>) -> (Option<ResetReason>, SegmentId) {
     match decision {
         Decision::Solved { reset, segment, .. } => (*reset, *segment),
@@ -1124,8 +973,7 @@ fn decision_reset_segment<E: Entry>(decision: &Decision<E>) -> (Option<ResetReas
     }
 }
 
-/// Sleep until `at`, or forever when no deadline is armed — the `select!` arm's
-/// timer that only wakes the loop exactly when the next deadline is due.
+/// Sleep until `at`, or forever when no deadline is armed.
 async fn wait_deadline(at: Option<Instant>) {
     match at {
         Some(at) => sleep_until(at).await,
@@ -1133,8 +981,7 @@ async fn wait_deadline(at: Option<Instant>) {
     }
 }
 
-/// The current wall clock as absolute unix microseconds (the units the wire and
-/// matcher deadline against), saturating rather than wrapping.
+/// The current wall clock as absolute unix microseconds, saturating rather than wrapping.
 fn unix_micros() -> i64 {
     crate::bus::wallclock()
         .duration_since(UNIX_EPOCH)
@@ -1178,8 +1025,7 @@ mod tests {
         Point::new(151.2093, -33.8688)
     }
 
-    /// A one-region catalog serving the fixture cell, with a tunable freshness
-    /// budget so the deadline test can make jobs expire quickly.
+    /// A one-region catalog serving the fixture cell, with a tunable freshness budget.
     fn catalog(budget_ms: u64) -> Catalog {
         let cell = shard_of(point()).to_string();
         let toml = format!(
@@ -1211,7 +1057,6 @@ freshness_budget_ms = {budget_ms}
         }
     }
 
-    /// An admission controller knowing exactly the catalog's regions.
     fn admission_for(catalog: &Catalog) -> Admission {
         Admission::new(
             AdmissionConfig::default(),
@@ -1219,7 +1064,6 @@ freshness_budget_ms = {budget_ms}
         )
     }
 
-    /// A recovery report for a clean partition (no frontier, nothing prepared).
     fn clean_report(partition: u16) -> RecoveryReport {
         RecoveryReport {
             partition,
@@ -1242,8 +1086,6 @@ freshness_budget_ms = {budget_ms}
         build_worker_with(cfg, catalog, bus, store, admission, &report, shutdown)
     }
 
-    /// Build a worker with a caller-supplied admission controller and recovery
-    /// report, so tests can inspect admission usage or seed a blocked set.
     #[allow(clippy::too_many_arguments)]
     fn build_worker_with(
         cfg: WorkerConfig,
@@ -1279,12 +1121,10 @@ freshness_budget_ms = {budget_ms}
         )
     }
 
-    /// The partition the fixture vehicle hashes to.
     fn partition_for(vehicle: u64) -> u16 {
         partition_of(VehicleId(vehicle)) as u16
     }
 
-    /// A second vehicle id that lands in the same partition as `vehicle`.
     fn same_partition_as(vehicle: u64) -> u64 {
         let want = partition_for(vehicle);
         (vehicle + 1..)
@@ -1292,7 +1132,6 @@ freshness_budget_ms = {budget_ms}
             .expect("another vehicle in the partition")
     }
 
-    /// Publish one raw observation, returning its assigned stream sequence.
     async fn publish_raw(bus: &MemoryBus, partition: u16, vehicle: u64, ts_us: i64) -> u64 {
         let payload = Payload {
             vehicle_id: VehicleId(vehicle),
@@ -1316,8 +1155,7 @@ freshness_budget_ms = {budget_ms}
         }
     }
 
-    /// A scripted matcher: every job gets a `Solved` result with an empty diff
-    /// (enough to drive a real commit without a network), acked and published.
+    /// A scripted matcher: every job gets a `Solved` result with an empty diff.
     async fn run_matcher(bus: MemoryBus, shutdown: Shutdown) {
         let mut jobs = bus.source::<SolveJob<E>>("solve.v1.g.>");
         let publisher = bus.publisher::<SolveResult<E>>();
@@ -1350,7 +1188,6 @@ freshness_budget_ms = {budget_ms}
         }
     }
 
-    /// Poll `cond` until it holds (or panic), advancing paused time by parking.
     async fn wait_until(cond: impl Fn() -> bool) {
         for _ in 0..2000 {
             if cond() {
@@ -1369,7 +1206,7 @@ freshness_budget_ms = {budget_ms}
         let store = MemoryCheckpointStore::new();
         let shutdown = Shutdown::new();
 
-        // Three observations, published first so their sequences are 1, 2, 3.
+        // Published first so their sequences are 1, 2, 3.
         let mut seqs = Vec::new();
         for i in 0..3 {
             seqs.push(
@@ -1419,7 +1256,6 @@ freshness_budget_ms = {budget_ms}
         );
         assert_eq!(bus.published(&out_subject).len(), 3, "three outputs");
 
-        // Checkpoint revision is the last raw sequence, and every raw was acked.
         let (checkpoint, prepared) = store.load(VehicleId(vehicle)).await.unwrap();
         assert_eq!(checkpoint.unwrap().revision, Revision(last_seq));
         assert!(
@@ -1440,7 +1276,6 @@ freshness_budget_ms = {budget_ms}
         let store = MemoryCheckpointStore::new();
         let shutdown = Shutdown::new();
 
-        // Interleave the two vehicles' observations on the shared partition.
         publish_raw(&bus, partition, a, 1_775_000_000_000_000).await;
         publish_raw(&bus, partition, b, 1_775_000_000_000_000).await;
         publish_raw(&bus, partition, a, 1_775_000_001_000_000).await;
@@ -1473,7 +1308,6 @@ freshness_budget_ms = {budget_ms}
         let stats = stats.expect("worker ran");
 
         assert_eq!(stats.committed, 4, "both vehicles fully commit");
-        // Each vehicle's checkpoint advanced to its own last observation.
         assert!(store.load(VehicleId(a)).await.unwrap().0.is_some());
         assert!(store.load(VehicleId(b)).await.unwrap().0.is_some());
     }
@@ -1488,8 +1322,7 @@ freshness_budget_ms = {budget_ms}
 
         let seq = publish_raw(&bus, partition, vehicle, 1_775_000_000_000_000).await;
 
-        // No matcher runs, so the job is never answered; a short budget makes it
-        // expire quickly under paused time.
+        // No matcher runs, so the job is never answered; a short budget expires it fast.
         let worker = build_worker(
             config(partition),
             Arc::new(catalog(100)),
@@ -1504,9 +1337,7 @@ freshness_budget_ms = {budget_ms}
             let shutdown = shutdown.clone();
             let out_subject = out_subject.clone();
             async move {
-                // The deadline fires and commits a terminal output.
                 wait_until(|| !bus.published(&out_subject).is_empty()).await;
-                // A real result finally straggles in for the decided observation.
                 let identity = JobIdentity {
                     schema: SCHEMA_VERSION,
                     vehicle_id: VehicleId(vehicle),
@@ -1557,8 +1388,7 @@ freshness_budget_ms = {budget_ms}
 
         publish_raw(&bus, partition, vehicle, 1_775_000_000_000_000).await;
 
-        // No matcher: the observation dispatches and stays in flight, so a
-        // redelivery coalesces against the still-outstanding original.
+        // No matcher: the observation stays in flight, so a redelivery coalesces against the original.
         let worker = build_worker(
             config(partition),
             Arc::new(catalog(30_000)),
@@ -1574,10 +1404,8 @@ freshness_budget_ms = {budget_ms}
             let shutdown = shutdown.clone();
             let raw_sub = raw_sub.clone();
             async move {
-                // Wait for the original to dispatch, then force a redelivery.
                 wait_until(|| !bus.published(job_filter).is_empty()).await;
                 bus.redeliver_unacked(&raw_sub);
-                // The coalesced duplicate is acked (the original stays in flight).
                 wait_until(|| bus.acked_count(&raw_sub) >= 1).await;
                 shutdown.trigger(crate::lifecycle::DrainReason::Operator);
             }
@@ -1629,17 +1457,13 @@ freshness_budget_ms = {budget_ms}
         let stats = stats.expect("worker ran");
 
         assert_eq!(stats.committed, 2);
-        // Every commit promoted; nothing is left staged for recovery.
         assert!(
             store.snapshot().prepared.is_empty(),
             "no prepared records remain"
         );
     }
 
-    /// Install a committed checkpoint whose stored `bytes` are `garbage` at
-    /// revision `rev`, by staging a self-contained prepared record and finishing
-    /// it on a throwaway bus (so its output never lands on the worker's bus). The
-    /// store then holds a `StoredCheckpoint` at `rev` whose bytes will not decode.
+    /// Install a committed checkpoint whose stored `bytes` are `garbage` at revision `rev`.
     async fn seed_checkpoint_bytes(
         store: &MemoryCheckpointStore,
         vehicle: u64,
@@ -1706,9 +1530,7 @@ freshness_budget_ms = {budget_ms}
         let store = MemoryCheckpointStore::new();
         let shutdown = Shutdown::new();
 
-        // The store holds an undecodable checkpoint at revision 5: state was lost,
-        // but a `Reset { StateLost }` committed with `expected_base: None` would
-        // Conflict against that revision and loop. The fix CASes against it.
+        // The store holds an undecodable checkpoint at revision 5 (state lost).
         seed_checkpoint_bytes(&store, vehicle, partition, 5, b"not a checkpoint".to_vec()).await;
 
         publish_raw(&bus, partition, vehicle, 1_775_000_000_000_000).await;
@@ -1727,7 +1549,6 @@ freshness_budget_ms = {budget_ms}
             let shutdown = shutdown.clone();
             let out_subject = out_subject.clone();
             async move {
-                // A reset then a match: two outputs, and no retry loop.
                 wait_until(|| bus.published(&out_subject).len() >= 2).await;
                 shutdown.trigger(crate::lifecycle::DrainReason::Operator);
             }
@@ -1745,7 +1566,6 @@ freshness_budget_ms = {budget_ms}
         assert_eq!(stats.conflicts, 0, "the CAS targeted the stale revision");
         assert_eq!(stats.quarantined_vehicles, 0);
 
-        // The two outputs, in order: a StateLost reset then the match.
         let published = bus.published(&out_subject);
         assert_eq!(published.len(), 2, "a reset then a match");
         let first = CommittedOutput::<E>::decode(&published[0].2).unwrap();
@@ -1759,8 +1579,6 @@ freshness_budget_ms = {budget_ms}
             "the match follows the reset"
         );
 
-        // The checkpoint was promoted (no prepared record survives) and the raw
-        // input was acked, so the vehicle made real progress rather than spinning.
         let (checkpoint, prepared) = store.load(VehicleId(vehicle)).await.unwrap();
         assert!(checkpoint.is_some(), "a fresh checkpoint was promoted");
         assert!(prepared.is_none(), "nothing is left staged");
@@ -1775,7 +1593,7 @@ freshness_budget_ms = {budget_ms}
         let store = MemoryCheckpointStore::new();
         let shutdown = Shutdown::new();
 
-        // Plant a prepared record whose staged output bytes will never decode.
+        // The staged output bytes will never decode.
         let prepared = PreparedCommit {
             output: OutputId(1),
             output_subject: output_subject(u64::from(partition)),
@@ -1795,8 +1613,7 @@ freshness_budget_ms = {budget_ms}
             .await
             .unwrap();
 
-        // Start with the vehicle blocked (recovery could not finish its commit),
-        // so the housekeeping tick drives `finish_prepared` and hits the decode.
+        // Start blocked, so the housekeeping tick drives `finish_prepared` and hits the decode.
         let admission = admission_for(&catalog(30_000));
         let report = RecoveryReport {
             partition,
@@ -1818,8 +1635,6 @@ freshness_budget_ms = {budget_ms}
         let driver = {
             let shutdown = shutdown.clone();
             async move {
-                // Let several housekeeping ticks fire; a spinning retry would keep
-                // re-blocking, a quarantine fires exactly once.
                 tokio::time::sleep(Duration::from_millis(200)).await;
                 shutdown.trigger(crate::lifecycle::DrainReason::Operator);
             }
@@ -1833,19 +1648,14 @@ freshness_budget_ms = {budget_ms}
             "the poison vehicle was quarantined exactly once"
         );
         assert_eq!(stats.committed, 0, "nothing could be committed");
-        // The poison record is retained (the worker stopped retrying it rather
-        // than deleting or spinning on it).
         assert!(
             store.snapshot().prepared.contains_key(&VehicleId(vehicle)),
             "the undecodable record is left in place"
         );
     }
 
-    /// A one-region catalog that serves a cell far from `point()`, so `point()`
-    /// resolves to no region (an unserved coverage hole).
+    /// A one-region catalog that serves a cell far from `point()`, so `point()` resolves to no region.
     fn unserved_catalog() -> Catalog {
-        // The precision-4 cell of the null island — a valid geohash nowhere near
-        // Sydney, so `point()` never matches this coverage.
         let elsewhere = shard_of(Point::new(0.0, 0.0)).to_string();
         assert_ne!(elsewhere, shard_of(point()).to_string());
         let toml = format!(
@@ -1879,7 +1689,6 @@ freshness_budget_ms = 30000
 
         let catalog = Arc::new(unserved_catalog());
         let admission = admission_for(&catalog);
-        // A clone to inspect the controller after the worker has consumed its own.
         let admission_probe = admission.clone();
         let report = clean_report(partition);
         let worker = build_worker_with(
@@ -1898,8 +1707,6 @@ freshness_budget_ms = 30000
             let shutdown = shutdown.clone();
             let out_subject = out_subject.clone();
             async move {
-                // No matcher runs: the terminal flows straight through the commit
-                // path from the unserved resolution.
                 wait_until(|| !bus.published(&out_subject).is_empty()).await;
                 shutdown.trigger(crate::lifecycle::DrainReason::Operator);
             }
@@ -1912,7 +1719,6 @@ freshness_budget_ms = 30000
         assert_eq!(stats.committed, 1);
         assert_eq!(stats.dispatched, 0, "no real job was dispatched");
 
-        // Exactly one Terminal output, tagged UnsupportedCoverage.
         let published = bus.published(&out_subject);
         assert_eq!(published.len(), 1);
         let output = CommittedOutput::<E>::decode(&published[0].2).unwrap();
@@ -1923,8 +1729,6 @@ freshness_budget_ms = 30000
             other => panic!("expected a Terminal output, got {}", other.kind()),
         }
 
-        // The synthetic zero-byte permit was released on the commit path: no
-        // credit leaked in the billed region or globally.
         assert_eq!(admission_probe.global().jobs, 0, "no job credit leaked");
         assert!(
             admission_probe.snapshot().iter().all(|r| r.jobs == 0),
@@ -1940,12 +1744,7 @@ freshness_budget_ms = 30000
         let store = MemoryCheckpointStore::new();
         let shutdown = Shutdown::new();
 
-        // The store holds an undecodable checkpoint at revision 7 (state lost),
-        // and the vehicle's first observation resolves to an unserved cell. The
-        // unserved terminal is committed with `expected_base: None` unless it
-        // folds in the stale revision — so before the fix it would `Conflict`
-        // against revision 7 and the `UnsupportedCoverage` terminal would be
-        // silently dropped while the vehicle looped under blocked-retry.
+        // The store holds an undecodable checkpoint at revision 7 (state lost), and the point is unserved.
         seed_checkpoint_bytes(&store, vehicle, partition, 7, b"not a checkpoint".to_vec()).await;
 
         publish_raw(&bus, partition, vehicle, 1_775_000_000_000_000).await;
@@ -1970,8 +1769,6 @@ freshness_budget_ms = 30000
             let shutdown = shutdown.clone();
             let out_subject = out_subject.clone();
             async move {
-                // No matcher runs: the terminal flows straight through the commit
-                // path from the unserved resolution.
                 wait_until(|| !bus.published(&out_subject).is_empty()).await;
                 shutdown.trigger(crate::lifecycle::DrainReason::Operator);
             }
@@ -1985,8 +1782,6 @@ freshness_budget_ms = 30000
         assert_eq!(stats.conflicts, 0, "the CAS targeted the stale revision");
         assert_eq!(stats.quarantined_vehicles, 0);
 
-        // Exactly one Terminal output, tagged UnsupportedCoverage — no Conflict
-        // swallowed it.
         let published = bus.published(&out_subject);
         assert_eq!(published.len(), 1, "exactly one terminal output");
         let output = CommittedOutput::<E>::decode(&published[0].2).unwrap();
@@ -1997,8 +1792,6 @@ freshness_budget_ms = 30000
             other => panic!("expected a Terminal output, got {}", other.kind()),
         }
 
-        // A fresh checkpoint was promoted (no prepared record survives) and the
-        // raw input was acked: real progress rather than a spin.
         let (checkpoint, prepared) = store.load(VehicleId(vehicle)).await.unwrap();
         assert!(checkpoint.is_some(), "a fresh checkpoint was promoted");
         assert!(prepared.is_none(), "nothing is left staged");

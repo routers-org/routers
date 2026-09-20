@@ -1,8 +1,9 @@
 //! Raw journal plane.
 //!
-//! The partition-to-subject and partition-to-stream mappings are wire law and
-//! require a coordinated migration to change. Acks advance consumers without
-//! deleting messages so committed frontiers remain replayable.
+//! Like [`partition`](crate::partition), everything here is wire law: the
+//! partition→subject and partition→stream mappings must not move without a
+//! coordinated migration. Retention is `Limits`, not work-queue: the journal is
+//! the replay source, so an ack advances a consumer without deleting messages.
 
 use core::time::Duration;
 
@@ -87,8 +88,8 @@ pub async fn ensure_raw_stream(
 
 /// The durable consumer owning one partition's raw events.
 ///
-/// `start` is the recovery seam: `None` binds the existing durable and
-/// `Some(seq)` recreates it from that sequence.
+/// `start` is the recovery seam: `None` binds the durable at its existing
+/// position, `Some(seq)` recreates it to resume strictly from `seq`.
 pub async fn raw_consumer(
     stream: &jetstream::stream::Stream,
     partition: u64,
@@ -128,11 +129,7 @@ pub async fn raw_consumer(
         .await
         .with_context(|| format!("could not create consumer for partition {partition}"))?;
 
-    // `get_or_create_consumer` binds an *existing* durable as-is: if a stale
-    // consumer survived with a different deliver policy (a durable's policy is
-    // immutable, so it cannot be updated in place), recovery would resume from
-    // the wrong sequence. Confirm the broker's view matches what we asked for
-    // and refuse to run the partition otherwise.
+    // A stale durable's immutable deliver policy would replay from the wrong point; refuse it.
     let actual = consumer
         .info()
         .await
@@ -148,9 +145,7 @@ pub async fn raw_consumer(
     Ok(consumer)
 }
 
-/// Whether a [`delete_consumer`](jetstream::stream::Stream::delete_consumer)
-/// error is the benign "consumer not found" case (JetStream error code 10014) —
-/// the fresh-recovery path where there is nothing to delete.
+/// Whether a delete error is the benign "consumer not found" case (JetStream code 10014).
 fn is_consumer_not_found(err: &async_nats::jetstream::stream::ConsumerError) -> bool {
     matches!(
         err.kind(),

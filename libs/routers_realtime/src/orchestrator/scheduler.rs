@@ -382,9 +382,7 @@ impl<E: Entry, H: AckHandle> Scheduler<E, H> {
         Ok(())
     }
 
-    /// The full [`VehicleState`] for a tracked vehicle, or `None` if untracked —
-    /// the borrow the pure result ([`validate`](crate::orchestrator::validate))
-    /// and deadline ([`deadline`](crate::orchestrator::deadline)) validators take.
+    /// The full [`VehicleState`] for a tracked vehicle, or `None` if untracked.
     #[must_use]
     pub fn state(&self, vehicle: VehicleId) -> Option<&VehicleState<E, H>> {
         self.vehicles.get(&vehicle)

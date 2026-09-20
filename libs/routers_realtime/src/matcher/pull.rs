@@ -1,53 +1,11 @@
 //! Matcher capacity-bound pull loop: claim only as much work as there is CPU
-//! and payload budget to answer, solve it, and answer every job. (T27)
+//! budget to answer, solve it, and answer every job.
 //!
-//! A region's matchers share one work-queue consumer (spec §5), so the broker
-//! hands each job to exactly one replica and redelivers an un-acked one to
-//! another. The loop's whole job is to *not over-claim*: solving is CPU-bound
-//! and runs on the blocking pool, so the number of solves in flight is capped
-//! at [`PullConfig::slots`] (one per core) and the loop never fetches more than
-//! the free slots. Claiming a job it cannot start would only park work on this
-//! replica that another idle replica could have taken, and — because a
-//! work-queue job is invisible to peers until it is acked or its `ack_wait`
-//! lapses — needlessly delay the vehicle's answer.
-//!
-//! Every claimed job is answered, never silently dropped (spec §4, §8):
-//!
-//! * bytes that cannot be turned into an answerable job ([`check_bytes`] ⇒
-//!   [`PoisonReason`](super::validate::PoisonReason)) are acknowledged and
-//!   dropped — there is no identity to publish a result against;
-//! * a job that must not be solved ([`check`] ⇒ [`Checked::Refuse`]) has its
-//!   typed [`SolveOutcome`] published as the result, so the owner learns why;
-//! * a solvable job is handed to [`Engine::solve_blocking`] and its outcome
-//!   published.
-//!
-//! Publishing a result and acknowledging its job are sequenced by
-//! [`ResultPublisher::publish_then_ack`] (T26): the job is never acked until the
-//! broker holds the result, and a publish that fails leaves the job for
-//! redelivery. That is what makes a matcher crash safe — an unanswered job is
-//! redelivered within `ack_wait`/`max_deliver` (spec §10) — at the cost of a
-//! duplicate solve, which the result's msg-id deduplicates.
-//!
-//! # Raw bytes before decode
-//!
-//! The size gate must run *before* the postcard decode ([`check_bytes`]), so a
-//! hostile length prefix can never drive an unbounded allocation. But
-//! [`Consumer`] decodes eagerly into its `T`, so the loop consumes an identity
-//! [`RawBytes`] payload — a `Wire` whose "decode" is just "keep the bytes" —
-//! and gates them itself. [`RawBytes`] is public because the orchestrator's
-//! worker (T23) reuses the same trick to read raw observations.
-//!
-//! # Concurrency without threads-crossing
-//!
-//! The bus adapter futures are deliberately not `Send` (see
-//! [`bus::adapter`](crate::bus::adapter)): the loop owns them on one task and
-//! never moves them across threads. Concurrency therefore comes from a
-//! [`FuturesUnordered`] of in-flight job handlers driven on that one task — each
-//! handler offloads its actual solve to [`tokio::task::spawn_blocking`], so the
-//! CPU work still fans out over the pool — rather than from spawning `Send`
-//! tasks onto a runtime. This is the one place this module departs from the
-//! T27 draft's "`JoinSet`" wording, which would force `Send` bounds the adapter
-//! contract forbids.
+//! A region's matchers share one work-queue consumer; the loop never fetches
+//! more than its free [`PullConfig::slots`] so it does not park work a peer
+//! could take. Every claimed job is answered, never silently dropped, and
+//! [`ResultPublisher::publish_then_ack`] never acks a job until the broker holds
+//! the result, so an unanswered job is redelivered (its msg-id dedups the retry).
 
 use alloc::sync::Arc;
 use core::time::Duration;
@@ -68,13 +26,9 @@ use crate::matcher::validate::{Checked, ValidateConfig, check, check_bytes};
 use crate::protocol::result::SolveResult;
 use crate::region::Region;
 
-/// An identity [`Wire`] payload: the message bytes, carried through the
+/// An identity [`Wire`] payload: the message bytes carried through the
 /// eager-decoding [`Consumer`] untouched so the pull loop can size-gate them
-/// *before* the real decode (see the module docs).
-///
-/// Public so the orchestrator worker (T23) can consume raw observations the
-/// same way. `encode`/`decode` are the identity map — no framing is added, so a
-/// `RawBytes` round-trips a producer's exact bytes.
+/// before the real decode. `encode`/`decode` are the identity map.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RawBytes(pub Vec<u8>);
 
@@ -91,20 +45,18 @@ impl Wire for RawBytes {
 /// How the pull loop bounds and paces the work it claims.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PullConfig {
-    /// The most solves allowed in flight at once — one per core, since a solve
-    /// is CPU-bound. Also the ceiling on how many jobs are ever claimed but
-    /// unanswered on this replica.
+    /// The most solves in flight at once — one per core. Also the ceiling on
+    /// jobs claimed but unanswered on this replica.
     pub slots: usize,
-    /// How long a fetch waits for a batch to fill before returning what it has
-    /// (possibly nothing). Bounds how long the loop blocks with free capacity.
+    /// How long a fetch waits for a batch to fill before returning what it has.
     pub fetch_wait: Duration,
-    /// The most jobs to claim in a single fetch. Capped at the free slots each
-    /// call regardless; defaults to [`slots`](Self::slots).
+    /// The most jobs to claim in a single fetch; capped at the free slots each
+    /// call. Defaults to [`slots`](Self::slots).
     pub max_batch: usize,
     /// The wire/semantic bounds applied to every job before it is solved.
     pub validate: ValidateConfig,
-    /// How long [`run`](PullLoop::run) waits for in-flight solves to finish on
-    /// shutdown before abandoning them to redelivery.
+    /// How long [`run`](PullLoop::run) waits for in-flight solves on shutdown
+    /// before abandoning them to redelivery.
     pub grace: Duration,
 }
 
@@ -121,11 +73,9 @@ impl Default for PullConfig {
     }
 }
 
-/// What one [`run`](PullLoop::run) processed, for the caller's log line and the
-/// binary's exit accounting. Every fetched delivery lands in exactly one of the
-/// terminal counters (`solved` + `refused` + `poison` + `publish_failures`) once
-/// its handler completes — a handler still in flight when the grace budget
-/// lapses is counted in none of them.
+/// What one [`run`](PullLoop::run) processed. A completed handler lands in
+/// exactly one terminal counter; one still in flight when the grace budget
+/// lapses is counted in none.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PullStats {
     /// Deliveries pulled off the job consumer.
@@ -136,22 +86,18 @@ pub struct PullStats {
     pub refused: u64,
     /// Deliveries whose bytes were unanswerable and were acked and dropped.
     pub poison: u64,
-    /// Handlers whose result could not be published (the job was left for
-    /// redelivery by [`ResultPublisher`]).
+    /// Handlers whose result could not be published.
     pub publish_failures: u64,
-    /// `true` when every in-flight solve finished within the grace budget on
-    /// shutdown; `false` when the budget lapsed with work still running.
+    /// `true` when every in-flight solve finished within the grace budget.
     pub drained: bool,
 }
 
 /// The matcher's capacity-bound pull loop over one region's job consumer.
 ///
-/// Generic over the loaded [`Network`] `N` (so tests use
-/// [`MockNetwork`](routers_network::mock::MockNetwork) and the binary its
-/// sharded graph), the raw-bytes [`Consumer`] `C`, and the result [`Publisher`]
-/// `P`. It is constructed after [`bootstrap`](super::bootstrap) has loaded and
-/// verified the graph and readiness is already [`Ready`](crate::lifecycle::ReadyState::Ready):
-/// [`run`](Self::run) never checks readiness, it only stops on `shutdown`.
+/// Generic over the loaded [`Network`] `N`, the raw-bytes [`Consumer`] `C`, and
+/// the result [`Publisher`] `P`. Constructed after [`bootstrap`](super::bootstrap)
+/// reached [`Ready`](crate::lifecycle::ReadyState::Ready); [`run`](Self::run)
+/// never checks readiness, it only stops on `shutdown`.
 pub struct PullLoop<N: Network, C, P> {
     engine: Arc<Engine<N>>,
     consumer: C,
@@ -166,14 +112,10 @@ pub struct PullLoop<N: Network, C, P> {
 impl<N: Network, C, P> PullLoop<N, C, P> {
     /// Assemble a pull loop from its already-built dependencies.
     ///
-    /// `region` and `cells` are the two pieces of a loaded region the validator
-    /// needs (`loaded.region` and `loaded.cells`); `engine` wraps the same
-    /// loaded network. `shutdown` and `drain` are shared with the rest of the
-    /// binary so a signal stops this loop and its in-flight solves are counted
-    /// in the process-wide drain.
-    // Eight collaborators, each distinct and none sensibly grouped: the loop is
-    // the join point of bootstrap, the bus, and lifecycle, so an explicit
-    // constructor reads clearer than a bespoke parameter struct.
+    /// `region` and `cells` are the validator's two pieces of a loaded region;
+    /// `engine` wraps the same loaded network. `shutdown` and `drain` are shared
+    /// with the rest of the binary.
+    // An explicit constructor reads clearer than a bespoke parameter struct.
     #[allow(clippy::too_many_arguments)]
     #[must_use]
     pub fn new(
@@ -209,13 +151,10 @@ where
 {
     /// Pull, solve, and answer jobs until `shutdown` is triggered.
     ///
-    /// Each turn computes the free slots and, while any exist, fetches up to
-    /// `min(free, max_batch)` jobs and spawns a handler for each into an
-    /// in-flight set; when full, it only drains completions. Fetching and
-    /// completing race on one task, so a result is published the moment its
-    /// solve returns rather than waiting on the next fetch. On shutdown it stops
-    /// fetching and waits up to [`PullConfig::grace`] for the in-flight solves
-    /// to finish, then returns the run's [`PullStats`].
+    /// While free slots exist it fetches up to `min(free, max_batch)` jobs into
+    /// an in-flight set; when full it only drains completions. On shutdown it
+    /// stops fetching, waits up to [`PullConfig::grace`] for in-flight solves,
+    /// then returns the run's [`PullStats`].
     pub async fn run(self) -> PullStats {
         let Self {
             engine,
@@ -228,8 +167,6 @@ where
             drain,
         } = self;
 
-        // Share the read-only validator inputs across every handler without a
-        // per-job clone of the served-cell set.
         let region = Arc::new(region);
         let cells = Arc::new(cells);
 
@@ -239,7 +176,7 @@ where
         while !shutdown.is_triggered() {
             let free = cfg.slots.saturating_sub(in_flight.len());
             if free == 0 {
-                // At capacity: only make room by finishing work (or stop).
+                // At capacity: make room only by finishing work, or stop.
                 tokio::select! {
                     biased;
                     () = shutdown.triggered() => break,
@@ -251,9 +188,7 @@ where
             let want = free.min(cfg.max_batch.max(1));
             tokio::select! {
                 biased;
-                // Fetch first so a ready batch is claimed and never dropped by a
-                // racing arm; a *pending* fetch has consumed nothing, so
-                // dropping it when a completion wins is lossless.
+                // Fetch first: a pending fetch has consumed nothing, so losing the race is lossless.
                 batch = consumer.fetch(want, cfg.fetch_wait) => match batch {
                     Ok(deliveries) => {
                         stats.fetched += deliveries.len() as u64;
@@ -278,10 +213,7 @@ where
             }
         }
 
-        // Shutdown: stop fetching and let the in-flight solves finish. They live
-        // on this task, so draining means polling them to completion while
-        // `quiesce` watches the shared in-flight count and enforces the grace
-        // budget.
+        // Shutdown: drain in-flight solves within the `quiesce` grace budget.
         stats.drained = {
             let quiesce = drain.quiesce(cfg.grace);
             tokio::pin!(quiesce);
@@ -345,7 +277,7 @@ where
     let handle = delivery.handle;
     let RawBytes(bytes) = delivery.item;
 
-    // 1. Size-gate then decode. Unanswerable bytes are acked and dropped.
+    // Size-gate then decode; unanswerable bytes are acked and dropped.
     let job = match check_bytes::<N::Entry>(&bytes, &validate) {
         Ok(job) => job,
         Err(reason) => {
@@ -355,14 +287,12 @@ where
         }
     };
 
-    // Record the delivery's queue wait as a span, mirroring the old binary.
     if let Some(sent) = sent_at {
         bus::span_between("queue_wait", sent, bus::wallclock());
     }
 
     let now_us = unix_micros();
     match check(&job, &region, &cells, now_us, &validate) {
-        // 2. Refuse: publish the typed outcome so the owner sees an answer.
         Checked::Refuse(outcome) => {
             let result = SolveResult::new(&job, outcome, now_us);
             match publisher.publish_then_ack(&result, handle).await {
@@ -373,10 +303,7 @@ where
                 }
             }
         }
-        // 3. Solve on the blocking pool, then publish the outcome. The job is
-        //    moved into the solve, so its identity (echoed into the result) is
-        //    taken first; `id` and `identity` still come from the one job, so
-        //    they cannot drift.
+        // Take id and identity before the job is moved into the blocking solve.
         Checked::Solve(_) => {
             let job_id = job.id;
             let identity = job.identity.clone();
@@ -398,8 +325,7 @@ where
                 }
             }
         }
-        // `check` never yields `Poison` — that is `check_bytes`' domain, handled
-        // above — but the shared verdict type carries the variant.
+        // `check` never yields `Poison`, but the shared verdict type carries it.
         Checked::Poison(reason) => {
             debug!(%reason, "unexpected poison verdict from check; acking");
             let _ = handle.ack().await;
@@ -448,7 +374,7 @@ mod tests {
     /// The result-plane wildcard the tests inspect and drive shutdown from.
     const RESULTS: &str = "solve-result.v1.p.>";
 
-    /// A staircase road (the shared `matched_diff` shape) the mock solves over.
+    /// A staircase road (the shared `matched_diff` shape).
     fn bent_road() -> MockNetwork {
         MockNetworkBuilder::new()
             .node(1, point!(x: -118.15, y: 34.15))
@@ -609,8 +535,6 @@ mod tests {
         let mut results = bus.source::<SolveResult<MockEntryId>>(RESULTS);
         let pull = pull_loop(&bus, config(4), shutdown.clone());
 
-        // Stop the loop once both results have landed, so the test is timing
-        // free: it waits on the effect, not a duration.
         let driver = async {
             for _ in 0..2 {
                 let delivery = results.next().await.expect("a result").expect("it decodes");
@@ -639,8 +563,6 @@ mod tests {
     async fn expired_job_publishes_deadline_expired_and_acks() {
         let bus = MemoryBus::new();
         let shutdown = Shutdown::new();
-        // A deadline in the distant past: valid graph/region/coverage, but no
-        // time left, so it is refused rather than solved.
         publish_job(&bus, &restart_job(7, 1)).await;
 
         let mut results = bus.source::<SolveResult<MockEntryId>>(RESULTS);
@@ -680,8 +602,6 @@ mod tests {
             ..config(2)
         };
 
-        // A blob past the decode bound: refused before decode, so there is no
-        // identity to answer — it is acked and dropped.
         let subject = job_subject(
             &GraphVersion::new(GRAPH).unwrap(),
             &RegionId::new(REGION).unwrap(),
@@ -714,11 +634,9 @@ mod tests {
     async fn shutdown_ends_run_and_reports_drained() {
         let bus = MemoryBus::new();
         let shutdown = Shutdown::new();
-        // No jobs: the loop idles in fetch until shutdown ends it cleanly.
         let pull = pull_loop(&bus, config(2), shutdown.clone());
 
         let driver = async {
-            // Let the loop reach its first fetch, then stop it mid-run.
             tokio::time::sleep(Duration::from_millis(10)).await;
             shutdown.trigger(DrainReason::Signal);
         };

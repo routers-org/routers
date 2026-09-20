@@ -59,8 +59,9 @@ impl AckHandle for JetStreamAck {
 
 /// Turn one delivered [`jetstream::Message`] into a decoded [`Delivery`].
 ///
-/// Returns `None` — after acking and warning — for unreadable ack metadata or an
-/// undecodable payload, preventing poison messages from looping forever.
+/// Returns `None` — after acking and warning — when the message has unreadable
+/// ack metadata or an undecodable payload; acking it is deliberate poison
+/// handling so it does not loop forever under redelivery.
 async fn build_delivery<T: Wire>(message: jetstream::Message) -> Option<Delivery<T, JetStreamAck>> {
     let subject = message.subject.to_string();
     let headers = message.headers.clone();

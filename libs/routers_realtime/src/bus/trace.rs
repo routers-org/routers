@@ -73,14 +73,8 @@ pub fn outbound() -> HeaderMap {
     headers
 }
 
-/// Continue an inbound message's trace and record its queue-wait span, returning
-/// the producer's send time parsed from `x-routers-sent-at-ms` (if it stamped
-/// one).
-///
-/// The send time is returned rather than stashed in a process-global: under many
-/// concurrent partition workers a shared atomic would let a delivery without a
-/// send-time header inherit another message's stamp, so each caller reads back
-/// exactly the time of the message it just handled and nothing else.
+/// Continue an inbound message's trace, record its queue-wait span, and return
+/// the producer's send time from `x-routers-sent-at-ms` (`None` if unstamped).
 pub fn inbound(subject: &str, headers: Option<&HeaderMap>) -> Option<SystemTime> {
     let headers = headers?;
     let sent_at = headers

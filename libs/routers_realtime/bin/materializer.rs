@@ -2,7 +2,8 @@
 //!
 //! Tails the committed-output plane with a durable pull consumer and applies
 //! every output to a [`ValkeySink`], persisting each before acknowledging. It
-//! of the orchestrator's state: the output plane alone defines the served view.
+//! owns none of the orchestrator's state: the output plane alone defines the
+//! served view.
 
 use core::ops::RangeInclusive;
 

@@ -1,90 +1,11 @@
 //! Orchestrator: the recovery coordinator (spec §3, §9, §10).
 //!
-//! When a partition worker (re)acquires a partition it inherits whatever the
-//! previous owner left behind: prepared commits that never finished, a
-//! committed frontier somewhere behind the raw journal's head, and per-vehicle
-//! checkpoints that may or may not still decode. This module turns that durable
-//! residue back into a running partition, crash-safely and without ever
-//! re-emitting or diverging a committed history.
-//!
-//! # Resolve prepared commits first (spec §9, §10)
-//!
-//! The governing rule is *resolve any prepared commit before anything else*. A
-//! [`PreparedCommit`](crate::store::checkpoint::PreparedCommit) is the durable
-//! record of a commit's intent: exact output bytes plus the next checkpoint to
-//! install. [`recover_partition`] walks every prepared record a partition holds
-//! ([`CheckpointStore::list_prepared`]) and re-drives it through
-//! [`Committer::finish_prepared`], which re-publishes the identical bytes (the
-//! broker deduplicates them) and promotes the checkpoint. A prepared record
-//! that was already published but not promoted is simply promoted; one that was
-//! never published is published then promoted. Either way the partition emerges
-//! with no half-finished commits.
-//!
-//! A `finish_prepared` failure — a bus outage, a store fault — does **not**
-//! abort recovery. The vehicle is recorded in
-//! [`RecoveryReport::prepared_failed`] and the worker keeps it in a blocked set,
-//! refusing to dispatch it until a later retry of `finish_prepared` succeeds. A
-//! vehicle mid-commit must never dispatch a *new* revision over an unresolved
-//! one, so blocking (rather than aborting the whole partition) is the safe
-//! degradation: the rest of the partition recovers and the blocked vehicles
-//! drain as the dependency heals.
-//!
-//! # Resuming the raw journal
-//!
-//! Recovery reports the partition's completion `frontier`; the worker then
-//! (re)creates the raw consumer starting at [`expected_start`] — the frontier's
-//! successor, or the stream head when no frontier has ever been set. The raw
-//! journal retains acknowledged messages ([`topology::raw`](crate::topology::raw)
-//! documents why), so re-reading from `frontier + 1` replays exactly the
-//! uncommitted tail and nothing already committed.
-//!
-//! **Consumer-start verification (a known nit, deferred to T35).** The T05
-//! review flagged that `topology::raw::raw_consumer` swallows a
-//! `delete_consumer` error with `let _ =` when `start` is `Some`: a transient
-//! delete failure would silently rebind the *stale* durable and ignore the
-//! requested start sequence, so recovery would resume from the wrong point.
-//! This pure module holds no JetStream consumer handle, so it cannot inspect
-//! `consumer.info()` here. Instead it exposes [`expected_start`] as the single
-//! source of truth for the deliver policy the bound consumer must carry, and it
-//! is the wiring in T35 (`bin/orchestrator.rs`, which owns the consumer) that
-//! must, after `raw_consumer` returns, assert `consumer.info().config`'s
-//! `deliver_policy` is `ByStartSequence` at `expected_start(frontier)` (or
-//! `All` when no frontier exists) and refuse to run otherwise. See the
-//! follow-up.
-//!
-//! # Suppression and reconstruction are not this module's job
-//!
-//! Two responsibilities that look like recovery's belong elsewhere, by design:
-//!
-//! * **Replay suppression.** Once the raw consumer resumes from `frontier + 1`
-//!   the broker will still redeliver the uncommitted tail, some of which a crash
-//!   committed but did not acknowledge. Dropping those is the *reader*'s job
-//!   ([`reader`](crate::orchestrator::reader)): a sequence at or below the
-//!   frontier is [`SuppressReason::BehindFrontier`](crate::orchestrator::reader),
-//!   and one already folded into the loaded checkpoint is
-//!   [`SuppressReason::Committed`](crate::orchestrator::reader). Recovery only
-//!   positions the consumer; it suppresses nothing itself.
-//!
-//! * **Expected-job reconstruction.** Recovery does not persist or replay
-//!   in-flight jobs. It does not need to: a job's identity is the digest of its
-//!   [`JobIdentity`](crate::protocol::job::JobIdentity), so a job re-dispatched
-//!   from the restored checkpoint and the same observation hashes to the *same*
-//!   [`JobId`](crate::protocol::ids::JobId) as the one lost to the crash. An
-//!   in-flight matcher's result therefore still validates against the
-//!   re-dispatched job (T16), and the broker deduplicates the re-published job.
-//!   This is reconstruction by determinism, and the unit tests pin it.
-//!
-//! # Lazy per-vehicle restore
-//!
-//! [`restore_vehicle`] is the worker's first-touch path: on a vehicle's first
-//! observation after acquiring its partition it loads the durable state,
-//! resolves any surviving prepared commit first (the same §9 rule), and decodes
-//! the checkpoint. A checkpoint whose bytes will not decode, or that was written
-//! under a superseded schema, cannot be resumed: restore reports it
-//! [`Absent`](CheckpointState::Absent) with [`ResetReason::StateLost`], so the
-//! next dispatch opens a new segment and the commit emits a `Reset{StateLost}`.
-//! The prior segment's finalised layers are never touched — the materializer
-//! keeps old segments — so state loss costs continuity, not history.
+//! Turns the durable residue a re-acquired partition inherits back into a
+//! running partition without diverging committed history. The governing rule is
+//! to resolve any prepared commit first: [`recover_partition`] re-drives each
+//! record through the idempotent [`Committer::finish_prepared`]; one that cannot
+//! complete lands in [`RecoveryReport::prepared_failed`] and blocks its vehicle
+//! rather than aborting. [`restore_vehicle`] applies the rule lazily.
 
 use routers_network::Entry;
 use thiserror::Error;
@@ -98,58 +19,42 @@ use crate::protocol::output::{CommittedOutput, ResetReason};
 use crate::store::checkpoint::{CheckpointStore, VehicleCheckpoint};
 
 /// What a partition's recovery pass resolved, for the worker to act on.
-///
-/// The worker seeds its raw consumer from `frontier` (via [`expected_start`]),
-/// counts `prepared_finished` against `prepared_found` for observability, and
-/// keeps `prepared_failed` as its initial blocked set — those vehicles must not
-/// dispatch until a later [`Committer::finish_prepared`] clears them.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RecoveryReport {
     /// The partition this pass recovered.
     pub partition: u16,
-    /// The partition's completion frontier: the last raw sequence whose commit
-    /// is fully durable, or `None` if none was ever recorded.
+    /// The completion frontier: the last raw sequence whose commit is fully
+    /// durable, or `None` if none was ever recorded.
     pub frontier: Option<u64>,
     /// How many prepared commits the partition held when recovery began.
     pub prepared_found: usize,
     /// How many of those were driven to completion (published and promoted).
     pub prepared_finished: usize,
-    /// The vehicles whose prepared commit could not be completed — a transient
-    /// bus or store fault. The worker blocks these until a retry succeeds.
+    /// Vehicles whose prepared commit could not be completed; the worker blocks
+    /// these until a retry succeeds.
     pub prepared_failed: Vec<VehicleId>,
 }
 
-/// Why recovery could not proceed.
-///
-/// A failure to *complete* an individual prepared commit is not an error — it
-/// is recorded in [`RecoveryReport::prepared_failed`] and the pass carries on.
-/// These variants are the faults that make the pass itself unsafe to continue:
-/// a store read that did not answer ([`Store`](Self::Store)), or — on the lazy
-/// [`restore_vehicle`] path — a surviving prepared commit that could not be
-/// resolved before the vehicle's state could be trusted
-/// ([`Unfinished`](Self::Unfinished)).
+/// Why recovery could not proceed. A failure to *complete* an individual
+/// prepared commit is not an error (it lands in
+/// [`RecoveryReport::prepared_failed`]); these are the faults that make the pass
+/// itself unsafe to continue.
 #[derive(Debug, Error)]
 pub enum RecoveryError<SE> {
-    /// A checkpoint-store read (the frontier, the prepared list, or a vehicle
-    /// load) failed. Recovery cannot proceed on a partition it cannot read.
+    /// A checkpoint-store read failed; recovery cannot proceed on a partition it
+    /// cannot read.
     #[error("the checkpoint store rejected a recovery read")]
     Store(#[source] SE),
-    /// A vehicle carried a surviving prepared commit that could not be
-    /// completed, so its committed state cannot yet be trusted. The caller
-    /// blocks the vehicle and retries.
+    /// A surviving prepared commit could not be completed, so the vehicle's
+    /// committed state cannot yet be trusted. The caller blocks and retries.
     #[error("a surviving prepared commit could not be completed during restore")]
     Unfinished(#[source] CommitError<SE>),
 }
 
 /// The delivery start position the raw consumer must bind to after recovery:
-/// the sequence *after* the completion `frontier`, or `None` (bind at the
-/// stream head, delivering everything) when no frontier has been recorded.
-///
-/// This is the single source of truth for the deliver policy T35 must verify
-/// against the consumer it creates (see the module docs): `Some(n)` demands a
-/// `ByStartSequence { start_sequence: n }` policy, `None` demands `All`.
-/// Saturating so a `u64::MAX` frontier cannot wrap — it would only ever pin the
-/// consumer at the very end, never past the start.
+/// the sequence *after* the completion `frontier`, or `None` (bind at the stream
+/// head, delivering everything) when no frontier has been recorded. Saturating,
+/// so a `u64::MAX` frontier cannot wrap.
 #[must_use]
 pub fn expected_start(frontier: Option<u64>) -> Option<u64> {
     frontier.map(|sequence| sequence.saturating_add(1))
@@ -158,17 +63,10 @@ pub fn expected_start(frontier: Option<u64>) -> Option<u64> {
 /// Recover one partition: resolve every surviving prepared commit and report
 /// the frontier the raw consumer should resume from.
 ///
-/// Reads the partition's `frontier` and its prepared records, then re-drives
-/// each prepared commit through [`Committer::finish_prepared`]. A completion
-/// failure is recorded (the vehicle lands in
-/// [`RecoveryReport::prepared_failed`]) and never aborts the pass — the store
-/// keeps the prepared record for a later retry. Only a failed store *read*
-/// aborts, as [`RecoveryError::Store`].
-///
-/// The `partition` index the store keys `list_prepared` by is best-effort (the
-/// store repairs it), so a listed vehicle may already have been promoted away;
-/// `finish_prepared` is idempotent and treats that as a completed no-op, so it
-/// still counts as finished.
+/// A completion failure is recorded in [`RecoveryReport::prepared_failed`] and
+/// never aborts the pass; only a failed store *read* aborts, as
+/// [`RecoveryError::Store`]. `finish_prepared` is idempotent, so a vehicle
+/// already promoted away still counts as finished.
 pub async fn recover_partition<E, S, P>(
     store: &S,
     committer: &Committer<E, S, P>,
@@ -197,8 +95,7 @@ where
     for (vehicle, record) in prepared {
         match committer.finish_prepared(vehicle, partition, record).await {
             Ok(_) => prepared_finished += 1,
-            // A bus or store fault: leave the record for a retry and block the
-            // vehicle rather than abandoning the whole partition.
+            // Leave the record for a retry and block the vehicle.
             Err(_) => prepared_failed.push(vehicle),
         }
     }
@@ -213,55 +110,31 @@ where
 }
 
 /// The outcome of restoring one vehicle's durable state.
-///
-/// `checkpoint` is what the worker installs into its scheduler:
-/// [`Present`](CheckpointState::Present) when a checkpoint decoded cleanly,
-/// [`Absent`](CheckpointState::Absent) when none existed or it could not be
-/// resumed. `reset` is [`ResetReason::StateLost`] exactly when a checkpoint
-/// existed but was unusable — the next dispatch then opens a new segment.
 #[derive(Clone, Debug)]
 pub struct Restored<E: Entry> {
     /// The committed checkpoint the worker resumes from, or `Absent`.
     pub checkpoint: CheckpointState<E>,
-    /// The reset the next dispatch must apply, if state was lost. `None` on a
+    /// The reset the next dispatch must apply, if state was lost; `None` on a
     /// clean restore (present or genuinely fresh).
     pub reset: Option<ResetReason>,
-    /// The revision the store still holds for this vehicle, even when the
-    /// checkpoint could not be decoded. This is the base a `Reset { StateLost }`
-    /// commit must compare-and-swap against: the vehicle resumes with a fresh
-    /// `base: None`, but the store still carries the stale checkpoint's revision,
-    /// so a commit staged with `expected_base: None` would hit
-    /// [`PrepareOutcome::Conflict`](crate::store::checkpoint::PrepareOutcome::Conflict)
-    /// and loop. `None` when nothing was stored (a genuinely fresh vehicle).
+    /// The revision the store still holds, even when the checkpoint could not be
+    /// decoded: the base a `Reset { StateLost }` commit must compare-and-swap
+    /// against. `None` when nothing was stored.
     pub prior: Option<Revision>,
 }
 
 /// Restore one vehicle's state on its first observation after the worker
-/// acquires its partition.
+/// acquires its partition. Resolves any surviving prepared commit first, then
+/// decodes the committed checkpoint:
 ///
-/// Resolves any surviving prepared commit first (the §9 rule: a mid-commit
-/// vehicle is completed before its committed state is read), reloading
-/// afterwards so the promoted checkpoint is the one decoded. A prepared commit
-/// that cannot be completed is [`RecoveryError::Unfinished`] — the worker blocks
-/// the vehicle and retries.
-///
-/// With the prepared record resolved, the committed checkpoint is decoded:
-///
-/// * no checkpoint ⇒ [`Absent`](CheckpointState::Absent), no reset (a genuinely
-///   fresh vehicle);
-/// * a checkpoint that decodes and carries the current
+/// * no checkpoint ⇒ [`Absent`](CheckpointState::Absent), no reset;
+/// * decodes at the current
 ///   [`SCHEMA_VERSION`](crate::protocol::ids::SCHEMA_VERSION) ⇒
 ///   [`Present`](CheckpointState::Present), no reset;
-/// * a checkpoint whose bytes will not decode, or that was written under a
-///   superseded schema ⇒ [`Absent`](CheckpointState::Absent) with
-///   [`ResetReason::StateLost`]. Prior finalised layers stay untouched.
+/// * will not decode, or a superseded schema ⇒
+///   [`Absent`](CheckpointState::Absent) with [`ResetReason::StateLost`].
 ///
-/// The graph snapshot a checkpoint was solved against is *not* compared here:
-/// this module never learns the region's current
-/// [`GraphVersion`](crate::protocol::ids::GraphVersion). That comparison is the
-/// resolver's (T07) and dispatch's — a differing resolved graph produces a
-/// distinct [`JobIdentity`](crate::protocol::job::JobIdentity) and the
-/// reconcile there decides resumability. See the follow-up.
+/// A prepared commit that cannot be completed is [`RecoveryError::Unfinished`].
 pub async fn restore_vehicle<E, S, P>(
     store: &S,
     vehicle: VehicleId,
@@ -275,8 +148,7 @@ where
 {
     let (stored, prepared) = store.load(vehicle).await.map_err(RecoveryError::Store)?;
 
-    // Resolve a surviving prepared commit before trusting any committed state,
-    // then reload so the promoted checkpoint is what we decode.
+    // Resolve a surviving prepared commit before trusting committed state.
     let stored = if let Some(prepared) = prepared {
         committer
             .finish_prepared(vehicle, partition, prepared)
@@ -296,19 +168,15 @@ where
         });
     };
 
-    // The store holds this revision regardless of whether the bytes decode; a
-    // state-lost reset's commit must compare-and-swap against it.
     let prior = Some(stored.revision);
 
     match VehicleCheckpoint::<E>::decode(&stored.bytes) {
-        // A clean, current-schema checkpoint resumes as-is.
         Ok(checkpoint) if checkpoint.schema == SCHEMA_VERSION => Ok(Restored {
             checkpoint: CheckpointState::Present(checkpoint),
             reset: None,
             prior,
         }),
-        // Decoded but stale schema, or would not decode at all: unusable state.
-        // Start a new segment; the old segment's finalised layers stay.
+        // Stale schema or undecodable: unusable state, start a new segment.
         Ok(_) | Err(_) => Ok(Restored {
             checkpoint: CheckpointState::Absent,
             reset: Some(ResetReason::StateLost),
@@ -383,8 +251,6 @@ mod tests {
         )
     }
 
-    /// A terminal-only plan whose single output is durable and self-contained,
-    /// so a commit of it installs a valid checkpoint the store can hand back.
     fn terminal_plan(seq: u64) -> Plan<E> {
         let id = JobIdentity {
             schema: SCHEMA_VERSION,
@@ -410,8 +276,8 @@ mod tests {
         )
     }
 
-    /// Stage (and leave prepared) a commit that fails on its publish, so the
-    /// store holds an unpublished prepared record ready for recovery.
+    /// Stage a commit that fails on publish, leaving an unpublished prepared
+    /// record in the store.
     async fn stage_unpublished(
         store: &MemoryCheckpointStore,
         bus: &MemoryBus,
@@ -428,9 +294,8 @@ mod tests {
         assert!(!prepared.unwrap().is_published(), "and it is unpublished");
     }
 
-    /// Directly install `bytes` as a vehicle's committed checkpoint by staging a
-    /// self-contained prepared record whose `next_checkpoint` is `bytes` and
-    /// finishing it — the only way to seed arbitrary (including corrupt) bytes.
+    /// Install `bytes` as a vehicle's committed checkpoint — the only way to
+    /// seed arbitrary (including corrupt) bytes.
     async fn install_checkpoint_bytes(
         store: &MemoryCheckpointStore,
         bus: &MemoryBus,
@@ -507,8 +372,8 @@ mod tests {
         .collect()
     }
 
-    /// Mint a non-empty [`Trip`] by pushing `origins` through a matcher — the
-    /// only way to build one, since `push_layer` is crate-private.
+    /// Mint a non-empty [`Trip`] by pushing `origins` through a matcher (the
+    /// only way to build one, since `push_layer` is crate-private).
     fn trip_with(origins: &[Origin]) -> Trip<E> {
         let net = bent_road();
         let costing = Costing::default();
@@ -544,8 +409,7 @@ mod tests {
     }
 
     /// Rebuild a job's identity exactly as the dispatcher would, from a
-    /// checkpoint and the head observation — the reconstruction-by-determinism
-    /// path recovery relies on.
+    /// checkpoint and the head observation.
     fn identity_from(
         checkpoint: Option<&VehicleCheckpoint<E>>,
         observation: ObservationId,
@@ -562,18 +426,13 @@ mod tests {
         }
     }
 
-    // ----- expected_start (pure) -----
-
     #[test]
     fn expected_start_is_the_frontier_successor_or_the_head() {
         assert_eq!(expected_start(None), None);
         assert_eq!(expected_start(Some(0)), Some(1));
         assert_eq!(expected_start(Some(41)), Some(42));
-        // Saturating: a maxed frontier never wraps past the start.
         assert_eq!(expected_start(Some(u64::MAX)), Some(u64::MAX));
     }
-
-    // ----- recover_partition -----
 
     #[tokio::test]
     async fn recovery_reports_the_stored_frontier() {
@@ -610,7 +469,6 @@ mod tests {
         assert_eq!(report.prepared_found, 1);
         assert_eq!(report.prepared_finished, 1);
         assert!(report.prepared_failed.is_empty());
-        // The output is now durable and the checkpoint is installed.
         assert_eq!(bus.published(SUBJECT).len(), 1);
         let (checkpoint, prepared) = store.load(vehicle).await.unwrap();
         assert_eq!(checkpoint.unwrap().revision, Revision(100));
@@ -623,8 +481,7 @@ mod tests {
         let bus = MemoryBus::new();
         let vehicle = VehicleId(1);
 
-        // A crash between publish and promote: the output is durable and the
-        // record is marked published, but promotion never ran.
+        // Crash between publish and promote: durable output, unpromoted record.
         store.fail_next(crate::store::checkpoint::Op::Promote);
         committer(store.clone(), &bus)
             .commit(vehicle, PARTITION, terminal_plan(100), None, obs(100))
@@ -638,7 +495,6 @@ mod tests {
             .unwrap();
 
         assert_eq!(report.prepared_finished, 1);
-        // The republish deduplicates to the one already-durable copy.
         assert_eq!(bus.published(SUBJECT).len(), 1, "republish deduplicates");
         assert_eq!(
             store.load(vehicle).await.unwrap().0.unwrap().revision,
@@ -654,7 +510,7 @@ mod tests {
         let vehicle = VehicleId(1);
         stage_unpublished(&store, &bus, vehicle, 100).await;
 
-        // The bus is still down when recovery tries to re-drive the record.
+        // The bus is still down when recovery re-drives the record.
         bus.fail_next_publish(PublishError::Failed(anyhow::anyhow!("still down")));
         let report = recover_partition(&store, &committer(store.clone(), &bus), PARTITION)
             .await
@@ -663,7 +519,6 @@ mod tests {
         assert_eq!(report.prepared_found, 1);
         assert_eq!(report.prepared_finished, 0);
         assert_eq!(report.prepared_failed, vec![vehicle]);
-        // The record survives for a later retry; nothing was committed.
         let (checkpoint, prepared) = store.load(vehicle).await.unwrap();
         assert!(checkpoint.is_none());
         assert!(prepared.is_some(), "the prepared record is retained");
@@ -680,8 +535,6 @@ mod tests {
             .expect_err("a failed frontier read aborts");
         assert!(matches!(err, RecoveryError::Store(_)), "got {err:?}");
     }
-
-    // ----- restore_vehicle -----
 
     #[tokio::test]
     async fn restore_of_an_unknown_vehicle_is_absent_without_reset() {
@@ -776,7 +629,6 @@ mod tests {
                 .await
                 .unwrap();
 
-        // The prepared commit was finished, then the promoted checkpoint read.
         assert_eq!(bus.published(SUBJECT).len(), 1);
         match restored.checkpoint {
             CheckpointState::Present(got) => assert_eq!(got.revision, Revision(100)),
@@ -801,8 +653,6 @@ mod tests {
         assert!(matches!(err, RecoveryError::Unfinished(_)), "got {err:?}");
     }
 
-    // ----- reconstruction by determinism (deliverable 4) -----
-
     #[tokio::test]
     async fn a_job_rebuilt_from_the_restored_checkpoint_keeps_its_id() {
         let store = MemoryCheckpointStore::new();
@@ -811,11 +661,9 @@ mod tests {
         let head = continuing_head();
         let observation = obs(200);
 
-        // The job id the pre-crash dispatcher would have minted.
         let before = checkpoint_at(100, 100, SCHEMA_VERSION);
         let id_before = identity_from(Some(&before), observation, &head).job_id();
 
-        // Round-trip the checkpoint through the store and restore it.
         install_checkpoint_bytes(&store, &bus, vehicle, 100, before.encode().unwrap()).await;
         let restored: Restored<E> =
             restore_vehicle(&store, vehicle, PARTITION, &committer(store.clone(), &bus))
@@ -825,8 +673,6 @@ mod tests {
             panic!("the checkpoint must restore");
         };
 
-        // The re-dispatched job hashes to exactly the same id, so an in-flight
-        // matcher's result still validates and the broker dedups the republish.
         let id_after = identity_from(Some(&after), observation, &head).job_id();
         assert_eq!(id_before, id_after);
     }
