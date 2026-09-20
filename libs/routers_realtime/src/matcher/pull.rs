@@ -422,6 +422,7 @@ where
     }
 
     let now_us = unix_micros();
+    metrics.freshness_target(region.id.as_str(), job.freshness_target_us, now_us);
     match check(&job, &region, &cells, now_us, &validate) {
         Checked::Refuse(outcome) => {
             let result = SolveResult::new(&job, outcome, now_us);
@@ -608,12 +609,12 @@ mod tests {
         }
     }
 
-    /// A well-formed restart job for `vehicle`, deadline `deadline_us`.
-    fn restart_job(vehicle: u64, deadline_us: i64) -> SolveJob<MockEntryId> {
+    /// A well-formed restart job for `vehicle`, with freshness target `target_us`.
+    fn restart_job(vehicle: u64, target_us: i64) -> SolveJob<MockEntryId> {
         SolveJob::new(
             identity(vehicle),
             Lane::DEFAULT,
-            deadline_us,
+            target_us,
             Continuation::Restart {
                 fresh: observations(),
             },
@@ -968,7 +969,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn expired_job_publishes_deadline_expired_and_acks() {
+    async fn overdue_job_is_solved_and_acked() {
         let bus = MemoryBus::new();
         let shutdown = Shutdown::new();
         publish_job(&bus, &restart_job(7, 1)).await;
@@ -979,8 +980,8 @@ mod tests {
         let driver = async {
             let delivery = results.next().await.expect("a result").expect("it decodes");
             assert!(
-                matches!(delivery.item.outcome, SolveOutcome::DeadlineExpired),
-                "an expired job is refused as DeadlineExpired, got {:?}",
+                delivery.item.outcome.is_success(),
+                "an overdue freshness target must not refuse a valid job, got {:?}",
                 delivery.item.outcome
             );
             shutdown.trigger(DrainReason::Operator);
@@ -988,14 +989,10 @@ mod tests {
 
         let (stats, ()) = tokio::join!(pull.run(), driver);
 
-        assert_eq!(stats.refused, 1);
-        assert_eq!(stats.solved, 0);
+        assert_eq!(stats.refused, 0);
+        assert_eq!(stats.solved, 1);
         assert!(stats.drained);
-        assert_eq!(
-            bus.acked_count(&job_filter()),
-            1,
-            "the refused job is acked"
-        );
+        assert_eq!(bus.acked_count(&job_filter()), 1, "the solved job is acked");
     }
 
     #[tokio::test]
@@ -1005,7 +1002,6 @@ mod tests {
         let cfg = PullConfig {
             validate: ValidateConfig {
                 max_decoded_bytes: 16,
-                ..ValidateConfig::default()
             },
             ..config(2)
         };

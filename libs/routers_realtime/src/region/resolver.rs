@@ -50,7 +50,7 @@ impl ResolutionKind {
 }
 
 /// The region a vehicle is pinned to for one observation, with everything the
-/// dispatcher needs to address and deadline the job.
+/// dispatcher needs to address the job and stamp its freshness target.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Resolution {
     /// The serving region's id (a subject/stream token).
@@ -59,7 +59,7 @@ pub struct Resolution {
     pub graph: GraphVersion,
     /// The job lane this vehicle takes within the region.
     pub lane: Lane,
-    /// The region's per-job freshness budget, source of the job's `deadline_us`.
+    /// The region's per-job freshness target budget, used for SLA telemetry.
     pub budget: Duration,
     /// How this resolution was reached.
     pub kind: ResolutionKind,

@@ -31,7 +31,7 @@ async fn happy_path_matches_and_finalizes() {
 
     assert_eq!(stats.accepted, 6, "every observation was answered");
     assert_eq!(stats.committed, 6, "every answer committed");
-    assert_eq!(stats.terminal, 0, "no deadline fired");
+    assert_eq!(stats.terminal, 0, "no terminal was synthesized");
     assert_eq!(stats.resets, 0, "a continuous trace never resets");
     assert_eq!(
         stats.frontier, last_seq,

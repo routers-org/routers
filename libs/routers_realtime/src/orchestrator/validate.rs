@@ -67,8 +67,6 @@ pub enum RejectReason {
     Schema,
     /// The echoed job id does not match the id its identity hashes to.
     IdMismatch,
-    /// The job for this exact observation has already been resolved and committed.
-    ExpiredJob,
 }
 
 impl RejectReason {
@@ -82,7 +80,6 @@ impl RejectReason {
             RejectReason::WrongVehicle => "wrong_vehicle",
             RejectReason::Schema => "schema",
             RejectReason::IdMismatch => "id_mismatch",
-            RejectReason::ExpiredJob => "expired_job",
         }
     }
 }
@@ -160,7 +157,7 @@ where
         None => match vehicle.checkpoint.present() {
             Some(cp) => match result.identity.observation.cmp(&cp.last_input) {
                 Ordering::Less => Verdict::Reject(RejectReason::Committed),
-                Ordering::Equal => Verdict::Reject(RejectReason::ExpiredJob),
+                Ordering::Equal => Verdict::Reject(RejectReason::Committed),
                 Ordering::Greater => Verdict::Park,
             },
             None => Verdict::Park,
@@ -312,7 +309,6 @@ mod tests {
                 id: solve_job.id,
                 identity: solve_job.identity,
                 observation: self.obs(seq),
-                deadline: self.base + Duration::from_secs(30),
                 bytes: 100,
                 reservation: JobReservation::Admitted(
                     self.admission.try_admit(&self.region, 100).unwrap(),
@@ -534,7 +530,7 @@ mod tests {
 
         assert!(matches!(
             validate(&vehicle, &result, part(1)),
-            Verdict::Reject(RejectReason::ExpiredJob)
+            Verdict::Reject(RejectReason::Committed)
         ));
     }
 
@@ -603,14 +599,13 @@ mod tests {
             (RejectReason::WrongVehicle, "wrong_vehicle"),
             (RejectReason::Schema, "schema"),
             (RejectReason::IdMismatch, "id_mismatch"),
-            (RejectReason::ExpiredJob, "expired_job"),
         ];
         let mut seen = std::collections::HashSet::new();
         for (reason, label) in rejects {
             assert_eq!(reason.label(), label);
             assert!(seen.insert(label), "duplicate reject label {label}");
         }
-        assert_eq!(seen.len(), 7);
+        assert_eq!(seen.len(), 6);
 
         for (reason, label) in [
             (QuarantineReason::ConflictingContent, "conflicting_content"),

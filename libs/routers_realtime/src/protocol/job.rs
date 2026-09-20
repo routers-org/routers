@@ -32,7 +32,7 @@ pub struct BaseState {
 }
 
 /// The durable, store-addressable portion of a solve job's context. The full
-/// [`JobId`] additionally authenticates the lane, deadline, and continuation
+/// [`JobId`] additionally authenticates the lane, freshness target, and continuation
 /// through [`JobProof`].
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct JobIdentity {
@@ -61,7 +61,7 @@ impl JobIdentity {
     /// [`SolveJob`] id: use [`SolveJob::computed_id`] for a dispatched solve.
     ///
     /// This remains for local terminal decisions, which have no continuation
-    /// or deadline to authenticate.
+    /// or freshness target to authenticate.
     #[must_use]
     pub fn local_decision_id(&self) -> JobId {
         let bytes = postcard::to_allocvec(self).expect("JobIdentity is infallibly serialisable");
@@ -89,8 +89,8 @@ pub struct JobProof {
     pub identity: JobIdentity,
     /// The queue lane selected for this solve.
     pub lane: Lane,
-    /// The absolute deadline the matcher must honour.
-    pub deadline_us: i64,
+    /// The absolute freshness target the matcher observes.
+    pub freshness_target_us: i64,
     continuation: ContinuationDigest,
 }
 
@@ -98,7 +98,7 @@ impl JobProof {
     fn for_job<E: Entry>(
         identity: &JobIdentity,
         lane: Lane,
-        deadline_us: i64,
+        freshness_target_us: i64,
         context: &Continuation<E>,
     ) -> Self {
         let bytes = postcard::to_allocvec(context)
@@ -106,7 +106,7 @@ impl JobProof {
         Self {
             identity: identity.clone(),
             lane,
-            deadline_us,
+            freshness_target_us,
             continuation: ContinuationDigest(ids::digest128(&[
                 CONTINUATION_DOMAIN,
                 bytes.as_slice(),
@@ -123,7 +123,9 @@ impl JobProof {
 }
 
 /// One regional solve job: solve `identity.observation` for `identity.vehicle`
-/// against `identity.graph`, resuming from `context`, before `deadline_us`.
+/// against `identity.graph`, resuming from `context`. `freshness_target_us` is the
+/// authenticated freshness target used for SLA telemetry, not a correctness
+/// cutoff.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(bound(serialize = "E: Serialize", deserialize = "E: Deserialize<'de>"))]
 pub struct SolveJob<E: Entry> {
@@ -133,8 +135,9 @@ pub struct SolveJob<E: Entry> {
     pub identity: JobIdentity,
     /// The priority lane this job travels in (default [`Lane::DEFAULT`]).
     pub lane: Lane,
-    /// Absolute deadline in unix microseconds; a matcher rejects an expired job.
-    pub deadline_us: i64,
+    /// Absolute freshness target in unix microseconds; matchers observe lateness
+    /// but still solve an overdue target.
+    pub freshness_target_us: i64,
     /// The resume/restart state the matcher solves from.
     pub context: Continuation<E>,
 }
@@ -145,15 +148,15 @@ impl<E: Entry> SolveJob<E> {
     pub fn new(
         identity: JobIdentity,
         lane: Lane,
-        deadline_us: i64,
+        freshness_target_us: i64,
         context: Continuation<E>,
     ) -> Self {
-        let id = JobProof::for_job(&identity, lane, deadline_us, &context).job_id();
+        let id = JobProof::for_job(&identity, lane, freshness_target_us, &context).job_id();
         Self {
             id,
             identity,
             lane,
-            deadline_us,
+            freshness_target_us,
             context,
         }
     }
@@ -162,7 +165,12 @@ impl<E: Entry> SolveJob<E> {
     /// in a result without duplicating its continuation.
     #[must_use]
     pub fn proof(&self) -> JobProof {
-        JobProof::for_job(&self.identity, self.lane, self.deadline_us, &self.context)
+        JobProof::for_job(
+            &self.identity,
+            self.lane,
+            self.freshness_target_us,
+            &self.context,
+        )
     }
 
     /// Recompute the id from every solve-affecting envelope field.
@@ -190,10 +198,11 @@ impl<E: Entry> SolveJob<E> {
         Ok(())
     }
 
-    /// How long is left before the deadline, or `None` once it has passed
-    /// (including exactly at the deadline — no time then remains).
+    /// How long remains before the freshness target, or `None` once it has
+    /// passed (including exactly at the target). This is telemetry-only; it
+    /// must not be used to reject a valid job.
     pub fn remaining(&self, now_us: i64) -> Option<Duration> {
-        let micros = self.deadline_us.checked_sub(now_us)?;
+        let micros = self.freshness_target_us.checked_sub(now_us)?;
         (micros > 0).then(|| Duration::from_micros(micros as u64))
     }
 
@@ -328,8 +337,8 @@ mod tests {
         changed.lane = Lane(1);
         mutations.push(("lane", changed));
         let mut changed = base.clone();
-        changed.deadline_us += 1;
-        mutations.push(("deadline_us", changed));
+        changed.freshness_target_us += 1;
+        mutations.push(("freshness_target_us", changed));
         let mut changed = base.clone();
         changed.context = restart(vec![origin(2)]);
         mutations.push(("continuation", changed));
@@ -421,7 +430,7 @@ mod tests {
         assert_eq!(decoded.id, job.id);
         assert_eq!(decoded.identity, job.identity);
         assert_eq!(decoded.lane, Lane(2));
-        assert_eq!(decoded.deadline_us, 12_345);
+        assert_eq!(decoded.freshness_target_us, 12_345);
         assert_eq!(decoded.head(), Some(&origin(2)));
     }
 
@@ -491,7 +500,7 @@ mod tests {
     }
 
     #[test]
-    fn remaining_before_at_and_after_deadline() {
+    fn remaining_before_at_and_after_target() {
         let job = SolveJob::new(
             sample_identity(),
             Lane::DEFAULT,
@@ -499,15 +508,11 @@ mod tests {
             restart(vec![origin(1)]),
         );
         assert_eq!(job.remaining(400), Some(Duration::from_micros(600)));
-        assert_eq!(
-            job.remaining(1_000),
-            None,
-            "at the deadline nothing remains"
-        );
+        assert_eq!(job.remaining(1_000), None, "at the target nothing remains");
         assert_eq!(
             job.remaining(1_500),
             None,
-            "past the deadline nothing remains"
+            "past the target nothing remains"
         );
     }
 

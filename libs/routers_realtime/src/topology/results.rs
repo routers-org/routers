@@ -15,6 +15,7 @@ use async_nats::jetstream::{
 };
 
 use super::{create_or_update_stream, duplicate_window};
+use crate::partition::{ShardCount, ShardId};
 
 /// Subject prefix for partitioned solve results.
 pub const RESULT_PREFIX: &str = "solve-result.v1.p";
@@ -27,7 +28,7 @@ pub const RESULT_STREAM: &str = "SOLVE-RESULTS";
 pub struct ResultsConfig {
     /// How long an unread result survives; bounds how far an orchestrator may lag.
     pub max_age: Duration,
-    /// Unacknowledged results a partition's consumer may hold.
+    /// Per-partition unacknowledged allowance within its shard consumer.
     pub max_ack_pending: i64,
     /// How long the broker waits for an ack before redelivering.
     pub ack_wait: Duration,
@@ -37,13 +38,64 @@ impl Default for ResultsConfig {
     fn default() -> Self {
         Self {
             max_age: Duration::from_secs(10 * 60),
-            // Results are consumed by one durable per partition; a small
-            // broker-side window prevents 1,024 consumers from collectively
-            // claiming an unbounded working set.
+            // This is a per-partition allowance. A sharded durable multiplies
+            // it by its number of filtered partitions below.
             max_ack_pending: 8,
             ack_wait: Duration::from_secs(30),
         }
     }
+}
+
+/// The durable consumer through which one shard's owner reads results.
+///
+/// The name contains only the stable shard id, never a pod ordinal, so safely
+/// moving an aligned shard between replica counts resumes the same durable.
+pub async fn result_shard_consumer(
+    stream: &jetstream::stream::Stream,
+    shard_count: ShardCount,
+    shard: ShardId,
+    partitions: &[u16],
+    config: &ResultsConfig,
+) -> anyhow::Result<PullConsumer> {
+    anyhow::ensure!(
+        !partitions.is_empty(),
+        "result shard {shard} has no partitions"
+    );
+    anyhow::ensure!(
+        shard_count.partitions(shard).eq(partitions.iter().copied()),
+        "result shard {shard} does not contain exactly the configured partitions"
+    );
+    let name = result_shard_consumer_name(shard_count, shard);
+    let partition_count = i64::try_from(partitions.len())
+        .context("result shard partition count does not fit max_ack_pending")?;
+    let max_ack_pending = config
+        .max_ack_pending
+        .checked_mul(partition_count)
+        .filter(|pending| *pending > 0)
+        .context("result shard max_ack_pending must be positive and not overflow")?;
+    let filter_subjects = partitions
+        .iter()
+        .map(|partition| result_subject(u64::from(*partition)))
+        .collect();
+    stream
+        .get_or_create_consumer(
+            &name,
+            pull::Config {
+                durable_name: Some(name.clone()),
+                filter_subjects,
+                ack_policy: AckPolicy::Explicit,
+                max_ack_pending,
+                ack_wait: config.ack_wait,
+                ..Default::default()
+            },
+        )
+        .await
+        .with_context(|| format!("could not create result shard consumer {name}"))
+}
+
+/// Stable result durable name for a shard layout.
+pub fn result_shard_consumer_name(shard_count: ShardCount, shard: ShardId) -> String {
+    format!("orchestrator-results-n{}-sh{shard}", shard_count.get())
 }
 
 /// The solve-result subject of one partition.
@@ -116,5 +168,15 @@ mod tests {
     #[test]
     fn default_delivery_window_is_partition_bounded() {
         assert_eq!(ResultsConfig::default().max_ack_pending, 8);
+    }
+
+    #[test]
+    fn sharded_durable_name_is_replica_independent_and_layout_scoped() {
+        let shards = ShardCount::new(64).unwrap();
+        let shard = shards.shard(7).unwrap();
+        assert_eq!(
+            result_shard_consumer_name(shards, shard),
+            "orchestrator-results-n64-sh7"
+        );
     }
 }

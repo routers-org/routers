@@ -31,6 +31,23 @@ helm.sh/chart: {{ printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" }}
 {{- if or (lt $fleet 1) (ne (mod 1024 $fleet) 0) -}}
 {{- fail (printf "orchestrator.replicas is %d, which must divide 1024; any other fleet size slices the 1024 partitions unevenly, leaving gaps or overlapping ownership." $fleet) -}}
 {{- end -}}
+{{- $streams := int .Values.streams -}}
+{{- if or (lt $streams 1) (gt $streams 1024) (ne (mod 1024 $streams) 0) -}}
+{{- fail (printf "streams is %d, which must be a non-zero divisor of 1024 so raw stream ownership is complete and contiguous." $streams) -}}
+{{- end -}}
+{{- $shards := int .Values.orchestrator.shards -}}
+{{- if or (lt $shards 1) (gt $shards 1024) (ne (mod 1024 $shards) 0) -}}
+{{- fail (printf "orchestrator.shards is %d, which must be a non-zero divisor of 1024." $shards) -}}
+{{- end -}}
+{{- if ne (mod $shards $streams) 0 -}}
+{{- fail (printf "orchestrator.shards is %d and streams is %d; shards must divide evenly across raw streams so one durable never crosses streams." $shards $streams) -}}
+{{- end -}}
+{{- if ne (mod $shards $fleet) 0 -}}
+{{- fail (printf "orchestrator.shards is %d and orchestrator.replicas is %d; shards must divide evenly across replicas so no durable has two owners." $shards $fleet) -}}
+{{- end -}}
+{{- if lt (int .Values.orchestrator.shardQueueCapacity) 1 -}}
+{{- fail "orchestrator.shardQueueCapacity must be non-zero; zero would prevent every shared durable from routing deliveries." -}}
+{{- end -}}
 {{- $owned := dict -}}
 {{- range $region := $regions -}}
 {{- $id := toString $region.id -}}

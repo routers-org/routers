@@ -5,7 +5,6 @@
 //! decode ([`check_bytes`]) is split from the semantic checks ([`check`]) so
 //! [`check`] stays a pure, network-free function.
 
-use core::time::Duration;
 use std::collections::HashSet;
 
 use routers_network::Entry;
@@ -23,28 +22,22 @@ use crate::region::Region;
 #[allow(unused_imports)]
 use self::VehicleId as _KeepVehicleIdDocLink;
 
-/// How strict the validator is: the two bounds it enforces that are policy, not
-/// correctness.
+/// How strict the validator is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ValidateConfig {
     /// The largest wire buffer the matcher will decode, enforced before decoding.
     pub max_decoded_bytes: usize,
-    /// The least time that must remain before the deadline for a solve to be worth starting.
-    pub min_remaining: Duration,
 }
 
 impl ValidateConfig {
     /// The default decode bound: 4 MiB.
     pub const DEFAULT_MAX_DECODED_BYTES: usize = 4 << 20;
-    /// The default deadline floor: 250 ms.
-    pub const DEFAULT_MIN_REMAINING: Duration = Duration::from_millis(250);
 }
 
 impl Default for ValidateConfig {
     fn default() -> Self {
         Self {
             max_decoded_bytes: Self::DEFAULT_MAX_DECODED_BYTES,
-            min_remaining: Self::DEFAULT_MIN_REMAINING,
         }
     }
 }
@@ -110,14 +103,16 @@ where
 /// Decide whether an already-decoded `job` should be solved or refused with a
 /// typed outcome. `region` and `cells` are passed directly so the function stays
 /// pure and network-free; the checks short-circuit in the order graph → region →
-/// coverage → deadline.
+/// coverage. The authenticated freshness target is intentionally not an
+/// admission criterion: a delayed, replayed, or clock-skewed observation still
+/// has valid per-vehicle ordering and must be solved.
 #[must_use]
 pub fn check<'j, E>(
     job: &'j SolveJob<E>,
     region: &Region,
     cells: &HashSet<Geohash>,
     now_us: i64,
-    cfg: &ValidateConfig,
+    _cfg: &ValidateConfig,
 ) -> Checked<'j, E>
 where
     E: Entry,
@@ -163,13 +158,8 @@ where
         }
     }
 
-    match job.remaining(now_us) {
-        None => Checked::Refuse(SolveOutcome::DeadlineExpired),
-        Some(remaining) if remaining < cfg.min_remaining => {
-            Checked::Refuse(SolveOutcome::DeadlineExpired)
-        }
-        Some(_) => Checked::Solve(job),
-    }
+    let _ = now_us;
+    Checked::Solve(job)
 }
 
 /// How many of `origins` fall on a cell that `cells` does not serve.
@@ -182,6 +172,8 @@ fn unserved_origins(origins: &[Origin], cells: &HashSet<Geohash>) -> usize {
 
 #[cfg(test)]
 mod tests {
+    use core::time::Duration;
+
     use geo::Point;
     use routers_network::mock::MockEntryId;
     use routers_transition::matcher::Trip;
@@ -246,11 +238,11 @@ mod tests {
         }
     }
 
-    fn job(graph: &str, region_id: &str, head: Point, deadline_us: i64) -> SolveJob<MockEntryId> {
+    fn job(graph: &str, region_id: &str, head: Point, target_us: i64) -> SolveJob<MockEntryId> {
         SolveJob::new(
             identity(graph, region_id),
             Lane::DEFAULT,
-            deadline_us,
+            target_us,
             restart(head),
         )
     }
@@ -265,7 +257,6 @@ mod tests {
     fn check_bytes_refuses_oversize_before_decoding() {
         let cfg = ValidateConfig {
             max_decoded_bytes: 8,
-            ..ValidateConfig::default()
         };
         let bytes = vec![0xAB_u8; 9];
         match check_bytes::<MockEntryId>(&bytes, &cfg) {
@@ -399,7 +390,7 @@ mod tests {
     }
 
     #[test]
-    fn check_refuses_an_expired_deadline() {
+    fn check_solves_an_overdue_freshness_target() {
         let job = job(GRAPH, REGION, head_point(), 0);
         assert!(matches!(
             check(
@@ -409,17 +400,17 @@ mod tests {
                 0,
                 &ValidateConfig::default()
             ),
-            Checked::Refuse(SolveOutcome::DeadlineExpired)
+            Checked::Solve(_)
         ));
     }
 
     #[test]
-    fn check_refuses_a_deadline_too_close_to_start() {
+    fn check_solves_a_freshness_target_too_close_to_start() {
         let cfg = ValidateConfig::default();
         let job = job(GRAPH, REGION, head_point(), 100_000);
         assert!(matches!(
             check(&job, &region(), &serving_cells(), 0, &cfg),
-            Checked::Refuse(SolveOutcome::DeadlineExpired)
+            Checked::Solve(_)
         ));
     }
 
@@ -471,7 +462,7 @@ mod tests {
     }
 
     #[test]
-    fn check_prefers_coverage_over_the_deadline() {
+    fn check_prefers_coverage_over_an_overdue_freshness_target() {
         let job = job(GRAPH, REGION, head_point(), 0);
         let empty = HashSet::new();
         assert!(matches!(

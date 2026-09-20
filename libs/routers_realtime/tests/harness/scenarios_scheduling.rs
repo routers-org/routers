@@ -1,5 +1,5 @@
-//! Deadlines, the deadline/commit race, contiguous frontier advance, and
-//! admission backpressure — the §8 scheduling rules and their §10 rows.
+//! Freshness targets, contiguous frontier advance, and admission backpressure
+//! — the §8 scheduling rules and their §10 rows.
 
 use core::time::Duration;
 
@@ -10,11 +10,10 @@ fn jobs_filter() -> &'static str {
     "solve.v1.g.>"
 }
 
-/// A never-answered job runs out its freshness budget and commits a `Terminal`;
-/// a straggling late answer is then rejected, not committed twice.
+/// Passing a job's freshness target does not complete or evict it. A later
+/// answer remains valid and commits normally.
 #[tokio::test(start_paused = true)]
-async fn deadline_expiry_commits_terminal_and_rejects_late_result() {
-    // A brisk 100 ms budget so the deadline fires quickly under paused time.
+async fn unanswered_job_remains_active_past_its_freshness_target() {
     let fleet = Fleet::bent_road_with_budget(100);
     let vehicle = 1u64;
     let partition = fleet.partition_of(vehicle);
@@ -26,8 +25,8 @@ async fn deadline_expiry_commits_terminal_and_rejects_late_result() {
     fleet.settle().await;
     assert_eq!(
         published_outputs(&fleet.bus, partition).len(),
-        1,
-        "the deadline committed one terminal",
+        0,
+        "freshness target must not synthesize a terminal",
     );
 
     let job = published_jobs(&fleet.bus)
@@ -40,33 +39,33 @@ async fn deadline_expiry_commits_terminal_and_rejects_late_result() {
     let stats = orchestrator.stop().await;
     matcher.stop().await;
 
-    assert_eq!(stats.terminal, 1, "one terminal was committed");
-    assert_eq!(stats.committed, 1, "and only one commit overall");
-    assert_eq!(stats.rejected, 1, "the late answer was rejected");
+    assert_eq!(stats.terminal, 1, "the matcher outcome is terminal");
+    assert_eq!(stats.committed, 1, "the late answer committed once");
+    assert_eq!(stats.rejected, 0, "the late answer remained valid");
     assert_eq!(
         published_outputs(&fleet.bus, partition).len(),
         1,
-        "no second output for the late answer",
+        "the late answer produced one output",
     );
     let output = &published_outputs(&fleet.bus, partition)[0];
     assert!(
         matches!(
             output.kind,
             OutputKind::Terminal {
-                reason: TerminalReason::DeadlineExpired,
+                reason: TerminalReason::Unanchored,
                 ..
             }
         ),
-        "the terminal is tagged deadline-expired, got {}",
+        "the answer determines the terminal reason, got {}",
         output.kind.kind(),
     );
 }
 
-/// An answer landing just before the deadline wins: the commit is a match, no terminal.
+/// A solved answer landing after the freshness target still commits as a match.
 #[tokio::test(start_paused = true)]
-async fn prepared_commit_beats_deadline() {
-    // A 40 ms answer under a 100 ms budget: the result commits first.
-    let fleet = Fleet::bent_road_with_budget(100);
+async fn solved_answer_after_freshness_target_commits() {
+    // A 40 ms answer exceeds the 10 ms target but remains valid work.
+    let fleet = Fleet::bent_road_with_budget(10);
     let vehicle = 1u64;
     let partition = fleet.partition_of(vehicle);
 
@@ -78,7 +77,7 @@ async fn prepared_commit_beats_deadline() {
     let stats = orchestrator.stop().await;
     matcher.stop().await;
 
-    assert_eq!(stats.terminal, 0, "the answer beat the deadline");
+    assert_eq!(stats.terminal, 0, "lateness does not create a terminal");
     assert_eq!(stats.committed, 1, "exactly one commit");
     let outputs = published_outputs(&fleet.bus, partition);
     assert_eq!(outputs.len(), 1, "one output");

@@ -19,8 +19,6 @@ use crate::protocol::ids::{self, JobId, ObservationId, OutputId, Revision, Segme
 /// layers; whether they close the segment is carried by `Terminal::closes_segment`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum TerminalReason {
-    /// The job's deadline passed before a result committed.
-    DeadlineExpired,
     /// The matcher ran the job to exhaustion without an emission.
     JobExhausted,
     /// The observation fell outside the loaded shard coverage.
@@ -42,7 +40,6 @@ impl TerminalReason {
     /// A stable snake_case label for bounded metric dimensions.
     pub fn label(&self) -> &'static str {
         match self {
-            TerminalReason::DeadlineExpired => "deadline_expired",
             TerminalReason::JobExhausted => "job_exhausted",
             TerminalReason::UnsupportedCoverage => "unsupported_coverage",
             TerminalReason::VersionMismatch => "version_mismatch",
@@ -436,7 +433,6 @@ mod tests {
     #[test]
     fn terminal_reason_labels_are_snake_case() {
         let all = [
-            TerminalReason::DeadlineExpired,
             TerminalReason::JobExhausted,
             TerminalReason::UnsupportedCoverage,
             TerminalReason::VersionMismatch,
@@ -447,7 +443,6 @@ mod tests {
         ];
         for reason in all {
             let expected = match reason {
-                TerminalReason::DeadlineExpired => "deadline_expired",
                 TerminalReason::JobExhausted => "job_exhausted",
                 TerminalReason::UnsupportedCoverage => "unsupported_coverage",
                 TerminalReason::VersionMismatch => "version_mismatch",

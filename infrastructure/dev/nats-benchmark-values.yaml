@@ -1,0 +1,65 @@
+# Complete local NATS benchmark profile. Keep this aligned with the actual
+# routers-local devstack release; using `--reuse-values` across chart schema
+# revisions can omit newly required defaults.
+#
+# The chart default uses `-jsz=all`, which asks NATS for every consumer on every
+# scrape. The realtime topology can have thousands of consumers, so that query
+# materially loads NATS and contaminates a throughput benchmark. Stream-level
+# JSZ retains broker publish rates and work-queue depth without enumerating
+# consumers. Application metrics supply claim/ack rates and scheduler depth.
+fullnameOverride: nats
+
+config:
+  cluster:
+    enabled: false
+    replicas: 1
+  jetstream:
+    enabled: true
+    fileStore:
+      enabled: true
+      pvc:
+        enabled: true
+        # Must match the bound nats-js-nats-0 PVC. Its default storage class is
+        # local-path; leaving storageClassName unset preserves that live spec.
+        size: 47Gi
+  merge:
+    max_payload: 8388608
+
+container:
+  env:
+    GOMEMLIMIT:
+      value: 3276MiB
+  resources:
+    limits:
+      memory: 4096Mi
+    requests:
+      cpu: 500m
+      memory: 4096Mi
+
+natsBox:
+  enabled: false
+
+podTemplate:
+  topologySpreadConstraints:
+    kubernetes.io/hostname:
+      maxSkew: 1
+      whenUnsatisfiable: DoNotSchedule
+
+promExporter:
+  enabled: true
+  port: 7777
+  merge:
+    args:
+      - -port=7777
+      - -varz
+      - -prefix=nats
+      - -use_internal_server_id
+      - -jsz=streams
+      - http://localhost:8222/
+  podMonitor:
+    enabled: true
+    merge:
+      spec:
+        podMetricsEndpoints:
+          - port: prom-metrics
+            interval: 5s

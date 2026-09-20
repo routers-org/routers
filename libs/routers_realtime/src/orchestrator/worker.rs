@@ -1,7 +1,7 @@
 //! Orchestrator: the single-task partition worker loop.
 //!
 //! One worker owns one partition's state and `select!`s over raw deliveries,
-//! result deliveries, deadline ticks, and a housekeeping tick. Invariants: one
+//! result deliveries and a housekeeping tick. Invariants: one
 //! active job per vehicle, per-vehicle FIFO on the raw sequence, and commits run
 //! inline on this task so they never overlap. The `bus::adapter` futures are not
 //! `Send`, so every source, publisher, and ack stays on this one task.
@@ -12,7 +12,7 @@ use core::time::Duration;
 use std::collections::{HashMap, HashSet};
 
 use routers_network::Entry;
-use tokio::time::{Instant, MissedTickBehavior, interval, sleep_until};
+use tokio::time::{Instant, MissedTickBehavior, interval};
 use tracing::{debug, error, warn};
 use web_time::UNIX_EPOCH;
 
@@ -23,7 +23,6 @@ use crate::matcher::pull::RawBytes;
 use crate::metrics::Metrics;
 use crate::orchestrator::admission::{Admission, HeldReason, Waiting};
 use crate::orchestrator::commit::{self, CommitConfig, CommitError, Committer, Decision};
-use crate::orchestrator::deadline::{self, DeadlineConfig, Deadlines, Expiry};
 use crate::orchestrator::dispatch::{
     DispatchConfig, DispatchError, Dispatcher, TimestampRegression, timestamp_regression,
 };
@@ -57,8 +56,6 @@ pub struct WorkerConfig {
     pub dispatch: DispatchConfig,
     /// The committer's publish-retry policy (mirror of the built one).
     pub commit: CommitConfig,
-    /// The deadline grace knob.
-    pub deadline: DeadlineConfig,
     /// How often the housekeeping tick fires (frontier persist, retries,
     /// eviction).
     pub tick: Duration,
@@ -82,7 +79,6 @@ impl WorkerConfig {
             frontier: FrontierConfig::default(),
             dispatch: DispatchConfig::default(),
             commit: CommitConfig::default(),
-            deadline: DeadlineConfig::default(),
             tick: Duration::from_millis(250),
             evict_every: Duration::from_secs(30),
             blocked_retry: Duration::from_secs(5),
@@ -230,7 +226,6 @@ where
     results: XS,
     scheduler: Scheduler<E, RS::Handle>,
     tracker: FrontierTracker,
-    deadlines: Deadlines,
     /// Vehicles whose commit is stuck, mapped to the next retry instant.
     blocked: HashMap<VehicleId, Instant>,
     /// Admission-held vehicles retaining a [`Waiting`] guard until dispatch.
@@ -306,7 +301,6 @@ where
             results,
             scheduler,
             tracker,
-            deadlines: Deadlines::new(),
             blocked,
             held: HashMap::new(),
             active_meta: HashMap::new(),
@@ -338,7 +332,6 @@ where
         let mut results_open = true;
 
         loop {
-            let next_deadline = self.deadlines.next_at();
             tokio::select! {
                 () = self.shutdown.triggered() => break,
                 maybe = self.raw.next(), if raw_open => match maybe {
@@ -351,7 +344,6 @@ where
                     Some(Err(error)) => warn!(%error, "result source error"),
                     None => results_open = false,
                 },
-                () = wait_deadline(next_deadline) => self.on_deadlines().await,
                 _ = tick.tick() => self.on_tick().await,
             }
         }
@@ -401,14 +393,18 @@ where
                 self.metrics.poison(reason.label());
                 debug!(reason = reason.label(), "poison raw message");
                 let seq = handle.sequence();
-                let _ = handle.ack().await;
+                if handle.ack().await.is_ok() {
+                    self.metrics.raw_acked("poison");
+                }
                 self.tracker.complete(seq);
             }
             RawDisposition::Suppressed { handle, reason } => {
                 self.stats.suppressed += 1;
                 self.metrics.suppressed(reason.label());
                 let seq = handle.sequence();
-                let _ = handle.ack().await;
+                if handle.ack().await.is_ok() {
+                    self.metrics.raw_acked("suppressed");
+                }
                 self.tracker.complete(seq);
             }
             RawDisposition::Deferred { handle, reason } => {
@@ -514,32 +510,6 @@ where
                 }
             }
         }
-    }
-
-    /// Fire due deadlines: a live, uncommitted job whose timer expired commits a
-    /// `Terminal` through the same commit path a real result uses.
-    async fn on_deadlines(&mut self) {
-        let now = Instant::now();
-        for (vehicle, job) in self.deadlines.pop_expired(now) {
-            let expiry = self
-                .scheduler
-                .state(vehicle)
-                .map_or(Expiry::Ignore, |state| deadline::on_expiry(state, job));
-            let Expiry::Terminal(reason) = expiry else {
-                continue;
-            };
-            let Some(segment) = self.active_meta.get(&vehicle).map(|m| m.segment) else {
-                continue;
-            };
-            let decision = {
-                let Some(active) = self.scheduler.active(vehicle) else {
-                    continue;
-                };
-                deadline::terminal_decision(active, reason, segment)
-            };
-            self.commit_decision(vehicle, decision, None).await;
-        }
-        self.pump().await;
     }
 
     /// Housekeeping: persist the frontier when due, retry blocked and held
@@ -700,8 +670,6 @@ where
                     .base
                     .map(|b| b.revision)
                     .or_else(|| pending.and_then(|p| p.prior));
-                let fire = self.cfg.deadline.fire_at(d.job.deadline);
-                let job_id = d.job.id;
                 let job_bytes = d.job.bytes;
                 self.active_meta.insert(
                     vehicle,
@@ -718,7 +686,6 @@ where
                     self.active_meta.remove(&vehicle);
                     return DispatchOutcome::Skipped;
                 }
-                self.deadlines.arm(fire, vehicle, job_id);
                 self.held.remove(&vehicle);
                 self.stats.dispatched += 1;
                 self.metrics
@@ -793,7 +760,7 @@ where
     }
 
     /// Commit `decision` for `vehicle` and advance past its head. The single
-    /// funnel both the result path and the deadline path reach.
+    /// funnel that result deliveries reach.
     async fn commit_decision(
         &mut self,
         vehicle: VehicleId,
@@ -858,7 +825,9 @@ where
                     .set_checkpoint(vehicle, CheckpointState::Present(next));
                 if let Ok(finished) = self.scheduler.finish(vehicle, now) {
                     let seq = finished.observation.id.sequence;
-                    let _ = finished.observation.handle.ack().await;
+                    if finished.observation.handle.ack().await.is_ok() {
+                        self.metrics.raw_acked("committed");
+                    }
                     if let Some(delivery) = result_delivery {
                         let _ = delivery.handle.ack().await;
                     }
@@ -1030,7 +999,6 @@ where
             id: job_id,
             identity: identity.clone(),
             observation: head_obs,
-            deadline: now,
             bytes: 0,
             reservation,
             dispatched: now,
@@ -1168,7 +1136,9 @@ where
                 .set_checkpoint(vehicle, CheckpointState::Unloaded);
             if let Ok(finished) = self.scheduler.finish(vehicle, now) {
                 let seq = finished.observation.id.sequence;
-                let _ = finished.observation.handle.ack().await;
+                if finished.observation.handle.ack().await.is_ok() {
+                    self.metrics.raw_acked("committed");
+                }
                 self.tracker.complete(seq);
                 drop(finished.job);
             }
@@ -1254,14 +1224,6 @@ fn decision_reset_segment<E: Entry>(decision: &Decision<E>) -> (Option<ResetReas
     }
 }
 
-/// Sleep until `at`, or forever when no deadline is armed.
-async fn wait_deadline(at: Option<Instant>) {
-    match at {
-        Some(at) => sleep_until(at).await,
-        None => core::future::pending::<()>().await,
-    }
-}
-
 /// The current wall clock as absolute unix microseconds, saturating rather than wrapping.
 fn unix_micros() -> i64 {
     crate::bus::wallclock()
@@ -1279,14 +1241,14 @@ mod tests {
     use chrono::{DateTime, Utc};
     use geo::Point;
     use routers_network::mock::MockEntryId;
-    use routers_transition::matcher::{Continuation, Trip};
+    use routers_transition::matcher::Trip;
 
     use crate::bus::Wire;
     use crate::bus::memory::{MemoryBus, MemoryPublisher, MemorySource};
     use crate::event::{MatchedDiff, Payload, shard_of};
     use crate::orchestrator::admission::AdmissionConfig;
     use crate::partition::partition_of;
-    use crate::protocol::ids::{JobId, Lane, ObservationId, OutputId};
+    use crate::protocol::ids::{JobId, ObservationId, OutputId};
     use crate::protocol::output::OutputKind;
     use crate::protocol::result::SolveOutcome;
     use crate::store::checkpoint::{CommitPhase, MemoryCheckpointStore, PreparedCommit};
@@ -1872,16 +1834,18 @@ freshness_budget_ms = 30000
     }
 
     #[tokio::test(start_paused = true)]
-    async fn deadline_terminal_and_late_result_rejected() {
+    async fn overdue_freshness_target_keeps_unanswered_work_active() {
         let vehicle = 1u64;
         let partition = partition_for(vehicle);
         let bus = MemoryBus::new();
         let store = MemoryCheckpointStore::new();
         let shutdown = Shutdown::new();
 
-        let seq = publish_raw(&bus, partition, vehicle, 1_775_000_000_000_000).await;
+        publish_raw(&bus, partition, vehicle, 1_775_000_000_000_000).await;
 
-        // No matcher runs, so the job is never answered; a short budget expires it fast.
+        // No matcher runs. The small target is deliberately crossed while the
+        // job is unanswered; it must remain active and broker-owned rather
+        // rather than being converted into a synthetic terminal.
         let worker = build_worker(
             config(partition),
             Arc::new(catalog(100)),
@@ -1891,40 +1855,18 @@ freshness_budget_ms = 30000
         );
 
         let out_subject = output_subject(u64::from(partition));
+        let job_filter = "solve.v1.g.>";
         let driver = {
             let bus = bus.clone();
             let shutdown = shutdown.clone();
             let out_subject = out_subject.clone();
             async move {
-                wait_until(|| !bus.published(&out_subject).is_empty()).await;
-                let identity = JobIdentity {
-                    schema: SCHEMA_VERSION,
-                    vehicle_id: VehicleId(vehicle),
-                    observation: crate::protocol::ids::ObservationId {
-                        partition,
-                        sequence: seq,
-                    },
-                    base: None,
-                    graph: GraphVersion::new("g1").unwrap(),
-                    region: RegionId::new("r1").unwrap(),
-                };
-                let job = SolveJob::new(
-                    identity,
-                    Lane::DEFAULT,
-                    i64::MAX,
-                    Continuation::Restart { fresh: Vec::new() },
+                wait_until(|| !bus.published(job_filter).is_empty()).await;
+                tokio::time::advance(Duration::from_secs(1)).await;
+                assert!(
+                    bus.published(&out_subject).is_empty(),
+                    "freshness age must not emit a terminal output"
                 );
-                let late = SolveResult::new(&job, SolveOutcome::Unanchored, 0);
-                bus.publisher::<SolveResult<E>>()
-                    .publish(
-                        &result_subject(u64::from(partition)),
-                        &late.msg_id(),
-                        HeaderMap::new(),
-                        &late,
-                    )
-                    .await
-                    .unwrap();
-                wait_until(|| bus.acked_count(&result_subject(u64::from(partition))) >= 1).await;
                 shutdown.trigger(crate::lifecycle::DrainReason::Operator);
             }
         };
@@ -1932,10 +1874,9 @@ freshness_budget_ms = 30000
         let (stats, ()) = tokio::join!(worker.run(), driver);
         let stats = stats.expect("worker ran");
 
-        assert_eq!(stats.terminal, 1, "the deadline committed one terminal");
-        assert_eq!(stats.committed, 1);
-        assert_eq!(stats.rejected, 1, "the late result was rejected as decided");
-        assert_eq!(bus.published(&out_subject).len(), 1);
+        assert_eq!(stats.terminal, 0, "freshness is not a terminal outcome");
+        assert_eq!(stats.committed, 0);
+        assert!(bus.published(&out_subject).is_empty());
     }
 
     #[tokio::test(start_paused = true)]
@@ -2429,7 +2370,7 @@ freshness_budget_ms = 30000
 
         publish_raw(&bus, partition, vehicle, 1_775_000_000_000_000).await;
 
-        // A long freshness budget so no deadline pops the head; the observation keeps ageing.
+        // The observation remains active while its result is outstanding.
         let mut worker = build_worker(
             config(partition),
             Arc::new(catalog(3_600_000)),

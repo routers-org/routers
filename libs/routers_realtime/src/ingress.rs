@@ -7,7 +7,7 @@
 //! their own streams so replay never touches the live path. Per-vehicle order
 //! holds only if a caller publishes one vehicle's observations in order.
 
-use core::future::IntoFuture;
+use core::future::{Future, IntoFuture};
 use core::time::Duration;
 
 use anyhow::anyhow;
@@ -267,33 +267,47 @@ impl Ingress {
     }
 
     /// One publish send-and-await under [`Ingress::publish_timeout`]; a timeout is ambiguous.
+    ///
+    /// The budget covers both creating the pending publish and awaiting its
+    /// acknowledgement. A stalled connection can otherwise hang before there
+    /// is an acknowledgement future to wrap.
     async fn send(
         &self,
         subject: &str,
         headers: HeaderMap,
         bytes: Vec<u8>,
     ) -> anyhow::Result<PublishAck> {
-        let pending = self
-            .js
-            .publish_with_headers(subject.to_owned(), headers, bytes.into())
-            .await
-            .map_err(|error| anyhow!("publish send failed: {error}"))?;
-
-        let ack = tokio::time::timeout(self.publish_timeout, pending.into_future())
-            .await
-            .map_err(|_| {
-                anyhow!(
-                    "publish acknowledgement timed out after {:?}",
-                    self.publish_timeout
-                )
-            })?
-            .map_err(|error| anyhow!("publish acknowledgement failed: {error}"))?;
+        let timeout = self.publish_timeout;
+        let ack = within_publish_timeout(timeout, async {
+            let pending = self
+                .js
+                .publish_with_headers(subject.to_owned(), headers, bytes.into())
+                .await
+                .map_err(|error| anyhow!("publish send failed: {error}"))?;
+            pending
+                .into_future()
+                .await
+                .map_err(|error| anyhow!("publish acknowledgement failed: {error}"))
+        })
+        .await?;
 
         Ok(PublishAck {
             sequence: ack.sequence,
             duplicate: ack.duplicate,
         })
     }
+}
+
+/// Await an entire publish operation under one budget, including creation of a
+/// broker acknowledgement future. Keeping this separate makes the timeout
+/// boundary explicit and testable without a live broker.
+async fn within_publish_timeout<T>(
+    timeout: Duration,
+    operation: impl Future<Output = anyhow::Result<T>>,
+) -> anyhow::Result<T> {
+    tokio::time::timeout(timeout, operation)
+        .await
+        .map_err(|_| anyhow!("publish send or acknowledgement timed out after {timeout:?}"))?
 }
 
 /// The raw subject for `partition`, prefixed `replay.<run>.` when `run` is set.
@@ -412,6 +426,17 @@ mod tests {
         assert_eq!(msg_id(&event), msg_id(&valid()));
         let later = payload(42, 151.2093, -33.8688, now() + TimeDelta::seconds(1));
         assert_ne!(msg_id(&event), msg_id(&later));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn publish_timeout_covers_a_stalled_send() {
+        let task = tokio::spawn(within_publish_timeout(
+            Duration::from_secs(1),
+            core::future::pending::<anyhow::Result<()>>(),
+        ));
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_secs(1)).await;
+        assert!(task.await.expect("timeout task did not panic").is_err());
     }
 
     #[test]

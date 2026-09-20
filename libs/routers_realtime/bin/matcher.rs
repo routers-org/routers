@@ -236,7 +236,6 @@ async fn main() -> anyhow::Result<()> {
         max_batch: args.max_in_flight.get(),
         validate: ValidateConfig {
             max_decoded_bytes: args.max_decoded_bytes,
-            min_remaining: ValidateConfig::DEFAULT_MIN_REMAINING,
         },
         grace: args.grace,
     };

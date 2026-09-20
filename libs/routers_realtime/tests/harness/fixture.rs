@@ -181,7 +181,7 @@ pub fn empty_solved() -> SolveOutcome<E> {
     }
 }
 
-/// A scripted answer function: `None` never answers (the deadline path's fuel).
+/// A scripted answer function: `None` never answers.
 pub type Answer = Box<dyn FnMut(&SolveJob<E>) -> Option<SolveOutcome<E>> + Send>;
 
 /// How a spawned matcher answers the jobs it pulls.
@@ -214,7 +214,7 @@ impl MatcherBehaviour {
         }))
     }
 
-    /// A matcher that never answers, so every job runs out its deadline.
+    /// A matcher that consumes jobs without answering them.
     #[must_use]
     pub fn silent() -> Self {
         MatcherBehaviour::Scripted(Box::new(|_| None))
@@ -293,7 +293,7 @@ pub struct Fleet {
     pub store: MemoryCheckpointStore,
     pub catalog: Arc<Catalog>,
     pub admission: Admission,
-    /// The per-region freshness budget baked into the catalog (the deadline).
+    /// The per-region freshness target budget baked into the catalog.
     budget_ms: u64,
     pending_limit: usize,
     parked_limit: usize,
@@ -308,8 +308,8 @@ impl Fleet {
         Self::with_budget(regions, 30_000)
     }
 
-    /// As [`new`](Self::new), but with an explicit per-region freshness budget so
-    /// the deadline scenarios can make jobs expire quickly.
+    /// As [`new`](Self::new), but with an explicit per-region freshness target
+    /// budget for SLA scenarios.
     #[must_use]
     pub fn with_budget(regions: &[(&str, &[&str])], budget_ms: u64) -> Self {
         let catalog = Arc::new(build_catalog(regions, budget_ms));
@@ -676,7 +676,7 @@ impl Fleet {
     /// quiesced. Bounded; panics rather than hang.
     pub async fn settle(&self) {
         const STEP: Duration = Duration::from_millis(5);
-        // 400 ms of stillness: longer than any tick, deadline, or delay a scenario arms.
+        // 400 ms of stillness: longer than any tick or delay a scenario arms.
         const QUIET_STEPS: usize = 80;
         const MAX_STEPS: usize = 6_000; // 30 s of simulated time, a hard ceiling.
 
