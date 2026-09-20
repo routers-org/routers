@@ -1,29 +1,10 @@
-//! Matcher result publisher: publish the result, then acknowledge the job. (T26)
+//! Matcher result publisher: publish the result, then acknowledge the job.
 //!
-//! A matcher answers exactly one [`SolveJob`](crate::protocol::job::SolveJob)
-//! with one [`SolveResult`], and the ordering between *publishing that result*
-//! and *acknowledging the job* is the load-bearing invariant of the stage
-//! (spec §4, §10): **never acknowledge the job until the broker has
-//! acknowledged the result.** If the matcher dies after solving but before the
-//! result lands, the un-acked job is redelivered and re-solved — duplicate
-//! *computation* is nominal. What must never happen is a job retired against a
-//! result the broker never stored, because then the outcome is lost for good
-//! and the vehicle's timeline stalls.
-//!
-//! Idempotence closes the other edge of that window. The result carries
-//! `Nats-Msg-Id = `[`SolveResult::msg_id`]` = ` the job id, so a result
-//! re-published after an *ambiguous* send — one whose acknowledgement was lost
-//! and which therefore *may* already have landed — is collapsed by the broker's
-//! deduplication window rather than committed twice. That is why an
-//! [`PublishError::Ambiguous`] outcome is retried with the *same bytes* under
-//! the *same id*: a byte-identical retry is safe precisely because the broker
-//! deduplicates it, whereas a [`PublishError::Failed`] outcome stored nothing
-//! and the job is simply handed back for redelivery.
-//!
-//! [`ResultPublisher::publish_then_ack`] is the sequencing of those two facts:
-//! encode once, retry ambiguous publishes with a capped doubling backoff,
-//! acknowledge the job only on a confirmed store, and otherwise `nak` the job
-//! so the broker redelivers it.
+//! The load-bearing invariant: never acknowledge the job until the broker has
+//! acknowledged the result — a crash before the result lands redelivers the
+//! un-acked job (a duplicate solve is nominal). The result's `Nats-Msg-Id` is
+//! the job id, so an [`PublishError::Ambiguous`] retry dedups; a
+//! [`PublishError::Failed`] send stored nothing and the job is redelivered.
 
 use core::time::Duration;
 
@@ -38,23 +19,20 @@ use crate::protocol::ids::headers::stamp_schema;
 use crate::protocol::result::SolveResult;
 use crate::topology::results;
 
-/// The ceiling a doubling backoff is allowed to reach between retries, so a
-/// struggling broker is not hammered while an ambiguous publish is retried.
+/// The ceiling a doubling backoff may reach between retries.
 const BACKOFF_CAP: Duration = Duration::from_secs(2);
 
 /// How the publisher retries an ambiguous result publish before giving up.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PublishConfig {
-    /// The maximum number of publish attempts for one result before it is
-    /// declared [`PublishFailure::Exhausted`]. It counts the first attempt, so
-    /// `1` means "try once, never retry".
+    /// The maximum publish attempts before [`PublishFailure::Exhausted`]. Counts
+    /// the first attempt, so `1` means "try once, never retry".
     pub attempts: u32,
-    /// The first inter-attempt pause. It doubles after each ambiguous attempt,
-    /// capped at [`BACKOFF_CAP`], so retries spread out instead of spinning.
+    /// The first inter-attempt pause. Doubles after each ambiguous attempt,
+    /// capped at [`BACKOFF_CAP`].
     pub backoff: Duration,
-    /// The redelivery hint attached to the job's `nak` when the result could
-    /// not be published — how long the broker should hold the job back before
-    /// offering it to a matcher again.
+    /// The redelivery hint attached to the job's `nak`: how long the broker holds
+    /// the job back before offering it again.
     pub nak_delay: Duration,
 }
 
@@ -74,17 +52,13 @@ impl Default for PublishConfig {
 pub struct Published {
     /// How many publish attempts it took (`1` when the first landed).
     pub attempts: u32,
-    /// `true` when the broker recognised the result as a duplicate of one it
-    /// already held — the ambiguous-retry-dedups path, not a fresh store.
+    /// `true` when the broker recognised the result as a duplicate it already
+    /// held, rather than a fresh store.
     pub duplicate: bool,
 }
 
-/// Why a result could not be published-then-acked.
-///
-/// In every case the job is left for redelivery — explicitly `nak`ed for
-/// [`PublishFailure::Exhausted`] and [`PublishFailure::Failed`], or simply not
-/// acknowledged for [`PublishFailure::AckFailed`] — so the work is retried and
-/// the result's msg-id deduplicates any copy that does reach the stream.
+/// Why a result could not be published-then-acked. In every case the job is left
+/// for redelivery, so the work is retried and its msg-id deduplicates any copy.
 #[derive(Debug, Error)]
 pub enum PublishFailure {
     /// Every attempt returned [`PublishError::Ambiguous`]; a copy may or may not
@@ -99,21 +73,15 @@ pub enum PublishFailure {
     #[error("result publish failed")]
     Failed(#[source] anyhow::Error),
     /// The result was stored, but acknowledging the job afterwards failed. The
-    /// job is deliberately *not* `nak`ed — the broker redelivers it on
-    /// `ack_wait`, and the duplicate result deduplicates on its msg-id — so the
-    /// outcome is not lost.
+    /// job is deliberately not `nak`ed — the broker redelivers it on `ack_wait`
+    /// and the duplicate result deduplicates on its msg-id.
     #[error("result published but the job acknowledgement failed")]
     AckFailed(#[source] anyhow::Error),
 }
 
 /// Publishes solve results and acknowledges the jobs that produced them, in
-/// that order.
-///
-/// It is generic over the [`Publisher`] `P` so production wires it to JetStream
-/// while tests drive it against the in-memory bus. The network entry type `E`
-/// is a parameter of [`publish_then_ack`](Self::publish_then_ack) rather than
-/// the struct, mirroring that method's own signature, so the bound
-/// `P: Publisher<SolveResult<E>>` is stated exactly where the publish happens.
+/// that order. Generic over the [`Publisher`] `P` so production wires it to
+/// JetStream while tests drive it against the in-memory bus.
 #[derive(Clone, Debug)]
 pub struct ResultPublisher<P> {
     publisher: P,
@@ -129,33 +97,20 @@ impl<P> ResultPublisher<P> {
 
     /// Publish `result`, then acknowledge `job` — and only in that order.
     ///
-    /// The result is encoded once and published to its partition's result
-    /// subject under `Nats-Msg-Id = result.msg_id()` (the job id) with an
-    /// outbound trace context stamped with this build's schema version. The
-    /// attempt loop then enforces the stage's invariant:
-    ///
-    /// * [`PublishOutcome::Acked`] ⇒ the broker holds the result, so `job` is
-    ///   acknowledged and [`Published`] is returned. If that acknowledgement
-    ///   itself fails, [`PublishFailure::AckFailed`] is returned and the job is
-    ///   left for redelivery (the stored result deduplicates the retry).
-    /// * [`PublishError::Ambiguous`] ⇒ the send *may* have landed; back off and
-    ///   retry the identical bytes so a stored copy deduplicates. After
-    ///   [`PublishConfig::attempts`] the job is `nak`ed and
-    ///   [`PublishFailure::Exhausted`] is returned.
-    /// * [`PublishError::Failed`] ⇒ nothing landed; the job is `nak`ed and
-    ///   [`PublishFailure::Failed`] is returned.
-    ///
-    /// The job is never acknowledged unless the broker acknowledged the result.
+    /// The result is encoded once and published under
+    /// `Nats-Msg-Id = result.msg_id()` (the job id). The job is never
+    /// acknowledged unless the broker acknowledged the result: an ambiguous send
+    /// retries the identical bytes up to [`PublishConfig::attempts`] then
+    /// [`PublishFailure::Exhausted`], a failed send `nak`s, and an ack that fails
+    /// after a confirmed store returns [`PublishFailure::AckFailed`] without a `nak`.
     pub async fn publish_then_ack<E, H>(
         &self,
         result: &SolveResult<E>,
         job: H,
     ) -> Result<Published, PublishFailure>
     where
-        // `SolveResult<E>: Wire` — the encode below and the `Publisher` bound —
-        // holds only when `E` deserialises; `Entry` alone guarantees only
-        // `Serialize`, so the extra bound the postcard `Wire` impl needs is
-        // stated here.
+        // `SolveResult<E>: Wire` holds only when `E` deserialises; `Entry` alone
+        // guarantees only `Serialize`, so the extra bound is stated here.
         E: Entry + serde::de::DeserializeOwned,
         H: AckHandle,
         P: Publisher<SolveResult<E>>,
@@ -166,9 +121,8 @@ impl<P> ResultPublisher<P> {
         let mut headers = outbound();
         stamp_schema(&mut headers);
 
-        // Encode once: every retry republishes these exact bytes so the broker
-        // deduplicates an ambiguous send. An encode failure lands nothing, so it
-        // is treated like a clean `Failed` publish — the job is handed back.
+        // Encode once so every retry republishes these exact bytes; an encode
+        // failure lands nothing and is handled like a clean `Failed` publish.
         let bytes = match result.encode() {
             Ok(bytes) => bytes,
             Err(error) => {
@@ -187,9 +141,8 @@ impl<P> ResultPublisher<P> {
                 .await
             {
                 Ok(PublishOutcome::Acked { duplicate, .. }) => {
-                    // The broker has the result: only now may the job retire. If
-                    // the ack fails we do not `nak` — the broker redelivers the
-                    // job on its own and the stored result deduplicates.
+                    // The broker has the result: only now may the job retire. A
+                    // failed ack is not `nak`ed — redelivery plus dedup covers it.
                     return match job.ack().await {
                         Ok(()) => Ok(Published {
                             attempts: attempt,
@@ -235,15 +188,14 @@ mod tests {
     use crate::protocol::result::{SolveOutcome, SolveResult};
     use crate::topology::results;
 
-    /// The subject the stand-in job message lives on. It shares no dedup group
-    /// with the result plane, so acking/naking it never touches result state.
+    /// The subject the stand-in job message lives on, sharing no dedup group with
+    /// the result plane so acking/naking it never touches result state.
     const JOB_SUBJECT: &str = "solve.jobs.test";
 
     /// The result-plane wildcard used to inspect what the publisher stored.
     const RESULTS: &str = "solve-result.v1.p.>";
 
-    /// A representative result for `vehicle`, whose echoed id matches its
-    /// identity so [`SolveResult::verify`] would pass.
+    /// A representative result for `vehicle`, whose echoed id matches its identity.
     fn sample_result(vehicle: u64) -> SolveResult<MockEntryId> {
         let identity = JobIdentity {
             schema: SCHEMA_VERSION,
@@ -266,7 +218,7 @@ mod tests {
         SolveResult::new(&job, SolveOutcome::Unanchored, 1_726_000_000_500_000)
     }
 
-    /// Small, fast timings so retrying tests do not sleep for real.
+    /// Fast timings so retrying tests do not sleep for real.
     fn fast_config() -> PublishConfig {
         PublishConfig {
             attempts: 5,
@@ -275,8 +227,7 @@ mod tests {
         }
     }
 
-    /// Deliver a stand-in job message and hand back its ack handle, so a test
-    /// can assert whether the publisher acknowledged or `nak`ed "the job".
+    /// Deliver a stand-in job message and hand back its ack handle.
     async fn job_handle(bus: &MemoryBus) -> MemoryAck {
         let publisher = bus.publisher::<SolveResult<MockEntryId>>();
         let mut source = bus.source::<SolveResult<MockEntryId>>(JOB_SUBJECT);
@@ -292,8 +243,8 @@ mod tests {
             .handle
     }
 
-    /// An ack handle whose acknowledgement always fails, for the AckFailed path.
-    /// Its `nak`s are recorded so a test can assert one was (not) sent.
+    /// An ack handle whose acknowledgement always fails, recording its `nak`s so
+    /// a test can assert one was (not) sent.
     struct FailingAck {
         naks: Arc<Mutex<Vec<Option<Duration>>>>,
     }
@@ -337,8 +288,6 @@ mod tests {
             }
         );
 
-        // Exactly one result stored, keyed by the job id, on the vehicle's
-        // partition subject.
         let stored = bus.published(RESULTS);
         assert_eq!(stored.len(), 1);
         assert_eq!(stored[0].1.as_deref(), Some(result.msg_id().as_str()));
@@ -347,7 +296,6 @@ mod tests {
             results::result_subject(u64::from(result.partition()))
         );
 
-        // The job was acked exactly once and never naked.
         assert_eq!(bus.acked_count(JOB_SUBJECT), 1);
         assert!(bus.nak_delays().is_empty());
     }
@@ -360,8 +308,8 @@ mod tests {
         let publisher =
             ResultPublisher::new(bus.publisher::<SolveResult<MockEntryId>>(), fast_config());
 
-        // The first publish is ambiguous: the memory bus stores it, then the
-        // retry deduplicates against that stored copy.
+        // The first publish is ambiguous: the bus stores it, then the retry
+        // deduplicates against that stored copy.
         bus.fail_next_publish(PublishError::Ambiguous(anyhow::anyhow!("ack lost")));
 
         let published = publisher
@@ -374,7 +322,6 @@ mod tests {
             "the retry deduplicated against the stored copy"
         );
 
-        // Only one result exists despite two attempts, and the job is acked.
         assert_eq!(bus.published(RESULTS).len(), 1);
         assert_eq!(bus.acked_count(JOB_SUBJECT), 1);
         assert!(bus.nak_delays().is_empty());
@@ -400,7 +347,6 @@ mod tests {
             "got {failure:?}"
         );
 
-        // Nothing stored, the job is not acked, and it is naked with the hint.
         assert!(bus.published(RESULTS).is_empty());
         assert_eq!(bus.acked_count(JOB_SUBJECT), 0);
         assert_eq!(bus.nak_delays(), vec![Some(nak_delay)]);
@@ -411,8 +357,7 @@ mod tests {
         let bus = MemoryBus::new();
         let handle = job_handle(&bus).await;
         let result = sample_result(99);
-        // A one-shot bus knob pairs with a one-attempt budget to exhaust
-        // deterministically without a repeating-failure knob.
+        // A one-shot bus knob plus a one-attempt budget exhausts deterministically.
         let cfg = PublishConfig {
             attempts: 1,
             backoff: Duration::from_millis(1),
@@ -455,8 +400,7 @@ mod tests {
             "got {failure:?}"
         );
 
-        // The result did land, and the job was NOT naked: the broker will
-        // redeliver it on ack_wait and the stored result deduplicates.
+        // The result landed and the job was not naked: redelivery plus dedup covers it.
         assert_eq!(bus.published(RESULTS).len(), 1);
         assert!(naks.lock().unwrap().is_empty());
     }

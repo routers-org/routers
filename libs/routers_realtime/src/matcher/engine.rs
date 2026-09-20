@@ -1,28 +1,10 @@
 //! Matcher: the solve engine.
 //!
-//! [`Engine`] is the map-matching core lifted out of `bin/matcher.rs` so the
-//! pull loop (T27), the validator (T25) and the tests can drive a solve
-//! without a NATS connection or a concrete OSM network. It owns exactly the
-//! heavy, shareable state a solve reaches into — the loaded network, its
-//! runtime, the costing strategies and the reachability cache — so a whole
-//! pool of blocking solves can fan out over one `Arc<Engine>` with nothing to
-//! serialise on. A per-solve [`Matcher`] is a cheap bundle of borrows into
-//! this and is rebuilt each call.
-//!
-//! The engine is generic over the [`Network`] rather than pinned to the OSM
-//! types the binary uses: the tests exercise it against
-//! [`routers_network::mock::MockNetwork`], and the binary specialises it to
-//! its sharded network in T32.
-//!
-//! # Outcomes, not replies
-//!
-//! Where the binary answered every request with a `MatchReply` (`Solved` or an
-//! opaque `NoMatch`), the engine returns a typed [`SolveOutcome`]: the nominal
-//! terminals ([`SolveOutcome::Unanchored`], [`SolveOutcome::Disconnected`])
-//! and the faults ([`SolveOutcome::Internal`]) are distinct, so the owner can
-//! commit the right terminal reason instead of collapsing them into "nothing
-//! to emit". Everything the engine does not decide — the deadline (T25) and
-//! the decoded-size bound (T27) — is left to the caller; the engine never
+//! [`Engine`] is the map-matching core. It owns the heavy, shareable state a
+//! solve reaches into — the loaded network, its runtime, costing strategies,
+//! and reachability cache — so blocking solves can share one `Arc<Engine>`.
+//! It is generic over [`Network`] so tests can drive it against a mock. A solve
+//! returns a typed [`SolveOutcome`]; the engine never
 //! rejects a job, it only solves the one it is handed.
 
 use alloc::sync::Arc;
@@ -44,12 +26,6 @@ use crate::protocol::job::SolveJob;
 use crate::protocol::result::SolveOutcome;
 
 /// The shared, reusable state one region's matcher solves against.
-///
-/// Everything here is owned so the engine can be wrapped in an `Arc` and
-/// shared across concurrent blocking solves without juggling `'static`
-/// borrows: the network's spatial index and the predicate cache are the only
-/// heavy state and both are shared, while a per-solve [`Matcher`] is just a
-/// bundle of borrows that is free to build.
 pub struct Engine<N: Network> {
     network: Arc<N>,
     runtime: N::Runtime,
@@ -62,10 +38,8 @@ impl<N: Network> Engine<N> {
     /// Build an engine over a loaded `network` and its `runtime`, using the
     /// default costing strategies and a fresh reachability cache.
     ///
-    /// `search_distance` overrides the candidate generator's default reach
-    /// when `Some`; `None` keeps the generator's own default. The runtime is
-    /// the one that produced `network` — the cache binds itself to it on first
-    /// query and is only valid for that runtime.
+    /// `search_distance` overrides the candidate generator's default reach when
+    /// `Some`; `None` keeps the generator's own default.
     pub fn new(network: Arc<N>, runtime: N::Runtime, search_distance: Option<f64>) -> Self {
         Self {
             network,
@@ -78,20 +52,10 @@ impl<N: Network> Engine<N> {
 
     /// Solve one job, returning the typed outcome the owner commits against.
     ///
-    /// The whole solve is recorded onto a fresh `match_event` span so a trace
-    /// carries the continuation kind, the convergence layer and the emitted
-    /// layer count without a separate metric.
-    ///
     /// A [`Continuation::Resume`] whose trip references edges this network does
-    /// not serve (a resume solved on another shard) is *downgraded* to a
-    /// restart over the trip's own observations, with `diff.downgraded` set:
-    /// the emission re-covers them under a higher revision so the reconciled
-    /// history heals the seam. Fresh observations that anchor to no road are
+    /// not serve is downgraded to a restart over the trip's own observations,
+    /// with `diff.downgraded` set. Fresh observations that anchor to no road are
     /// dropped; a solve left with nothing to match is [`SolveOutcome::Unanchored`].
-    ///
-    /// The deadline and the decoded-size bound are *not* checked here — the
-    /// validator (T25) and the pull loop (T27) own those. The engine only
-    /// solves the job it is handed.
     pub fn solve(&self, job: &SolveJob<N::Entry>) -> SolveOutcome<N::Entry> {
         let vehicle_id = job.identity.vehicle_id;
 
@@ -120,11 +84,9 @@ impl<N: Network> Engine<N> {
         let _entered = span.enter();
 
         let (mut trip, fresh, downgraded) = match job.context.clone() {
-            // A resume solved on another shard references edges this shard's
-            // padding may not cover: adopting it would route through nodes that
-            // do not exist here. Degrade to a restart over the trip's own
-            // observations — the emission re-covers them under a higher
-            // revision, so the reconciled history heals the seam.
+            // A resume referencing edges this shard does not serve is degraded to
+            // a restart over the trip's own observations, healing the seam under
+            // a higher revision.
             Continuation::Resume { trip, fresh } if !matcher.supports(&trip) => {
                 span.record("continuation", "downgrade");
                 warn!("{vehicle_id}: resume references a foreign shard; restarting");
@@ -173,7 +135,7 @@ impl<N: Network> Engine<N> {
             return terminal_outcome(err);
         }
 
-        // Copied out: the snapshot's borrow spans the whole trip mutably.
+        // Copied out: the snapshot borrows the whole trip mutably.
         let origins = trip.origins().to_vec();
 
         let solution = match info_span!("snapshot").in_scope(|| matcher.snapshot(&mut trip)) {
@@ -186,22 +148,17 @@ impl<N: Network> Engine<N> {
             }
         };
 
-        // Emit everything a future solve could still change — the whole trip
-        // since its last cut. Revision 0 is a placeholder: the owner stamps the
-        // real revision (the raw stream sequence) before publishing.
+        // Revision 0 is a placeholder: the owner stamps the real revision (the
+        // raw stream sequence) before publishing.
         let mut diff = info_span!("emit")
             .in_scope(|| MatchedDiff::new(&solution, &origins, self.network.as_ref(), 0));
         diff.downgraded = downgraded;
         drop(solution);
         span.record("emitted", diff.layers.len());
 
-        // The convergence timestamp is read from `origins` *before* the cut:
-        // once the trip is tailed, its layers are renumbered, but the copied
-        // origins still index by the pre-cut layer. The convergence layer is
-        // the latest no future push can change; cutting behind it drops layers
-        // that are final and already emitted, leaving the convergence layer as
-        // the resume anchor. An unfused trip stays whole — the orchestrator's
-        // context window bounds its growth.
+        // Read the convergence timestamp from `origins` before the cut: tailing
+        // renumbers the trip's layers, but the copied origins still index by the
+        // pre-cut layer.
         let converged_through = match matcher.convergence(&trip) {
             Ok(Some(layer)) => {
                 span.record("converged", layer.index() as u64);
@@ -234,11 +191,8 @@ where
 {
     /// Solve `job` on the blocking pool, awaited as a future.
     ///
-    /// Solving is synchronous and CPU-bound, so it runs on
-    /// [`tokio::task::spawn_blocking`] rather than blocking a runtime worker.
-    /// A panic inside the solve is caught and mapped to
-    /// [`SolveOutcome::Internal`] so one poisoned job never takes the pull loop
-    /// down with it.
+    /// A panic inside the solve is caught and mapped to [`SolveOutcome::Internal`]
+    /// so one poisoned job never takes the pull loop down with it.
     pub fn solve_blocking(
         self: &Arc<Self>,
         job: SolveJob<N::Entry>,
@@ -258,9 +212,7 @@ where
 }
 
 /// A match attempt's `outcome`/`severity` span labels for the success-ratio
-/// series. Nominal failures are the data's fault (a point off every road, a
-/// trace the network cannot bridge) and expected in healthy operation; fatal
-/// ones are ours.
+/// series. Nominal failures are the data's fault; fatal ones are ours.
 fn classify(err: &MatchError) -> (&'static str, &'static str) {
     match err {
         MatchError::Unanchored(_) => ("unanchored", "nominal"),
@@ -269,9 +221,8 @@ fn classify(err: &MatchError) -> (&'static str, &'static str) {
     }
 }
 
-/// Project a solve failure onto its terminal [`SolveOutcome`]. The two nominal
-/// failures leave committed state intact; a trellis or solver error is the
-/// matcher's own fault and carries its message for the logs (never a label).
+/// Project a solve failure onto its terminal [`SolveOutcome`]. A trellis or
+/// solver error carries its message for the logs, never a label.
 fn terminal_outcome<E: Entry>(err: MatchError) -> SolveOutcome<E> {
     match err {
         MatchError::Unanchored(_) => SolveOutcome::Unanchored,
@@ -294,8 +245,7 @@ mod tests {
     use crate::protocol::ids::{GraphVersion, Lane, ObservationId, RegionId, SCHEMA_VERSION};
     use crate::protocol::job::{JobIdentity, SolveJob};
 
-    /// A staircase road (west, south, west) — the same shape the crate's
-    /// `matched_diff` integration test matches against.
+    /// A staircase road (west, south, west) — the shared `matched_diff` shape.
     fn bent_road() -> MockNetwork {
         MockNetworkBuilder::new()
             .node(1, point!(x: -118.15, y: 34.15))
@@ -310,9 +260,8 @@ mod tests {
             .build()
     }
 
-    /// The same road geometry with a *disjoint* node-id space: its candidates
-    /// reference edges no [`bent_road`] network serves, so a trip solved here
-    /// fails `matcher.supports` on a `bent_road` engine and forces a downgrade.
+    /// The same road geometry with a disjoint node-id space, so a trip solved
+    /// here fails `matcher.supports` on a `bent_road` engine and forces a downgrade.
     fn bent_road_disjoint() -> MockNetwork {
         MockNetworkBuilder::new()
             .node(1001, point!(x: -118.15, y: 34.15))
@@ -327,8 +276,7 @@ mod tests {
             .build()
     }
 
-    /// Six spaced observations tracing the bend, with realistic supplier
-    /// stamps: distinct, five seconds apart, non-zero micros.
+    /// Six spaced observations tracing the bend, five seconds apart.
     fn observations() -> Vec<Origin> {
         [
             point!(x: -118.151, y: 34.1503),
@@ -348,8 +296,7 @@ mod tests {
         Arc::new(Engine::new(Arc::new(network), (), None))
     }
 
-    /// A minimal identity — the engine only reads its `vehicle_id`, so the rest
-    /// is any valid context.
+    /// A minimal identity; the engine only reads its `vehicle_id`.
     fn identity() -> JobIdentity {
         JobIdentity {
             schema: SCHEMA_VERSION,
@@ -368,9 +315,6 @@ mod tests {
         SolveJob::new(identity(), Lane::DEFAULT, i64::MAX, context)
     }
 
-    /// A restart over the bend solves to one emitted layer per observation, and
-    /// the convergence timestamp — when present — is an observation's own stamp
-    /// that the returned trip resumes from.
     #[test]
     fn restart_solves_every_layer() {
         let engine = engine(bent_road());
@@ -415,8 +359,6 @@ mod tests {
         }
     }
 
-    /// The trip a restart returns resumes on the same engine: pushing one more
-    /// on-road observation solves again, without a downgrade.
     #[test]
     fn resume_extends_without_downgrade() {
         let engine = engine(bent_road());
@@ -427,7 +369,6 @@ mod tests {
             panic!("the seed restart must solve");
         };
 
-        // One more observation on the final edge, stamped after the last.
         let next = Origin::new(
             point!(x: -118.1795, y: 34.1401),
             1_775_000_000_000_000 + 6 * 5_000_000,
@@ -447,9 +388,6 @@ mod tests {
         );
     }
 
-    /// A trip solved on a network with a disjoint node-id space is not
-    /// supported here: the resume downgrades to a restart over its own
-    /// observations and still solves, flagged `downgraded`.
     #[test]
     fn resume_of_foreign_trip_downgrades() {
         let foreign = engine(bent_road_disjoint());
@@ -474,13 +412,11 @@ mod tests {
         );
     }
 
-    /// Every observation off every road anchors nothing, so the trip is empty
-    /// and the outcome is the nominal [`SolveOutcome::Unanchored`].
     #[test]
     fn all_points_off_network_are_unanchored() {
         let engine = engine(bent_road());
 
-        // The Gulf of Guinea: thousands of kilometres from the LA bend.
+        // The Gulf of Guinea: far from the LA bend.
         let off: Vec<Origin> = (0..4)
             .map(|i| Origin::new(Point::new(0.0, 0.0), 1_775_000_000_000_000 + i * 5_000_000))
             .collect();
@@ -492,7 +428,6 @@ mod tests {
         );
     }
 
-    /// The blocking wrapper returns the same outcome as the direct call.
     #[tokio::test]
     async fn solve_blocking_matches_direct() {
         let engine = engine(bent_road());
