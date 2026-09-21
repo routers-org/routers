@@ -149,6 +149,12 @@ jobs:
         if: steps.check.outputs.exists == 'false'
         run: buf generate
 
+      - name: Set up Docker Buildx
+        if: steps.check.outputs.exists == 'false'
+        uses: docker/setup-buildx-action@v3
+        with:
+          driver: docker-container
+
       - name: Configure Docker for Artifact Registry
         if: steps.check.outputs.exists == 'false'
         run: gcloud auth configure-docker ${{ env.GAR_LOCATION }}-docker.pkg.dev --quiet
