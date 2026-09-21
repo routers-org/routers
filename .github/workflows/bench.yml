@@ -73,6 +73,10 @@ jobs:
       # `routers_viewer` has no benches; excluding it drops the whole GUI stack.
       - name: 🔨Build (workspace)
         run: cargo codspeed build --workspace --exclude routers_viewer
+        env:
+          # Fat LTO can run several memory-heavy links concurrently on the
+          # 16-core CodSpeed runner, so leave enough RAM headroom for each one.
+          CARGO_BUILD_JOBS: 4
 
       - name: Run the benchmarks
         uses: CodSpeedHQ/action@v3
