@@ -13,7 +13,6 @@ concurrency:
 
 env:
   PROTOC_VERSION: 3.20.3
-  # Keep in step with the `buffa` workspace dependency and flake.nix.
   BUFFA_VERSION: 0.6.0
   CARGO_TERM_COLOR: always
 

@@ -12,6 +12,7 @@ on:
 
 env:
   PROTOC_VERSION: 3.20.3
+  BUFFA_VERSION: 0.6.0
   CARGO_TERM_COLOR: always
   GAR_LOCATION: ${{ vars.GAR_LOCATION }}
   GAR_REPOSITORY: ${{ vars.GAR_REPOSITORY }}
@@ -48,7 +49,8 @@ jobs:
 
       - name: Install Packager
         run: |
-          cargo install --locked protoc-gen-buffa-packaging
+          cargo install --locked \
+            protoc-gen-buffa-packaging@${{ env.BUFFA_VERSION }}
 
       - name: Generate Schema
         run: |
@@ -139,7 +141,9 @@ jobs:
 
       - name: Install Packager
         if: steps.check.outputs.exists == 'false'
-        run: cargo install --locked protoc-gen-buffa-packaging
+        run: |
+          cargo install --locked \
+            protoc-gen-buffa-packaging@${{ env.BUFFA_VERSION }}
 
       - name: Generate Schema
         if: steps.check.outputs.exists == 'false'
@@ -206,7 +210,9 @@ jobs:
           registry-url: https://registry.npmjs.org
 
       - name: Install Packager
-        run: cargo install --locked protoc-gen-buffa-packaging
+        run: |
+          cargo install --locked \
+            protoc-gen-buffa-packaging@${{ env.BUFFA_VERSION }}
 
       - name: Generate Schema
         run: buf generate
@@ -301,7 +307,8 @@ jobs:
 
       - name: Install Packager
         run: |
-          cargo install --locked protoc-gen-buffa-packaging
+          cargo install --locked \
+            protoc-gen-buffa-packaging@${{ env.BUFFA_VERSION }}
 
       - name: Generate Schema
         run: |

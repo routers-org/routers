@@ -5,6 +5,10 @@ dependencies_update = true
 publish_allow_dirty = true
 
 [[package]]
+name = "routers_rpc"
+semver_check = false
+
+[[package]]
 name = "routers_wasm"
 release = true
 publish = false

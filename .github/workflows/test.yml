@@ -13,7 +13,6 @@ concurrency:
 
 env:
   PROTOC_VERSION: 3.20.3
-  # Keep in step with the `buffa` workspace dependency and flake.nix.
   BUFFA_VERSION: 0.6.0
   CARGO_TERM_COLOR: always
 
@@ -71,6 +70,15 @@ jobs:
       - name: Generate Schema
         run: |
           buf generate
+
+      - name: Check routers_rpc API compatibility
+        if: github.event_name == 'pull_request'
+        uses: obi1kenobi/cargo-semver-checks-action@v2
+        with:
+          package: routers_rpc
+          feature-group: all-features
+          release-type: minor
+          rust-toolchain: manual
 
       - name: 📦 Verify packages against published dependencies
         if: github.event_name == 'pull_request'
