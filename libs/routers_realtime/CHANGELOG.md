@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.0] - 2026-09-21
+
+### 🚀 Features
+
+- Replace the realtime pipeline with partitioned event-bus planes, durable checkpoints,
+  bounded scheduling, and verified graph-artifact bootstrap
+
+### 💥 Breaking Changes
+
+- Replace the legacy ingest, request/reply event, and Redis store APIs with typed
+  raw/job/result/output planes and checkpoint storage
+
+
+
 ## [0.4.7] - 2026-09-07
 
 ### ⚙️ Miscellaneous Tasks
@@ -162,4 +176,3 @@ All notable changes to this project will be documented in this file.
 
 - *(viewer)* Convert to lib, make fixture a dev dependency
 - *(viewer)* Format and clippy fixes
-

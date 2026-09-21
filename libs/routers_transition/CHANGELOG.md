@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.7] - 2026-09-21
+
+### 🚀 Features
+
+- *(realtime)* Add a configurable per-layer candidate limit
+
+
+
 ## [0.3.6] - 2026-09-07
 
 ### ⚙️ Miscellaneous Tasks
@@ -128,5 +136,4 @@ All notable changes to this project will be documented in this file.
 - *(routers)* Update imports for the transition crate
 - *(routers)* Imports within benchmarks
 - *(transition)* Imports, compilation issues, ..
-
 

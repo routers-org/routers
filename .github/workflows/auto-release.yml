@@ -272,6 +272,8 @@ jobs:
   release-plz-pr:
     name: Release-plz PR
     runs-on: ubuntu-latest
+    needs: release-plz-release
+    if: ${{ !cancelled() }}
     permissions:
       contents: write
       pull-requests: write

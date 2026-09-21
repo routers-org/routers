@@ -24,6 +24,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          # Package verification compares the PR's two merge parents below.
+          fetch-depth: 2
           lfs: true
 
       - name: install protoc
@@ -69,6 +71,21 @@ jobs:
       - name: Generate Schema
         run: |
           buf generate
+
+      - name: 📦 Verify packages against published dependencies
+        if: github.event_name == 'pull_request'
+        run: |
+          if git diff --unified=0 HEAD^1 HEAD^2 -- Cargo.toml ':(glob)**/Cargo.toml' \
+            | grep -Eq '^[+-]version = "[0-9]'; then
+            echo "Package versions changed; release verification will validate them after publication."
+            exit 0
+          fi
+
+          cargo package --workspace \
+            --exclude routers-conformance \
+            --exclude routers_fixtures \
+            --exclude routers_viewer \
+            --allow-dirty
 
       - name: 🧪 Test
         # Excluded crates have no tests; remove from this list when they gain some.

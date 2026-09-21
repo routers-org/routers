@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.7] - 2026-09-21
+
+### 🚀 Features
+
+- *(realtime, shard)* Add graph artifact manifests with checksum verification
+
+
+
 ## [0.2.6] - 2026-09-07
 
 ### 🐛 Bug Fixes
@@ -88,5 +96,4 @@ All notable changes to this project will be documented in this file.
 - *(root)* Update imports of tests and examples
 - *(shard)* Include a binary to generate files into the shard cache from a given sourcefile
 - *(infra)* Allow pbf and rt as args on their own
-
 
