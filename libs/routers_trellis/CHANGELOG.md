@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.2] - 2026-09-21
+
+### 🚀 Features
+
+- *(realtime)* Bound the carried match state
+
+### 🐛 Bug Fixes
+
+- Explicit removals, stronger test harness with scenario testing
+
+
+
 ## [0.2.1] - 2026-08-11
 
 ### 🚀 Features

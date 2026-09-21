@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.14] - 2026-09-21
+
+### 🐛 Bug Fixes
+
+- Pin buffa-packaging, perform semver in-worktree
+- Setup docker buildx
+- Check all crates using cargo-semver-checks
+- Migrate docker base to rustc 1.98
+
+
+
 ## [0.3.13] - 2026-09-07
 
 ### 🐛 Bug Fixes

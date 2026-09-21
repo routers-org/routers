@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.8] - 2026-09-21
+
+### ⚙️ Miscellaneous Tasks
+
+- Updated the following local packages: routers_trellis
+
+
+
 ## [0.3.7] - 2026-09-21
 
 ### 🚀 Features
