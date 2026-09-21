@@ -3,9 +3,6 @@ changelog_config = "cliff.toml"
 repo_url = "https://github.com/routers-org/routers"
 dependencies_update = true
 publish_allow_dirty = true
-
-[[package]]
-name = "routers_rpc"
 semver_check = false
 
 [[package]]

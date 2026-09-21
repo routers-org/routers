@@ -71,11 +71,12 @@ jobs:
         run: |
           buf generate
 
-      - name: Check routers_rpc API compatibility
+      - name: Check published crate API compatibility
         if: github.event_name == 'pull_request'
         uses: obi1kenobi/cargo-semver-checks-action@v2
         with:
-          package: routers_rpc
+          manifest-path: Cargo.toml
+          exclude: routers-conformance,routers_fixtures,routers_viewer,routers_wasm
           feature-group: all-features
           release-type: minor
           rust-toolchain: manual
