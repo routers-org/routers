@@ -93,7 +93,7 @@ pub mod r#match {
         Some(TripContext { transport_mode })
     }
 
-    /// Generic glue for [`MatchService`] handlers: lifts the OSM-specific
+    /// Generic glue for `MatchService` handlers: lifts the OSM-specific
     /// conversions into a trait so the handler can stay generic over the
     /// network's [`Metadata`] implementation. Implement for new metadata
     /// types alongside their [`Metadata`] impl.
@@ -187,7 +187,7 @@ pub mod r#match {
                 ..Default::default()
             };
 
-            let edge = overture_edge_metadata(&meta, &runtime);
+            let edge = MatchSdk::edge_metadata(&meta, &runtime);
             assert_eq!(edge.speed_limit, Some(60));
             assert_eq!(edge.lane_count, None);
         }

@@ -23,7 +23,7 @@ impl OsmService {
     pub fn from_file(
         file: std::path::PathBuf,
     ) -> Result<routers_codec::osm::OsmNetwork, Box<dyn core::error::Error>> {
-        OsmNetwork::from_pbf(&file)
+        routers_codec::osm::OsmNetwork::from_pbf(&file)
     }
 }
 
