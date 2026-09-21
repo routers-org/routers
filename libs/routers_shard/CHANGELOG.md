@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.6] - 2026-09-07
+
+### 🐛 Bug Fixes
+
+- *(shards)* Only generate indicies when requested
+
+
+
 ## [0.2.5] - 2026-09-06
 
 ### 🚀 Features

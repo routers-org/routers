@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.6] - 2026-09-07
+
+### ⚙️ Miscellaneous Tasks
+
+- Updated the following local packages: routers_shard
+
+
+
 ## [0.3.5] - 2026-09-06
 
 ### ⚙️ Miscellaneous Tasks
