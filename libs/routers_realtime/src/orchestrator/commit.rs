@@ -591,11 +591,7 @@ where
         }
 
         self.store
-            .mark_published(vehicle, prepared.output)
-            .await
-            .map_err(CommitError::Store)?;
-        self.store
-            .promote(vehicle, partition, prepared.output)
+            .finish_published(vehicle, partition, prepared.output)
             .await
             .map_err(CommitError::Store)?;
 

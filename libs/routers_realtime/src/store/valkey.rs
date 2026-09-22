@@ -413,11 +413,35 @@ redis.call('HSET', KEYS[2], 'phase', 'published')
 return {'ok'}
 "#;
 
+/// Promote immediately after the broker has acknowledged publication. A crash
+/// before this script leaves the prepared bytes for idempotent republish; a
+/// crash after it sees the installed checkpoint. No intermediate store state
+/// is required, so the hot commit path uses one Valkey round trip instead of
+/// separate mark and promote calls.
+const FINISH_PUBLISHED_LUA: &str = r#"
+local existing = redis.call('HGET', KEYS[2], 'output')
+if not existing then
+  return {'noop'}
+end
+if existing ~= ARGV[1] then
+  return {'mismatch', existing}
+end
+local rev = redis.call('HGET', KEYS[2], 'next_revision')
+local seg = redis.call('HGET', KEYS[2], 'next_segment')
+local bytes = redis.call('HGET', KEYS[2], 'next_checkpoint')
+redis.call('HSET', KEYS[1], 'revision', rev, 'segment', seg, 'bytes', bytes)
+redis.call('PEXPIRE', KEYS[1], ARGV[2])
+redis.call('SET', KEYS[3], rev)
+redis.call('DEL', KEYS[2])
+return {'ok'}
+"#;
+
 /// The Lua scripts, compiled once and shared across every clone of the store.
 struct Scripts {
     prepare: redis::Script,
     promote: redis::Script,
     mark_published: redis::Script,
+    finish_published: redis::Script,
 }
 
 impl Scripts {
@@ -426,6 +450,7 @@ impl Scripts {
             prepare: redis::Script::new(PREPARE_LUA),
             promote: redis::Script::new(PROMOTE_LUA),
             mark_published: redis::Script::new(MARK_PUBLISHED_LUA),
+            finish_published: redis::Script::new(FINISH_PUBLISHED_LUA),
         }
     }
 }
@@ -694,6 +719,34 @@ impl CheckpointStore for ValkeyCheckpointStore {
         parse_promote_reply(&reply, output)?;
 
         // Best-effort index removal; a leaked entry is repaired by `list_prepared`.
+        let mut index_conn = self.partition_conn(partition);
+        redis::cmd("SREM")
+            .arg(partition_index_key(partition))
+            .arg(vehicle.0)
+            .query_async::<i64>(&mut index_conn)
+            .await?;
+        Ok(())
+    }
+
+    async fn finish_published(
+        &self,
+        vehicle: VehicleId,
+        partition: u16,
+        output: OutputId,
+    ) -> Result<(), Self::Error> {
+        let ttl_ms = u64::try_from(self.cfg.checkpoint_ttl.as_millis()).unwrap_or(u64::MAX);
+
+        let mut conn = self.vehicle_conn(vehicle);
+        let mut invocation = self.scripts.finish_published.prepare_invoke();
+        invocation
+            .key(checkpoint_key(vehicle))
+            .key(prepared_key(vehicle))
+            .key(committed_revision_key(vehicle))
+            .arg(output.to_string())
+            .arg(ttl_ms);
+        let reply: Vec<String> = invocation.invoke_async(&mut conn).await?;
+        parse_ok_or_mismatch(&reply, output)?;
+
         let mut index_conn = self.partition_conn(partition);
         redis::cmd("SREM")
             .arg(partition_index_key(partition))

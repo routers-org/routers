@@ -205,7 +205,16 @@ async fn main() -> anyhow::Result<()> {
     let context = async_nats::jetstream::new(client);
 
     // Read raw job bytes so the loop can size-gate them before decode.
-    let jobs = JobsConfig::default();
+    let max_ack_pending = i64::try_from(args.max_in_flight.get())
+        .ok()
+        .and_then(|per_replica| {
+            per_replica.checked_mul(i64::from(loaded.region.replicas.max.get()))
+        })
+        .context("matcher fleet capacity does not fit JetStream max_ack_pending")?;
+    let jobs = JobsConfig {
+        max_ack_pending,
+        ..JobsConfig::default()
+    };
     let stream = open_job_stream(&context, &loaded.region.id, &jobs)
         .await
         .context("could not open the region job stream")?;

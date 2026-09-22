@@ -271,6 +271,21 @@ pub trait CheckpointStore: Clone + Send + Sync + 'static {
         output: OutputId,
     ) -> Result<(), Self::Error>;
 
+    /// Record a broker-acknowledged publication and promote its checkpoint.
+    ///
+    /// The default preserves the explicit two-step state machine. Stores that
+    /// can atomically promote after the broker acknowledgement may override it
+    /// to avoid an otherwise redundant storage round trip.
+    async fn finish_published(
+        &self,
+        vehicle: VehicleId,
+        partition: u16,
+        output: OutputId,
+    ) -> Result<(), Self::Error> {
+        self.mark_published(vehicle, output).await?;
+        self.promote(vehicle, partition, output).await
+    }
+
     /// Every staged prepared commit in `partition`, so recovery can re-drive
     /// them. The index is best-effort: a listed vehicle may have been promoted
     /// away, and the store repairs such stale entries.

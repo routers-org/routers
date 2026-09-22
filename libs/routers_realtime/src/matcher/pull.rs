@@ -4,7 +4,9 @@
 //!
 //! A region's matchers share one work-queue consumer; the loop never fetches
 //! more than its free [`PullConfig::max_in_flight`] so it does not park work a
-//! peer could take. A separate [`PullConfig::solve_slots`] limit admits work to
+//! peer could take. At sustained load it refills in half-capacity batches,
+//! amortising broker pull requests while the remaining handlers stay busy. A
+//! separate [`PullConfig::solve_slots`] limit admits work to
 //! the blocking CPU stage without serialising validation, publication, or
 //! acknowledgement. Every claimed job is answered, never silently dropped,
 //! and [`ResultPublisher::publish_then_ack`] never acks a job until the broker
@@ -173,9 +175,10 @@ where
 {
     /// Pull, solve, and answer jobs until `shutdown` is triggered.
     ///
-    /// While free handler capacity exists it fetches up to
-    /// `min(free, max_batch)` jobs into an in-flight set; when full it only
-    /// drains completions. At most [`PullConfig::solve_slots`] handlers enter
+    /// It fetches up to `min(free, max_batch)` jobs into an in-flight set. At
+    /// sustained load it drains until half a batch is free before fetching,
+    /// avoiding a broker round trip for every single completed handler. At most
+    /// [`PullConfig::solve_slots`] handlers enter
     /// the CPU-bound solve stage concurrently. On shutdown it stops fetching,
     /// waits up to [`PullConfig::grace`] for in-flight handlers, then returns
     /// the run's [`PullStats`].
@@ -202,11 +205,17 @@ where
 
         let mut stats = PullStats::default();
         let mut in_flight = FuturesUnordered::new();
+        let refill_at = cfg
+            .max_batch
+            .max(1)
+            .min(cfg.max_in_flight.get())
+            .div_ceil(2);
 
         while !shutdown.is_triggered() {
             let free = cfg.max_in_flight.get().saturating_sub(in_flight.len());
-            if free == 0 {
-                // At capacity: make room only by finishing work, or stop.
+            if free < refill_at {
+                // Retain enough live handlers to overlap the next broker pull,
+                // but amortise that pull over more than one completion.
                 tokio::select! {
                     biased;
                     () = shutdown.triggered() => break,

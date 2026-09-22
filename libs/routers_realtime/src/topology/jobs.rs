@@ -145,22 +145,29 @@ pub async fn job_consumer(
     config: &JobsConfig,
 ) -> anyhow::Result<PullConsumer> {
     let name = job_consumer_name(graph, region);
+    let desired = pull::Config {
+        durable_name: Some(name.clone()),
+        filter_subject: job_consumer_filter(graph, region),
+        ack_policy: AckPolicy::Explicit,
+        max_deliver: config.max_deliver,
+        ack_wait: config.ack_wait,
+        max_ack_pending: config.max_ack_pending,
+        ..Default::default()
+    };
+
+    let consumer = stream
+        .get_or_create_consumer(&name, desired.clone())
+        .await
+        .with_context(|| format!("could not create job consumer {name}"))?;
+
+    if consumer.cached_info().config.max_ack_pending == config.max_ack_pending {
+        return Ok(consumer);
+    }
 
     stream
-        .get_or_create_consumer(
-            &name,
-            pull::Config {
-                durable_name: Some(name.clone()),
-                filter_subject: job_consumer_filter(graph, region),
-                ack_policy: AckPolicy::Explicit,
-                max_deliver: config.max_deliver,
-                ack_wait: config.ack_wait,
-                max_ack_pending: config.max_ack_pending,
-                ..Default::default()
-            },
-        )
+        .update_consumer(desired)
         .await
-        .with_context(|| format!("could not create job consumer {name}"))
+        .with_context(|| format!("could not resize job consumer {name}"))
 }
 
 #[cfg(test)]

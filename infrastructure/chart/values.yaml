@@ -121,6 +121,9 @@ materializer:
     pullPolicy: Never
   replicas: 1
   consumerName: materializer
+  # Storage applies overlapped within each process. CAS keeps same-vehicle
+  # races safe across both tasks and replicas.
+  maxInFlight: 32
   # Empty tails the whole plane; a range like "0-511" narrows the filter.
   partitions: ""
   rustLog: info

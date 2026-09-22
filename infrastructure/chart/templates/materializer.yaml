@@ -33,6 +33,8 @@ spec:
               value: {{ .Values.infra.kv.url | quote }}
             - name: CONSUMER_NAME
               value: {{ .Values.materializer.consumerName | quote }}
+            - name: MAX_IN_FLIGHT
+              value: {{ .Values.materializer.maxInFlight | quote }}
             - name: POD_NAME
               valueFrom:
                 fieldRef:

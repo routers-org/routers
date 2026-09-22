@@ -74,6 +74,10 @@ struct Args {
     /// a distinct name replays the plane independently.
     #[arg(long, env, default_value = "materializer")]
     consumer_name: String,
+
+    /// Most outputs being applied or acknowledged concurrently in this process.
+    #[arg(long, env, default_value_t = NonZeroUsize::new(32).unwrap())]
+    max_in_flight: NonZeroUsize,
 }
 
 /// Build the durable pull consumer over the output plane, narrowed to
@@ -140,7 +144,7 @@ async fn main() -> anyhow::Result<()> {
         .await
         .context("could not connect to valkey")?;
 
-    let stats = run_materializer(source, sink, shutdown, &metrics).await?;
+    let stats = run_materializer(source, sink, shutdown, &metrics, args.max_in_flight).await?;
     info!("materializer stopped: {stats:?}");
     Ok(())
 }
@@ -151,12 +155,14 @@ async fn run_materializer<Src, S>(
     sink: S,
     shutdown: Shutdown,
     metrics: &Metrics,
+    max_in_flight: NonZeroUsize,
 ) -> anyhow::Result<consumer::Stats>
 where
     Src: Source<CommittedOutput<E>>,
     S: routers_realtime::materializer::Sink<E>,
 {
-    consumer::run_with_metrics::<E, _, _>(source, sink, shutdown, metrics).await
+    consumer::run_concurrent_with_metrics::<E, _, _>(source, sink, shutdown, metrics, max_in_flight)
+        .await
 }
 
 #[cfg(test)]
@@ -183,6 +189,7 @@ mod tests {
         assert_eq!(args.consumer_name, "materializer");
         assert!(args.partitions.is_none());
         assert_eq!(args.valkey.len(), 1);
+        assert_eq!(args.max_in_flight, NonZeroUsize::new(32).unwrap());
     }
 
     #[test]
