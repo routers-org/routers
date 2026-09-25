@@ -33,6 +33,9 @@ infra:
     url: ""
   kv:
     url: ""
+  materializedView:
+    # Empty uses kv.url; set a separate stable-id=URL fleet for the served view.
+    url: ""
   telemetry:
     otlpUrl: ""
 

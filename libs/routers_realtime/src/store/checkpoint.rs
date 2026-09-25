@@ -8,6 +8,7 @@
 //! and segment travel outside them in [`StoredCheckpoint`] for base compares.
 
 use alloc::sync::Arc;
+use core::future::Future;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, MutexGuard};
 
@@ -246,44 +247,49 @@ pub trait CheckpointStore: Clone + Send + Sync + 'static {
     /// against `expected_base` (`None` demands no checkpoint), yielding
     /// [`Conflict`](PrepareOutcome::Conflict) or a staged
     /// [`Prepared`](PrepareOutcome::Prepared).
-    async fn prepare(
+    fn prepare(
         &self,
         vehicle: VehicleId,
         partition: u16,
         prepared: PreparedCommit,
-    ) -> Result<PrepareOutcome, Self::Error>;
+    ) -> impl Future<Output = Result<PrepareOutcome, Self::Error>> + Send;
 
     /// Mark the vehicle's prepared commit as [`CommitPhase::Published`].
     /// Idempotent for the same `output`; errors on a different staged output;
     /// succeeds as a no-op when already promoted away.
-    async fn mark_published(&self, vehicle: VehicleId, output: OutputId)
-    -> Result<(), Self::Error>;
+    fn mark_published(
+        &self,
+        vehicle: VehicleId,
+        output: OutputId,
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send;
 
     /// Promote the vehicle's published prepared commit in `partition`:
     /// atomically install the [`StoredCheckpoint`] and delete the prepared
     /// record. The best-effort partition index may be cleaned separately.
     /// Idempotent when already promoted; errors on a different staged output or
     /// when the record has not reached [`CommitPhase::Published`].
-    async fn promote(
+    fn promote(
         &self,
         vehicle: VehicleId,
         partition: u16,
         output: OutputId,
-    ) -> Result<(), Self::Error>;
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send;
 
     /// Record a broker-acknowledged publication and promote its checkpoint.
     ///
     /// The default preserves the explicit two-step state machine. Stores that
     /// can atomically promote after the broker acknowledgement may override it
     /// to avoid an otherwise redundant storage round trip.
-    async fn finish_published(
+    fn finish_published(
         &self,
         vehicle: VehicleId,
         partition: u16,
         output: OutputId,
-    ) -> Result<(), Self::Error> {
-        self.mark_published(vehicle, output).await?;
-        self.promote(vehicle, partition, output).await
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send {
+        async move {
+            self.mark_published(vehicle, output).await?;
+            self.promote(vehicle, partition, output).await
+        }
     }
 
     /// Every staged prepared commit in `partition`, so recovery can re-drive

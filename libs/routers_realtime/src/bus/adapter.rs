@@ -1,10 +1,11 @@
 //! Bus adapter traits: publication, consumption, and acknowledgement.
 //!
 //! A transport-only seam so the same calls drive the in-memory fake in
-//! [`super::memory`] under test and JetStream in production. Futures are not
-//! `Send` — callers own them on a single task, so native `async fn` in traits is fine.
+//! [`super::memory`] under test and JetStream in production. Source futures
+//! stay task-owned; publication futures may move with bounded background work.
 #![allow(async_fn_in_trait)]
 
+use core::future::Future;
 use core::time::Duration;
 
 use async_nats::HeaderMap;
@@ -78,13 +79,13 @@ impl PublishError {
 /// Publishes messages of one wire type to subjects on the bus.
 pub trait Publisher<T: Wire>: Clone + Send + Sync + 'static {
     /// Publish pre-encoded `bytes` under `subject` with dedup key `msg_id`.
-    async fn publish_bytes(
+    fn publish_bytes(
         &self,
         subject: &str,
         msg_id: &str,
         headers: HeaderMap,
         bytes: &[u8],
-    ) -> Result<PublishOutcome, PublishError>;
+    ) -> impl Future<Output = Result<PublishOutcome, PublishError>> + Send;
 
     /// Encode `item` and publish it; an encoding failure is a [`PublishError::Failed`].
     async fn publish(

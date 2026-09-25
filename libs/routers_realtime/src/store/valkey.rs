@@ -4,8 +4,8 @@
 //! A vehicle's keys carry a `{vehicle:<id>}` hash tag and are placed by
 //! rendezvous hashing, so all reach one primary and a resize remaps only ~`1/N`.
 //! Per-vehicle atomicity comes from Lua scripts over that key group; the
-//! `SADD`/`SREM` partition-index writes run afterwards and are best-effort, a
-//! recovery hint that [`list_prepared`](CheckpointStore::list_prepared) repairs.
+//! The partition index is a recovery hint that
+//! [`list_prepared`](CheckpointStore::list_prepared) repairs.
 
 use alloc::sync::Arc;
 use core::str::FromStr;
@@ -15,6 +15,7 @@ use std::collections::HashMap;
 use futures::future::try_join_all;
 use redis::aio::MultiplexedConnection;
 use thiserror::Error;
+use tokio::sync::mpsc;
 
 use crate::event::VehicleId;
 use crate::partition::{fnv1a, mix};
@@ -38,6 +39,9 @@ pub const DEFAULT_CHECKPOINT_TTL: Duration = Duration::from_secs(600);
 
 /// The default per-primary connection timeout.
 pub const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+
+const INDEX_CLEANUP_CAPACITY: usize = 4_096;
+const INDEX_CLEANUP_BATCH: usize = 256;
 
 /// A failure a [`ValkeyCheckpointStore`] operation can report.
 #[derive(Debug, Error)]
@@ -492,6 +496,7 @@ pub struct ValkeyCheckpointStore {
     placement: Placement,
     scripts: Arc<Scripts>,
     cfg: ValkeyConfig,
+    index_cleanup: mpsc::Sender<(u16, VehicleId)>,
 }
 
 impl ValkeyCheckpointStore {
@@ -528,11 +533,19 @@ impl ValkeyCheckpointStore {
         }))
         .await?;
 
+        let (index_cleanup, cleanup_rx) = mpsc::channel(INDEX_CLEANUP_CAPACITY);
+        tokio::spawn(run_index_cleanup(
+            conns.clone(),
+            placement.clone(),
+            cleanup_rx,
+        ));
+
         Ok(Self {
             conns,
             placement,
             scripts: Arc::new(Scripts::new()),
             cfg,
+            index_cleanup,
         })
     }
 
@@ -546,6 +559,48 @@ impl ValkeyCheckpointStore {
     /// may differ from a listed vehicle's primary.
     fn partition_conn(&self, partition: u16) -> MultiplexedConnection {
         self.conns[self.placement.index_for(&partition_slot(partition))].clone()
+    }
+
+    fn clean_index_later(&self, partition: u16, vehicle: VehicleId) {
+        let _ = self.index_cleanup.try_send((partition, vehicle));
+    }
+}
+
+async fn run_index_cleanup(
+    conns: Vec<MultiplexedConnection>,
+    placement: Placement,
+    mut rx: mpsc::Receiver<(u16, VehicleId)>,
+) {
+    while let Some(first) = rx.recv().await {
+        let mut batch = Vec::with_capacity(INDEX_CLEANUP_BATCH);
+        batch.push(first);
+        while batch.len() < INDEX_CLEANUP_BATCH {
+            match rx.try_recv() {
+                Ok(item) => batch.push(item),
+                Err(_) => break,
+            }
+        }
+
+        let mut by_primary = HashMap::<usize, Vec<(u16, VehicleId)>>::new();
+        for (partition, vehicle) in batch {
+            let primary = placement.index_for(&partition_slot(partition));
+            by_primary
+                .entry(primary)
+                .or_default()
+                .push((partition, vehicle));
+        }
+
+        for (primary, entries) in by_primary {
+            let mut pipe = redis::pipe();
+            for (partition, vehicle) in entries {
+                pipe.cmd("SREM")
+                    .arg(partition_index_key(partition))
+                    .arg(vehicle.0)
+                    .ignore();
+            }
+            let mut conn = conns[primary].clone();
+            let _: Result<(), redis::RedisError> = pipe.query_async(&mut conn).await;
+        }
     }
 }
 
@@ -664,21 +719,17 @@ impl CheckpointStore for ValkeyCheckpointStore {
         for (_, value) in &fields {
             invocation.arg(value.as_slice());
         }
-        let reply: Vec<String> = invocation.invoke_async(&mut conn).await?;
+        let mut index_conn = self.partition_conn(partition);
+        let mut index = redis::cmd("SADD");
+        index.arg(partition_index_key(partition)).arg(vehicle.0);
+        let (reply, _): (Vec<String>, i64) = tokio::try_join!(
+            invocation.invoke_async(&mut conn),
+            index.query_async(&mut index_conn),
+        )?;
         let outcome = parse_prepare_reply(&reply)?;
 
-        // Best-effort index: add on `AlreadyPrepared` too so a retry repairs a
-        // missing entry (`SADD` is idempotent).
-        if matches!(
-            outcome,
-            PrepareOutcome::Prepared | PrepareOutcome::AlreadyPrepared
-        ) {
-            let mut index_conn = self.partition_conn(partition);
-            redis::cmd("SADD")
-                .arg(partition_index_key(partition))
-                .arg(vehicle.0)
-                .query_async::<i64>(&mut index_conn)
-                .await?;
+        if matches!(outcome, PrepareOutcome::Conflict { .. }) {
+            self.clean_index_later(partition, vehicle);
         }
         Ok(outcome)
     }
@@ -718,13 +769,7 @@ impl CheckpointStore for ValkeyCheckpointStore {
         let reply: Vec<String> = invocation.invoke_async(&mut conn).await?;
         parse_promote_reply(&reply, output)?;
 
-        // Best-effort index removal; a leaked entry is repaired by `list_prepared`.
-        let mut index_conn = self.partition_conn(partition);
-        redis::cmd("SREM")
-            .arg(partition_index_key(partition))
-            .arg(vehicle.0)
-            .query_async::<i64>(&mut index_conn)
-            .await?;
+        self.clean_index_later(partition, vehicle);
         Ok(())
     }
 
@@ -747,12 +792,7 @@ impl CheckpointStore for ValkeyCheckpointStore {
         let reply: Vec<String> = invocation.invoke_async(&mut conn).await?;
         parse_ok_or_mismatch(&reply, output)?;
 
-        let mut index_conn = self.partition_conn(partition);
-        redis::cmd("SREM")
-            .arg(partition_index_key(partition))
-            .arg(vehicle.0)
-            .query_async::<i64>(&mut index_conn)
-            .await?;
+        self.clean_index_later(partition, vehicle);
         Ok(())
     }
 

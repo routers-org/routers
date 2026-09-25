@@ -30,7 +30,7 @@ spec:
             - name: NATS
               value: {{ .Values.infra.eventBus.url | quote }}
             - name: VALKEY
-              value: {{ .Values.infra.kv.url | quote }}
+              value: {{ default .Values.infra.kv.url .Values.infra.materializedView.url | quote }}
             - name: CONSUMER_NAME
               value: {{ .Values.materializer.consumerName | quote }}
             - name: MAX_IN_FLIGHT

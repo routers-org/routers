@@ -36,6 +36,10 @@ use tokio::time::Instant;
 
 /// Bounded depth of each lane's hand-off channel, so a stalled broker back-pressures the walker rather than buffering the whole file.
 const LANE_CHANNEL_CAPACITY: usize = 1024;
+const TIMING_BUCKET_US: [u64; 21] = [
+    10, 25, 50, 100, 250, 500, 1_000, 2_000, 5_000, 10_000, 20_000, 50_000, 100_000, 250_000,
+    500_000, 1_000_000, 2_000_000, 5_000_000, 10_000_000, 30_000_000, 60_000_000,
+];
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -63,6 +67,14 @@ struct Args {
     /// Defaults to 1, but a higher value can be used for saturation testing.
     #[arg(short, env, long, default_value_t = 1)]
     loops: usize,
+
+    /// Publish at most this many sorted input rows per loop, for short diagnostic runs.
+    #[arg(long, env)]
+    max_events: Option<usize>,
+
+    /// Skip this many sorted rows before the diagnostic window begins.
+    #[arg(long, env, default_value_t = 0)]
+    skip_events: usize,
 
     /// How many publish lanes to fan sends across; each vehicle is pinned to one lane. `0` is treated as `1`.
     #[arg(long, env, default_value_t = 64)]
@@ -144,6 +156,7 @@ async fn main() -> anyhow::Result<()> {
     };
     ingress.ensure_streams(args.streams, &raw_cfg).await?;
 
+    let load_started = Instant::now();
     let df = LazyCsvReader::new(args.file.clone())
         .with_has_header(true)
         .finish()?
@@ -157,6 +170,7 @@ async fn main() -> anyhow::Result<()> {
         ])
         .collect()
         .map_err(|e| anyhow::anyhow!("dataframe parse: {e}"))?;
+    let input_load_seconds = load_started.elapsed().as_secs_f64();
 
     let n = df.height();
     if n == 0 {
@@ -184,7 +198,11 @@ async fn main() -> anyhow::Result<()> {
     let speed = if flood { f64::INFINITY } else { args.speed };
     let realtime_s = if flood { 0.0 } else { timespan_s / speed };
 
-    let pb = ProgressBar::new(df.height() as u64);
+    let available_rows = n.saturating_sub(args.skip_events);
+    let selected_rows = args
+        .max_events
+        .map_or(available_rows, |max| available_rows.min(max));
+    let pb = ProgressBar::new(selected_rows as u64);
     pb.set_style(
         ProgressStyle::with_template(
             "[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg} ({speed} evt/s sent)",
@@ -224,6 +242,9 @@ async fn main() -> anyhow::Result<()> {
     // A lane that exits early (broker failure) is captured here.
     let mut early: Option<Result<anyhow::Result<LaneReport>, JoinError>> = None;
     let replay_started = Instant::now();
+    let mut pacing_sleep = Timing::default();
+    let mut schedule_lag = Timing::default();
+    let mut lane_send = Timing::default();
     'walk: for iteration in 0..args.loops {
         pg.reset();
 
@@ -231,18 +252,30 @@ async fn main() -> anyhow::Result<()> {
         let rows = rows_of(&df).context("could not deserialize rows from dataframe")?;
 
         let start = Instant::now();
-        for (offset_index, (time, payload)) in rows.enumerate() {
+        let mut first_time = None;
+        for (offset_index, (time, payload)) in
+            rows.skip(args.skip_events).take(selected_rows).enumerate()
+        {
             pg.inc(1);
 
             let offset = rate.map_or_else(
-                || Duration::from_micros(time - min).div_f64(speed),
+                || Duration::from_micros(time - *first_time.get_or_insert(time)).div_f64(speed),
                 |rate| Duration::from_secs_f64(offset_index as f64 / rate),
             );
-            tokio::time::sleep_until(start + offset).await;
+            if !flood {
+                let deadline = start + offset;
+                let sleep_started = Instant::now();
+                tokio::time::sleep_until(deadline).await;
+                pacing_sleep.record(sleep_started.elapsed());
+                schedule_lag.record(Instant::now().saturating_duration_since(deadline));
+            }
 
             // Route by vehicle so its observations stay on one lane and cannot transpose.
             let lane = lane_of(payload.vehicle_id, lanes);
-            if senders[lane].send(payload).await.is_err() {
+            let send_started = Instant::now();
+            let sent = senders[lane].send(payload).await;
+            lane_send.record(send_started.elapsed());
+            if sent.is_err() {
                 // Receiver gone: this lane exited early; stop feeding.
                 break 'walk;
             }
@@ -277,9 +310,15 @@ async fn main() -> anyhow::Result<()> {
     let summary = ReplaySummary::new(
         &args,
         n as u64,
-        totals.attempted,
+        selected_rows as u64,
         rate,
         replay_started.elapsed().as_secs_f64(),
+        ReplayTiming {
+            input_load_seconds,
+            pacing_sleep_us: pacing_sleep.summary(),
+            schedule_lag_us: schedule_lag.summary(),
+            lane_send_us: lane_send.summary(),
+        },
         totals,
     );
     report_totals(&summary);
@@ -307,7 +346,10 @@ async fn run_lane(ingress: Ingress, mut rx: mpsc::Receiver<Payload>) -> anyhow::
     while let Some(payload) = rx.recv().await {
         report.attempted += 1;
         // Await each publish before the next: revisions are assigned in send order, so receive order must be preserved.
-        match ingress.publish(&payload, bus::wallclock()).await {
+        let publish_started = Instant::now();
+        let result = ingress.publish(&payload, bus::wallclock()).await;
+        report.publish_ack.record(publish_started.elapsed());
+        match result {
             Ok(ack) => {
                 report.published += 1;
                 if ack.duplicate {
@@ -336,6 +378,7 @@ struct LaneReport {
     duplicates: u64,
     /// Rejected rows, keyed by the fixed `IngressError::kind` label.
     rejected: BTreeMap<&'static str, u64>,
+    publish_ack: Timing,
 }
 
 impl LaneReport {
@@ -347,7 +390,86 @@ impl LaneReport {
         for (kind, count) in other.rejected {
             *self.rejected.entry(kind).or_default() += count;
         }
+        self.publish_ack.merge(other.publish_ack);
     }
+}
+
+#[derive(Debug, Default)]
+struct Timing {
+    buckets: [u64; TIMING_BUCKET_US.len() + 1],
+    count: u64,
+    total_us: u128,
+    max_us: u64,
+}
+
+impl Timing {
+    fn record(&mut self, duration: Duration) {
+        let micros = u64::try_from(duration.as_micros()).unwrap_or(u64::MAX);
+        let bucket = TIMING_BUCKET_US.partition_point(|&upper| upper < micros);
+        self.buckets[bucket] += 1;
+        self.count += 1;
+        self.total_us += u128::from(micros);
+        self.max_us = self.max_us.max(micros);
+    }
+
+    fn merge(&mut self, other: Self) {
+        for (bucket, count) in self.buckets.iter_mut().zip(other.buckets) {
+            *bucket += count;
+        }
+        self.count += other.count;
+        self.total_us += other.total_us;
+        self.max_us = self.max_us.max(other.max_us);
+    }
+
+    fn summary(&self) -> TimingSummary {
+        if self.count == 0 {
+            return TimingSummary {
+                count: 0,
+                mean_us: None,
+                p50_upper_us: 0,
+                p95_upper_us: 0,
+                p99_upper_us: 0,
+                max_us: 0,
+            };
+        }
+        let percentile_upper_us = |numerator: u64| {
+            let target = self.count.saturating_mul(numerator).div_ceil(100);
+            let mut seen = 0;
+            self.buckets
+                .iter()
+                .position(|count| {
+                    seen += count;
+                    seen >= target
+                })
+                .map(|bucket| TIMING_BUCKET_US.get(bucket).copied().unwrap_or(self.max_us))
+                .unwrap_or(0)
+        };
+        TimingSummary {
+            count: self.count,
+            mean_us: (self.count > 0).then(|| self.total_us as f64 / self.count as f64),
+            p50_upper_us: percentile_upper_us(50),
+            p95_upper_us: percentile_upper_us(95),
+            p99_upper_us: percentile_upper_us(99),
+            max_us: self.max_us,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct TimingSummary {
+    count: u64,
+    mean_us: Option<f64>,
+    p50_upper_us: u64,
+    p95_upper_us: u64,
+    p99_upper_us: u64,
+    max_us: u64,
+}
+
+struct ReplayTiming {
+    input_load_seconds: f64,
+    pacing_sleep_us: TimingSummary,
+    schedule_lag_us: TimingSummary,
+    lane_send_us: TimingSummary,
 }
 
 /// Fold one joined lane result into the totals, recording the first broker
@@ -373,6 +495,10 @@ fn absorb(
 struct ReplaySummary {
     /// Input rows selected from the CSV before replay loops.
     input_rows: u64,
+    /// Sorted rows skipped before the diagnostic window.
+    skipped_rows: usize,
+    /// Sorted rows selected for each loop after applying `--max-events`.
+    selected_rows_per_loop: u64,
     /// Observations a lane actually submitted to ingress, including validation
     /// rejections and broker-acknowledged duplicates.
     raw_attempted: u64,
@@ -396,20 +522,33 @@ struct ReplaySummary {
     isolated: bool,
     /// Full wall time through lane drain and broker acknowledgements.
     elapsed_seconds: f64,
+    /// CSV parsing and sorting time, excluded from elapsed_seconds.
+    input_load_seconds: f64,
+    /// Time actually spent in the pacing sleep, including timer delay.
+    pacing_sleep_us: TimingSummary,
+    /// Time by which the walker missed each scheduled send deadline.
+    schedule_lag_us: TimingSummary,
+    /// Time waiting to enqueue into a bounded publish lane.
+    lane_send_us: TimingSummary,
+    /// Ingress validation, publish retries, and JetStream acknowledgement time.
+    publish_ack_us: TimingSummary,
 }
 
 impl ReplaySummary {
     fn new(
         args: &Args,
         input_rows: u64,
-        raw_attempted: u64,
+        selected_rows_per_loop: u64,
         rate: Option<f64>,
         elapsed_seconds: f64,
+        timings: ReplayTiming,
         totals: LaneReport,
     ) -> Self {
         Self {
             input_rows,
-            raw_attempted,
+            skipped_rows: args.skip_events,
+            selected_rows_per_loop,
+            raw_attempted: totals.attempted,
             raw_published: totals.published,
             raw_duplicates: totals.duplicates,
             raw_rejected: totals.rejected,
@@ -420,6 +559,11 @@ impl ReplaySummary {
             speed_multiplier: (rate.is_none() && args.speed > 0.0).then_some(args.speed),
             isolated: args.isolated.is_some(),
             elapsed_seconds,
+            input_load_seconds: timings.input_load_seconds,
+            pacing_sleep_us: timings.pacing_sleep_us,
+            schedule_lag_us: timings.schedule_lag_us,
+            lane_send_us: timings.lane_send_us,
+            publish_ack_us: totals.publish_ack.summary(),
         }
     }
 }
@@ -640,5 +784,40 @@ mod tests {
                 .to_string(),
             "broker down",
         );
+    }
+
+    #[test]
+    fn timing_summary_merges_bounded_histograms() {
+        let mut first = Timing::default();
+        first.record(Duration::from_micros(40));
+        first.record(Duration::from_micros(900));
+        let mut second = Timing::default();
+        second.record(Duration::from_micros(1_500));
+        first.merge(second);
+
+        let summary = first.summary();
+        assert_eq!(summary.count, 3);
+        assert_eq!(summary.p50_upper_us, 1_000);
+        assert_eq!(summary.p95_upper_us, 2_000);
+        assert_eq!(summary.max_us, 1_500);
+        assert_eq!(Timing::default().summary().p95_upper_us, 0);
+    }
+
+    #[test]
+    fn short_run_limit_parses() {
+        let args = Args::try_parse_from([
+            "replay",
+            "--file",
+            "in.csv",
+            "--nats",
+            "nats://localhost:4222",
+            "--max-events",
+            "100000",
+            "--skip-events",
+            "250000",
+        ])
+        .expect("short diagnostic run should parse");
+        assert_eq!(args.max_events, Some(100_000));
+        assert_eq!(args.skip_events, 250_000);
     }
 }

@@ -43,6 +43,9 @@ pub enum ValkeyError {
     /// A materialised vehicle's optimistic version was not a valid unsigned integer.
     #[error("invalid materialized view version {0:?}")]
     MalformedVersion(String),
+    /// A selected segment read did not return one layer/tombstone pair per timestamp.
+    #[error("invalid materialized segment field reply")]
+    MalformedSegmentReply,
     /// Concurrent writers changed a vehicle on every retry; redelivery may retry safely.
     #[error("materialized view changed during every compare-and-set retry")]
     CasExhausted,
@@ -264,12 +267,18 @@ fn snapshot_fields(segment: SegmentId) -> [String; 5] {
     ]
 }
 
-/// Only layer-changing outputs need the potentially large segment HASH.
-fn needs_segment_state<E: Entry>(kind: &OutputKind<E>) -> bool {
-    matches!(
-        kind,
-        OutputKind::Matched { .. } | OutputKind::Retraction { .. }
-    )
+/// The only timestamps whose layer or tombstone can affect this output.
+fn affected_timestamps<E: Entry>(kind: &OutputKind<E>) -> Vec<i64> {
+    let mut timestamps = match kind {
+        OutputKind::Matched { diff, .. } => {
+            diff.layers.iter().map(|layer| layer.timestamp).collect()
+        }
+        OutputKind::Retraction { timestamps } => timestamps.clone(),
+        OutputKind::Terminal { .. } | OutputKind::Reset { .. } => Vec::new(),
+    };
+    timestamps.sort_unstable();
+    timestamps.dedup();
+    timestamps
 }
 
 impl WritePlan {
@@ -348,25 +357,24 @@ async fn apply_plan(
     Ok(applied == 1)
 }
 
-/// Decode one segment HASH into live layers and retraction tombstones.
+/// Decode the selected layer/tombstone pairs from a segment HASH.
 fn decode_layers<E: Entry + DeserializeOwned>(
-    raw: std::collections::HashMap<String, Vec<u8>>,
+    timestamps: &[i64],
+    raw: Vec<Option<Vec<u8>>>,
 ) -> Result<StoredSegment<E>, ValkeyError> {
+    if raw.len() != timestamps.len().saturating_mul(2) {
+        return Err(ValkeyError::MalformedSegmentReply);
+    }
     let mut layers = BTreeMap::new();
     let mut retractions = BTreeMap::new();
-    for (field, bytes) in raw {
-        if let Some(timestamp) = field
-            .strip_prefix("retracted:")
-            .and_then(|value| value.parse::<i64>().ok())
-        {
-            retractions.insert(timestamp, postcard::from_bytes(&bytes)?);
-            continue;
+    let (pairs, _) = raw.as_chunks::<2>();
+    for (timestamp, pair) in timestamps.iter().copied().zip(pairs) {
+        if let Some(bytes) = &pair[0] {
+            layers.insert(timestamp, postcard::from_bytes(bytes)?);
         }
-        // Skip fields that are neither layers nor recognised tombstones.
-        let Ok(timestamp) = field.parse::<i64>() else {
-            continue;
-        };
-        layers.insert(timestamp, postcard::from_bytes(&bytes)?);
+        if let Some(bytes) = &pair[1] {
+            retractions.insert(timestamp, postcard::from_bytes(bytes)?);
+        }
     }
     Ok(StoredSegment {
         layers,
@@ -374,7 +382,7 @@ fn decode_layers<E: Entry + DeserializeOwned>(
     })
 }
 
-/// Load the versioned metadata before the segment HASH in one network round
+/// Load the versioned metadata before selected segment fields in one network round
 /// trip. Redis executes the pipelined commands in order; if another writer
 /// advances the version after the first read, the later CAS rejects this
 /// snapshot exactly as it did when these were separate round trips.
@@ -382,14 +390,11 @@ async fn load_snapshot<E: Entry + DeserializeOwned>(
     conn: &mut MultiplexedConnection,
     vehicle: VehicleId,
     segment: SegmentId,
-    include_segment: bool,
+    timestamps: &[i64],
 ) -> Result<StoredSnapshot<E>, ValkeyError> {
     let fields = snapshot_fields(segment);
     let metadata_key = meta_key(vehicle);
-    let (values, raw): (
-        Vec<Option<String>>,
-        std::collections::HashMap<String, Vec<u8>>,
-    ) = if include_segment {
+    let (values, raw): (Vec<Option<String>>, Vec<Option<Vec<u8>>>) = if !timestamps.is_empty() {
         let mut pipeline = redis::pipe();
         pipeline
             // This must remain first: the CAS version makes a later mixed
@@ -397,8 +402,13 @@ async fn load_snapshot<E: Entry + DeserializeOwned>(
             .cmd("HMGET")
             .arg(&metadata_key)
             .arg(&fields)
-            .cmd("HGETALL")
+            .cmd("HMGET")
             .arg(segment_key(vehicle, segment));
+        for timestamp in timestamps {
+            pipeline
+                .arg(timestamp.to_string())
+                .arg(format!("retracted:{timestamp}"));
+        }
         pipeline.query_async(conn).await?
     } else {
         let values = redis::cmd("HMGET")
@@ -406,7 +416,7 @@ async fn load_snapshot<E: Entry + DeserializeOwned>(
             .arg(&fields)
             .query_async(conn)
             .await?;
-        (values, std::collections::HashMap::new())
+        (values, Vec::new())
     };
     let meta = fields
         .into_iter()
@@ -416,7 +426,7 @@ async fn load_snapshot<E: Entry + DeserializeOwned>(
     let StoredSegment {
         layers,
         retractions,
-    } = decode_layers(raw)?;
+    } = decode_layers(timestamps, raw)?;
     Ok(StoredSnapshot {
         meta,
         layers,
@@ -433,6 +443,7 @@ impl<E: Entry + DeserializeOwned> Sink<E> for ValkeySink {
         let mut conn = self.connection(vehicle);
         let layer_key = segment_key(vehicle, segment);
         let meta_key = meta_key(vehicle);
+        let timestamps = affected_timestamps(&output.kind);
 
         for _ in 0..CAS_RETRIES {
             // Read the version first; see `state_version` for why this order
@@ -441,13 +452,7 @@ impl<E: Entry + DeserializeOwned> Sink<E> for ValkeySink {
                 meta,
                 layers,
                 retractions,
-            } = load_snapshot::<E>(
-                &mut conn,
-                vehicle,
-                segment,
-                needs_segment_state(&output.kind),
-            )
-            .await?;
+            } = load_snapshot::<E>(&mut conn, vehicle, segment, &timestamps).await?;
             let version = state_version(&meta)?;
             let had_current = meta.contains_key("current_segment");
             let current_segment = meta
@@ -580,9 +585,51 @@ impl<E: Entry + DeserializeOwned> Sink<E> for ValkeySink {
 mod tests {
     use super::*;
 
-    use crate::event::MatchedDiff;
+    use crate::event::{MatchedDiff, MatchedLayer};
+    use crate::protocol::ids::{JobId, ObservationId};
     use crate::protocol::output::{ResetReason, TerminalReason};
+    use geo::Point;
     use routers_network::mock::MockEntryId;
+    use routers_network::{DirectionAwareEdgeId, Edge};
+
+    fn test_output(
+        vehicle: VehicleId,
+        revision: u64,
+        kind: OutputKind<MockEntryId>,
+    ) -> CommittedOutput<MockEntryId> {
+        CommittedOutput::new(
+            JobId(u128::from(revision)),
+            vehicle,
+            ObservationId {
+                partition: 0,
+                sequence: revision,
+            },
+            Revision(revision),
+            SegmentId(1),
+            kind,
+        )
+    }
+
+    fn matched_at(timestamp: i64, finalized_through: Option<i64>) -> OutputKind<MockEntryId> {
+        OutputKind::Matched {
+            diff: MatchedDiff {
+                revision: 0,
+                downgraded: false,
+                layers: vec![MatchedLayer {
+                    timestamp,
+                    edge: Edge {
+                        source: MockEntryId(1),
+                        target: MockEntryId(2),
+                        weight: 1,
+                        id: DirectionAwareEdgeId::new(MockEntryId(3)),
+                    },
+                    position: Point::new(0.0, 0.0),
+                    path: Vec::new(),
+                }],
+            },
+            finalized_through,
+        }
+    }
 
     /// Minimal model of the script's version gate. The real mutation is Lua;
     /// this lets adversarial ordering remain an ordinary unit test.
@@ -636,7 +683,7 @@ mod tests {
     }
 
     #[test]
-    fn only_layer_mutations_load_the_segment_hash() {
+    fn only_affected_timestamps_are_loaded_from_the_segment_hash() {
         let matched = OutputKind::<MockEntryId>::Matched {
             diff: MatchedDiff {
                 revision: 1,
@@ -657,10 +704,10 @@ mod tests {
             new_segment: SegmentId(2),
         };
 
-        assert!(needs_segment_state(&matched));
-        assert!(needs_segment_state(&retraction));
-        assert!(!needs_segment_state(&terminal));
-        assert!(!needs_segment_state(&reset));
+        assert!(affected_timestamps(&matched).is_empty());
+        assert_eq!(affected_timestamps(&retraction), [1]);
+        assert!(affected_timestamps(&terminal).is_empty());
+        assert!(affected_timestamps(&reset).is_empty());
     }
 
     #[test]
@@ -780,5 +827,66 @@ mod tests {
                 reversed[flipped.index_for(&key)].id
             );
         }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires ROUTERS_TEST_VALKEY_URL and a local disposable Valkey"]
+    async fn sparse_reads_preserve_retraction_replay_and_finality() {
+        let url = std::env::var("ROUTERS_TEST_VALKEY_URL").expect("Valkey URL");
+        let endpoint: ValkeyEndpoint = format!("test={url}").parse().expect("endpoint");
+        let sink = ValkeySink::connect(&[endpoint]).await.expect("connect");
+        let vehicle = VehicleId(
+            u64::try_from(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .expect("wall clock")
+                    .as_nanos(),
+            )
+            .expect("test timestamp fits"),
+        );
+
+        for (revision, kind) in [
+            (1, matched_at(10, None)),
+            (2, matched_at(20, None)),
+            (
+                3,
+                OutputKind::Retraction {
+                    timestamps: vec![10],
+                },
+            ),
+            (2, matched_at(10, None)),
+            (4, matched_at(10, Some(10))),
+            (
+                5,
+                OutputKind::Retraction {
+                    timestamps: vec![10],
+                },
+            ),
+        ] {
+            sink.apply(&test_output(vehicle, revision, kind))
+                .await
+                .expect("apply");
+        }
+
+        let client = redis::Client::open(url).expect("client");
+        let mut conn = client
+            .get_multiplexed_async_connection()
+            .await
+            .expect("connection");
+        let key = segment_key(vehicle, SegmentId(1));
+        let fields: std::collections::HashMap<String, Vec<u8>> = redis::cmd("HGETALL")
+            .arg(&key)
+            .query_async(&mut conn)
+            .await
+            .expect("segment hash");
+        assert!(fields.contains_key("10"));
+        assert!(fields.contains_key("20"));
+        assert!(!fields.contains_key("retracted:10"));
+        let _: i64 = redis::cmd("DEL")
+            .arg(key)
+            .arg(meta_key(vehicle))
+            .query_async(&mut conn)
+            .await
+            .expect("cleanup test vehicle");
     }
 }

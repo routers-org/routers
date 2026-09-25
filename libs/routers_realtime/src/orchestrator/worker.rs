@@ -1,16 +1,17 @@
 //! Orchestrator: the single-task partition worker loop.
 //!
 //! One worker owns one partition's state and `select!`s over raw deliveries,
-//! result deliveries and a housekeeping tick. Invariants: one
-//! active job per vehicle, per-vehicle FIFO on the raw sequence, and commits run
-//! inline on this task so they never overlap. The `bus::adapter` futures are not
-//! `Send`, so every source, publisher, and ack stays on this one task.
+//! result deliveries, commit completions, and a housekeeping tick. Per-vehicle
+//! work stays ordered while independent vehicles may wait on durable I/O
+//! concurrently.
 
 use alloc::collections::VecDeque;
 use alloc::sync::Arc;
 use core::time::Duration;
 use std::collections::{HashMap, HashSet};
 
+use futures::future::BoxFuture;
+use futures::stream::{FuturesUnordered, StreamExt as _};
 use routers_network::Entry;
 use tokio::time::{Instant, MissedTickBehavior, interval};
 use tracing::{debug, error, warn};
@@ -22,7 +23,9 @@ use crate::lifecycle::{Drain, Shutdown};
 use crate::matcher::pull::RawBytes;
 use crate::metrics::Metrics;
 use crate::orchestrator::admission::{Admission, HeldReason, Waiting};
-use crate::orchestrator::commit::{self, CommitConfig, CommitError, Committer, Decision};
+use crate::orchestrator::commit::{
+    self, CommitConfig, CommitError, Committed, Committer, Decision,
+};
 use crate::orchestrator::dispatch::{
     DispatchConfig, DispatchError, Dispatcher, TimestampRegression, timestamp_regression,
 };
@@ -171,6 +174,19 @@ struct ParkedResult<E: Entry, H: AckHandle> {
     handle: H,
 }
 
+struct CommitCompletion<E: Entry, H: AckHandle, SE> {
+    vehicle: VehicleId,
+    next: VehicleCheckpoint<E>,
+    result_delivery: Option<ParkedResult<E, H>>,
+    started: Instant,
+    is_terminal: bool,
+    terminal_reason: Option<&'static str>,
+    reset_reason: Option<&'static str>,
+    result: Result<Committed, CommitError<SE>>,
+}
+
+type CommitFuture<E, H, SE> = BoxFuture<'static, CommitCompletion<E, H, SE>>;
+
 /// The worker's own owned projection of [`Verdict`].
 enum ResultVerdict {
     /// Commit this result as the answer to the active job.
@@ -240,6 +256,7 @@ where
     blocked_results: HashMap<VehicleId, ParkedResult<E, XS::Handle>>,
     /// Vehicles retired after a permanent commit fault.
     quarantined: HashSet<VehicleId>,
+    commits: FuturesUnordered<CommitFuture<E, XS::Handle, S::Error>>,
     shutdown: Shutdown,
     drain: Drain,
     last_evict: Instant,
@@ -308,6 +325,7 @@ where
             parked_results: HashMap::new(),
             blocked_results: HashMap::new(),
             quarantined: HashSet::new(),
+            commits: FuturesUnordered::new(),
             shutdown,
             drain: Drain::new(),
             last_evict: now,
@@ -344,12 +362,24 @@ where
                     Some(Err(error)) => warn!(%error, "result source error"),
                     None => results_open = false,
                 },
+                completion = self.commits.next(), if !self.commits.is_empty() => {
+                    self.finish_commit(completion.expect("guarded by non-empty check")).await;
+                    self.pump().await;
+                },
                 _ = tick.tick() => self.on_tick().await,
             }
         }
 
-        // Commits run inline, so the quiesce returns immediately.
-        let _ = self.drain.quiesce(self.cfg.grace).await;
+        let deadline = Instant::now() + self.cfg.grace;
+        while !self.commits.is_empty() {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let Ok(Some(completion)) = tokio::time::timeout(remaining, self.commits.next()).await
+            else {
+                break;
+            };
+            self.finish_commit(completion).await;
+        }
+        let _ = self.drain.quiesce(Duration::ZERO).await;
         let _ = self
             .store
             .set_frontier(PartitionFrontier {
@@ -767,9 +797,6 @@ where
         decision: Decision<E>,
         result_delivery: Option<ParkedResult<E, XS::Handle>>,
     ) {
-        let _guard = self.drain.begin();
-        let now = Instant::now();
-
         let Some(meta) = self.active_meta.get(&vehicle).cloned() else {
             if let Some(delivery) = result_delivery {
                 let _ = delivery.handle.ack().await;
@@ -814,12 +841,43 @@ where
         );
         let next = plan.next.clone();
 
-        let commit_start = Instant::now();
-        match self
-            .committer
-            .commit(vehicle, self.cfg.partition, plan, meta.expected_base, raw)
-            .await
-        {
+        let committer = self.committer.clone();
+        let partition = self.cfg.partition;
+        let expected_base = meta.expected_base;
+        let started = Instant::now();
+        let guard = self.drain.begin();
+        self.commits.push(Box::pin(async move {
+            let result = committer
+                .commit(vehicle, partition, plan, expected_base, raw)
+                .await;
+            drop(guard);
+            CommitCompletion {
+                vehicle,
+                next,
+                result_delivery,
+                started,
+                is_terminal,
+                terminal_reason,
+                reset_reason,
+                result,
+            }
+        }));
+    }
+
+    async fn finish_commit(&mut self, completion: CommitCompletion<E, XS::Handle, S::Error>) {
+        let CommitCompletion {
+            vehicle,
+            next,
+            result_delivery,
+            started,
+            is_terminal,
+            terminal_reason,
+            reset_reason,
+            result,
+        } = completion;
+        let now = Instant::now();
+
+        match result {
             Ok(committed) => {
                 self.scheduler
                     .set_checkpoint(vehicle, CheckpointState::Present(next));
@@ -840,7 +898,7 @@ where
                 self.stats.committed += 1;
                 let kind = if is_terminal { "terminal" } else { "matched" };
                 self.metrics
-                    .commit_seconds(kind, commit_start.elapsed().as_secs_f64());
+                    .commit_seconds(kind, started.elapsed().as_secs_f64());
                 self.metrics.output_bytes(committed.bytes as u64);
                 // A reset commit emits the reset before the matched/terminal output.
                 if let Some(reason) = reset_reason {
@@ -855,7 +913,7 @@ where
                 if is_terminal {
                     self.stats.terminal += 1;
                 }
-                if reset_opt.is_some() {
+                if reset_reason.is_some() {
                     self.stats.resets += 1;
                 }
                 self.stats.frontier = self.tracker.frontier();
@@ -1237,11 +1295,14 @@ fn unix_micros() -> i64 {
 mod tests {
     use super::*;
 
+    use core::sync::atomic::{AtomicUsize, Ordering};
+
     use async_nats::HeaderMap;
     use chrono::{DateTime, Utc};
     use geo::Point;
     use routers_network::mock::MockEntryId;
     use routers_transition::matcher::Trip;
+    use tokio::sync::Notify;
 
     use crate::bus::Wire;
     use crate::bus::memory::{MemoryBus, MemoryPublisher, MemorySource};
@@ -1263,6 +1324,63 @@ mod tests {
         MemorySource<RawBytes>,
         MemorySource<SolveResult<E>>,
     >;
+
+    struct OverlapPublisher<T: Wire> {
+        inner: MemoryPublisher<T>,
+        active: Arc<AtomicUsize>,
+        peak: Arc<AtomicUsize>,
+        changed: Arc<Notify>,
+    }
+
+    impl<T: Wire> Clone for OverlapPublisher<T> {
+        fn clone(&self) -> Self {
+            Self {
+                inner: self.inner.clone(),
+                active: Arc::clone(&self.active),
+                peak: Arc::clone(&self.peak),
+                changed: Arc::clone(&self.changed),
+            }
+        }
+    }
+
+    impl<T: Wire> OverlapPublisher<T> {
+        fn new(inner: MemoryPublisher<T>) -> Self {
+            Self {
+                inner,
+                active: Arc::new(AtomicUsize::new(0)),
+                peak: Arc::new(AtomicUsize::new(0)),
+                changed: Arc::new(Notify::new()),
+            }
+        }
+    }
+
+    impl<T: Wire + Send + Sync + 'static> Publisher<T> for OverlapPublisher<T> {
+        async fn publish_bytes(
+            &self,
+            subject: &str,
+            msg_id: &str,
+            headers: HeaderMap,
+            bytes: &[u8],
+        ) -> Result<crate::bus::adapter::PublishOutcome, crate::bus::adapter::PublishError>
+        {
+            let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
+            self.peak.fetch_max(active, Ordering::SeqCst);
+            if active == 1 {
+                while self.peak.load(Ordering::SeqCst) < 2 {
+                    self.changed.notified().await;
+                }
+            } else {
+                self.changed.notify_waiters();
+            }
+
+            let result = self
+                .inner
+                .publish_bytes(subject, msg_id, headers, bytes)
+                .await;
+            self.active.fetch_sub(1, Ordering::SeqCst);
+            result
+        }
+    }
 
     /// A Sydney fix; its precision-4 cell is what the test catalog serves.
     fn point() -> Point {
@@ -1650,7 +1768,18 @@ freshness_budget_ms = 30000
 
     /// Pull one raw delivery into the scheduler without pumping it, so a test
     /// can arrange a complete dispatch round before exercising the worker.
-    async fn enqueue_next_raw(worker: &mut Worker) {
+    async fn enqueue_next_raw<OP>(
+        worker: &mut PartitionWorker<
+            E,
+            MemoryCheckpointStore,
+            MemoryPublisher<SolveJob<E>>,
+            OP,
+            MemorySource<RawBytes>,
+            MemorySource<SolveResult<E>>,
+        >,
+    ) where
+        OP: Publisher<CommittedOutput<E>>,
+    {
         let delivery = worker
             .raw
             .next()
@@ -1831,6 +1960,104 @@ freshness_budget_ms = 30000
         assert_eq!(stats.committed, 4, "both vehicles fully commit");
         assert!(store.load(VehicleId(a)).await.unwrap().0.is_some());
         assert!(store.load(VehicleId(b)).await.unwrap().0.is_some());
+    }
+
+    #[tokio::test]
+    async fn independent_vehicle_commits_overlap_durable_io() {
+        let a = 1u64;
+        let b = same_partition_as(a);
+        let partition = partition_for(a);
+        let bus = MemoryBus::new();
+        let store = MemoryCheckpointStore::new();
+        let shutdown = Shutdown::new();
+        let catalog = Arc::new(catalog(30_000));
+
+        publish_raw(&bus, partition, a, 1_775_000_000_000_000).await;
+        publish_raw(&bus, partition, b, 1_775_000_000_000_000).await;
+
+        let output = OverlapPublisher::new(bus.publisher::<CommittedOutput<E>>());
+        let dispatcher = Dispatcher::new(bus.publisher::<SolveJob<E>>(), DispatchConfig::default());
+        let committer = Committer::new(
+            store.clone(),
+            output.clone(),
+            CommitConfig {
+                publish_attempts: 1,
+                backoff: Duration::ZERO,
+            },
+        );
+        let report = clean_report(partition);
+        let mut worker = PartitionWorker::new(
+            config(partition),
+            catalog.clone(),
+            admission_for(&catalog),
+            store,
+            dispatcher,
+            committer,
+            bus.source::<RawBytes>(&raw_subject(u64::from(partition))),
+            bus.source::<SolveResult<E>>(&result_subject(u64::from(partition))),
+            &report,
+            shutdown.clone(),
+        );
+
+        enqueue_next_raw(&mut worker).await;
+        enqueue_next_raw(&mut worker).await;
+        worker.pump().await;
+
+        let result_publisher = bus.publisher::<SolveResult<E>>();
+        for (_, _, bytes) in bus.published("solve.v1.g.>") {
+            let job = SolveJob::<E>::decode(&bytes).expect("job decodes");
+            let result = SolveResult::new(
+                &job,
+                SolveOutcome::Solved {
+                    diff: MatchedDiff {
+                        revision: 1,
+                        downgraded: false,
+                        layers: Vec::new(),
+                    },
+                    trip: Trip::new(),
+                    converged_through: None,
+                },
+                0,
+            );
+            result_publisher
+                .publish(
+                    &result_subject(u64::from(partition)),
+                    &result.msg_id(),
+                    HeaderMap::new(),
+                    &result,
+                )
+                .await
+                .expect("result publishes");
+        }
+
+        for _ in 0..2 {
+            let delivery = worker
+                .results
+                .next()
+                .await
+                .expect("result source stays open")
+                .expect("result decodes");
+            worker.on_result(delivery).await;
+        }
+        assert_eq!(worker.commits.len(), 2);
+
+        for _ in 0..2 {
+            let completion = tokio::time::timeout(Duration::from_secs(1), worker.commits.next())
+                .await
+                .unwrap_or_else(|_| {
+                    panic!(
+                        "commit gate stalled: active={}, peak={}, outputs={}",
+                        output.active.load(Ordering::SeqCst),
+                        output.peak.load(Ordering::SeqCst),
+                        bus.published(&output_subject(u64::from(partition))).len(),
+                    )
+                })
+                .expect("a commit remains");
+            worker.finish_commit(completion).await;
+        }
+
+        assert_eq!(worker.stats.committed, 2);
+        assert_eq!(output.peak.load(Ordering::SeqCst), 2);
     }
 
     #[tokio::test(start_paused = true)]
