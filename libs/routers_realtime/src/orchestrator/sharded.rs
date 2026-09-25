@@ -9,7 +9,10 @@
 use core::num::NonZeroUsize;
 use std::collections::HashMap;
 
+use alloc::collections::VecDeque;
 use anyhow::Context as _;
+use futures::future::BoxFuture;
+use futures::stream::{FuturesUnordered, StreamExt as _};
 use tokio::sync::mpsc;
 
 use crate::bus::Wire;
@@ -27,6 +30,9 @@ pub type PartitionRoutes<T, H> = HashMap<u16, mpsc::Sender<Delivery<T, H>>>;
 
 /// Partition id to the worker-owned receiving side of its bounded route.
 pub type PartitionSources<T, H> = HashMap<u16, PartitionSource<T, H>>;
+
+type RoutePermit<T, H> = Result<mpsc::OwnedPermit<Delivery<T, H>>, mpsc::error::SendError<()>>;
+type RouteReservation<T, H> = BoxFuture<'static, (u16, RoutePermit<T, H>)>;
 
 impl<T: Wire + Send, H: AckHandle> Source<T> for PartitionSource<T, H> {
     type Handle = H;
@@ -62,63 +68,123 @@ pub fn partition_routes<T, H: AckHandle>(
 
 /// Forward a shared durable's deliveries to its partition-local worker queues.
 ///
-/// Sending awaits bounded capacity, naturally applying backpressure to the
-/// pull source. A failed/closed route negatively acknowledges the delivery and
-/// forces a process drain; continuing would strand a durable on a replica that
-/// no longer owns every one of its partitions.
+/// A busy partition is buffered independently, so it cannot block deliveries
+/// for the other partitions owned by this router. Both the worker channels and
+/// router-owned pending deliveries are bounded. A failed/closed route
+/// negatively acknowledges its next delivery and forces a process drain;
+/// continuing would strand a durable on a replica that no longer owns every
+/// one of its partitions.
 pub async fn route<T, Src>(
     mut source: Src,
     routes: PartitionRoutes<T, Src::Handle>,
     shutdown: Shutdown,
 ) -> anyhow::Result<()>
 where
-    T: Wire + Send,
+    T: Wire + Send + 'static,
     Src: Source<T>,
 {
-    loop {
-        let next = tokio::select! {
-            _ = shutdown.triggered() => return Ok(()),
-            next = source.next() => next,
-        };
-        let Some(delivery) = next else {
-            if shutdown.is_triggered() {
-                return Ok(());
-            }
-            shutdown.trigger(DrainReason::Fatal);
-            anyhow::bail!("sharded source closed before shutdown");
-        };
-        let delivery = match delivery {
-            Ok(delivery) => delivery,
-            Err(error) => {
-                shutdown.trigger(DrainReason::Fatal);
-                return Err(error).context("sharded JetStream source failed");
-            }
-        };
-        let Some(sender) = partition_of_subject(&delivery.subject).and_then(|p| routes.get(&p))
-        else {
-            let subject = delivery.subject.clone();
-            let _ = delivery.handle.nak(None).await;
-            shutdown.trigger(DrainReason::Fatal);
-            anyhow::bail!("shared consumer delivered unroutable subject {subject}");
-        };
+    let pending_limit = routes
+        .values()
+        .map(mpsc::Sender::max_capacity)
+        .sum::<usize>()
+        .max(1);
+    let mut pending = HashMap::<u16, VecDeque<Delivery<T, Src::Handle>>>::new();
+    let mut pending_count = 0_usize;
+    let mut reservations: FuturesUnordered<RouteReservation<T, Src::Handle>> =
+        FuturesUnordered::new();
 
+    loop {
         tokio::select! {
-            _ = shutdown.triggered() => {
-                // Dropping the unacked delivery makes it eligible for the
-                // durable's normal redelivery after this process drains.
-                return Ok(());
+            _ = shutdown.triggered() => return Ok(()),
+            reservation = reservations.next(), if !reservations.is_empty() => {
+                let (partition, permit) = reservation.expect("guarded by non-empty check");
+                let queue = pending
+                    .get_mut(&partition)
+                    .expect("a reservation always has pending work");
+                let delivery = queue.pop_front().expect("pending queue is never empty");
+                pending_count -= 1;
+                let has_more = !queue.is_empty();
+
+                match permit {
+                    Ok(permit) => {
+                        permit.send(delivery);
+                    }
+                    Err(_) => {
+                        let subject = delivery.subject.clone();
+                        let _ = delivery.handle.nak(None).await;
+                        shutdown.trigger(DrainReason::Fatal);
+                        anyhow::bail!("partition route for {subject} closed");
+                    }
+                }
+
+                if has_more {
+                    let sender = routes
+                        .get(&partition)
+                        .expect("pending work belongs to an existing route")
+                        .clone();
+                    reservations.push(reserve_route(partition, sender));
+                } else {
+                    pending.remove(&partition);
+                }
             }
-            sent = sender.send(delivery) => match sent {
-                Ok(()) => {}
-                Err(error) => {
-                    let subject = error.0.subject.clone();
-                    let _ = error.0.handle.nak(None).await;
+            next = source.next(), if pending_count < pending_limit => {
+                let Some(delivery) = next else {
+                    if shutdown.is_triggered() {
+                        return Ok(());
+                    }
                     shutdown.trigger(DrainReason::Fatal);
-                    anyhow::bail!("partition route for {subject} closed");
+                    anyhow::bail!("sharded source closed before shutdown");
+                };
+                let delivery = match delivery {
+                    Ok(delivery) => delivery,
+                    Err(error) => {
+                        shutdown.trigger(DrainReason::Fatal);
+                        return Err(error).context("sharded JetStream source failed");
+                    }
+                };
+                let Some(partition) = partition_of_subject(&delivery.subject) else {
+                    let subject = delivery.subject.clone();
+                    let _ = delivery.handle.nak(None).await;
+                    shutdown.trigger(DrainReason::Fatal);
+                    anyhow::bail!("shared consumer delivered unroutable subject {subject}");
+                };
+                let Some(sender) = routes.get(&partition) else {
+                    let subject = delivery.subject.clone();
+                    let _ = delivery.handle.nak(None).await;
+                    shutdown.trigger(DrainReason::Fatal);
+                    anyhow::bail!("shared consumer delivered unroutable subject {subject}");
+                };
+
+                if let Some(queue) = pending.get_mut(&partition) {
+                    queue.push_back(delivery);
+                    pending_count += 1;
+                    continue;
+                }
+
+                match sender.try_send(delivery) {
+                    Ok(()) => {}
+                    Err(mpsc::error::TrySendError::Full(delivery)) => {
+                        pending.insert(partition, VecDeque::from([delivery]));
+                        pending_count += 1;
+                        reservations.push(reserve_route(partition, sender.clone()));
+                    }
+                    Err(mpsc::error::TrySendError::Closed(delivery)) => {
+                        let subject = delivery.subject.clone();
+                        let _ = delivery.handle.nak(None).await;
+                        shutdown.trigger(DrainReason::Fatal);
+                        anyhow::bail!("partition route for {subject} closed");
+                    }
                 }
             }
         }
     }
+}
+
+fn reserve_route<T: Send + 'static, H: AckHandle>(
+    partition: u16,
+    sender: mpsc::Sender<Delivery<T, H>>,
+) -> RouteReservation<T, H> {
+    Box::pin(async move { (partition, sender.reserve_owned().await) })
 }
 
 /// The earliest raw stream position a shared durable may safely resume from.
@@ -192,6 +258,18 @@ mod tests {
         type Handle = TestAck;
         async fn next(&mut self) -> Option<anyhow::Result<Delivery<TestWire, Self::Handle>>> {
             self.deliveries.pop_front().map(Ok)
+        }
+    }
+
+    struct OpenTestSource(TestSource);
+
+    impl Source<TestWire> for OpenTestSource {
+        type Handle = TestAck;
+        async fn next(&mut self) -> Option<anyhow::Result<Delivery<TestWire, Self::Handle>>> {
+            if let Some(delivery) = self.0.deliveries.pop_front() {
+                return Some(Ok(delivery));
+            }
+            core::future::pending().await
         }
     }
 
@@ -284,6 +362,59 @@ mod tests {
         );
         assert_eq!(*ops.lock().unwrap(), ["nak"]);
         routes.clear();
+    }
+
+    #[tokio::test]
+    async fn a_full_partition_does_not_block_another_partition() {
+        let ops = Arc::new(Mutex::new(Vec::new()));
+        let (routes, mut sources) = partition_routes([2, 3], NonZeroUsize::new(1).unwrap());
+        let source = OpenTestSource(TestSource {
+            deliveries: [
+                delivery(
+                    2,
+                    1,
+                    TestAck {
+                        sequence: 1,
+                        operations: ops.clone(),
+                    },
+                ),
+                delivery(
+                    2,
+                    2,
+                    TestAck {
+                        sequence: 2,
+                        operations: ops.clone(),
+                    },
+                ),
+                delivery(
+                    3,
+                    9,
+                    TestAck {
+                        sequence: 3,
+                        operations: ops.clone(),
+                    },
+                ),
+            ]
+            .into(),
+        });
+        let shutdown = Shutdown::new();
+        let route_task = tokio::spawn(route(source, routes, shutdown.clone()));
+
+        let three =
+            tokio::time::timeout(Duration::from_secs(1), sources.get_mut(&3).unwrap().next())
+                .await
+                .expect("partition 3 was blocked by full partition 2")
+                .unwrap()
+                .unwrap();
+        assert_eq!(three.item, TestWire(9));
+
+        let two = sources.get_mut(&2).unwrap();
+        assert_eq!(two.next().await.unwrap().unwrap().item, TestWire(1));
+        assert_eq!(two.next().await.unwrap().unwrap().item, TestWire(2));
+
+        shutdown.trigger(DrainReason::Operator);
+        route_task.await.unwrap().unwrap();
+        assert!(ops.lock().unwrap().is_empty());
     }
 
     #[test]
