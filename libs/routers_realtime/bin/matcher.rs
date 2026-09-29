@@ -236,7 +236,8 @@ async fn main() -> anyhow::Result<()> {
         )
         .with_max_candidates(Some(args.max_candidates).filter(|k| *k > 0))
         .with_window_layers(Some(args.window_layers).filter(|w| *w > 0))
-        .with_cache_capacities(args.predicate_cache_entries, args.successor_cache_entries),
+        .with_cache_capacities(args.predicate_cache_entries, args.successor_cache_entries)
+        .with_solve_threads(args.solve_slots),
     );
 
     let mut publisher = ResultPublisher::new(

@@ -36,6 +36,7 @@ web-time = "1"
 fnv_rs = "0.4.4"
 rustc-hash = { workspace = true }
 scc = { workspace = true }
+rayon = { workspace = true }
 futures = "0.3.32"
 tokio = { workspace = true, features = ["net", "signal", "sync", "time"] }
 itertools = { workspace = true }

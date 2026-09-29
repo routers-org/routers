@@ -7602,6 +7602,7 @@ dependencies = [
  "opentelemetry_sdk",
  "polars",
  "postcard",
+ "rayon",
  "redis",
  "routers_codec",
  "routers_network",

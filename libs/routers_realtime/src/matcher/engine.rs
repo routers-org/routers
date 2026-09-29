@@ -45,6 +45,9 @@ pub struct Engine<N: Network> {
     search_distance: Option<f64>,
     max_candidates: Option<usize>,
     window_layers: Option<usize>,
+    /// Runs whole solves, so the matcher's parallel loops split work inside
+    /// this pool rather than handing off to rayon's global pool per loop.
+    solve_pool: Option<Arc<rayon::ThreadPool>>,
 }
 
 impl<N: Network> Engine<N> {
@@ -62,7 +65,26 @@ impl<N: Network> Engine<N> {
             search_distance,
             max_candidates: None,
             window_layers: None,
+            solve_pool: None,
         }
+    }
+
+    /// Run [`Engine::solve_blocking`] solves on a dedicated pool of `threads`
+    /// rather than on the runtime's blocking threads. Size it to the number of
+    /// concurrent solves the caller admits.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the pool's threads cannot be spawned.
+    #[must_use]
+    pub fn with_solve_threads(mut self, threads: core::num::NonZeroUsize) -> Self {
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(threads.get())
+            .thread_name(|index| format!("solve-{index}"))
+            .build()
+            .expect("the solve pool's threads spawn");
+        self.solve_pool = Some(Arc::new(pool));
+        self
     }
 
     /// Keep only the best `max_candidates` per observation; `None` keeps every edge in range.
@@ -273,7 +295,7 @@ where
     ) -> BlockingSolve<N::Entry> {
         let engine = Arc::clone(self);
         let queued_at = web_time::Instant::now();
-        tokio::task::spawn_blocking(move || {
+        let run = move || {
             let started_at = web_time::Instant::now();
             let outcome = engine.solve(&job);
             BlockingSolve {
@@ -281,18 +303,37 @@ where
                 queued_for: started_at.duration_since(queued_at),
                 ran_for: started_at.elapsed(),
             }
-        })
-        .await
-        .unwrap_or_else(|err| {
-            error!("solve task panicked: {err}");
-            BlockingSolve {
-                outcome: SolveOutcome::Internal {
-                    reason: "panic".to_owned(),
-                },
-                queued_for: queued_at.elapsed(),
-                ran_for: Duration::ZERO,
+        };
+        let panicked = |queued_at: web_time::Instant| BlockingSolve {
+            outcome: SolveOutcome::Internal {
+                reason: "panic".to_owned(),
+            },
+            queued_for: queued_at.elapsed(),
+            ran_for: Duration::ZERO,
+        };
+        match &self.solve_pool {
+            Some(pool) => {
+                let (sender, receiver) = tokio::sync::oneshot::channel();
+                pool.spawn(move || {
+                    let solved = std::panic::catch_unwind(core::panic::AssertUnwindSafe(run));
+                    // The awaiting handler may have been cancelled; nothing to do then.
+                    let _ = sender.send(solved);
+                });
+                match receiver.await {
+                    Ok(Ok(solved)) => solved,
+                    Ok(Err(_)) | Err(_) => {
+                        error!("solve task panicked");
+                        panicked(queued_at)
+                    }
+                }
             }
-        })
+            None => tokio::task::spawn_blocking(run)
+                .await
+                .unwrap_or_else(|err| {
+                    error!("solve task panicked: {err}");
+                    panicked(queued_at)
+                }),
+        }
     }
 }
 
@@ -589,5 +630,25 @@ mod tests {
 
         assert!(matches!(solved.outcome, SolveOutcome::Solved { .. }));
         assert!(solved.ran_for > Duration::ZERO);
+    }
+
+    #[tokio::test]
+    async fn pooled_solves_match_direct_ones_byte_for_byte() {
+        let direct = engine(bent_road());
+        let pooled = Arc::new(
+            Engine::new(Arc::new(bent_road()), (), None)
+                .with_solve_threads(core::num::NonZeroUsize::new(2).unwrap()),
+        );
+        let context = || Continuation::Restart {
+            fresh: observations(),
+        };
+        let expected = postcard::to_allocvec(&direct.solve(&job(context()))).unwrap();
+
+        // Concurrent solves share the pool, and each matches the direct solve.
+        let solves = (0..4).map(|_| pooled.solve_blocking_timed(job(context())));
+        for solved in futures::future::join_all(solves).await {
+            assert!(solved.ran_for > Duration::ZERO);
+            assert_eq!(postcard::to_allocvec(&solved.outcome).unwrap(), expected);
+        }
     }
 }
