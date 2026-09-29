@@ -12,6 +12,9 @@ bringup: repos
     helm upgrade --install valkey oci://registry-1.docker.io/bitnamicharts/valkey \
         -n {{ namespace }} --create-namespace \
         -f valkey-values.yaml
+    helm upgrade --install valkey-view oci://registry-1.docker.io/bitnamicharts/valkey --version 6.2.4 \
+        -n {{ namespace }} --create-namespace \
+        -f valkey-view-values.yaml
     helm upgrade --install kube-prometheus-stack prometheus-community/kube-prometheus-stack \
         -n {{ namespace }} --create-namespace \
         -f kube-prometheus-stack-values.yaml
@@ -70,6 +73,9 @@ patch: repos
     helm upgrade valkey oci://registry-1.docker.io/bitnamicharts/valkey \
         -n {{ namespace }} \
         -f valkey-values.yaml
+    helm upgrade valkey-view oci://registry-1.docker.io/bitnamicharts/valkey --version 6.2.4 \
+        -n {{ namespace }} \
+        -f valkey-view-values.yaml
     helm upgrade kube-prometheus-stack prometheus-community/kube-prometheus-stack \
         -n {{ namespace }} \
         -f kube-prometheus-stack-values.yaml
@@ -81,6 +87,7 @@ patch: repos
 teardown:
     helm uninstall otel-collector -n {{ namespace }} --ignore-not-found
     helm uninstall kube-prometheus-stack -n {{ namespace }} --ignore-not-found
+    helm uninstall valkey-view -n {{ namespace }} --ignore-not-found
     helm uninstall valkey -n {{ namespace }} --ignore-not-found
     helm uninstall nats -n {{ namespace }} --ignore-not-found
     @if [ "${ROUTERS_DEVSTACK_DELETE_NAMESPACE:-0}" = "1" ]; then \

@@ -12,7 +12,7 @@ Deployed:
   - grafana dashboard ConfigMap
 {{- end }}
 
-Planes: events.raw.p.<p>, solve.v1.g.<graph>.r.<region>.q.<lane>, solve-result.v1.p.<p>, events.matched.v1.p.<p>
+Planes: durable events.raw.p.<p> and events.matched.v1.p.<p>; transient solve.req.v1.g.<graph>.r.<region>.q.<lane> and process-scoped replies.
 
 Depends on (not installed by this chart):
   - event bus (NATS JetStream, 2.10+) at {{ .Values.infra.eventBus.url }}
