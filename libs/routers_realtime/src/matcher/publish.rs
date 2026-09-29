@@ -1,23 +1,24 @@
 //! Matcher result publisher: publish the result, then acknowledge the job.
 //!
-//! The load-bearing invariant: never acknowledge the job until the broker has
-//! acknowledged the result — a crash before the result lands redelivers the
-//! un-acked job (a duplicate solve is nominal). The result's `Nats-Msg-Id` is
-//! the job id, so an [`PublishError::Ambiguous`] retry dedups; a
-//! [`PublishError::Failed`] send stored nothing and the job is redelivered.
+//! Results go to the requesting owner's reply inbox over transient Core NATS.
+//! The raw event remains unacknowledged until the orchestrator commits the
+//! result, so a lost result is recomputed from that raw event.
 
+use core::str::FromStr;
 use core::time::Duration;
 
+use async_nats::HeaderValue;
 use thiserror::Error;
+use tokio::time::Instant;
 
 use routers_network::Entry;
 
 use crate::bus::Wire;
 use crate::bus::adapter::{AckHandle, PublishError, PublishOutcome, Publisher};
 use crate::bus::outbound;
+use crate::orchestrator::dispatch::STICKY_HEADER;
 use crate::protocol::ids::headers::stamp_schema;
 use crate::protocol::result::SolveResult;
-use crate::topology::results;
 
 /// The ceiling a doubling backoff may reach between retries.
 const BACKOFF_CAP: Duration = Duration::from_secs(2);
@@ -46,17 +47,21 @@ impl Default for PublishConfig {
     }
 }
 
-/// A confirmed publish-then-ack: the broker stored (or deduplicated) the result
-/// and the job was acknowledged.
+/// The result publisher accepted the result and acknowledged its input.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Published {
     /// How many publish attempts it took (`1` when the first landed).
     pub attempts: u32,
-    /// `true` when the broker recognised the result as a duplicate it already
-    /// held, rather than a fresh store.
+    /// `true` when a durable publisher recognised a stored duplicate.
     pub duplicate: bool,
     /// Encoded result size on the wire.
     pub bytes: usize,
+    /// Time spent encoding the result once.
+    pub encoded_for: Duration,
+    /// Time spent publishing encoded bytes, including ambiguous retries.
+    pub stored_for: Duration,
+    /// Time spent acknowledging the source job after confirmed publication.
+    pub acked_for: Duration,
 }
 
 /// Why a result could not be published-then-acked. In every case the job is left
@@ -82,49 +87,67 @@ pub enum PublishFailure {
 }
 
 /// Publishes solve results and acknowledges the jobs that produced them, in
-/// that order. Generic over the [`Publisher`] `P` so production wires it to
-/// JetStream while tests drive it against the in-memory bus.
+/// that order. Production uses Core NATS with raw-event ownership; tests also
+/// exercise the durable adapter against an in-memory bus.
 #[derive(Clone, Debug)]
 pub struct ResultPublisher<P> {
     publisher: P,
     cfg: PublishConfig,
+    sticky: Option<HeaderValue>,
 }
 
 impl<P> ResultPublisher<P> {
     /// Wrap `publisher` with the retry policy `cfg`.
     #[must_use]
     pub fn new(publisher: P, cfg: PublishConfig) -> Self {
-        Self { publisher, cfg }
+        Self {
+            publisher,
+            cfg,
+            sticky: None,
+        }
+    }
+
+    /// Advertise `subject` on every result as this matcher's direct request
+    /// subject, so the owner can send the vehicle's next request here.
+    ///
+    /// # Errors
+    ///
+    /// Fails when `subject` is not a valid header value.
+    pub fn with_sticky_subject(mut self, subject: &str) -> anyhow::Result<Self> {
+        self.sticky = Some(HeaderValue::from_str(subject)?);
+        Ok(self)
     }
 
     /// Publish `result`, then acknowledge `job` — and only in that order.
     ///
-    /// The result is encoded once and published under
-    /// `Nats-Msg-Id = result.msg_id()` (the job id). The job is never
+    /// The result is encoded once and published to `subject`, the owner's
+    /// reply inbox, under `Nats-Msg-Id = result.msg_id()` (the job id). The job is never
     /// acknowledged unless the broker acknowledged the result: an ambiguous send
     /// retries the identical bytes up to [`PublishConfig::attempts`] then
     /// [`PublishFailure::Exhausted`], a failed send `nak`s, and an ack that fails
     /// after a confirmed store returns [`PublishFailure::AckFailed`] without a `nak`.
-    pub async fn publish_then_ack<E, H>(
+    pub async fn publish_then_ack_to<E, H>(
         &self,
         result: &SolveResult<E>,
         job: H,
+        subject: &str,
     ) -> Result<Published, PublishFailure>
     where
-        // `SolveResult<E>: Wire` holds only when `E` deserialises; `Entry` alone
-        // guarantees only `Serialize`, so the extra bound is stated here.
         E: Entry + serde::de::DeserializeOwned,
         H: AckHandle,
         P: Publisher<SolveResult<E>>,
     {
-        let subject = results::result_subject(u64::from(result.partition()));
         let msg_id = result.msg_id();
 
         let mut headers = outbound();
         stamp_schema(&mut headers);
+        if let Some(sticky) = &self.sticky {
+            headers.insert(STICKY_HEADER, sticky.clone());
+        }
 
         // Encode once so every retry republishes these exact bytes; an encode
         // failure lands nothing and is handled like a clean `Failed` publish.
+        let encode_started = Instant::now();
         let bytes = match result.encode() {
             Ok(bytes) => bytes,
             Err(error) => {
@@ -132,24 +155,31 @@ impl<P> ResultPublisher<P> {
                 return Err(PublishFailure::Failed(error));
             }
         };
+        let encoded_for = encode_started.elapsed();
 
         let mut backoff = self.cfg.backoff;
         let mut attempt: u32 = 0;
+        let store_started = Instant::now();
         loop {
             attempt += 1;
             match self
                 .publisher
-                .publish_bytes(&subject, &msg_id, headers.clone(), &bytes)
+                .publish_bytes(subject, &msg_id, headers.clone(), &bytes)
                 .await
             {
                 Ok(PublishOutcome::Acked { duplicate, .. }) => {
-                    // The broker has the result: only now may the job retire. A
-                    // failed ack is not `nak`ed — redelivery plus dedup covers it.
+                    let stored_for = store_started.elapsed();
+                    // A durable adapter stored the result; a Core adapter only
+                    // enqueued it, leaving recovery to the owned raw event.
+                    let ack_started = Instant::now();
                     return match job.ack().await {
                         Ok(()) => Ok(Published {
                             attempts: attempt,
                             duplicate,
                             bytes: bytes.len(),
+                            encoded_for,
+                            stored_for,
+                            acked_for: ack_started.elapsed(),
                         }),
                         Err(error) => Err(PublishFailure::AckFailed(error)),
                     };
@@ -189,14 +219,14 @@ mod tests {
     use crate::protocol::ids::{GraphVersion, Lane, ObservationId, RegionId, SCHEMA_VERSION};
     use crate::protocol::job::{JobIdentity, SolveJob};
     use crate::protocol::result::{SolveOutcome, SolveResult};
-    use crate::topology::results;
 
     /// The subject the stand-in job message lives on, sharing no dedup group with
     /// the result plane so acking/naking it never touches result state.
     const JOB_SUBJECT: &str = "solve.jobs.test";
 
-    /// The result-plane wildcard used to inspect what the publisher stored.
-    const RESULTS: &str = "solve-result.v1.p.>";
+    /// The owner inbox the tests answer to, and its wildcard.
+    const REPLY: &str = "_INBOX.test.p.3";
+    const RESULTS: &str = "_INBOX.test.p.>";
 
     /// A representative result for `vehicle`, whose echoed id matches its identity.
     fn sample_result(vehicle: u64) -> SolveResult<MockEntryId> {
@@ -279,7 +309,7 @@ mod tests {
             ResultPublisher::new(bus.publisher::<SolveResult<MockEntryId>>(), fast_config());
 
         let published = publisher
-            .publish_then_ack(&result, handle)
+            .publish_then_ack_to(&result, handle, REPLY)
             .await
             .expect("first publish lands");
         assert_eq!(published.attempts, 1);
@@ -289,10 +319,7 @@ mod tests {
         let stored = bus.published(RESULTS);
         assert_eq!(stored.len(), 1);
         assert_eq!(stored[0].1.as_deref(), Some(result.msg_id().as_str()));
-        assert_eq!(
-            stored[0].0,
-            results::result_subject(u64::from(result.partition()))
-        );
+        assert_eq!(stored[0].0, REPLY);
 
         assert_eq!(bus.acked_count(JOB_SUBJECT), 1);
         assert!(bus.nak_delays().is_empty());
@@ -311,7 +338,7 @@ mod tests {
         bus.fail_next_publish(PublishError::Ambiguous(anyhow::anyhow!("ack lost")));
 
         let published = publisher
-            .publish_then_ack(&result, handle)
+            .publish_then_ack_to(&result, handle, REPLY)
             .await
             .expect("retry lands");
         assert_eq!(published.attempts, 2);
@@ -337,7 +364,7 @@ mod tests {
         bus.fail_next_publish(PublishError::Failed(anyhow::anyhow!("refused")));
 
         let failure = publisher
-            .publish_then_ack(&result, handle)
+            .publish_then_ack_to(&result, handle, REPLY)
             .await
             .expect_err("a failed publish surfaces");
         assert!(
@@ -367,7 +394,7 @@ mod tests {
         bus.fail_next_publish(PublishError::Ambiguous(anyhow::anyhow!("timeout")));
 
         let failure = publisher
-            .publish_then_ack(&result, handle)
+            .publish_then_ack_to(&result, handle, REPLY)
             .await
             .expect_err("the single attempt exhausts");
         match failure {
@@ -390,7 +417,7 @@ mod tests {
             ResultPublisher::new(bus.publisher::<SolveResult<MockEntryId>>(), fast_config());
 
         let failure = publisher
-            .publish_then_ack(&result, handle)
+            .publish_then_ack_to(&result, handle, REPLY)
             .await
             .expect_err("the job ack fails");
         assert!(

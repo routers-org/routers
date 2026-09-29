@@ -72,6 +72,8 @@ struct Inner {
     closed: bool,
     /// A one-shot publish failure armed by [`MemoryBus::fail_next_publish`].
     fail_next: Option<PublishError>,
+    /// A one-shot failure for the next publish matching a subject filter.
+    fail_next_on: Option<(String, PublishError)>,
     /// Every nak backoff hint seen, in order; recorded but never honoured.
     nak_delays: Vec<Option<Duration>>,
     /// Wakes parked sources/consumers when new work becomes available.
@@ -143,7 +145,13 @@ impl Inner {
         headers: &HeaderMap,
         bytes: &[u8],
     ) -> Result<PublishOutcome, PublishError> {
-        if let Some(err) = self.fail_next.take() {
+        let filtered = match &self.fail_next_on {
+            Some((filter, _)) if subject_matches(filter, subject) => {
+                self.fail_next_on.take().map(|(_, err)| err)
+            }
+            _ => None,
+        };
+        if let Some(err) = filtered.or_else(|| self.fail_next.take()) {
             return match err {
                 // Ambiguous stores the message so a retry dedups; Failed stores nothing.
                 PublishError::Ambiguous(cause) => {
@@ -272,6 +280,7 @@ impl MemoryBus {
             next_consumer_id: 0,
             closed: false,
             fail_next: None,
+            fail_next_on: None,
             nak_delays: Vec::new(),
             notify: Arc::new(Notify::new()),
         })))
@@ -315,6 +324,12 @@ impl MemoryBus {
     /// a [`PublishError::Failed`] stores nothing.
     pub fn fail_next_publish(&self, err: PublishError) {
         self.0.lock().unwrap().fail_next = Some(err);
+    }
+
+    /// As [`fail_next_publish`](Self::fail_next_publish), but only for the next
+    /// publish whose subject matches `filter`; other publishes are unaffected.
+    pub fn fail_next_publish_on(&self, filter: &str, err: PublishError) {
+        self.0.lock().unwrap().fail_next_on = Some((filter.to_owned(), err));
     }
 
     /// Mark every delivered-but-unacked message matching `filter` for
@@ -704,8 +719,8 @@ mod tests {
             ("a.*", "a.b", true),
             ("a.*", "a.b.c", false),
             ("*.b", "a.b", true),
-            ("solve-result.v1.p.>", "solve-result.v1.p.5", true),
-            ("solve-result.v1.p.>", "solve-result.v1.q.5", false),
+            ("events.matched.v1.p.>", "events.matched.v1.p.5", true),
+            ("events.matched.v1.p.>", "events.matched.v1.q.5", false),
         ];
         for (filter, subject, expected) in cases {
             assert_eq!(
@@ -718,7 +733,10 @@ mod tests {
 
     #[test]
     fn subject_group_strips_final_token() {
-        assert_eq!(subject_group("solve-result.v1.p.5"), "solve-result.v1.p");
+        assert_eq!(
+            subject_group("events.matched.v1.p.5"),
+            "events.matched.v1.p"
+        );
         assert_eq!(
             subject_group("events.matched.v1.p.7"),
             "events.matched.v1.p"

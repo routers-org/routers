@@ -5,9 +5,9 @@ use core::time::Duration;
 
 use super::fixture::*;
 
-/// The concrete solve-jobs plane filter.
+/// Every solve request the fleet sent.
 fn jobs_filter() -> &'static str {
-    "solve.v1.g.>"
+    REQUESTS
 }
 
 /// Passing a job's freshness target does not complete or evict it. A later

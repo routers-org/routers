@@ -4,12 +4,13 @@
 //! space and runs one
 //! [`PartitionWorker`]
 //! per owned partition, with no cross-partition sharing. This binary is only
-//! wiring: connect NATS and Valkey, reconcile every plane before any worker
-//! reads, recover each partition, and spawn the workers.
+//! wiring: connect NATS and Valkey, reconcile durable raw/output before any
+//! worker reads, recover each partition, and spawn the workers.
 
 extern crate alloc;
 
 use alloc::sync::Arc;
+use core::net::SocketAddr;
 use core::num::NonZeroUsize;
 use core::ops::RangeInclusive;
 use core::time::Duration;
@@ -18,40 +19,44 @@ use std::collections::HashMap;
 use anyhow::{Context as _, Result};
 use async_nats::{ConnectOptions, ServerAddr, jetstream};
 use clap::Parser;
+use tokio::net::TcpListener;
 use tracing::{error, info};
 
 use routers_codec::osm::OsmEntryId;
+use routers_realtime::bus::core::{CoreAck, CorePublisher, CoreSource};
 use routers_realtime::bus::jetstream::{JetStreamAck, JetStreamPublisher, JetStreamSource};
-use routers_realtime::lifecycle::{DrainReason, Shutdown};
+use routers_realtime::health::health_router;
+use routers_realtime::lifecycle::{DrainReason, Readiness, ReadyState, Shutdown};
 use routers_realtime::matcher::pull::RawBytes;
 use routers_realtime::metrics::Metrics;
 use routers_realtime::orchestrator::admission::{Admission, AdmissionConfig};
-use routers_realtime::orchestrator::commit::{CommitConfig, Committer};
+use routers_realtime::orchestrator::commit::{CommitConfig, CommitMode, Committer};
 use routers_realtime::orchestrator::dispatch::{DispatchConfig, Dispatcher};
 use routers_realtime::orchestrator::recovery::{RecoveryReport, recover_partition};
 use routers_realtime::orchestrator::scheduler::SchedulerConfig;
 use routers_realtime::orchestrator::sharded::{partition_routes, raw_replay_start, route};
-use routers_realtime::orchestrator::worker::{PartitionWorker, WorkerConfig, WorkerStats};
+use routers_realtime::orchestrator::worker::{
+    CheckpointPolicy, PartitionWorker, WorkerConfig, WorkerStats,
+};
 use routers_realtime::partition::{PARTITIONS, ShardCount, ShardId};
-use routers_realtime::protocol::job::SolveJob;
 use routers_realtime::protocol::output::CommittedOutput;
 use routers_realtime::protocol::result::SolveResult;
 use routers_realtime::region::catalog::Catalog;
 use routers_realtime::secret::SecretUrl;
 use routers_realtime::store::valkey::{ValkeyCheckpointStore, ValkeyConfig, ValkeyEndpoint};
 use routers_realtime::topology::{
-    JobsConfig, OutputConfig, RawConfig, ResultsConfig, ensure_job_stream, ensure_output_stream,
-    ensure_raw_stream, ensure_result_stream, raw_shard_consumer, raw_stream_index,
-    result_shard_consumer,
+    OutputConfig, RawConfig, ensure_output_stream, ensure_raw_stream, raw_shard_consumer,
+    raw_stream_index, reply_filter,
 };
 
 /// The network entry type the fleet solves against.
 type E = OsmEntryId;
 
-/// Each sharded durable opens one raw and one result source. Broker-side
-/// `max_ack_pending` and the bounded internal queues remain the ownership
-/// bound; this request only amortises continuous-pull control traffic.
+/// Raw source fetch size. Broker credit and bounded internal queues remain
+/// the ownership bound; this amortises continuous-pull control traffic.
 const PARTITION_SOURCE_BATCH: NonZeroUsize = NonZeroUsize::new(64).unwrap();
+
+const DEFAULT_HEALTH_ADDR: &str = "0.0.0.0:9092";
 
 /// One long-lived task owned by the process supervisor.
 enum TaskExit {
@@ -61,7 +66,7 @@ enum TaskExit {
     },
     Router {
         plane: &'static str,
-        shard: ShardId,
+        shard: String,
         result: anyhow::Result<()>,
     },
 }
@@ -145,18 +150,9 @@ struct Args {
     #[arg(long, env, value_parser = humantime::parse_duration, default_value = "60s")]
     raw_ack_wait: Duration,
 
-    /// How long the solve-result plane retains a result before it ages out.
-    #[arg(long, env, value_parser = humantime::parse_duration, default_value = "10m")]
-    results_retention: Duration,
-
     /// How long committed matched output is retained for materialisers and observers to catch up.
     #[arg(long, env, value_parser = humantime::parse_duration, default_value = "15m")]
     output_retention: Duration,
-
-    /// How long an unacknowledged solve job remains on the work queue. Zero
-    /// retains it until a matcher publishes and acknowledges a result.
-    #[arg(long, env, value_parser = humantime::parse_duration, default_value = "0s")]
-    jobs_ttl: Duration,
 
     /// How long a committed checkpoint survives without a fresh commit.
     #[arg(long, env, value_parser = humantime::parse_duration, default_value = "10m")]
@@ -201,6 +197,58 @@ struct Args {
     /// How long a publish waits for the broker's ack before being retried byte-identically.
     #[arg(long, env, value_parser = humantime::parse_duration, default_value = "5s")]
     ack_timeout: Duration,
+
+    /// Address for Kubernetes liveness and readiness probes.
+    #[arg(long, env, default_value = DEFAULT_HEALTH_ADDR)]
+    health_addr: SocketAddr,
+
+    /// How commits become durable. `direct` publishes then compare-and-sets the
+    /// checkpoint in one store round trip and relies on deterministic re-solves
+    /// for crash recovery; `staged` keeps the prepare → publish → promote record;
+    /// `deferred` publishes only and persists checkpoints periodically (see
+    /// `--checkpoint-every`), replaying unpersisted commits after a crash.
+    #[arg(long, env, value_enum, default_value_t = CommitModeArg::Direct)]
+    commit_mode: CommitModeArg,
+
+    /// With `--commit-mode deferred`: unpersisted commits that make a vehicle's
+    /// checkpoint due.
+    #[arg(long, env, default_value_t = 16)]
+    checkpoint_every: usize,
+
+    /// With `--commit-mode deferred`: the oldest an unpersisted commit may get
+    /// before its vehicle's checkpoint is due. Bounds replay after a crash;
+    /// raw retention must comfortably exceed it.
+    #[arg(long, env, value_parser = humantime::parse_duration, default_value = "2s")]
+    checkpoint_interval: Duration,
+
+    /// With `--commit-mode deferred`: checkpoint persists in flight per partition.
+    #[arg(long, env, default_value_t = 32)]
+    checkpoint_in_flight: usize,
+
+    /// How long a trip-less request to a vehicle's sticky matcher may go
+    /// unanswered before the full request is resent to the matcher queue group.
+    #[arg(long, env, value_parser = humantime::parse_duration, default_value = "500ms")]
+    sticky_request_retry: Duration,
+}
+
+/// The command-line spelling of [`CommitMode`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+enum CommitModeArg {
+    Direct,
+    Staged,
+    Deferred,
+}
+
+/// The commit policy every committer in this process shares.
+fn commit_config(args: &Args) -> CommitConfig {
+    CommitConfig {
+        mode: match args.commit_mode {
+            CommitModeArg::Direct => CommitMode::Direct,
+            CommitModeArg::Staged => CommitMode::Staged,
+            CommitModeArg::Deferred => CommitMode::Deferred,
+        },
+        ..CommitConfig::default()
+    }
 }
 
 /// The slice of the partition space this pod owns; explicit, or derived from its
@@ -262,6 +310,15 @@ fn runtime_layout(args: &Args) -> Result<RuntimeLayout> {
         args.raw_max_ack_pending > 0,
         "raw max_ack_pending must be positive"
     );
+    let shard_credit = u64::try_from(args.raw_max_ack_pending)?
+        .checked_mul(u64::from(shards.width()))
+        .context("raw shard max_ack_pending overflows")?;
+    let pending_limit = u64::try_from(SchedulerConfig::default().pending_limit)
+        .context("per-vehicle pending limit does not fit u64")?;
+    anyhow::ensure!(
+        shard_credit <= pending_limit,
+        "raw shard max_ack_pending ({shard_credit}) exceeds the per-vehicle pending limit ({pending_limit}); a full vehicle queue could redeliver observations out of order"
+    );
     Ok(RuntimeLayout {
         partitions,
         shards,
@@ -279,8 +336,14 @@ fn worker_config(args: &Args, partition: u16) -> WorkerConfig {
         },
         parked_limit: args.parked_limit,
         dispatch: dispatch_config(args),
-        commit: CommitConfig::default(),
+        commit: commit_config(args),
         grace: args.grace,
+        sticky_retry: args.sticky_request_retry,
+        checkpoint: CheckpointPolicy {
+            every: args.checkpoint_every.max(1),
+            interval: args.checkpoint_interval,
+            in_flight: args.checkpoint_in_flight.max(1),
+        },
         ..WorkerConfig::new(partition)
     }
 }
@@ -320,6 +383,28 @@ async fn main() -> Result<()> {
 
     let shutdown = Shutdown::from_signals();
 
+    let (readiness, watcher) = Readiness::new();
+    let health_listener = TcpListener::bind(args.health_addr)
+        .await
+        .with_context(|| format!("could not bind health endpoint at {}", args.health_addr))?;
+    let health_shutdown = shutdown.clone();
+    let health_task = tokio::spawn(async move {
+        let graceful = health_shutdown.clone();
+        let result = axum::serve(health_listener, health_router(watcher))
+            .with_graceful_shutdown(async move { graceful.triggered().await })
+            .await;
+        if result.is_err() {
+            health_shutdown.trigger(DrainReason::Fatal);
+        }
+        result
+    });
+    let drain_signal = shutdown.clone();
+    let drain_readiness = readiness.clone();
+    tokio::spawn(async move {
+        drain_signal.triggered().await;
+        drain_readiness.set(ReadyState::Draining);
+    });
+
     let nats_url =
         ServerAddr::from_url(args.nats.connection_url()).context("could not create NATS url")?;
     let client = ConnectOptions::new()
@@ -327,7 +412,7 @@ async fn main() -> Result<()> {
         .connect(nats_url)
         .await
         .context("could not connect to NATS")?;
-    let context = jetstream::new(client);
+    let context = jetstream::new(client.clone());
 
     let catalog = Arc::new(
         Catalog::load(&args.catalog)
@@ -347,31 +432,18 @@ async fn main() -> Result<()> {
         raw_streams.push(ensure_raw_stream(&context, index, args.streams, &raw_cfg).await?);
     }
 
-    let results_cfg = ResultsConfig {
-        max_age: args.results_retention,
-        ..ResultsConfig::default()
-    };
-    let result_stream = ensure_result_stream(&context, &results_cfg).await?;
-
     let output_cfg = OutputConfig {
         max_age: args.output_retention,
     };
     ensure_output_stream(&context, &output_cfg).await?;
-
-    let jobs_cfg = JobsConfig {
-        max_age: args.jobs_ttl,
-        ..JobsConfig::default()
-    };
-    for region in &catalog.regions {
-        ensure_job_stream(&context, &region.id, &jobs_cfg).await?;
-    }
 
     let store = ValkeyCheckpointStore::connect(ValkeyConfig {
         checkpoint_ttl: args.checkpoint_ttl,
         ..ValkeyConfig::new(args.valkey.clone())
     })
     .await
-    .context("could not connect to the Valkey checkpoint store")?;
+    .context("could not connect to the Valkey checkpoint store")?
+    .with_metrics(metrics.clone());
     let admission = Admission::new(
         admission_config(&args),
         catalog.regions.iter().map(|r| &r.id),
@@ -381,9 +453,19 @@ async fn main() -> Result<()> {
     let _admission_gauges = admission.register_gauges(&metrics);
 
     // Publishers are shared by every partition and retry ambiguous publishes.
-    let job_publisher = JetStreamPublisher::<SolveJob<E>>::new(context.clone(), args.ack_timeout);
+    let job_publisher = CorePublisher::new(client.clone());
+    let reply_prefix = client.new_inbox();
+    let reply_subscription = client
+        .subscribe(reply_filter(&reply_prefix))
+        .await
+        .context("could not subscribe to transient solve replies")?;
+    client
+        .flush()
+        .await
+        .context("could not activate solve reply subscription")?;
     let output_publisher =
-        JetStreamPublisher::<CommittedOutput<E>>::new(context.clone(), args.ack_timeout);
+        JetStreamPublisher::<CommittedOutput<E>>::new(context.clone(), args.ack_timeout)
+            .with_metrics(metrics.clone());
 
     info!(
         partitions = ?layout.partitions,
@@ -415,7 +497,7 @@ async fn main() -> Result<()> {
     let recovery_committer = Committer::new(
         store.clone(),
         output_publisher.clone(),
-        CommitConfig::default(),
+        commit_config(&args),
     );
     let mut reports = HashMap::<u16, RecoveryReport>::with_capacity(partitions.len());
     for &partition in &partitions {
@@ -437,7 +519,7 @@ async fn main() -> Result<()> {
         partitions.iter().copied(),
         layout.queue_capacity,
     );
-    let (result_routes, mut result_sources) = partition_routes::<SolveResult<E>, JetStreamAck>(
+    let (result_routes, mut result_sources) = partition_routes::<SolveResult<E>, CoreAck>(
         partitions.iter().copied(),
         layout.queue_capacity,
     );
@@ -464,34 +546,15 @@ async fn main() -> Result<()> {
             start,
         )
         .await?;
-        let result_consumer = result_shard_consumer(
-            &result_stream,
-            layout.shards,
-            shard,
-            &shard_partitions,
-            &results_cfg,
-        )
-        .await?;
         let shard_raw_routes = shard_partitions
             .iter()
             .map(|partition| (*partition, raw_routes[partition].clone()))
             .collect();
-        let shard_result_routes = shard_partitions
-            .iter()
-            .map(|partition| (*partition, result_routes[partition].clone()))
-            .collect();
-        prepared_shards.push((
-            shard,
-            raw_consumer,
-            shard_raw_routes,
-            result_consumer,
-            shard_result_routes,
-        ));
+        prepared_shards.push((shard, raw_consumer, shard_raw_routes));
     }
 
     // Only router-owned senders keep channels open from here onward.
     drop(raw_routes);
-    drop(result_routes);
 
     let mut tasks = tokio::task::JoinSet::new();
     for &partition in &partitions {
@@ -508,9 +571,13 @@ async fn main() -> Result<()> {
         let committer = Committer::new(
             store.clone(),
             output_publisher.clone(),
-            CommitConfig::default(),
+            commit_config(&args),
         );
-        let dispatcher = Dispatcher::new(job_publisher.clone(), dispatch_config(&args));
+        let dispatcher = Dispatcher::new(
+            job_publisher.clone(),
+            dispatch_config(&args),
+            reply_prefix.clone(),
+        );
         let worker = PartitionWorker::new(
             worker_config(&args, partition),
             catalog.clone(),
@@ -535,47 +602,36 @@ async fn main() -> Result<()> {
     debug_assert!(raw_sources.is_empty());
     debug_assert!(result_sources.is_empty());
 
-    for (shard, raw_consumer, shard_raw_routes, result_consumer, shard_result_routes) in
-        prepared_shards
-    {
-        let raw_shutdown = shutdown.clone();
-        tasks.spawn(async move {
-            let result = async {
-                let source = JetStreamSource::<RawBytes>::from_consumer(
-                    &raw_consumer,
-                    PARTITION_SOURCE_BATCH,
-                )
+    for (shard, raw_consumer, shard_raw_routes) in prepared_shards {
+        let raw_source =
+            JetStreamSource::<RawBytes>::from_consumer(&raw_consumer, PARTITION_SOURCE_BATCH)
                 .await
                 .with_context(|| format!("could not open raw source for shard {shard}"))?;
-                route(source, shard_raw_routes, raw_shutdown).await
-            }
-            .await;
+        let raw_shutdown = shutdown.clone();
+        tasks.spawn(async move {
             TaskExit::Router {
                 plane: "raw",
-                shard,
-                result,
-            }
-        });
-
-        let result_shutdown = shutdown.clone();
-        tasks.spawn(async move {
-            let result = async {
-                let source = JetStreamSource::<SolveResult<E>>::from_consumer(
-                    &result_consumer,
-                    PARTITION_SOURCE_BATCH,
-                )
-                .await
-                .with_context(|| format!("could not open result source for shard {shard}"))?;
-                route(source, shard_result_routes, result_shutdown).await
-            }
-            .await;
-            TaskExit::Router {
-                plane: "result",
-                shard,
-                result,
+                shard: shard.to_string(),
+                result: route(raw_source, shard_raw_routes, raw_shutdown).await,
             }
         });
     }
+
+    let result_shutdown = shutdown.clone();
+    tasks.spawn(async move {
+        TaskExit::Router {
+            plane: "result",
+            shard: "all".to_owned(),
+            result: route(
+                CoreSource::<SolveResult<E>>::new(reply_subscription),
+                result_routes,
+                result_shutdown,
+            )
+            .await,
+        }
+    });
+
+    readiness.set(ReadyState::Ready);
 
     // Any unexpected task exit initiates a fleet-local drain. Join every task
     // so workers can persist their safe frontiers and unacked routed messages
@@ -629,6 +685,11 @@ async fn main() -> Result<()> {
             }
         }
     }
+
+    health_task
+        .await
+        .context("health server task failed")?
+        .context("health server failed")?;
 
     anyhow::ensure!(!failed, "one or more orchestrator tasks failed");
     Ok(())
@@ -742,6 +803,22 @@ mod tests {
             ]))
             .is_err()
         );
+        let raw_credit = |shards: &str, per_partition: &str| {
+            runtime_layout(&args(&[
+                "--pod-name",
+                "orchestrator-1",
+                "--fleet",
+                "4",
+                "--shards",
+                shards,
+                "--raw-max-ack-pending",
+                per_partition,
+            ]))
+        };
+        assert!(raw_credit("64", "16").is_ok());
+        assert!(raw_credit("64", "17").is_err());
+        assert!(raw_credit("64", "32").is_err());
+        assert!(raw_credit("128", "32").is_ok());
     }
 
     #[test]
@@ -777,12 +854,6 @@ mod tests {
             "--admit-global-jobs",
             "10",
         ]);
-
-        assert_eq!(
-            parsed.jobs_ttl,
-            Duration::ZERO,
-            "the default must not age unanswered jobs out"
-        );
 
         let dispatch = dispatch_config(&parsed);
         assert_eq!(dispatch.gap, Duration::from_secs(30));

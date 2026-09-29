@@ -33,6 +33,9 @@ pub struct RecoveryReport {
     /// Vehicles whose prepared commit could not be completed; the worker blocks
     /// these until a retry succeeds.
     pub prepared_failed: Vec<VehicleId>,
+    /// The ownership epoch this pass acquired. Every fenced write by the owner
+    /// carries it, and any older owner's writes are refused from now on.
+    pub epoch: Option<u64>,
 }
 
 /// Why recovery could not proceed. A failure to *complete* an individual
@@ -77,6 +80,12 @@ where
     S: CheckpointStore,
     P: Publisher<CommittedOutput<E>>,
 {
+    // Take ownership before reading anything, so a previous owner still
+    // running can no longer advance the frontier this recovery starts from.
+    let epoch = store
+        .acquire_partition(partition)
+        .await
+        .map_err(RecoveryError::Store)?;
     let frontier = store
         .frontier(partition)
         .await
@@ -106,6 +115,7 @@ where
         prepared_found,
         prepared_finished,
         prepared_failed,
+        epoch: Some(epoch),
     })
 }
 
@@ -256,6 +266,7 @@ mod tests {
             CommitConfig {
                 publish_attempts: 4,
                 backoff: Duration::ZERO,
+                ..CommitConfig::default()
             },
         )
     }
@@ -406,6 +417,7 @@ mod tests {
             schema,
             region: region(),
             routing_version: 1,
+            trip_digest: None,
         }
     }
 

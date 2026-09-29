@@ -63,6 +63,56 @@ async fn happy_path_matches_and_finalizes() {
     assert_eq!(segment.last_revision, Some(Revision(last_seq)));
 }
 
+/// Direct commits produce the staged pipeline's output content and final
+/// checkpoint, with no prepared records or index entries left behind.
+#[tokio::test(start_paused = true)]
+async fn direct_commit_mode_matches_the_staged_pipeline() {
+    async fn run(mode: FleetCommitMode) -> (Vec<CommittedOutput<E>>, Vec<u8>, Fleet) {
+        let fleet = Fleet::bent_road().with_commit_mode(mode);
+        let vehicle = 1u64;
+        let partition = fleet.partition_of(vehicle);
+        let matcher = fleet.spawn_matcher(MatcherBehaviour::engine());
+        let orchestrator = fleet.spawn_orchestrator(partition);
+        for (i, &p) in road_points().iter().enumerate() {
+            fleet.ingest(vehicle, obs_ts(i), p).await;
+        }
+        fleet.settle().await;
+        let stats = orchestrator.stop().await;
+        matcher.stop().await;
+        assert_eq!(stats.committed, 6, "{mode:?} committed every observation");
+        let outputs = published_outputs(&fleet.bus, partition);
+        let checkpoint = fleet
+            .store
+            .load(VehicleId(vehicle))
+            .await
+            .unwrap()
+            .0
+            .unwrap()
+            .bytes;
+        (outputs, checkpoint, fleet)
+    }
+
+    let (staged, staged_checkpoint, _) = run(FleetCommitMode::Staged).await;
+    let (direct, direct_checkpoint, fleet) = run(FleetCommitMode::Direct).await;
+    let (deferred, deferred_checkpoint, _) = run(FleetCommitMode::Deferred).await;
+    // Ids differ between the two fleets because each job authenticates its
+    // raw publication time; the committed content and state must not.
+    let content = |outputs: &[CommittedOutput<E>]| {
+        outputs
+            .iter()
+            .map(|o| format!("{:?} {:?}", o.revision, o.kind))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(content(&staged), content(&direct));
+    assert_eq!(content(&staged), content(&deferred));
+    assert_eq!(staged_checkpoint, direct_checkpoint);
+    // The worker persists a deferred checkpoint on stop; it is the same state.
+    assert_eq!(staged_checkpoint, deferred_checkpoint);
+    let snapshot = fleet.store.snapshot();
+    assert!(snapshot.prepared.is_empty());
+    assert!(snapshot.index.values().all(|set| set.is_empty()));
+}
+
 /// A raw redelivered while its original is still in flight remains broker-owned;
 /// crashing before commit therefore lets restart process it exactly once.
 #[tokio::test(start_paused = true)]
@@ -75,7 +125,7 @@ async fn duplicate_raw_delivery_is_coalesced_not_reprocessed() {
     let orchestrator = fleet.spawn_orchestrator(partition);
     fleet.ingest(vehicle, obs_ts(0), road_points()[0]).await;
 
-    advance_until(|| !fleet.bus.published("solve.v1.g.>").is_empty()).await;
+    advance_until(|| !fleet.bus.published(REQUESTS).is_empty()).await;
     fleet.redeliver_raw(partition);
     advance_until(|| !fleet.bus.nak_delays().is_empty()).await;
 
@@ -107,7 +157,7 @@ async fn duplicate_result_delivery_is_idempotent() {
     let orchestrator = fleet.spawn_orchestrator(partition);
     let observation = fleet.ingest(vehicle, obs_ts(0), road_points()[0]).await;
 
-    advance_until(|| !fleet.bus.published("solve.v1.g.>").is_empty()).await;
+    advance_until(|| !fleet.bus.published(REQUESTS).is_empty()).await;
 
     let job = published_jobs(&fleet.bus)
         .into_iter()
@@ -142,7 +192,7 @@ async fn early_result_is_parked_then_accepted() {
     let mut fleet = Fleet::bent_road();
     let vehicle = 1u64;
     let partition = fleet.partition_of(vehicle);
-    let result_subject = routers_realtime::topology::result_subject(u64::from(partition));
+    let result_subject = result_subject(partition);
 
     // First publish the authentic job envelope, then model a crash before its
     // result is consumed.

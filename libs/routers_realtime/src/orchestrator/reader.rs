@@ -555,6 +555,7 @@ mod tests {
                 schema: SCHEMA_VERSION,
                 region: self.region.clone(),
                 routing_version: 1,
+                trip_digest: None,
             })
         }
     }

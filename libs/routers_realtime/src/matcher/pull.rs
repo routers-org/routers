@@ -1,17 +1,13 @@
-//! Matcher capacity-bound pull loop: claim only as much work as there is
-//! end-to-end handler capacity to answer, separately bound CPU solves, and
-//! answer every job.
+//! Matcher capacity-bound receive loop with a separate bound for CPU solves.
 //!
 //! A region's matchers share one work-queue consumer; the loop never fetches
 //! more than its free [`PullConfig::max_in_flight`] so it does not park work a
-//! peer could take. A separate [`PullConfig::solve_slots`] limit admits work to
-//! the blocking CPU stage without serialising validation, publication, or
-//! acknowledgement. Every claimed job is answered, never silently dropped,
-//! and [`ResultPublisher::publish_then_ack`] never acks a job until the broker
-//! holds the result, so an unanswered job is redelivered (its msg-id dedups the
-//! retry).
+//! peer could take. A separate [`PullConfig::solve_slots`] limit admits the
+//! blocking CPU stage without serialising result I/O. The orchestrator retains
+//! raw ownership and resends a request if its result is lost.
 
 use alloc::sync::Arc;
+use core::cell::Cell;
 use core::num::NonZeroUsize;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use core::time::Duration;
@@ -29,9 +25,13 @@ use crate::bus::{self, Wire};
 use crate::lifecycle::{Drain, InFlight, QuiesceOutcome, Shutdown};
 use crate::matcher::engine::Engine;
 use crate::matcher::publish::ResultPublisher;
-use crate::matcher::validate::{Checked, ValidateConfig, check, check_bytes};
+use crate::matcher::trip_cache::TripCache;
+use crate::matcher::validate::{Checked, PoisonReason, ValidateConfig, check, check_request_bytes};
 use crate::metrics::Metrics;
-use crate::protocol::result::SolveResult;
+use crate::orchestrator::dispatch::REPLY_HEADER;
+use crate::protocol::ids::Revision;
+use crate::protocol::job::{ResolveError, SolveJob, TripDigest};
+use crate::protocol::result::{SolveOutcome, SolveResult};
 use crate::region::Region;
 
 /// An identity [`Wire`] payload: the message bytes carried through the
@@ -100,6 +100,8 @@ pub struct PullStats {
     pub poison: u64,
     /// Handlers whose result could not be published.
     pub publish_failures: u64,
+    /// Cached requests answered with a trip miss so the owner resends in full.
+    pub trip_misses: u64,
     /// `true` when every in-flight solve finished within the grace budget.
     pub drained: bool,
 }
@@ -120,6 +122,7 @@ pub struct PullLoop<N: Network, C, P> {
     shutdown: Shutdown,
     drain: Drain,
     metrics: Metrics,
+    trip_cache: Option<Arc<TripCache<N::Entry>>>,
 }
 
 impl<N: Network, C, P> PullLoop<N, C, P> {
@@ -151,6 +154,7 @@ impl<N: Network, C, P> PullLoop<N, C, P> {
             shutdown,
             drain,
             metrics: Metrics::noop(),
+            trip_cache: None,
         }
     }
 
@@ -159,6 +163,15 @@ impl<N: Network, C, P> PullLoop<N, C, P> {
     #[must_use]
     pub fn with_metrics(mut self, metrics: Metrics) -> Self {
         self.metrics = metrics;
+        self
+    }
+
+    /// Retain each solved trip so a sticky owner's next request can omit it,
+    /// and resolve such cached requests. Without a cache every cached request
+    /// is answered as a trip miss.
+    #[must_use]
+    pub fn with_trip_cache(mut self, cache: Arc<TripCache<N::Entry>>) -> Self {
+        self.trip_cache = Some(cache);
         self
     }
 }
@@ -173,9 +186,10 @@ where
 {
     /// Pull, solve, and answer jobs until `shutdown` is triggered.
     ///
-    /// While free handler capacity exists it fetches up to
-    /// `min(free, max_batch)` jobs into an in-flight set; when full it only
-    /// drains completions. At most [`PullConfig::solve_slots`] handlers enter
+    /// It fetches up to `min(free, max_batch)` jobs into an in-flight set. At
+    /// sustained load it drains until half a batch is free before fetching,
+    /// avoiding a broker round trip for every single completed handler. At most
+    /// [`PullConfig::solve_slots`] handlers enter
     /// the CPU-bound solve stage concurrently. On shutdown it stops fetching,
     /// waits up to [`PullConfig::grace`] for in-flight handlers, then returns
     /// the run's [`PullStats`].
@@ -190,6 +204,7 @@ where
             shutdown,
             drain,
             metrics,
+            trip_cache,
         } = self;
 
         let region = Arc::new(region);
@@ -202,11 +217,17 @@ where
 
         let mut stats = PullStats::default();
         let mut in_flight = FuturesUnordered::new();
+        let refill_at = cfg
+            .max_batch
+            .max(1)
+            .min(cfg.max_in_flight.get())
+            .div_ceil(2);
 
         while !shutdown.is_triggered() {
             let free = cfg.max_in_flight.get().saturating_sub(in_flight.len());
-            if free == 0 {
-                // At capacity: make room only by finishing work, or stop.
+            if free < refill_at {
+                // Retain enough live handlers to overlap the next broker pull,
+                // but amortise that pull over more than one completion.
                 tokio::select! {
                     biased;
                     () = shutdown.triggered() => break,
@@ -222,10 +243,9 @@ where
             }
 
             let want = free.min(cfg.max_batch.max(1));
-            // Keep the same fetch future alive while solves finish. Once a
-            // JetStream pull reaches the broker, dropping its future can
-            // orphan delivered messages until `AckWait`; polling completions
-            // inside this loop overlaps broker I/O without cancelling it.
+            // Keep the fetch alive while solves finish. A durable pull can
+            // orphan deliveries if cancelled; Core fetch also benefits from
+            // overlapping input with solves.
             let fetch_started = bus::wallclock();
             let fetch = consumer.fetch(want, cfg.fetch_wait);
             tokio::pin!(fetch);
@@ -270,12 +290,19 @@ where
                             Arc::clone(&solve_limiter),
                             cfg.validate,
                             metrics.clone(),
+                            trip_cache.clone(),
                             drain.begin(),
                         ));
                     }
                     metrics.matcher_handlers_in_flight(region.id.as_str(), in_flight.len() as u64);
                 }
-                Err(error) => warn!(%error, "job fetch failed; retrying"),
+                Err(error) => {
+                    warn!(%error, "job fetch failed; retrying");
+                    tokio::select! {
+                        () = shutdown.triggered() => break,
+                        () = tokio::time::sleep(cfg.fetch_wait) => {}
+                    }
+                }
             }
         }
 
@@ -317,6 +344,8 @@ enum Handled {
     Solved,
     /// The result could not be published; the job was left for redelivery.
     PublishFailed,
+    /// A cached request's trip was unavailable; a trip miss was published.
+    TripMiss,
 }
 
 /// CPU admission shared by every handler in one pull loop. Its permit guard
@@ -373,6 +402,7 @@ fn record(done: Handled, stats: &mut PullStats) {
         Handled::Refused => stats.refused += 1,
         Handled::Solved => stats.solved += 1,
         Handled::PublishFailed => stats.publish_failures += 1,
+        Handled::TripMiss => stats.trip_misses += 1,
     }
 }
 
@@ -389,6 +419,7 @@ async fn handle_one<N, H, P>(
     solve_limiter: Arc<SolveLimiter>,
     validate: ValidateConfig,
     metrics: Metrics,
+    trip_cache: Option<Arc<TripCache<N::Entry>>>,
     _guard: InFlight,
 ) -> Handled
 where
@@ -401,11 +432,38 @@ where
     let sent_at = delivery.sent_at;
     let redelivered = delivery.redelivered;
     let handle = delivery.handle;
+    // A request with no reply inbox cannot be answered; its owner resends one.
+    let Some(reply) = delivery
+        .headers
+        .get(REPLY_HEADER)
+        .map(|value| value.as_str().to_owned())
+    else {
+        debug!("dropping a solve request without a reply subject");
+        let _ = handle.ack().await;
+        return Handled::Poison;
+    };
     let RawBytes(bytes) = delivery.item;
 
-    // Size-gate then decode; unanswerable bytes are acked and dropped.
-    let job = match check_bytes::<N::Entry>(&bytes, &validate) {
-        Ok(job) => job,
+    // Size-gate, decode, and resolve; unanswerable bytes are acked and dropped.
+    let job = match check_request_bytes::<N::Entry>(&bytes, &validate)
+        .map(|request| resolve_request(request, trip_cache.as_deref(), &metrics))
+    {
+        Ok(Ok(job)) => job,
+        Ok(Err(ResolveError::TripMiss(proof))) => {
+            let result = SolveResult::trip_miss(*proof, unix_micros());
+            let published = publisher.publish_then_ack_to(&result, handle, &reply).await;
+            if let Err(error) = published {
+                warn!(%error, job = %result.job, "failed to publish trip miss");
+                return Handled::PublishFailed;
+            }
+            return Handled::TripMiss;
+        }
+        Ok(Err(ResolveError::Job(error))) => {
+            let reason = PoisonReason::from(error);
+            debug!(%reason, "dropping unanswerable job bytes");
+            let _ = handle.ack().await;
+            return Handled::Poison;
+        }
         Err(reason) => {
             debug!(%reason, "dropping unanswerable job bytes");
             let _ = handle.ack().await;
@@ -426,9 +484,15 @@ where
     match check(&job, &region, &cells, now_us, &validate) {
         Checked::Refuse(outcome) => {
             let result = SolveResult::new(&job, outcome, now_us);
-            match publisher.publish_then_ack(&result, handle).await {
+            let published = publisher.publish_then_ack_to(&result, handle, &reply).await;
+            match published {
                 Ok(published) => {
                     metrics.result_bytes(region.id.as_str(), published.bytes as u64);
+                    if metrics.sample_probe() {
+                        metrics.result_encode_seconds(published.encoded_for.as_secs_f64());
+                        metrics.result_store_seconds(published.stored_for.as_secs_f64());
+                        metrics.job_ack_seconds(published.acked_for.as_secs_f64());
+                    }
                     Handled::Refused
                 }
                 Err(error) => {
@@ -451,7 +515,13 @@ where
                     metrics.solve_permit_wait_seconds(region.id.as_str(), elapsed.as_secs_f64());
                 }
                 let solve_started = bus::wallclock();
-                let outcome = engine.solve_blocking(job).await;
+                let solved = engine.solve_blocking_timed(job).await;
+                metrics.solve_worker_queue_seconds(
+                    region.id.as_str(),
+                    solved.queued_for.as_secs_f64(),
+                );
+                metrics.solve_worker_run_seconds(region.id.as_str(), solved.ran_for.as_secs_f64());
+                let outcome = solved.outcome;
                 let solved_at = bus::wallclock();
                 bus::span_between("solve_seconds", solve_started, solved_at);
                 if let Ok(elapsed) = solved_at.duration_since(solve_started) {
@@ -463,6 +533,22 @@ where
                 }
                 outcome
             };
+            if let (
+                Some(cache),
+                SolveOutcome::Solved {
+                    trip, trip_digest, ..
+                },
+            ) = (&trip_cache, &outcome)
+            {
+                // Keyed by the revision this answer commits at: the base of the
+                // owner's next request for the vehicle.
+                cache.insert(
+                    identity.vehicle_id,
+                    Revision::from(identity.observation),
+                    trip.clone(),
+                    trip_digest.unwrap_or_else(|| TripDigest::of(trip)),
+                );
+            }
             let result = SolveResult {
                 job: job_id,
                 identity,
@@ -471,13 +557,18 @@ where
                 solved_at_us: unix_micros(),
             };
             let publish_start = bus::wallclock();
-            let published = publisher.publish_then_ack(&result, handle).await;
+            let published = publisher.publish_then_ack_to(&result, handle, &reply).await;
             if let Ok(elapsed) = bus::wallclock().duration_since(publish_start) {
                 metrics.result_publish_seconds(elapsed.as_secs_f64());
             }
             match published {
                 Ok(published) => {
                     metrics.result_bytes(region.id.as_str(), published.bytes as u64);
+                    if metrics.sample_probe() {
+                        metrics.result_encode_seconds(published.encoded_for.as_secs_f64());
+                        metrics.result_store_seconds(published.stored_for.as_secs_f64());
+                        metrics.job_ack_seconds(published.acked_for.as_secs_f64());
+                    }
                     Handled::Solved
                 }
                 Err(error) => {
@@ -493,6 +584,33 @@ where
             Handled::Poison
         }
     }
+}
+
+/// Rebuild a request's job, taking a cached request's trip from `cache` and
+/// recording whether the lookup hit, missed, or held a non-matching trip.
+fn resolve_request<E>(
+    request: crate::protocol::job::SolveRequest<E>,
+    cache: Option<&TripCache<E>>,
+    metrics: &Metrics,
+) -> Result<SolveJob<E>, ResolveError>
+where
+    E: routers_network::Entry,
+{
+    let cached = request.is_cached();
+    let found = Cell::new(false);
+    let resolved = request.resolve(|vehicle, revision| {
+        let trip = cache.and_then(|cache| cache.take(vehicle, revision));
+        found.set(trip.is_some());
+        trip
+    });
+    if cached {
+        metrics.trip_cache_lookup(match (&resolved, found.get()) {
+            (Ok(_), _) => "hit",
+            (Err(_), false) => "miss",
+            (Err(_), true) => "mismatch",
+        });
+    }
+    resolved
 }
 
 /// The current wall clock as absolute unix microseconds, saturating rather than
@@ -528,16 +646,27 @@ mod tests {
     use crate::lifecycle::{Drain, DrainReason, Shutdown};
     use crate::matcher::engine::Engine;
     use crate::matcher::publish::{PublishConfig, ResultPublisher};
-    use crate::protocol::ids::{GraphVersion, Lane, ObservationId, RegionId, SCHEMA_VERSION};
-    use crate::protocol::job::{JobIdentity, SolveJob};
+    use crate::orchestrator::dispatch::STICKY_HEADER;
+    use crate::protocol::ids::{
+        GraphVersion, Lane, ObservationId, RegionId, Revision, SCHEMA_VERSION, SegmentId,
+    };
+    use crate::protocol::job::{BaseState, JobIdentity, SolveJob, SolveRequest};
     use crate::protocol::result::{SolveOutcome, SolveResult};
     use crate::region::{LaneCount, Region, Replicas};
-    use crate::topology::jobs::{job_stream_subjects, job_subject};
+    use crate::topology::{request_queue_filter, request_subject};
+    use routers_transition::matcher::Trip;
 
     const GRAPH: &str = "v1";
     const REGION: &str = "region";
     /// The result-plane wildcard the tests inspect and drive shutdown from.
-    const RESULTS: &str = "solve-result.v1.p.>";
+    const RESULTS: &str = "_INBOX.test.p.>";
+
+    /// Request headers naming the test owner's reply inbox.
+    fn request_headers() -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(REPLY_HEADER, "_INBOX.test.p.0");
+        headers
+    }
 
     /// A staircase road (the shared `matched_diff` shape).
     fn bent_road() -> MockNetwork {
@@ -730,7 +859,10 @@ mod tests {
         fn new(first: &SolveJob<MockEntryId>, second: &SolveJob<MockEntryId>) -> Self {
             Self {
                 calls: 0,
-                jobs: [first.encode().unwrap(), second.encode().unwrap()],
+                jobs: [
+                    SolveRequest::full(first).encode().unwrap(),
+                    SolveRequest::full(second).encode().unwrap(),
+                ],
                 probe: Arc::new(FetchProbe::default()),
             }
         }
@@ -743,13 +875,13 @@ mod tests {
                     sequence,
                     probe: Arc::clone(&self.probe),
                 },
-                subject: job_subject(
+                subject: request_subject(
                     &GraphVersion::new(GRAPH).unwrap(),
                     &RegionId::new(REGION).unwrap(),
                     Lane::DEFAULT,
                 ),
                 msg_id: None,
-                headers: HeaderMap::new(),
+                headers: request_headers(),
                 sent_at: None,
                 redelivered: false,
             }
@@ -788,20 +920,23 @@ mod tests {
     }
 
     fn job_filter() -> String {
-        job_stream_subjects(&RegionId::new(REGION).unwrap())
+        request_queue_filter(
+            &GraphVersion::new(GRAPH).unwrap(),
+            &RegionId::new(REGION).unwrap(),
+        )
     }
 
     /// Publish a job's exact wire bytes onto its region/lane subject, so the
     /// loop's raw consumer claims and size-gates them itself.
     async fn publish_job(bus: &MemoryBus, job: &SolveJob<MockEntryId>) {
-        let bytes = job.encode().expect("encode job");
-        let subject = job_subject(
+        let bytes = SolveRequest::full(job).encode().expect("encode job");
+        let subject = request_subject(
             &GraphVersion::new(GRAPH).unwrap(),
             &RegionId::new(REGION).unwrap(),
             job.lane,
         );
         bus.publisher::<RawBytes>()
-            .publish_bytes(&subject, &job.msg_id(), HeaderMap::new(), &bytes)
+            .publish_bytes(&subject, &job.msg_id(), request_headers(), &bytes)
             .await
             .expect("publish job bytes");
     }
@@ -847,6 +982,164 @@ mod tests {
             std::thread::available_parallelism().unwrap_or(NonZeroUsize::MIN)
         );
         assert_eq!(cfg.max_batch, cfg.max_in_flight.get());
+    }
+
+    fn sticky_loop(
+        bus: &MemoryBus,
+        cache: Option<Arc<TripCache<MockEntryId>>>,
+        shutdown: Shutdown,
+    ) -> TestLoop {
+        let consumer = bus.consumer::<RawBytes>(&job_filter());
+        let publisher =
+            ResultPublisher::new(bus.publisher::<SolveResult<MockEntryId>>(), fast_publish())
+                .with_sticky_subject("solve.req.v1.g.v1.r.region.m.replica")
+                .unwrap();
+        let pull = PullLoop::new(
+            engine(),
+            consumer,
+            publisher,
+            region(),
+            served_cells(),
+            config(4),
+            shutdown,
+            Drain::new(),
+        );
+        match cache {
+            Some(cache) => pull.with_trip_cache(cache),
+            None => pull,
+        }
+    }
+
+    /// The job an owner builds after committing `first`'s solved `trip`.
+    fn follow_up(
+        first: &SolveJob<MockEntryId>,
+        trip: Trip<MockEntryId>,
+        fresh: Origin,
+    ) -> SolveJob<MockEntryId> {
+        let identity = JobIdentity {
+            observation: ObservationId {
+                partition: 0,
+                sequence: first.identity.observation.sequence + 1,
+            },
+            base: Some(BaseState {
+                revision: Revision::from(first.identity.observation),
+                segment: SegmentId(1),
+            }),
+            ..first.identity.clone()
+        };
+        SolveJob::new(
+            identity,
+            Lane::DEFAULT,
+            i64::MAX,
+            Continuation::Resume {
+                trip,
+                fresh: vec![fresh],
+            },
+        )
+    }
+
+    #[tokio::test]
+    async fn a_cached_request_resumes_from_the_trip_this_matcher_produced() {
+        let bus = MemoryBus::new();
+        let shutdown = Shutdown::new();
+        let cache = Arc::new(TripCache::<MockEntryId>::new(64));
+        let first = SolveJob::new(
+            identity(7),
+            Lane::DEFAULT,
+            i64::MAX,
+            Continuation::Restart {
+                fresh: observations()[..3].to_vec(),
+            },
+        );
+        publish_job(&bus, &first).await;
+
+        let mut results = bus.source::<SolveResult<MockEntryId>>(RESULTS);
+        let pull = sticky_loop(&bus, Some(Arc::clone(&cache)), shutdown.clone());
+        let driver = async {
+            let delivery = results.next().await.unwrap().unwrap();
+            assert_eq!(
+                delivery
+                    .headers
+                    .get(STICKY_HEADER)
+                    .map(|v| v.as_str().to_owned()),
+                Some("solve.req.v1.g.v1.r.region.m.replica".to_owned()),
+                "results advertise the sticky replica"
+            );
+            let SolveOutcome::Solved { trip, .. } = delivery.item.outcome else {
+                panic!("the restart solves");
+            };
+            assert_eq!(cache.len(), 1, "the solved trip is cached");
+
+            let second = follow_up(&first, trip, observations()[3]);
+            let request = SolveRequest::cached(&second).unwrap();
+            let full_len = SolveRequest::full(&second).encode().unwrap().len();
+            let bytes = request.encode().unwrap();
+            assert!(
+                bytes.len() < full_len,
+                "{} vs {full_len} bytes",
+                bytes.len()
+            );
+            bus.publisher::<RawBytes>()
+                .publish_bytes(
+                    &request_subject(
+                        &GraphVersion::new(GRAPH).unwrap(),
+                        &RegionId::new(REGION).unwrap(),
+                        Lane::DEFAULT,
+                    ),
+                    &second.msg_id(),
+                    request_headers(),
+                    &bytes,
+                )
+                .await
+                .unwrap();
+            let delivery = results.next().await.unwrap().unwrap();
+            assert_eq!(delivery.item.job, second.id, "the cache hit verified");
+            assert!(matches!(delivery.item.outcome, SolveOutcome::Solved { .. }));
+            shutdown.trigger(DrainReason::Operator);
+        };
+        let (stats, ()) = tokio::join!(pull.run(), driver);
+        assert_eq!(stats.solved, 2);
+        assert_eq!(stats.trip_misses, 0);
+    }
+
+    #[tokio::test]
+    async fn a_cold_matcher_answers_a_cached_request_with_a_trip_miss() {
+        let bus = MemoryBus::new();
+        let shutdown = Shutdown::new();
+        let first = restart_job(9, i64::MAX);
+        let second = follow_up(&first, Trip::new(), observations()[0]);
+        let request = SolveRequest::cached(&second).unwrap();
+        bus.publisher::<RawBytes>()
+            .publish_bytes(
+                &request_subject(
+                    &GraphVersion::new(GRAPH).unwrap(),
+                    &RegionId::new(REGION).unwrap(),
+                    Lane::DEFAULT,
+                ),
+                &second.msg_id(),
+                request_headers(),
+                &request.encode().unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let mut results = bus.source::<SolveResult<MockEntryId>>(RESULTS);
+        let cache = Arc::new(TripCache::<MockEntryId>::new(64));
+        let pull = sticky_loop(&bus, Some(cache), shutdown.clone());
+        let driver = async {
+            let delivery = results.next().await.unwrap().unwrap();
+            assert!(matches!(delivery.item.outcome, SolveOutcome::TripMiss));
+            assert_eq!(delivery.item.job, second.id);
+            delivery
+                .item
+                .verify()
+                .expect("a trip miss is authenticated");
+            shutdown.trigger(DrainReason::Operator);
+        };
+        let (stats, ()) = tokio::join!(pull.run(), driver);
+        assert_eq!(stats.trip_misses, 1);
+        assert_eq!(stats.solved, 0);
+        assert_eq!(stats.poison, 0);
     }
 
     #[tokio::test]
@@ -1006,13 +1299,13 @@ mod tests {
             ..config(2)
         };
 
-        let subject = job_subject(
+        let subject = request_subject(
             &GraphVersion::new(GRAPH).unwrap(),
             &RegionId::new(REGION).unwrap(),
             Lane::DEFAULT,
         );
         bus.publisher::<RawBytes>()
-            .publish_bytes(&subject, "oversized-1", HeaderMap::new(), &[0xAB_u8; 64])
+            .publish_bytes(&subject, "oversized-1", request_headers(), &[0xAB_u8; 64])
             .await
             .expect("publish blob");
 

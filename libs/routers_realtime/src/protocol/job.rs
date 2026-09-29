@@ -1,7 +1,8 @@
-//! `SolveJob`: the regional solve-job message, one unit of work handed to the
-//! regional matchers. Its identity is a deterministic hash of its
-//! entire solve envelope, so two orchestrators that build the same context mint
-//! the same [`JobId`] and the broker's `Nats-Msg-Id` dedup collapses the duplicate.
+//! `SolveJob`: one unit of regional solve work. Its identity is a deterministic
+//! hash of its entire solve envelope, so two orchestrators that build the same
+//! context mint the same [`JobId`]. Only [`SolveRequest`] travels on the wire:
+//! the job's proof plus its full or trip-less continuation, from which both
+//! sides rebuild the verified [`SolveJob`].
 //!
 //! Field order in [`JobProof`] is wire law: postcard hashes it, so reordering
 //! silently changes every job id in the fleet. Do not reorder without bumping
@@ -10,11 +11,11 @@
 use core::time::Duration;
 
 use routers_network::Entry;
-use routers_transition::matcher::{Continuation, Origin};
+use routers_transition::matcher::{Continuation, Origin, Trip};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::bus::{Wire, postcard_wire};
+use crate::bus::postcard_wire;
 use crate::event::VehicleId;
 use crate::protocol::ids::{
     self, GraphVersion, JobId, Lane, ObservationId, RegionId, Revision, SCHEMA_VERSION,
@@ -54,7 +55,64 @@ pub struct JobIdentity {
 /// The v1 domain-separation tag mixed into every solve-job digest.
 const JOB_ID_DOMAIN: &[u8] = b"routers.solve-job.v1";
 /// Separates the continuation digest from the outer solve-job digest.
-const CONTINUATION_DOMAIN: &[u8] = b"routers.solve-job.continuation.v1";
+const CONTINUATION_DOMAIN: &[u8] = b"routers.solve-job.continuation.v2";
+/// Separates a trip digest from every other digest.
+const TRIP_DOMAIN: &[u8] = b"routers.solve-job.trip.v1";
+
+/// Digest of one [`Trip`]'s canonical postcard encoding.
+///
+/// A continuation is authenticated by this digest plus its fresh origins, so
+/// a party that already holds the trip's digest (the owner's sealed checkpoint,
+/// or the matcher's cache entry) never re-serialises the trip to build or check
+/// a job id.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct TripDigest(pub u128);
+
+impl TripDigest {
+    /// The digest of `trip`, serialising it once.
+    #[must_use]
+    pub fn of<E: Entry>(trip: &Trip<E>) -> Self {
+        let bytes = postcard::to_allocvec(trip).expect("Trip is infallibly serialisable");
+        Self::of_bytes(&bytes)
+    }
+
+    /// The digest of a trip's already-encoded postcard bytes.
+    #[must_use]
+    pub fn of_bytes(bytes: &[u8]) -> Self {
+        Self(ids::digest128(&[TRIP_DOMAIN, bytes]))
+    }
+}
+
+/// The continuation digest for a resume from `trip` (or a restart when
+/// `None`) followed by `fresh`.
+fn continuation_digest(trip: Option<TripDigest>, fresh: &[Origin]) -> ContinuationDigest {
+    let fresh = postcard::to_allocvec(fresh).expect("origins are infallibly serialisable");
+    ContinuationDigest(match trip {
+        Some(TripDigest(trip)) => ids::digest128(&[
+            CONTINUATION_DOMAIN,
+            b"resume",
+            trip.to_be_bytes().as_slice(),
+            fresh.as_slice(),
+        ]),
+        None => ids::digest128(&[CONTINUATION_DOMAIN, b"restart", fresh.as_slice()]),
+    })
+}
+
+/// The fresh origins of a continuation.
+fn fresh_of<E: Entry>(context: &Continuation<E>) -> &[Origin] {
+    match context {
+        Continuation::Resume { fresh, .. } | Continuation::Restart { fresh } => fresh,
+    }
+}
+
+/// The trip digest a continuation authenticates, computing it when the
+/// caller does not already hold it.
+fn trip_digest_of<E: Entry>(context: &Continuation<E>) -> Option<TripDigest> {
+    match context {
+        Continuation::Resume { trip, .. } => Some(TripDigest::of(trip)),
+        Continuation::Restart { .. } => None,
+    }
+}
 
 impl JobIdentity {
     /// The deterministic id of a context-only local decision. It is not the
@@ -95,22 +153,18 @@ pub struct JobProof {
 }
 
 impl JobProof {
-    fn for_job<E: Entry>(
+    fn for_parts(
         identity: &JobIdentity,
         lane: Lane,
         freshness_target_us: i64,
-        context: &Continuation<E>,
+        trip: Option<TripDigest>,
+        fresh: &[Origin],
     ) -> Self {
-        let bytes = postcard::to_allocvec(context)
-            .expect("Continuation is infallibly serialisable for an Entry");
         Self {
             identity: identity.clone(),
             lane,
             freshness_target_us,
-            continuation: ContinuationDigest(ids::digest128(&[
-                CONTINUATION_DOMAIN,
-                bytes.as_slice(),
-            ])),
+            continuation: continuation_digest(trip, fresh),
         }
     }
 
@@ -140,47 +194,88 @@ pub struct SolveJob<E: Entry> {
     pub freshness_target_us: i64,
     /// The resume/restart state the matcher solves from.
     pub context: Continuation<E>,
+    /// The digest of `context`'s trip for a resume, held so the job's proof
+    /// is rebuilt without re-serialising the trip. `None` for a restart.
+    pub trip_digest: Option<TripDigest>,
 }
 
 impl<E: Entry> SolveJob<E> {
-    /// Build a job for `identity`, computing a [`JobId`] that authenticates
-    /// the complete solve envelope.
+    /// Build a job for `identity`, digesting its trip, and computing a
+    /// [`JobId`] that authenticates the complete solve envelope.
     pub fn new(
         identity: JobIdentity,
         lane: Lane,
         freshness_target_us: i64,
         context: Continuation<E>,
     ) -> Self {
-        let id = JobProof::for_job(&identity, lane, freshness_target_us, &context).job_id();
+        let trip_digest = trip_digest_of(&context);
+        Self::with_trip_digest(identity, lane, freshness_target_us, context, trip_digest)
+    }
+
+    /// As [`new`](Self::new), trusting `trip_digest` as the digest of
+    /// `context`'s trip (`None` for a restart). The caller must hold it from
+    /// the same trip bytes, as a sealed checkpoint or matcher cache entry does.
+    pub fn with_trip_digest(
+        identity: JobIdentity,
+        lane: Lane,
+        freshness_target_us: i64,
+        context: Continuation<E>,
+        trip_digest: Option<TripDigest>,
+    ) -> Self {
+        debug_assert_eq!(
+            trip_digest.is_some(),
+            matches!(context, Continuation::Resume { .. }),
+            "exactly a resume carries a trip digest"
+        );
+        let id = JobProof::for_parts(
+            &identity,
+            lane,
+            freshness_target_us,
+            trip_digest,
+            fresh_of(&context),
+        )
+        .job_id();
         Self {
             id,
             identity,
             lane,
             freshness_target_us,
             context,
+            trip_digest,
         }
     }
 
     /// The compact proof of the complete solve envelope, suitable for echoing
-    /// in a result without duplicating its continuation.
+    /// in a result without duplicating its continuation. Uses the held trip
+    /// digest, so it costs only the fresh origins.
     #[must_use]
     pub fn proof(&self) -> JobProof {
-        JobProof::for_job(
+        JobProof::for_parts(
             &self.identity,
             self.lane,
             self.freshness_target_us,
-            &self.context,
+            self.trip_digest,
+            fresh_of(&self.context),
         )
     }
 
-    /// Recompute the id from every solve-affecting envelope field.
+    /// Recompute the id from every solve-affecting field, re-digesting the
+    /// trip itself rather than trusting the held digest.
     #[must_use]
     pub fn computed_id(&self) -> JobId {
-        self.proof().job_id()
+        JobProof::for_parts(
+            &self.identity,
+            self.lane,
+            self.freshness_target_us,
+            trip_digest_of(&self.context),
+            fresh_of(&self.context),
+        )
+        .job_id()
     }
 
     /// Check that this envelope is self-consistent: its `id` is the digest of
-    /// every solve-affecting field, and its schema is the schema this build speaks.
+    /// every solve-affecting field, including the trip itself, and its schema
+    /// is the schema this build speaks.
     pub fn verify(&self) -> Result<(), JobError> {
         let expected = self.computed_id();
         if self.id != expected {
@@ -223,17 +318,144 @@ impl<E: Entry> SolveJob<E> {
     }
 }
 
-impl<E: Entry + serde::de::DeserializeOwned> SolveJob<E> {
-    /// Decode a job from the wire and [`verify`](SolveJob::verify) it in one
-    /// step, so a caller never handles an unverified envelope.
-    pub fn decode_verified(bytes: &[u8]) -> Result<Self, JobError> {
-        let job = <Self as Wire>::decode(bytes).map_err(JobError::Decode)?;
-        job.verify()?;
-        Ok(job)
+/// The continuation a transient [`SolveRequest`] carries.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(bound(serialize = "E: Serialize", deserialize = "E: Deserialize<'de>"))]
+pub enum RequestContext<E: Entry> {
+    /// The complete continuation, trip included.
+    Full(Continuation<E>),
+    /// Only the fresh observations of a resume. The addressed matcher supplies
+    /// the trip it produced for `proof.identity.base`; the job id, which digests
+    /// the full continuation, proves the substitution was exact.
+    Cached { fresh: Vec<Origin> },
+}
+
+/// The transient solve-request wire message: a job's compact [`JobProof`] and
+/// either its full continuation or just the fresh tail of a resume.
+///
+/// Carrying the proof lets a matcher that cannot resolve a cached trip still
+/// answer with a verifiable [`SolveOutcome::TripMiss`](crate::protocol::result::SolveOutcome::TripMiss).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(bound(serialize = "E: Serialize", deserialize = "E: Deserialize<'de>"))]
+pub struct SolveRequest<E: Entry> {
+    /// Every solve-affecting field except the continuation, plus its digest.
+    pub proof: JobProof,
+    /// The continuation, or the part of it the matcher does not already hold.
+    pub context: RequestContext<E>,
+}
+
+/// Why a [`SolveRequest`] could not be turned into a verified [`SolveJob`].
+#[derive(Debug, Error)]
+pub enum ResolveError {
+    /// A cached request whose trip the matcher does not hold, or holds for a
+    /// different continuation. Answer with a trip miss; this is not poison.
+    #[error("cached trip unavailable for the requested base")]
+    TripMiss(Box<JobProof>),
+    /// The request itself is malformed or forged.
+    #[error(transparent)]
+    Job(#[from] JobError),
+}
+
+impl<E: Entry> SolveRequest<E> {
+    /// A request carrying `job`'s complete continuation.
+    #[must_use]
+    pub fn full(job: &SolveJob<E>) -> Self {
+        Self {
+            proof: job.proof(),
+            context: RequestContext::Full(job.context.clone()),
+        }
+    }
+
+    /// A request carrying only `job`'s fresh observations, or `None` when the
+    /// job is not a resume from a committed base (nothing to have cached).
+    #[must_use]
+    pub fn cached(job: &SolveJob<E>) -> Option<Self> {
+        match (&job.context, job.identity.base) {
+            (Continuation::Resume { fresh, .. }, Some(_)) => Some(Self {
+                proof: job.proof(),
+                context: RequestContext::Cached {
+                    fresh: fresh.clone(),
+                },
+            }),
+            _ => None,
+        }
+    }
+
+    /// The id the proof authenticates.
+    #[must_use]
+    pub fn job_id(&self) -> JobId {
+        self.proof.job_id()
+    }
+
+    /// Whether this request relies on the matcher's cached trip.
+    #[must_use]
+    pub fn is_cached(&self) -> bool {
+        matches!(self.context, RequestContext::Cached { .. })
+    }
+
+    /// Rebuild and verify the full job. A cached request takes its trip and
+    /// that trip's digest from `lookup(vehicle, base_revision)`, so it is
+    /// verified from the fresh origins alone; a full request digests its trip
+    /// once. A missing or non-matching cached trip is a
+    /// [`ResolveError::TripMiss`], while any other mismatch is a [`JobError`].
+    pub fn resolve(
+        self,
+        lookup: impl FnOnce(VehicleId, Revision) -> Option<(Trip<E>, TripDigest)>,
+    ) -> Result<SolveJob<E>, ResolveError> {
+        let Self { proof, context } = self;
+        let id = proof.job_id();
+        let (context, trip_digest, cached) = match context {
+            RequestContext::Full(continuation) => {
+                let digest = trip_digest_of(&continuation);
+                (continuation, digest, false)
+            }
+            RequestContext::Cached { fresh } => {
+                let Some(base) = proof.identity.base else {
+                    return Err(ResolveError::TripMiss(Box::new(proof)));
+                };
+                let Some((trip, digest)) = lookup(proof.identity.vehicle_id, base.revision) else {
+                    return Err(ResolveError::TripMiss(Box::new(proof)));
+                };
+                (Continuation::Resume { trip, fresh }, Some(digest), true)
+            }
+        };
+        let rebuilt = JobProof::for_parts(
+            &proof.identity,
+            proof.lane,
+            proof.freshness_target_us,
+            trip_digest,
+            fresh_of(&context),
+        );
+        if rebuilt != proof {
+            return if cached {
+                Err(ResolveError::TripMiss(Box::new(proof)))
+            } else {
+                Err(JobError::IdMismatch {
+                    expected: rebuilt.job_id(),
+                    got: id,
+                }
+                .into())
+            };
+        }
+        if proof.identity.schema != SCHEMA_VERSION {
+            return Err(JobError::Schema {
+                expected: SCHEMA_VERSION,
+                got: proof.identity.schema,
+            }
+            .into());
+        }
+        Ok(SolveJob {
+            id,
+            identity: proof.identity,
+            lane: proof.lane,
+            freshness_target_us: proof.freshness_target_us,
+            context,
+            trip_digest,
+        })
     }
 }
 
-postcard_wire!(SolveJob<E: Entry>);
+postcard_wire!(SolveRequest<E: Entry>);
 
 /// Why a [`SolveJob`] failed to verify or decode.
 #[derive(Debug, Error)]
@@ -266,6 +488,7 @@ mod tests {
     use routers_transition::matcher::Trip;
 
     use super::*;
+    use crate::bus::Wire;
 
     fn sample_identity() -> JobIdentity {
         JobIdentity {
@@ -418,62 +641,6 @@ mod tests {
     }
 
     #[test]
-    fn wire_round_trip_restart() {
-        let job = SolveJob::new(
-            sample_identity(),
-            Lane(2),
-            12_345,
-            restart(vec![origin(1), origin(2)]),
-        );
-        let bytes = job.encode().unwrap();
-        let decoded = SolveJob::<MockEntryId>::decode_verified(&bytes).unwrap();
-        assert_eq!(decoded.id, job.id);
-        assert_eq!(decoded.identity, job.identity);
-        assert_eq!(decoded.lane, Lane(2));
-        assert_eq!(decoded.freshness_target_us, 12_345);
-        assert_eq!(decoded.head(), Some(&origin(2)));
-    }
-
-    #[test]
-    fn wire_round_trip_resume() {
-        let context = Continuation::<MockEntryId>::Resume {
-            trip: Trip::new(),
-            fresh: vec![origin(5)],
-        };
-        let job = SolveJob::new(sample_identity(), Lane::DEFAULT, 7, context);
-        let bytes = job.encode().unwrap();
-        let decoded = SolveJob::<MockEntryId>::decode_verified(&bytes).unwrap();
-        assert_eq!(decoded.id, job.id);
-        assert_eq!(decoded.identity, job.identity);
-        assert!(matches!(decoded.context, Continuation::Resume { .. }));
-        assert_eq!(decoded.head(), Some(&origin(5)));
-    }
-
-    #[test]
-    fn decode_verified_rejects_a_tampered_envelope() {
-        let mut job = SolveJob::new(
-            sample_identity(),
-            Lane::DEFAULT,
-            100,
-            restart(vec![origin(1)]),
-        );
-        job.id = JobId(job.id.0 ^ 1);
-        let bytes = job.encode().unwrap();
-        assert!(matches!(
-            SolveJob::<MockEntryId>::decode_verified(&bytes),
-            Err(JobError::IdMismatch { .. })
-        ));
-    }
-
-    #[test]
-    fn decode_verified_rejects_garbage() {
-        assert!(matches!(
-            SolveJob::<MockEntryId>::decode_verified(&[0xff, 0xff, 0xff, 0xff]),
-            Err(JobError::Decode(_))
-        ));
-    }
-
-    #[test]
     fn msg_id_is_the_hex_id() {
         let job = SolveJob::new(
             sample_identity(),
@@ -514,6 +681,103 @@ mod tests {
             None,
             "past the target nothing remains"
         );
+    }
+
+    fn resume_job(base: Option<BaseState>) -> SolveJob<MockEntryId> {
+        let identity = JobIdentity {
+            base,
+            ..sample_identity()
+        };
+        let context = Continuation::Resume {
+            trip: Trip::new(),
+            fresh: vec![origin(5)],
+        };
+        SolveJob::new(identity, Lane::DEFAULT, 7, context)
+    }
+
+    fn committed_base() -> Option<BaseState> {
+        Some(BaseState {
+            revision: Revision(4),
+            segment: SegmentId(1),
+        })
+    }
+
+    #[test]
+    fn full_request_resolves_to_the_same_job() {
+        let job = sample_job();
+        let request = SolveRequest::full(&job);
+        assert_eq!(request.job_id(), job.id);
+        let bytes = request.encode().unwrap();
+        let resolved = SolveRequest::<MockEntryId>::decode(&bytes)
+            .unwrap()
+            .resolve(|_, _| panic!("a full request never consults the cache"))
+            .unwrap();
+        assert_eq!(resolved.id, job.id);
+        assert_eq!(resolved.identity, job.identity);
+    }
+
+    #[test]
+    fn cached_request_resolves_with_the_matching_trip() {
+        let job = resume_job(committed_base());
+        let request = SolveRequest::cached(&job).expect("a based resume can be cached");
+        let full = SolveRequest::full(&job).encode().unwrap();
+        let cached = request.encode().unwrap();
+        assert!(cached.len() <= full.len());
+        let resolved = SolveRequest::<MockEntryId>::decode(&cached)
+            .unwrap()
+            .resolve(|vehicle, revision| {
+                assert_eq!(vehicle, job.identity.vehicle_id);
+                assert_eq!(revision, Revision(4));
+                Some((Trip::new(), TripDigest::of(&Trip::<MockEntryId>::new())))
+            })
+            .unwrap();
+        assert_eq!(resolved.id, job.id);
+        assert_eq!(resolved.head(), Some(&origin(5)));
+    }
+
+    #[test]
+    fn cached_request_without_the_trip_is_a_miss_not_poison() {
+        let job = resume_job(committed_base());
+        let request = SolveRequest::cached(&job).unwrap();
+        match request.resolve(|_, _| None) {
+            Err(ResolveError::TripMiss(proof)) => assert_eq!(proof.job_id(), job.id),
+            other => panic!("expected a trip miss, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cached_request_that_fails_verification_is_a_miss() {
+        // Whatever the cause — a stale cached trip or altered fresh origins —
+        // a rebuilt continuation that misses the job id is a miss, which the
+        // owner answers by resending the authenticated full continuation.
+        let job = resume_job(committed_base());
+        let mut request = SolveRequest::cached(&job).unwrap();
+        request.context = RequestContext::Cached {
+            fresh: vec![origin(6)],
+        };
+        let result = request
+            .resolve(|_, _| Some((Trip::new(), TripDigest::of(&Trip::<MockEntryId>::new()))));
+        assert!(
+            matches!(result, Err(ResolveError::TripMiss(_))),
+            "{result:?}"
+        );
+    }
+
+    #[test]
+    fn only_based_resumes_can_be_cached() {
+        assert!(SolveRequest::cached(&sample_job()).is_none(), "restart");
+        assert!(SolveRequest::cached(&resume_job(None)).is_none(), "no base");
+    }
+
+    #[test]
+    fn a_forged_full_request_is_poison() {
+        let job = sample_job();
+        let mut request = SolveRequest::full(&job);
+        request.context = RequestContext::Full(restart(vec![origin(99)]));
+        assert!(matches!(
+            request.resolve(|_, _| None),
+            Err(ResolveError::Job(JobError::IdMismatch { .. }))
+        ));
     }
 
     #[test]

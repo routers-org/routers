@@ -5,13 +5,19 @@
 //! output is never acked before it is persisted, so a crash between apply and ack
 //! redelivers it and the idempotent merge absorbs the replay.
 
+use alloc::collections::VecDeque;
+use core::num::NonZeroUsize;
 use core::time::Duration;
+use std::collections::{HashMap, HashSet};
+use std::time::Instant;
 
+use futures::stream::{FuturesUnordered, StreamExt};
 use routers_network::Entry;
 use serde::de::DeserializeOwned;
 use tracing::{debug, warn};
 
-use crate::bus::adapter::{AckHandle, Source};
+use crate::bus::adapter::{AckHandle, Delivery, Source};
+use crate::event::VehicleId;
 use crate::lifecycle::Shutdown;
 use crate::materializer::sink::{Applied, Sink};
 use crate::metrics::Metrics;
@@ -49,6 +55,19 @@ impl Stats {
     }
 }
 
+enum Outcome {
+    Applied(Applied),
+    Failed,
+}
+
+enum Step<T, H: AckHandle> {
+    Completed(VehicleId, Outcome),
+    Delivery(Delivery<T, H>),
+    SourceClosed,
+    SourceError(anyhow::Error),
+    Shutdown,
+}
+
 /// The bounded metric label for one [`Applied`] outcome.
 fn applied_kind(applied: &Applied) -> &'static str {
     match applied {
@@ -79,7 +98,7 @@ where
 /// Returns the run's [`Stats`]; an error is returned only if acknowledging fails
 /// irrecoverably, which the caller treats as fatal.
 pub async fn run_with_metrics<E, S, Src>(
-    mut source: Src,
+    source: Src,
     sink: S,
     shutdown: Shutdown,
     metrics: &Metrics,
@@ -89,50 +108,179 @@ where
     S: Sink<E>,
     Src: Source<CommittedOutput<E>>,
 {
+    run_concurrent_with_metrics(source, sink, shutdown, metrics, NonZeroUsize::MIN).await
+}
+
+/// Run the materialiser with at most `max_in_flight` storage operations.
+///
+/// Each operation still persists before acknowledging. This process applies
+/// one vehicle's outputs in delivery order while other vehicles overlap I/O.
+/// Cross-process races remain guarded by the sink's compare-and-set loop.
+pub async fn run_concurrent_with_metrics<E, S, Src>(
+    mut source: Src,
+    sink: S,
+    shutdown: Shutdown,
+    metrics: &Metrics,
+    max_in_flight: NonZeroUsize,
+) -> anyhow::Result<Stats>
+where
+    E: Entry + DeserializeOwned,
+    S: Sink<E>,
+    Src: Source<CommittedOutput<E>>,
+{
     let mut stats = Stats::default();
+    let mut in_flight = FuturesUnordered::new();
+    let mut active = HashSet::<VehicleId>::new();
+    let mut pending =
+        HashMap::<VehicleId, VecDeque<Delivery<CommittedOutput<E>, Src::Handle>>>::new();
+    let mut queued = 0usize;
+    let mut source_closed = false;
+    let mut last_delivery = Instant::now();
 
-    loop {
-        tokio::select! {
-            // Bias to shutdown: stop before pulling more work once triggered.
-            biased;
-            () = shutdown.triggered() => break,
-            next = source.next() => {
-                let delivery = match next {
-                    None => break,
-                    Some(Ok(delivery)) => delivery,
-                    Some(Err(err)) => {
-                        warn!(error = %err, "committed-output source failed; continuing");
-                        stats.poison += 1;
-                        continue;
-                    }
-                };
+    while !source_closed || !in_flight.is_empty() {
+        if metrics.sample_probe() {
+            metrics.materializer_depth(in_flight.len(), queued);
+        }
+        if shutdown.is_triggered() {
+            source_closed = true;
+        }
+        if source_closed && in_flight.is_empty() {
+            break;
+        }
+        let source_started = Instant::now();
+        let step = if source_closed || in_flight.len() + queued >= max_in_flight.get() {
+            let (vehicle, outcome) = in_flight
+                .next()
+                .await
+                .expect("queued work has an active apply");
+            Step::Completed(vehicle, outcome)
+        } else {
+            tokio::select! {
+                biased;
+                () = shutdown.triggered() => Step::Shutdown,
+                Some((vehicle, outcome)) = in_flight.next(), if !in_flight.is_empty() => {
+                    Step::Completed(vehicle, outcome)
+                }
+                next = source.next() => match next {
+                    Some(Ok(delivery)) => Step::Delivery(delivery),
+                    Some(Err(error)) => Step::SourceError(error),
+                    None => Step::SourceClosed,
+                },
+            }
+        };
 
-                match sink.apply(&delivery.item).await {
-                    Ok(applied) => {
-                        metrics.materialized(applied_kind(&applied));
-                        stats.record(applied);
-                        if let Err(err) = delivery.handle.ack().await {
-                            warn!(error = %err, "could not acknowledge applied output");
-                        } else {
-                            debug!(?applied, "applied committed output");
-                        }
+        match step {
+            Step::Completed(vehicle, outcome) => {
+                record_outcome(&mut stats, outcome);
+                active.remove(&vehicle);
+                if let Some(waiting) = pending.get_mut(&vehicle) {
+                    if let Some(delivery) = waiting.pop_front() {
+                        queued -= 1;
+                        active.insert(vehicle);
+                        in_flight.push(apply_keyed_one(vehicle, delivery, &sink, metrics));
                     }
-                    Err(err) => {
-                        // Never ack unpersisted work; nak for backoff redelivery.
-                        warn!(error = %err, "sink failed to apply output; naking");
-                        stats.errors += 1;
-                        if let Err(nak_err) =
-                            delivery.handle.nak(Some(NAK_BACKOFF)).await
-                        {
-                            warn!(error = %nak_err, "could not nak failed output");
-                        }
+                    if waiting.is_empty() {
+                        pending.remove(&vehicle);
                     }
                 }
+            }
+            Step::Delivery(delivery) => {
+                if metrics.sample_probe() {
+                    metrics.materializer_stage_seconds(
+                        "source_next",
+                        source_started.elapsed().as_secs_f64(),
+                    );
+                    metrics.materializer_stage_seconds(
+                        "between_deliveries",
+                        last_delivery.elapsed().as_secs_f64(),
+                    );
+                }
+                last_delivery = Instant::now();
+                let vehicle = delivery.item.vehicle_id;
+                if active.insert(vehicle) {
+                    in_flight.push(apply_keyed_one(vehicle, delivery, &sink, metrics));
+                } else {
+                    pending.entry(vehicle).or_default().push_back(delivery);
+                    queued += 1;
+                }
+            }
+            Step::SourceClosed | Step::Shutdown => source_closed = true,
+            Step::SourceError(err) => {
+                warn!(error = %err, "committed-output source failed; continuing");
+                stats.poison += 1;
             }
         }
     }
 
     Ok(stats)
+}
+
+async fn apply_keyed_one<E, S, H>(
+    vehicle: VehicleId,
+    delivery: Delivery<CommittedOutput<E>, H>,
+    sink: &S,
+    metrics: &Metrics,
+) -> (VehicleId, Outcome)
+where
+    E: Entry + DeserializeOwned,
+    S: Sink<E>,
+    H: AckHandle,
+{
+    (vehicle, apply_one(delivery, sink, metrics).await)
+}
+
+fn record_outcome(stats: &mut Stats, outcome: Outcome) {
+    match outcome {
+        Outcome::Applied(applied) => stats.record(applied),
+        Outcome::Failed => stats.errors += 1,
+    }
+}
+
+async fn apply_one<E, S, H>(
+    delivery: Delivery<CommittedOutput<E>, H>,
+    sink: &S,
+    metrics: &Metrics,
+) -> Outcome
+where
+    E: Entry + DeserializeOwned,
+    S: Sink<E>,
+    H: AckHandle,
+{
+    let sampled = metrics.sample_probe();
+    let apply_started = Instant::now();
+    match sink.apply(&delivery.item).await {
+        Ok(applied) => {
+            if sampled {
+                metrics.materializer_stage_seconds(
+                    "sink_apply",
+                    apply_started.elapsed().as_secs_f64(),
+                );
+            }
+            metrics.materialized(applied_kind(&applied));
+            let ack_started = Instant::now();
+            if let Err(err) = delivery.handle.ack().await {
+                warn!(error = %err, "could not acknowledge applied output");
+            } else {
+                debug!(?applied, "applied committed output");
+            }
+            if sampled {
+                metrics.materializer_stage_seconds("ack", ack_started.elapsed().as_secs_f64());
+                metrics.materializer_stage_seconds(
+                    "slot_total",
+                    apply_started.elapsed().as_secs_f64(),
+                );
+            }
+            Outcome::Applied(applied)
+        }
+        Err(err) => {
+            // Never ack unpersisted work; nak for backoff redelivery.
+            warn!(error = %err, "sink failed to apply output; naking");
+            if let Err(nak_err) = delivery.handle.nak(Some(NAK_BACKOFF)).await {
+                warn!(error = %nak_err, "could not nak failed output");
+            }
+            Outcome::Failed
+        }
+    }
 }
 
 #[cfg(test)]
@@ -205,6 +353,117 @@ mod tests {
             )
             .await
             .expect("publish");
+    }
+
+    struct BlockingSink {
+        arrivals: std::sync::atomic::AtomicUsize,
+        barrier: std::sync::Arc<tokio::sync::Barrier>,
+    }
+
+    impl Sink<E> for BlockingSink {
+        type Error = core::convert::Infallible;
+
+        async fn apply(&self, _output: &CommittedOutput<E>) -> Result<Applied, Self::Error> {
+            self.arrivals
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.barrier.wait().await;
+            Ok(Applied::Duplicate)
+        }
+    }
+
+    #[tokio::test]
+    async fn concurrent_runner_overlaps_sink_io_up_to_its_bound() {
+        const CAPACITY: usize = 4;
+
+        let bus = MemoryBus::new();
+        for vehicle in 1..=CAPACITY as u64 {
+            publish(&bus, &matched_job(u128::from(vehicle), vehicle, 5, 100)).await;
+        }
+        bus.close();
+
+        let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(CAPACITY + 1));
+        let sink = BlockingSink {
+            arrivals: std::sync::atomic::AtomicUsize::new(0),
+            barrier: std::sync::Arc::clone(&barrier),
+        };
+        let source = bus.source::<CommittedOutput<E>>(FILTER);
+        let metrics = Metrics::noop();
+        let run = run_concurrent_with_metrics::<E, _, _>(
+            source,
+            sink,
+            Shutdown::new(),
+            &metrics,
+            NonZeroUsize::new(CAPACITY).unwrap(),
+        );
+
+        let (stats, _) = tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::join!(run, barrier.wait())
+        })
+        .await
+        .expect("storage operations were serialized");
+        let stats = stats.expect("run");
+
+        assert_eq!(stats.duplicates, CAPACITY as u64);
+        assert_eq!(bus.acked_count(FILTER), CAPACITY);
+    }
+
+    #[derive(Clone, Default)]
+    struct OrderedSink {
+        seen: std::sync::Arc<std::sync::Mutex<Vec<(VehicleId, Revision)>>>,
+        active: std::sync::Arc<std::sync::Mutex<HashSet<VehicleId>>>,
+    }
+
+    impl Sink<E> for OrderedSink {
+        type Error = core::convert::Infallible;
+
+        async fn apply(&self, output: &CommittedOutput<E>) -> Result<Applied, Self::Error> {
+            {
+                let mut active = self.active.lock().expect("active lock");
+                assert!(
+                    active.insert(output.vehicle_id),
+                    "same vehicle applied concurrently"
+                );
+            }
+            tokio::task::yield_now().await;
+            self.seen
+                .lock()
+                .expect("seen lock")
+                .push((output.vehicle_id, output.revision));
+            self.active
+                .lock()
+                .expect("active lock")
+                .remove(&output.vehicle_id);
+            Ok(Applied::Duplicate)
+        }
+    }
+
+    #[tokio::test]
+    async fn concurrent_runner_serializes_each_vehicle_in_delivery_order() {
+        let bus = MemoryBus::new();
+        for (job, vehicle, revision) in [(1, 1, 1), (2, 2, 1), (3, 1, 2), (4, 1, 3)] {
+            publish(&bus, &matched_job(job, vehicle, revision, revision as i64)).await;
+        }
+        bus.close();
+        let sink = OrderedSink::default();
+        let stats = run_concurrent_with_metrics::<E, _, _>(
+            bus.source::<CommittedOutput<E>>(FILTER),
+            sink.clone(),
+            Shutdown::new(),
+            &Metrics::noop(),
+            NonZeroUsize::new(4).expect("nonzero capacity"),
+        )
+        .await
+        .expect("run");
+
+        let seen = sink.seen.lock().expect("seen lock");
+        let revisions: Vec<_> = seen
+            .iter()
+            .filter(|(vehicle, _)| *vehicle == VehicleId(1))
+            .map(|(_, revision)| revision.0)
+            .collect();
+        assert_eq!(revisions, [1, 2, 3]);
+        assert_eq!(stats.duplicates, 4);
+        assert_eq!(bus.acked_count(FILTER), 4);
     }
 
     #[tokio::test]

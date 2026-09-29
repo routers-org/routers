@@ -3,25 +3,31 @@
 //!
 //! A vehicle's keys carry a `{vehicle:<id>}` hash tag and are placed by
 //! rendezvous hashing, so all reach one primary and a resize remaps only ~`1/N`.
-//! Per-vehicle atomicity comes from Lua scripts over that key group; the
-//! `SADD`/`SREM` partition-index writes run afterwards and are best-effort, a
-//! recovery hint that [`list_prepared`](CheckpointStore::list_prepared) repairs.
+//! Per-vehicle atomicity comes from Lua scripts over that key group. The
+//! partition index is a recovery hint that
+//! [`list_prepared`](CheckpointStore::list_prepared) repairs.
 
 use alloc::sync::Arc;
+use core::ops::{Deref, DerefMut};
 use core::str::FromStr;
 use core::time::Duration;
 use std::collections::HashMap;
+use std::sync::RwLock;
+use std::time::Instant;
 
 use futures::future::try_join_all;
-use redis::aio::MultiplexedConnection;
+use redis::aio::ConnectionManager;
 use thiserror::Error;
+use tokio::sync::{Mutex, mpsc};
+use tracing::warn;
 
 use crate::event::VehicleId;
+use crate::metrics::Metrics;
 use crate::partition::{fnv1a, mix};
 use crate::protocol::ids::{ObservationId, OutputId, Revision, SegmentId, token_safe};
 use crate::secret::SecretUrl;
 use crate::store::checkpoint::{
-    CheckpointStore, CommitPhase, PartitionFrontier, PrepareOutcome, PreparedCommit,
+    CheckpointStore, CommitPhase, DirectOutcome, PartitionFrontier, PrepareOutcome, PreparedCommit,
     StoredCheckpoint, StoredCheckpointState,
 };
 
@@ -38,6 +44,9 @@ pub const DEFAULT_CHECKPOINT_TTL: Duration = Duration::from_secs(600);
 
 /// The default per-primary connection timeout.
 pub const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+
+const INDEX_CLEANUP_CAPACITY: usize = 4_096;
+const INDEX_CLEANUP_BATCH: usize = 256;
 
 /// A failure a [`ValkeyCheckpointStore`] operation can report.
 #[derive(Debug, Error)]
@@ -197,6 +206,17 @@ fn partition_index_key(partition: u16) -> String {
 /// The raw-journal frontier string for a partition.
 fn frontier_key(partition: u16) -> String {
     format!("partition:{partition}:frontier")
+}
+
+/// The partition's ownership epoch; placed with its frontier.
+fn epoch_key(partition: u16) -> String {
+    format!("partition:{partition}:epoch")
+}
+
+/// The newest partition epoch that wrote a vehicle's checkpoint; kept with the
+/// vehicle's key group and never expired.
+fn owner_epoch_key(vehicle: VehicleId) -> String {
+    format!("{{vehicle:{}}}:owner-epoch", vehicle.0)
 }
 
 /// The stored spelling of a [`CommitPhase`].
@@ -413,11 +433,90 @@ redis.call('HSET', KEYS[2], 'phase', 'published')
 return {'ok'}
 "#;
 
+/// Promote immediately after the broker has acknowledged publication. A crash
+/// before this script leaves the prepared bytes for idempotent republish; a
+/// crash after it sees the installed checkpoint. No intermediate store state
+/// is required, so the hot commit path uses one Valkey round trip instead of
+/// separate mark and promote calls.
+const FINISH_PUBLISHED_LUA: &str = r#"
+local existing = redis.call('HGET', KEYS[2], 'output')
+if not existing then
+  return {'noop'}
+end
+if existing ~= ARGV[1] then
+  return {'mismatch', existing}
+end
+local rev = redis.call('HGET', KEYS[2], 'next_revision')
+local seg = redis.call('HGET', KEYS[2], 'next_segment')
+local bytes = redis.call('HGET', KEYS[2], 'next_checkpoint')
+redis.call('HSET', KEYS[1], 'revision', rev, 'segment', seg, 'bytes', bytes)
+redis.call('PEXPIRE', KEYS[1], ARGV[2])
+redis.call('SET', KEYS[3], rev)
+redis.call('DEL', KEYS[2])
+return {'ok'}
+"#;
+
+/// Compare-and-install a checkpoint whose outputs are already broker-durable,
+/// with no staged record. `KEYS[1]` = checkpoint, `KEYS[2]` = durable committed
+/// revision, `KEYS[3]` = prepared hash (a staged record must be re-driven
+/// first); `ARGV[1]` = expected base (`''` = never seen), `ARGV[2]` = next
+/// revision, `ARGV[3]` = next segment, `ARGV[4]` = checkpoint bytes, `ARGV[5]`
+/// = checkpoint TTL in ms, `ARGV[6]` = the writer's partition epoch (`''` =
+/// unfenced) and `KEYS[4]` = the vehicle's owner epoch. A newer recorded
+/// owner refuses the write as `{'fenced', owner}`. A stored revision already
+/// equal to the next one is `{'already'}`: revisions are raw sequences, so it
+/// can only be this commit.
+const COMMIT_DIRECT_LUA: &str = r#"
+if ARGV[6] ~= '' then
+  local owner = redis.call('GET', KEYS[4])
+  if owner and tonumber(owner) > tonumber(ARGV[6]) then
+    return {'fenced', owner}
+  end
+end
+local pending = redis.call('HGET', KEYS[3], 'output')
+if pending then
+  return {'busy', pending}
+end
+local actual = redis.call('GET', KEYS[2])
+if actual == ARGV[2] then
+  return {'already'}
+end
+if ARGV[1] == '' then
+  if actual then
+    return {'conflict', actual}
+  end
+elseif actual ~= ARGV[1] then
+  return {'conflict', actual or ''}
+end
+redis.call('HSET', KEYS[1], 'revision', ARGV[2], 'segment', ARGV[3], 'bytes', ARGV[4])
+redis.call('PEXPIRE', KEYS[1], ARGV[5])
+redis.call('SET', KEYS[2], ARGV[2])
+if ARGV[6] ~= '' then
+  redis.call('SET', KEYS[4], ARGV[6])
+end
+return {'ok'}
+"#;
+
+/// Set a partition frontier only while the writer still holds the partition's
+/// current epoch. `KEYS[1]` = epoch, `KEYS[2]` = frontier; `ARGV[1]` = epoch,
+/// `ARGV[2]` = frontier sequence. Returns 1 when written, 0 when fenced.
+const SET_FRONTIER_FENCED_LUA: &str = r#"
+local current = redis.call('GET', KEYS[1]) or '0'
+if current ~= ARGV[1] then
+  return 0
+end
+redis.call('SET', KEYS[2], ARGV[2])
+return 1
+"#;
+
 /// The Lua scripts, compiled once and shared across every clone of the store.
 struct Scripts {
     prepare: redis::Script,
     promote: redis::Script,
     mark_published: redis::Script,
+    finish_published: redis::Script,
+    commit_direct: redis::Script,
+    set_frontier_fenced: redis::Script,
 }
 
 impl Scripts {
@@ -426,6 +525,9 @@ impl Scripts {
             prepare: redis::Script::new(PREPARE_LUA),
             promote: redis::Script::new(PROMOTE_LUA),
             mark_published: redis::Script::new(MARK_PUBLISHED_LUA),
+            finish_published: redis::Script::new(FINISH_PUBLISHED_LUA),
+            commit_direct: redis::Script::new(COMMIT_DIRECT_LUA),
+            set_frontier_fenced: redis::Script::new(SET_FRONTIER_FENCED_LUA),
         }
     }
 }
@@ -440,6 +542,8 @@ pub struct ValkeyConfig {
     pub checkpoint_ttl: Duration,
     /// How long to wait for each primary's connection to establish.
     pub connect_timeout: Duration,
+    /// Bounds a queued command and its response on the multiplexed connection.
+    pub response_timeout: Duration,
 }
 
 impl ValkeyConfig {
@@ -449,6 +553,7 @@ impl ValkeyConfig {
             endpoints,
             checkpoint_ttl: DEFAULT_CHECKPOINT_TTL,
             connect_timeout: DEFAULT_CONNECT_TIMEOUT,
+            response_timeout: Duration::from_secs(10),
         }
     }
 }
@@ -459,18 +564,124 @@ impl Default for ValkeyConfig {
     }
 }
 
+/// One replaceable multiplexed connection. redis-rs retries a timed-out command
+/// on the same socket, which can remain wedged; replace that socket instead.
+struct ConnectionSlot {
+    client: redis::Client,
+    connect_timeout: Duration,
+    response_timeout: Duration,
+    current: RwLock<(u64, ConnectionManager)>,
+    refresh: Mutex<()>,
+}
+
+impl ConnectionSlot {
+    async fn new(endpoint: &ValkeyEndpoint, cfg: &ValkeyConfig) -> Result<Arc<Self>, ValkeyError> {
+        let client = redis::Client::open(endpoint.url.connection_url())?;
+        let conn = Self::open(&client, cfg.connect_timeout, cfg.response_timeout).await?;
+        Ok(Arc::new(Self {
+            client,
+            connect_timeout: cfg.connect_timeout,
+            response_timeout: cfg.response_timeout,
+            current: RwLock::new((0, conn)),
+            refresh: Mutex::new(()),
+        }))
+    }
+
+    async fn open(
+        client: &redis::Client,
+        connect_timeout: Duration,
+        response_timeout: Duration,
+    ) -> Result<ConnectionManager, ValkeyError> {
+        let config = redis::aio::ConnectionManagerConfig::new()
+            .set_connection_timeout(connect_timeout)
+            .set_response_timeout(response_timeout);
+        Ok(ConnectionManager::new_with_config(client.clone(), config).await?)
+    }
+
+    fn lease(self: &Arc<Self>) -> ConnectionLease {
+        let current = self
+            .current
+            .read()
+            .expect("Valkey connection lock poisoned");
+        ConnectionLease {
+            slot: Arc::clone(self),
+            generation: current.0,
+            conn: current.1.clone(),
+        }
+    }
+
+    async fn refresh_if(&self, generation: u64) {
+        let _guard = self.refresh.lock().await;
+        if self
+            .current
+            .read()
+            .expect("Valkey connection lock poisoned")
+            .0
+            != generation
+        {
+            return;
+        }
+        match Self::open(&self.client, self.connect_timeout, self.response_timeout).await {
+            Ok(conn) => {
+                let mut current = self
+                    .current
+                    .write()
+                    .expect("Valkey connection lock poisoned");
+                *current = (generation.wrapping_add(1), conn);
+                warn!("replaced timed-out Valkey connection");
+            }
+            Err(error) => warn!(%error, "could not replace timed-out Valkey connection"),
+        }
+    }
+}
+
+struct ConnectionLease {
+    slot: Arc<ConnectionSlot>,
+    generation: u64,
+    conn: ConnectionManager,
+}
+
+impl Deref for ConnectionLease {
+    type Target = ConnectionManager;
+    fn deref(&self) -> &Self::Target {
+        &self.conn
+    }
+}
+
+impl DerefMut for ConnectionLease {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.conn
+    }
+}
+
+impl ConnectionLease {
+    async fn resolve<T>(&self, result: Result<T, redis::RedisError>) -> Result<T, ValkeyError> {
+        match result {
+            Ok(value) => Ok(value),
+            Err(error) => {
+                if error.is_timeout() {
+                    self.slot.refresh_if(self.generation).await;
+                }
+                Err(error.into())
+            }
+        }
+    }
+}
+
 /// A [`CheckpointStore`] backed by a fleet of independent Valkey primaries.
-/// Cloning shares the multiplexed sockets and compiled scripts.
+/// Cloning shares replaceable connections and compiled scripts.
 #[derive(Clone)]
 pub struct ValkeyCheckpointStore {
-    conns: Vec<MultiplexedConnection>,
+    conns: Vec<Arc<ConnectionSlot>>,
     placement: Placement,
     scripts: Arc<Scripts>,
     cfg: ValkeyConfig,
+    index_cleanup: mpsc::Sender<(u16, VehicleId)>,
+    metrics: Option<Metrics>,
 }
 
 impl ValkeyCheckpointStore {
-    /// Open a multiplexed connection to every primary in `cfg`, concurrently.
+    /// Open a reconnecting connection to every primary in `cfg`, concurrently.
     /// Errors on an empty endpoint list or a connection that exceeds
     /// [`ValkeyConfig::connect_timeout`].
     pub async fn connect(cfg: ValkeyConfig) -> Result<Self, ValkeyError> {
@@ -489,38 +700,90 @@ impl ValkeyCheckpointStore {
 
         let placement = Placement::new(&cfg.endpoints);
 
-        let conns = try_join_all(cfg.endpoints.iter().cloned().map(|endpoint| {
-            let connect_timeout = cfg.connect_timeout;
-            async move {
-                let client = redis::Client::open(endpoint.url.connection_url())?;
-                let config =
-                    redis::AsyncConnectionConfig::new().set_connection_timeout(connect_timeout);
-                let conn = client
-                    .get_multiplexed_async_connection_with_config(&config)
-                    .await?;
-                Ok::<_, ValkeyError>(conn)
-            }
-        }))
+        let conns = try_join_all(
+            cfg.endpoints
+                .iter()
+                .map(|endpoint| ConnectionSlot::new(endpoint, &cfg)),
+        )
         .await?;
+
+        let (index_cleanup, cleanup_rx) = mpsc::channel(INDEX_CLEANUP_CAPACITY);
+        tokio::spawn(run_index_cleanup(
+            conns.clone(),
+            placement.clone(),
+            cleanup_rx,
+        ));
 
         Ok(Self {
             conns,
             placement,
             scripts: Arc::new(Scripts::new()),
             cfg,
+            index_cleanup,
+            metrics: None,
         })
+    }
+
+    /// Sample checkpoint command round trips separately from orchestration work.
+    #[must_use]
+    pub fn with_metrics(mut self, metrics: Metrics) -> Self {
+        self.metrics = Some(metrics);
+        self
     }
 
     /// The connection to the primary that owns `vehicle`'s keys; a cheap clone
     /// sharing the socket.
-    fn vehicle_conn(&self, vehicle: VehicleId) -> MultiplexedConnection {
-        self.conns[self.placement.index_for(&vehicle_slot(vehicle))].clone()
+    fn vehicle_conn(&self, vehicle: VehicleId) -> ConnectionLease {
+        self.conns[self.placement.index_for(&vehicle_slot(vehicle))].lease()
     }
 
     /// The connection to the primary that owns `partition`'s index and frontier;
     /// may differ from a listed vehicle's primary.
-    fn partition_conn(&self, partition: u16) -> MultiplexedConnection {
-        self.conns[self.placement.index_for(&partition_slot(partition))].clone()
+    fn partition_conn(&self, partition: u16) -> ConnectionLease {
+        self.conns[self.placement.index_for(&partition_slot(partition))].lease()
+    }
+
+    fn clean_index_later(&self, partition: u16, vehicle: VehicleId) {
+        let _ = self.index_cleanup.try_send((partition, vehicle));
+    }
+}
+
+async fn run_index_cleanup(
+    conns: Vec<Arc<ConnectionSlot>>,
+    placement: Placement,
+    mut rx: mpsc::Receiver<(u16, VehicleId)>,
+) {
+    while let Some(first) = rx.recv().await {
+        let mut batch = Vec::with_capacity(INDEX_CLEANUP_BATCH);
+        batch.push(first);
+        while batch.len() < INDEX_CLEANUP_BATCH {
+            match rx.try_recv() {
+                Ok(item) => batch.push(item),
+                Err(_) => break,
+            }
+        }
+
+        let mut by_primary = HashMap::<usize, Vec<(u16, VehicleId)>>::new();
+        for (partition, vehicle) in batch {
+            let primary = placement.index_for(&partition_slot(partition));
+            by_primary
+                .entry(primary)
+                .or_default()
+                .push((partition, vehicle));
+        }
+
+        for (primary, entries) in by_primary {
+            let mut pipe = redis::pipe();
+            for (partition, vehicle) in entries {
+                pipe.cmd("SREM")
+                    .arg(partition_index_key(partition))
+                    .arg(vehicle.0)
+                    .ignore();
+            }
+            let mut conn = conns[primary].lease();
+            let result: Result<(), redis::RedisError> = pipe.query_async(&mut *conn).await;
+            let _ = conn.resolve(result).await;
+        }
     }
 }
 
@@ -546,6 +809,40 @@ fn parse_prepare_reply(reply: &[String]) -> Result<PrepareOutcome, ValkeyError> 
                     _ => None,
                 };
             Ok(PrepareOutcome::Conflict { actual })
+        }
+        _ => Err(ValkeyError::UnexpectedReply(reply.to_vec())),
+    }
+}
+
+/// Read a `commit_direct` reply's status token into a [`DirectOutcome`].
+fn parse_direct_reply(reply: &[String]) -> Result<DirectOutcome, ValkeyError> {
+    match reply.first().map(String::as_str) {
+        Some("ok") => Ok(DirectOutcome::Committed),
+        Some("already") => Ok(DirectOutcome::AlreadyCommitted),
+        Some("fenced") => {
+            let owner = reply
+                .get(1)
+                .and_then(|owner| owner.parse().ok())
+                .ok_or_else(|| ValkeyError::UnexpectedReply(reply.to_vec()))?;
+            Ok(DirectOutcome::Fenced { owner })
+        }
+        Some("busy") => {
+            let pending = reply
+                .get(1)
+                .ok_or_else(|| ValkeyError::UnexpectedReply(reply.to_vec()))?;
+            let pending = OutputId::from_str(pending)
+                .map_err(|err| ValkeyError::Malformed(format!("busy output {pending:?}: {err}")))?;
+            Ok(DirectOutcome::Busy { pending })
+        }
+        Some("conflict") => {
+            let actual =
+                match reply.get(1) {
+                    Some(raw) if !raw.is_empty() => Some(Revision(raw.parse().map_err(|_| {
+                        ValkeyError::Malformed(format!("conflict revision {raw:?}"))
+                    })?)),
+                    _ => None,
+                };
+            Ok(DirectOutcome::Conflict { actual })
         }
         _ => Err(ValkeyError::UnexpectedReply(reply.to_vec())),
     }
@@ -597,8 +894,9 @@ impl CheckpointStore for ValkeyCheckpointStore {
             .arg(committed_revision_key(vehicle))
             .cmd("HGETALL")
             .arg(prepared_key(vehicle));
+        let result = pipe.query_async(&mut *conn).await;
         let (checkpoint_fields, committed_revision, prepared_fields): LoadReply =
-            pipe.query_async(&mut conn).await?;
+            conn.resolve(result).await?;
 
         let checkpoint = if checkpoint_fields.is_empty() {
             committed_revision.map_or(StoredCheckpointState::NeverSeen, |revision| {
@@ -639,21 +937,38 @@ impl CheckpointStore for ValkeyCheckpointStore {
         for (_, value) in &fields {
             invocation.arg(value.as_slice());
         }
-        let reply: Vec<String> = invocation.invoke_async(&mut conn).await?;
+        let mut index_conn = self.partition_conn(partition);
+        let mut index = redis::cmd("SADD");
+        index.arg(partition_index_key(partition)).arg(vehicle.0);
+        let sampled = self.metrics.as_ref().is_some_and(Metrics::sample_probe);
+        let (reply, _): (Vec<String>, i64) = tokio::try_join!(
+            async {
+                let started = Instant::now();
+                let result = invocation.invoke_async(&mut *conn).await;
+                if sampled && let Some(metrics) = &self.metrics {
+                    metrics.commit_stage_seconds(
+                        "valkey_prepare_lua",
+                        started.elapsed().as_secs_f64(),
+                    );
+                }
+                conn.resolve(result).await
+            },
+            async {
+                let started = Instant::now();
+                let result = index.query_async(&mut *index_conn).await;
+                if sampled && let Some(metrics) = &self.metrics {
+                    metrics.commit_stage_seconds(
+                        "valkey_prepare_index",
+                        started.elapsed().as_secs_f64(),
+                    );
+                }
+                index_conn.resolve(result).await
+            },
+        )?;
         let outcome = parse_prepare_reply(&reply)?;
 
-        // Best-effort index: add on `AlreadyPrepared` too so a retry repairs a
-        // missing entry (`SADD` is idempotent).
-        if matches!(
-            outcome,
-            PrepareOutcome::Prepared | PrepareOutcome::AlreadyPrepared
-        ) {
-            let mut index_conn = self.partition_conn(partition);
-            redis::cmd("SADD")
-                .arg(partition_index_key(partition))
-                .arg(vehicle.0)
-                .query_async::<i64>(&mut index_conn)
-                .await?;
+        if matches!(outcome, PrepareOutcome::Conflict { .. }) {
+            self.clean_index_later(partition, vehicle);
         }
         Ok(outcome)
     }
@@ -669,7 +984,8 @@ impl CheckpointStore for ValkeyCheckpointStore {
             .key(checkpoint_key(vehicle))
             .key(prepared_key(vehicle))
             .arg(output.to_string());
-        let reply: Vec<String> = invocation.invoke_async(&mut conn).await?;
+        let result = invocation.invoke_async(&mut *conn).await;
+        let reply: Vec<String> = conn.resolve(result).await?;
         parse_ok_or_mismatch(&reply, output)
     }
 
@@ -690,17 +1006,77 @@ impl CheckpointStore for ValkeyCheckpointStore {
             .key(committed_revision_key(vehicle))
             .arg(output.to_string())
             .arg(ttl_ms);
-        let reply: Vec<String> = invocation.invoke_async(&mut conn).await?;
+        let result = invocation.invoke_async(&mut *conn).await;
+        let reply: Vec<String> = conn.resolve(result).await?;
         parse_promote_reply(&reply, output)?;
 
-        // Best-effort index removal; a leaked entry is repaired by `list_prepared`.
-        let mut index_conn = self.partition_conn(partition);
-        redis::cmd("SREM")
-            .arg(partition_index_key(partition))
-            .arg(vehicle.0)
-            .query_async::<i64>(&mut index_conn)
-            .await?;
+        self.clean_index_later(partition, vehicle);
         Ok(())
+    }
+
+    async fn finish_published(
+        &self,
+        vehicle: VehicleId,
+        partition: u16,
+        output: OutputId,
+    ) -> Result<(), Self::Error> {
+        let ttl_ms = u64::try_from(self.cfg.checkpoint_ttl.as_millis()).unwrap_or(u64::MAX);
+
+        let mut conn = self.vehicle_conn(vehicle);
+        let mut invocation = self.scripts.finish_published.prepare_invoke();
+        invocation
+            .key(checkpoint_key(vehicle))
+            .key(prepared_key(vehicle))
+            .key(committed_revision_key(vehicle))
+            .arg(output.to_string())
+            .arg(ttl_ms);
+        let sampled = self.metrics.as_ref().is_some_and(Metrics::sample_probe);
+        let started = Instant::now();
+        let result = invocation.invoke_async(&mut *conn).await;
+        if sampled && let Some(metrics) = &self.metrics {
+            metrics.commit_stage_seconds("valkey_promote_lua", started.elapsed().as_secs_f64());
+        }
+        let reply: Vec<String> = conn.resolve(result).await?;
+        parse_ok_or_mismatch(&reply, output)?;
+
+        self.clean_index_later(partition, vehicle);
+        Ok(())
+    }
+
+    async fn commit_direct(
+        &self,
+        vehicle: VehicleId,
+        expected_base: Option<Revision>,
+        checkpoint: StoredCheckpoint,
+        epoch: Option<u64>,
+    ) -> Result<DirectOutcome, Self::Error> {
+        let ttl_ms = u64::try_from(self.cfg.checkpoint_ttl.as_millis()).unwrap_or(u64::MAX);
+        let expected = expected_base
+            .map(|revision| revision.0.to_string())
+            .unwrap_or_default();
+
+        let mut conn = self.vehicle_conn(vehicle);
+        let mut invocation = self.scripts.commit_direct.prepare_invoke();
+        invocation
+            .key(checkpoint_key(vehicle))
+            .key(committed_revision_key(vehicle))
+            .key(prepared_key(vehicle))
+            .key(owner_epoch_key(vehicle))
+            .arg(expected)
+            .arg(checkpoint.revision.0)
+            .arg(checkpoint.segment.0)
+            .arg(checkpoint.bytes.as_slice())
+            .arg(ttl_ms)
+            .arg(epoch.map(|epoch| epoch.to_string()).unwrap_or_default());
+        let sampled = self.metrics.as_ref().is_some_and(Metrics::sample_probe);
+        let started = Instant::now();
+        let result = invocation.invoke_async(&mut *conn).await;
+        if sampled && let Some(metrics) = &self.metrics {
+            metrics
+                .commit_stage_seconds("valkey_commit_direct_lua", started.elapsed().as_secs_f64());
+        }
+        let reply: Vec<String> = conn.resolve(result).await?;
+        parse_direct_reply(&reply)
     }
 
     async fn list_prepared(
@@ -709,20 +1085,22 @@ impl CheckpointStore for ValkeyCheckpointStore {
     ) -> Result<Vec<(VehicleId, PreparedCommit)>, Self::Error> {
         let index_key = partition_index_key(partition);
         let mut index_conn = self.partition_conn(partition);
-        let ids: Vec<u64> = redis::cmd("SMEMBERS")
+        let result = redis::cmd("SMEMBERS")
             .arg(&index_key)
-            .query_async(&mut index_conn)
-            .await?;
+            .query_async(&mut *index_conn)
+            .await;
+        let ids: Vec<u64> = index_conn.resolve(result).await?;
 
         let mut prepared = Vec::with_capacity(ids.len());
         let mut stale = Vec::new();
         for id in ids {
             let vehicle = VehicleId(id);
             let mut conn = self.vehicle_conn(vehicle);
-            let fields: HashMap<String, Vec<u8>> = redis::cmd("HGETALL")
+            let result = redis::cmd("HGETALL")
                 .arg(prepared_key(vehicle))
-                .query_async(&mut conn)
-                .await?;
+                .query_async(&mut *conn)
+                .await;
+            let fields: HashMap<String, Vec<u8>> = conn.resolve(result).await?;
             if fields.is_empty() {
                 stale.push(vehicle);
             } else {
@@ -732,11 +1110,12 @@ impl CheckpointStore for ValkeyCheckpointStore {
 
         // Best-effort repair; a failure is reconciled on the next recovery pass.
         for vehicle in stale {
-            let _: Result<i64, redis::RedisError> = redis::cmd("SREM")
+            let result: Result<i64, redis::RedisError> = redis::cmd("SREM")
                 .arg(&index_key)
                 .arg(vehicle.0)
-                .query_async(&mut index_conn)
+                .query_async(&mut *index_conn)
                 .await;
+            let _ = index_conn.resolve(result).await;
         }
 
         // Deterministic order, independent of set iteration.
@@ -744,12 +1123,39 @@ impl CheckpointStore for ValkeyCheckpointStore {
         Ok(prepared)
     }
 
+    async fn acquire_partition(&self, partition: u16) -> Result<u64, Self::Error> {
+        let mut conn = self.partition_conn(partition);
+        let result = redis::cmd("INCR")
+            .arg(epoch_key(partition))
+            .query_async(&mut *conn)
+            .await;
+        conn.resolve(result).await
+    }
+
+    async fn set_frontier_fenced(
+        &self,
+        frontier: PartitionFrontier,
+        epoch: u64,
+    ) -> Result<bool, Self::Error> {
+        let mut conn = self.partition_conn(frontier.partition);
+        let mut invocation = self.scripts.set_frontier_fenced.prepare_invoke();
+        invocation
+            .key(epoch_key(frontier.partition))
+            .key(frontier_key(frontier.partition))
+            .arg(epoch)
+            .arg(frontier.sequence);
+        let result = invocation.invoke_async(&mut *conn).await;
+        let written: i64 = conn.resolve(result).await?;
+        Ok(written == 1)
+    }
+
     async fn frontier(&self, partition: u16) -> Result<Option<PartitionFrontier>, Self::Error> {
         let mut conn = self.partition_conn(partition);
-        let sequence: Option<u64> = redis::cmd("GET")
+        let result = redis::cmd("GET")
             .arg(frontier_key(partition))
-            .query_async(&mut conn)
-            .await?;
+            .query_async(&mut *conn)
+            .await;
+        let sequence: Option<u64> = conn.resolve(result).await?;
         Ok(sequence.map(|sequence| PartitionFrontier {
             partition,
             sequence,
@@ -758,21 +1164,23 @@ impl CheckpointStore for ValkeyCheckpointStore {
 
     async fn set_frontier(&self, frontier: PartitionFrontier) -> Result<(), Self::Error> {
         let mut conn = self.partition_conn(frontier.partition);
-        redis::cmd("SET")
+        let result = redis::cmd("SET")
             .arg(frontier_key(frontier.partition))
             .arg(frontier.sequence)
-            .query_async::<()>(&mut conn)
-            .await?;
+            .query_async::<()>(&mut *conn)
+            .await;
+        conn.resolve(result).await?;
         Ok(())
     }
 
     async fn expire_idle(&self, vehicle: VehicleId) -> Result<(), Self::Error> {
         // Never touch a prepared record: an in-flight commit must survive.
         let mut conn = self.vehicle_conn(vehicle);
-        redis::cmd("DEL")
+        let result = redis::cmd("DEL")
             .arg(checkpoint_key(vehicle))
-            .query_async::<i64>(&mut conn)
-            .await?;
+            .query_async::<i64>(&mut *conn)
+            .await;
+        conn.resolve(result).await?;
         Ok(())
     }
 }
@@ -1048,6 +1456,50 @@ mod tests {
     }
 
     #[test]
+    fn direct_reply_maps_every_status() {
+        assert_eq!(
+            parse_direct_reply(&strings(&["ok"])).unwrap(),
+            DirectOutcome::Committed
+        );
+        assert_eq!(
+            parse_direct_reply(&strings(&["already"])).unwrap(),
+            DirectOutcome::AlreadyCommitted
+        );
+        assert_eq!(
+            parse_direct_reply(&strings(&["conflict", "12"])).unwrap(),
+            DirectOutcome::Conflict {
+                actual: Some(Revision(12))
+            }
+        );
+        assert_eq!(
+            parse_direct_reply(&strings(&["conflict", ""])).unwrap(),
+            DirectOutcome::Conflict { actual: None }
+        );
+        assert_eq!(
+            parse_direct_reply(&strings(&["busy", &OutputId(0xabc).to_string()])).unwrap(),
+            DirectOutcome::Busy {
+                pending: OutputId(0xabc)
+            }
+        );
+        assert_eq!(
+            parse_direct_reply(&strings(&["fenced", "7"])).unwrap(),
+            DirectOutcome::Fenced { owner: 7 }
+        );
+        assert!(parse_direct_reply(&strings(&["wat"])).is_err());
+    }
+
+    #[test]
+    fn commit_direct_lua_references_its_keys_and_argv() {
+        for key in 1..=4 {
+            assert!(COMMIT_DIRECT_LUA.contains(&format!("KEYS[{key}]")));
+        }
+        for arg in 1..=6 {
+            assert!(COMMIT_DIRECT_LUA.contains(&format!("ARGV[{arg}]")));
+        }
+        assert!(COMMIT_DIRECT_LUA.contains("PEXPIRE"));
+    }
+
+    #[test]
     fn promotion_reply_rejects_an_unpublished_record() {
         let output = OutputId(0x1);
         assert!(matches!(
@@ -1109,5 +1561,222 @@ mod tests {
         let cfg = ValkeyConfig::new(fleet(1));
         assert_eq!(cfg.checkpoint_ttl, Duration::from_secs(600));
         assert_eq!(cfg.connect_timeout, Duration::from_secs(5));
+        assert_eq!(cfg.response_timeout, Duration::from_secs(10));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires ROUTERS_TEST_VALKEY_URL and a local disposable Valkey"]
+    async fn checkpoint_store_reconnects_after_server_closes_the_connection() {
+        let url = std::env::var("ROUTERS_TEST_VALKEY_URL").expect("Valkey URL");
+        let endpoint: ValkeyEndpoint = format!("test={url}").parse().expect("endpoint");
+        let store = ValkeyCheckpointStore::connect(ValkeyConfig::new(vec![endpoint]))
+            .await
+            .expect("connect");
+        let mut conn = store.partition_conn(1);
+        let client_id: i64 = redis::cmd("CLIENT")
+            .arg("ID")
+            .query_async(&mut *conn)
+            .await
+            .expect("client ID");
+
+        let client = redis::Client::open(url).expect("client");
+        let mut admin = client
+            .get_multiplexed_async_connection()
+            .await
+            .expect("admin connection");
+        let killed: i64 = redis::cmd("CLIENT")
+            .arg("KILL")
+            .arg("ID")
+            .arg(client_id)
+            .query_async(&mut admin)
+            .await
+            .expect("kill test connection");
+        assert_eq!(killed, 1);
+
+        for _ in 0..20 {
+            if store.frontier(1).await.is_ok() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        panic!("checkpoint store did not recover after the server closed its connection");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires ROUTERS_TEST_VALKEY_URL and a local disposable Valkey"]
+    async fn commit_direct_round_trips_against_valkey() {
+        let url = std::env::var("ROUTERS_TEST_VALKEY_URL").expect("Valkey URL");
+        let endpoint: ValkeyEndpoint = format!("test={url}").parse().expect("endpoint");
+        let store = ValkeyCheckpointStore::connect(ValkeyConfig::new(vec![endpoint]))
+            .await
+            .expect("connect");
+        let vehicle = VehicleId(0xD1_EC7);
+        let stored = |revision: u64| StoredCheckpoint {
+            revision: Revision(revision),
+            segment: SegmentId(3),
+            bytes: vec![0x00, 0xff, revision as u8],
+        };
+        let mut conn = store.vehicle_conn(vehicle);
+        let _: () = redis::cmd("DEL")
+            .arg(checkpoint_key(vehicle))
+            .arg(committed_revision_key(vehicle))
+            .arg(prepared_key(vehicle))
+            .query_async(&mut *conn)
+            .await
+            .expect("clean slate");
+
+        assert_eq!(
+            store
+                .commit_direct(vehicle, None, stored(10), None)
+                .await
+                .unwrap(),
+            DirectOutcome::Committed
+        );
+        assert_eq!(
+            store
+                .commit_direct(vehicle, None, stored(10), None)
+                .await
+                .unwrap(),
+            DirectOutcome::AlreadyCommitted
+        );
+        assert_eq!(
+            store
+                .commit_direct(vehicle, Some(Revision(9)), stored(11), None)
+                .await
+                .unwrap(),
+            DirectOutcome::Conflict {
+                actual: Some(Revision(10))
+            }
+        );
+        assert_eq!(
+            store
+                .commit_direct(vehicle, Some(Revision(10)), stored(11), None)
+                .await
+                .unwrap(),
+            DirectOutcome::Committed
+        );
+        let (checkpoint, prepared) = store.load(vehicle).await.unwrap();
+        assert_eq!(checkpoint, StoredCheckpointState::Present(stored(11)));
+        assert!(prepared.is_none());
+        let ttl: i64 = redis::cmd("PTTL")
+            .arg(checkpoint_key(vehicle))
+            .query_async(&mut *conn)
+            .await
+            .unwrap();
+        assert!(ttl > 0, "the checkpoint carries its idle TTL");
+
+        // A staged record from a staged-mode predecessor blocks direct commits.
+        let staged = PreparedCommit {
+            output: OutputId(0xabc),
+            output_subject: "events.matched.v1.p.1".to_owned(),
+            output_bytes: vec![1],
+            next_checkpoint: vec![2],
+            next_revision: Revision(12),
+            next_segment: SegmentId(3),
+            expected_base: Some(Revision(11)),
+            phase: CommitPhase::Prepared,
+            raw: ObservationId {
+                partition: 1,
+                sequence: 12,
+            },
+        };
+        assert_eq!(
+            store.prepare(vehicle, 1, staged).await.unwrap(),
+            PrepareOutcome::Prepared
+        );
+        assert_eq!(
+            store
+                .commit_direct(vehicle, Some(Revision(11)), stored(13), None)
+                .await
+                .unwrap(),
+            DirectOutcome::Busy {
+                pending: OutputId(0xabc)
+            }
+        );
+        let _: () = redis::cmd("DEL")
+            .arg(checkpoint_key(vehicle))
+            .arg(committed_revision_key(vehicle))
+            .arg(prepared_key(vehicle))
+            .arg(partition_index_key(1))
+            .query_async(&mut *conn)
+            .await
+            .expect("cleanup");
+
+        // Ownership: a newer partition epoch fences the older owner's writes.
+        let partition = 1_000 + (vehicle.0 % 16) as u16;
+        let old = store.acquire_partition(partition).await.unwrap();
+        let new = store.acquire_partition(partition).await.unwrap();
+        assert_eq!(new, old + 1);
+        assert_eq!(
+            store
+                .commit_direct(vehicle, None, stored(20), Some(new))
+                .await
+                .unwrap(),
+            DirectOutcome::Committed
+        );
+        assert_eq!(
+            store
+                .commit_direct(vehicle, Some(Revision(20)), stored(21), Some(old))
+                .await
+                .unwrap(),
+            DirectOutcome::Fenced { owner: new }
+        );
+        let frontier = PartitionFrontier {
+            partition,
+            sequence: 99,
+        };
+        assert!(!store.set_frontier_fenced(frontier, old).await.unwrap());
+        assert!(store.set_frontier_fenced(frontier, new).await.unwrap());
+        assert_eq!(store.frontier(partition).await.unwrap(), Some(frontier));
+        let _: () = redis::cmd("DEL")
+            .arg(checkpoint_key(vehicle))
+            .arg(committed_revision_key(vehicle))
+            .arg(owner_epoch_key(vehicle))
+            .arg(epoch_key(partition))
+            .arg(frontier_key(partition))
+            .query_async(&mut *conn)
+            .await
+            .expect("cleanup");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires ROUTERS_TEST_VALKEY_URL and a local disposable Valkey"]
+    async fn checkpoint_store_replaces_timed_out_socket() {
+        let url = std::env::var("ROUTERS_TEST_VALKEY_URL").expect("Valkey URL");
+        let endpoint: ValkeyEndpoint = format!("test={url}").parse().expect("endpoint");
+        let store = ValkeyCheckpointStore::connect(ValkeyConfig::new(vec![endpoint]))
+            .await
+            .expect("connect");
+        let mut stale = store.partition_conn(1);
+        let old_id: i64 = redis::cmd("CLIENT")
+            .arg("ID")
+            .query_async(&mut *stale)
+            .await
+            .expect("old client ID");
+        let timeout = std::io::Error::new(std::io::ErrorKind::TimedOut, "test timeout");
+        assert!(stale.resolve::<()>(Err(timeout.into())).await.is_err());
+        let mut replacement = store.partition_conn(1);
+        let new_id: i64 = redis::cmd("CLIENT")
+            .arg("ID")
+            .query_async(&mut *replacement)
+            .await
+            .expect("new client ID");
+        assert_ne!(old_id, new_id);
+        store
+            .set_frontier(PartitionFrontier {
+                partition: 1,
+                sequence: 42,
+            })
+            .await
+            .expect("new connection works");
+        assert_eq!(
+            store
+                .frontier(1)
+                .await
+                .expect("frontier read")
+                .unwrap()
+                .sequence,
+            42
+        );
     }
 }

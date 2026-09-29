@@ -91,12 +91,12 @@ impl<E: Entry> Clone for VehicleMaterialized<E> {
 
 impl<E: Entry> Clone for crate::materializer::sink::SegmentState<E> {
     fn clone(&self) -> Self {
-        Self {
-            layers: self.layers.clone(),
-            finalized_through: self.finalized_through,
-            last_revision: self.last_revision,
-            retractions: self.retractions.clone(),
-        }
+        Self::from_parts(
+            self.layers.clone(),
+            self.finalized_through,
+            self.last_revision,
+            self.retractions.clone(),
+        )
     }
 }
 

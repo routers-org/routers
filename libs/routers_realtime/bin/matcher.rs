@@ -1,9 +1,9 @@
 //! The regional matcher worker binary.
 //!
 //! One matcher serves exactly one region: it loads that region's pinned graph
-//! before pulling any job, then bounds end-to-end handlers separately from the
-//! CPU solve stage and publishes each result before acknowledging the job so a
-//! crash never loses work. This binary is only the wiring around the reusable
+//! before receiving any job, then bounds end-to-end handlers separately from
+//! the CPU solve stage. The raw event remains durable until the orchestrator
+//! commits the checkpoint and output. This binary is wiring around the reusable
 //! pieces in [`routers_realtime::matcher`].
 
 // A binary crate has no `extern crate alloc`, so `std::sync::Arc` is the only spelling.
@@ -16,10 +16,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Context as _;
-use axum::Router;
-use axum::extract::State;
-use axum::http::StatusCode;
-use axum::routing::get;
 use clap::Parser;
 use tokio::net::TcpListener;
 use tracing::info;
@@ -27,58 +23,29 @@ use tracing::info;
 use routers_codec::osm::{OsmEdgeMetadata, OsmEntryId};
 use routers_network::Metadata;
 
-use routers_realtime::bus::jetstream::{JetStreamConsumer, JetStreamPublisher};
-use routers_realtime::lifecycle::{
-    Drain, DrainReason, Readiness, ReadinessWatcher, ReadyState, Shutdown,
-};
+use routers_realtime::bus::core::{CorePublisher, CoreSource};
+use routers_realtime::health::health_router;
+use routers_realtime::lifecycle::{Drain, DrainReason, Readiness, ReadyState, Shutdown};
 use routers_realtime::matcher::bootstrap::{BootstrapConfig, bootstrap};
 use routers_realtime::matcher::engine::Engine;
 use routers_realtime::matcher::publish::{PublishConfig, ResultPublisher};
 use routers_realtime::matcher::pull::{PullConfig, PullLoop, RawBytes};
+use routers_realtime::matcher::trip_cache::{DEFAULT_TRIP_CACHE_ENTRIES, TripCache};
 use routers_realtime::matcher::validate::ValidateConfig;
 use routers_realtime::metrics::Metrics;
 use routers_realtime::protocol::ids::{IdError, RegionId};
 use routers_realtime::protocol::result::SolveResult;
 use routers_realtime::secret::SecretUrl;
-use routers_realtime::topology::jobs::{JobsConfig, job_consumer, open_job_stream};
+use routers_realtime::topology::{request_queue_filter, sticky_subject};
 
 /// The network entry type this region's graph is keyed by.
 type E = OsmEntryId;
-
-/// How long a result publish waits for the broker's ack before being retried idempotently.
-const PUBLISH_ACK_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// How long one fetch waits for a batch to fill; short, so a lone job is not held back.
 const FETCH_WAIT: Duration = Duration::from_millis(100);
 
 /// Default address for Kubernetes liveness and readiness probes.
 const DEFAULT_HEALTH_ADDR: &str = "0.0.0.0:9091";
-
-#[derive(Clone)]
-struct HealthState {
-    readiness: ReadinessWatcher,
-}
-
-async fn live() -> StatusCode {
-    StatusCode::OK
-}
-
-async fn ready(State(state): State<HealthState>) -> (StatusCode, &'static str) {
-    let readiness = state.readiness.current();
-    let status = if readiness == ReadyState::Ready {
-        StatusCode::OK
-    } else {
-        StatusCode::SERVICE_UNAVAILABLE
-    };
-    (status, readiness.as_label())
-}
-
-fn health_router(readiness: ReadinessWatcher) -> Router {
-    Router::new()
-        .route("/live", get(live))
-        .route("/ready", get(ready))
-        .with_state(HealthState { readiness })
-}
 
 /// The default end-to-end handler capacity.
 fn default_max_in_flight() -> NonZeroUsize {
@@ -93,6 +60,15 @@ fn default_solve_slots() -> NonZeroUsize {
 /// Validate a `--region` value as a NATS-safe [`RegionId`].
 fn parse_region(value: &str) -> Result<RegionId, IdError> {
     RegionId::new(value)
+}
+
+fn parse_cache_capacity(value: &str) -> Result<usize, String> {
+    let entries = value.parse::<usize>().map_err(|error| error.to_string())?;
+    if entries.is_power_of_two() {
+        Ok(entries)
+    } else {
+        Err("cache entries must be a nonzero power of two".to_owned())
+    }
 }
 
 /// Command-line configuration for a regional matcher.
@@ -152,6 +128,27 @@ struct Args {
     /// Layers carried between solves; older layers are finalised at the cut. 0 carries all.
     #[arg(long, default_value_t = 32)]
     window_layers: usize,
+
+    /// Reachability results retained per matcher process; tune with the pod memory limit.
+    #[arg(long, default_value = "131072", value_parser = parse_cache_capacity)]
+    predicate_cache_entries: usize,
+
+    /// Node-successor lists retained while computing reachability misses.
+    #[arg(long, default_value = "131072", value_parser = parse_cache_capacity)]
+    successor_cache_entries: usize,
+
+    /// Vehicles whose last solved trip is retained so their owner's next request
+    /// can omit it. Each costs roughly one trip (~3–4 KiB); 0 disables sticky
+    /// requests for this replica.
+    #[arg(long, default_value_t = DEFAULT_TRIP_CACHE_ENTRIES, value_parser = parse_trip_cache_capacity)]
+    trip_cache_entries: usize,
+}
+
+fn parse_trip_cache_capacity(value: &str) -> Result<usize, String> {
+    if value == "0" {
+        return Ok(0);
+    }
+    parse_cache_capacity(value)
 }
 
 #[tokio::main]
@@ -202,17 +199,34 @@ async fn main() -> anyhow::Result<()> {
     let client = async_nats::connect(args.nats.connection_url().as_str())
         .await
         .context("could not connect to NATS")?;
-    let context = async_nats::jetstream::new(client);
+    let subject = request_queue_filter(&loaded.region.graph, &loaded.region.id);
+    let group = format!("matcher-{}-{}", loaded.region.graph, loaded.region.id);
+    let subscription = client
+        .queue_subscribe(subject.clone(), group.clone())
+        .await
+        .context("could not join regional solve queue")?;
+    let mut consumer =
+        CoreSource::<RawBytes>::new(subscription).with_queue(client.clone(), subject, group);
 
-    // Read raw job bytes so the loop can size-gate them before decode.
-    let jobs = JobsConfig::default();
-    let stream = open_job_stream(&context, &loaded.region.id, &jobs)
+    // A replica-unique subject outside the queue group: owners send a vehicle's
+    // next request here, omitting the trip this replica already holds.
+    let sticky = if args.trip_cache_entries > 0 {
+        let inbox = client.new_inbox();
+        let replica = inbox.rsplit('.').next().unwrap_or(&inbox).to_owned();
+        let direct = sticky_subject(&loaded.region.graph, &loaded.region.id, &replica);
+        let direct_subscription = client
+            .subscribe(direct.clone())
+            .await
+            .context("could not subscribe to the sticky request subject")?;
+        consumer = consumer.with_direct(client.clone(), direct.clone(), direct_subscription);
+        Some(direct)
+    } else {
+        None
+    };
+    client
+        .flush()
         .await
-        .context("could not open the region job stream")?;
-    let consumer = job_consumer(&stream, &loaded.region.graph, &loaded.region.id, &jobs)
-        .await
-        .context("could not create the job consumer")?;
-    let consumer = JetStreamConsumer::<RawBytes>::new(consumer);
+        .context("could not activate solve subscription")?;
 
     let engine = Arc::new(
         Engine::new(
@@ -221,13 +235,19 @@ async fn main() -> anyhow::Result<()> {
             args.search_distance,
         )
         .with_max_candidates(Some(args.max_candidates).filter(|k| *k > 0))
-        .with_window_layers(Some(args.window_layers).filter(|w| *w > 0)),
+        .with_window_layers(Some(args.window_layers).filter(|w| *w > 0))
+        .with_cache_capacities(args.predicate_cache_entries, args.successor_cache_entries),
     );
 
-    let publisher = ResultPublisher::new(
-        JetStreamPublisher::<SolveResult<E>>::new(context.clone(), PUBLISH_ACK_TIMEOUT),
+    let mut publisher = ResultPublisher::new(
+        CorePublisher::<SolveResult<E>>::new(client),
         PublishConfig::default(),
     );
+    if let Some(direct) = &sticky {
+        publisher = publisher
+            .with_sticky_subject(direct)
+            .context("sticky subject is not a valid header value")?;
+    }
 
     let cfg = PullConfig {
         max_in_flight: args.max_in_flight,
@@ -246,10 +266,14 @@ async fn main() -> anyhow::Result<()> {
         graph = %loaded.region.graph,
         max_in_flight = args.max_in_flight.get(),
         solve_slots = args.solve_slots.get(),
+        predicate_cache_entries = args.predicate_cache_entries,
+        successor_cache_entries = args.successor_cache_entries,
+        trip_cache_entries = args.trip_cache_entries,
+        sticky = sticky.as_deref().unwrap_or("disabled"),
         "matcher ready; pulling jobs"
     );
 
-    let pull = PullLoop::new(
+    let mut pull = PullLoop::new(
         engine,
         consumer,
         publisher,
@@ -260,6 +284,9 @@ async fn main() -> anyhow::Result<()> {
         Drain::new(),
     )
     .with_metrics(metrics);
+    if sticky.is_some() {
+        pull = pull.with_trip_cache(Arc::new(TripCache::new(args.trip_cache_entries)));
+    }
 
     let stats = pull.run().await;
     info!(?stats, "matcher drained; exiting");
@@ -308,6 +335,26 @@ mod tests {
         );
         assert_eq!(args.health_addr, DEFAULT_HEALTH_ADDR.parse().unwrap());
         assert!(args.search_distance.is_none());
+        assert_eq!(args.predicate_cache_entries, 131_072);
+        assert_eq!(args.successor_cache_entries, 131_072);
+        assert_eq!(args.trip_cache_entries, DEFAULT_TRIP_CACHE_ENTRIES);
+    }
+
+    #[test]
+    fn trip_cache_entries_accept_zero_to_disable() {
+        let mut argv = base();
+        argv.extend(["--trip-cache-entries", "0"]);
+        assert_eq!(Args::parse_from(argv).trip_cache_entries, 0);
+        let mut argv = base();
+        argv.extend(["--trip-cache-entries", "1000"]);
+        assert!(Args::try_parse_from(argv).is_err());
+    }
+
+    #[test]
+    fn cache_entries_reject_zero_and_rounded_bounds() {
+        assert!(parse_cache_capacity("0").is_err());
+        assert!(parse_cache_capacity("12000").is_err());
+        assert_eq!(parse_cache_capacity("65536").unwrap(), 65_536);
     }
 
     #[test]
@@ -365,19 +412,5 @@ mod tests {
     fn arg_definitions_are_valid() {
         use clap::CommandFactory;
         Args::command().debug_assert();
-    }
-
-    #[tokio::test]
-    async fn readiness_endpoint_tracks_the_state_machine() {
-        let (setter, watcher) = Readiness::new();
-        let state = State(HealthState { readiness: watcher });
-
-        assert_eq!(
-            ready(state.clone()).await,
-            (StatusCode::SERVICE_UNAVAILABLE, "starting")
-        );
-
-        setter.set(ReadyState::Ready);
-        assert_eq!(ready(state).await, (StatusCode::OK, "ready"));
     }
 }
