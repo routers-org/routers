@@ -124,6 +124,26 @@ where
 impl<V, N, Meta> LockedMap<V, N, Meta>
 where
     LockedMap<V, N, Meta>: Calculable<N, V>,
+    V: Debug + Send + Sync + 'static,
+    N: Network,
+    Meta: Default + Debug,
+{
+    /// Construct this cache with a power-of-two entry bound.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `capacity` is zero or not a power of two.
+    pub fn with_cache_capacity(capacity: usize) -> Self {
+        LockedMap(Arc::new(CacheMap::with_capacity_and_metadata(
+            capacity,
+            Meta::default(),
+        )))
+    }
+}
+
+impl<V, N, Meta> LockedMap<V, N, Meta>
+where
+    LockedMap<V, N, Meta>: Calculable<N, V>,
     N: Network,
     V: Debug + Send + Sync + 'static,
     Meta: Debug,
@@ -161,12 +181,16 @@ where
     /// The only way to build one, so no construction site can quietly
     /// reintroduce an unbounded map — which is how the bound was lost before.
     pub(crate) fn with_metadata(metadata: Meta) -> Self {
+        Self::with_capacity_and_metadata(DEFAULT_CACHE_CAPACITY, metadata)
+    }
+
+    pub(crate) fn with_capacity_and_metadata(capacity: usize, metadata: Meta) -> Self {
+        assert!(
+            capacity.is_power_of_two(),
+            "cache capacity must be a nonzero power of two"
+        );
         Self {
-            map: Backing::with_capacity_and_hasher(
-                0,
-                DEFAULT_CACHE_CAPACITY,
-                FxBuildHasher::default(),
-            ),
+            map: Backing::with_capacity_and_hasher(0, capacity, FxBuildHasher::default()),
             metadata,
         }
     }
@@ -336,6 +360,34 @@ mod predicate {
         LockedMap<Predicates<<N as DataPlane>::Entry>, N, PredicateMetadata<N>>;
 
     impl<N: Network> PredicateCache<N> {
+        /// An empty reachability cache with an explicit entry bound and the
+        /// default reach distance. The nested successor cache retains its
+        /// independent default bound.
+        ///
+        /// # Panics
+        ///
+        /// Panics if `capacity` is zero or not a power of two.
+        pub fn with_capacity(capacity: usize) -> Self {
+            Self::with_capacities(capacity, DEFAULT_CACHE_CAPACITY)
+        }
+
+        /// Set independent entry bounds for reachability results and the
+        /// successor lists used while calculating a cache miss.
+        ///
+        /// # Panics
+        ///
+        /// Panics if either bound is zero or not a power of two.
+        pub fn with_capacities(predicates: usize, successors: usize) -> Self {
+            LockedMap(Arc::new(CacheMap::with_capacity_and_metadata(
+                predicates,
+                PredicateMetadata {
+                    successors: SuccessorsCache::with_cache_capacity(successors),
+                    reach: DEFAULT_REACH_DISTANCE,
+                    bound_runtime: OnceLock::new(),
+                },
+            )))
+        }
+
         /// An empty cache whose entries reach `reach_distance`.
         ///
         /// Raise it for sparse traces — long gaps between positions, or
@@ -448,6 +500,21 @@ mod tests {
         // than it advertises; `DEFAULT_CACHE_CAPACITY` has a const assert for
         // that, and this confirms the constructor honours it.
         assert_eq!(cache.0.map.capacity(), DEFAULT_CACHE_CAPACITY);
+    }
+
+    #[test]
+    fn predicate_cache_accepts_an_explicit_power_of_two_bound() {
+        let cache = PredicateCache::<MockNetwork>::with_capacity(16_384);
+        for key in 0..32_768 {
+            let _ = cache.0.map.put(MockEntryId(key), Arc::default());
+        }
+        assert_eq!(cache.0.map.capacity(), 16_384);
+    }
+
+    #[test]
+    #[should_panic(expected = "cache capacity must be a nonzero power of two")]
+    fn predicate_cache_rejects_a_rounded_capacity() {
+        let _ = PredicateCache::<MockNetwork>::with_capacity(12_000);
     }
 
     /// A cache reports the reach it was built at, whichever unit named it —
