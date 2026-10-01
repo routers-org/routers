@@ -71,7 +71,9 @@ pub use routers_realtime::protocol::output::{
     CommittedOutput, OutputKind, ResetReason, TerminalReason,
 };
 pub use routers_realtime::protocol::result::SolveOutcome;
-pub use routers_realtime::store::checkpoint::{CheckpointStore, MemoryCheckpointStore, Op};
+pub use routers_realtime::store::checkpoint::{
+    CheckpointStore, DirectOutcome, MemoryCheckpointStore, Op,
+};
 
 /// The network entry type the fleet solves against — the crate's test mock.
 pub type E = MockEntryId;

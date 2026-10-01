@@ -371,6 +371,104 @@ async fn a_newer_owner_fences_the_old_one() {
     }
 }
 
+/// An older owner's save can land after the newer owner restored the vehicle
+/// but before the newer owner first saves it. The newer owner's save then
+/// conflicts; still holding the newest epoch, it adopts the stored revision as
+/// its base, and finishes exactly as one owner would.
+#[tokio::test(start_paused = true)]
+async fn a_late_save_from_an_older_owner_is_adopted() {
+    let policy = CheckpointPolicy {
+        every: 4,
+        interval: Duration::from_secs(3_600),
+        in_flight: 8,
+    };
+    let vehicle = 1u64;
+    let points = road_points();
+
+    // One owner throughout: the expected history, and the checkpoint the
+    // older owner holds after three events.
+    let reference = Fleet::bent_road()
+        .with_commit_mode(FleetCommitMode::Deferred)
+        .with_checkpoint_policy(policy);
+    let partition = reference.partition_of(vehicle);
+    let matcher = reference.spawn_matcher(MatcherBehaviour::engine());
+    let owner = reference.spawn_orchestrator(partition);
+    let mut last = None;
+    for (i, &p) in points.iter().enumerate() {
+        last = Some(reference.ingest(vehicle, obs_ts(i), p).await);
+        if i == 2 {
+            reference.settle().await;
+        }
+    }
+    reference.settle().await;
+    let expected_stats = owner.stop().await;
+    matcher.stop().await;
+    let expected_outputs: Vec<String> = published_outputs(&reference.bus, partition)
+        .iter()
+        .map(|o| format!("{:?} {:?}", o.revision, o.kind))
+        .collect();
+
+    let early = Fleet::bent_road()
+        .with_commit_mode(FleetCommitMode::Direct)
+        .with_checkpoint_policy(policy);
+    let matcher = early.spawn_matcher(MatcherBehaviour::engine());
+    let owner = early.spawn_orchestrator(partition);
+    for (i, &p) in points.iter().enumerate().take(3) {
+        early.ingest(vehicle, obs_ts(i), p).await;
+    }
+    early.settle().await;
+    owner.stop().await;
+    matcher.stop().await;
+    let late_save = early.store.snapshot().checkpoints[&VehicleId(vehicle)].clone();
+
+    // The takeover: A commits three events without saving, B takes over and
+    // restores the vehicle, then A's save of those three lands.
+    let fleet = Fleet::bent_road()
+        .with_commit_mode(FleetCommitMode::Deferred)
+        .with_checkpoint_policy(policy);
+    let matcher = fleet.spawn_matcher(MatcherBehaviour::engine());
+    let first = fleet.spawn_orchestrator(partition);
+    for (i, &p) in points.iter().enumerate().take(3) {
+        fleet.ingest(vehicle, obs_ts(i), p).await;
+    }
+    advance_until(|| published_outputs(&fleet.bus, partition).len() >= 3).await;
+    let second = fleet.spawn_orchestrator(partition);
+    advance_until(|| first.is_finished()).await;
+    first.join().await.expect_err("the older owner stops");
+
+    let outcome = fleet
+        .store
+        .commit_direct(VehicleId(vehicle), None, late_save, Some(1))
+        .await
+        .unwrap();
+    assert_eq!(outcome, DirectOutcome::Committed, "the late save lands");
+
+    for (i, &p) in points.iter().enumerate().skip(3) {
+        fleet.ingest(vehicle, obs_ts(i), p).await;
+    }
+    fleet.settle().await;
+    let stats = second.stop().await;
+    matcher.stop().await;
+
+    let checkpoint = fleet
+        .store
+        .load(VehicleId(vehicle))
+        .await
+        .unwrap()
+        .0
+        .unwrap();
+    assert_eq!(checkpoint.revision, Revision(last.unwrap().sequence));
+    assert_eq!(
+        stats.frontier, expected_stats.frontier,
+        "the frontier advances"
+    );
+    let outputs: Vec<String> = published_outputs(&fleet.bus, partition)
+        .iter()
+        .map(|o| format!("{:?} {:?}", o.revision, o.kind))
+        .collect();
+    assert_eq!(outputs, expected_outputs);
+}
+
 /// A crash before publish leaves an unpublished prepared record; recovery
 /// publishes then promotes it.
 #[tokio::test(start_paused = true)]

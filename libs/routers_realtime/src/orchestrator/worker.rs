@@ -480,7 +480,7 @@ where
                 },
                 completion = self.persists.next(), if !self.persists.is_empty() => {
                     let started = Instant::now();
-                    self.finish_persist(completion.expect("guarded by non-empty check"));
+                    self.finish_persist(completion.expect("guarded by non-empty check")).await;
                     self.metrics.worker_turn_seconds("persist", started.elapsed().as_secs_f64());
                 },
                 _ = tick.tick() => {
@@ -511,7 +511,7 @@ where
             else {
                 break;
             };
-            self.finish_persist(completion);
+            self.finish_persist(completion).await;
         }
         let _ = self.drain.quiesce(Duration::ZERO).await;
         let frontier = PartitionFrontier {
@@ -1329,7 +1329,7 @@ where
 
     /// Complete the frontier over a persisted vehicle's commits, or keep them
     /// deferred and retry later.
-    fn finish_persist(&mut self, completion: PersistCompletion<S::Error>) {
+    async fn finish_persist(&mut self, completion: PersistCompletion<S::Error>) {
         let PersistCompletion {
             vehicle,
             revision,
@@ -1342,17 +1342,11 @@ where
             "checkpoint_persist",
             now.saturating_duration_since(started).as_secs_f64(),
         );
+        let mut adopted = false;
         let persisted = match result {
             Ok(DirectOutcome::Committed | DirectOutcome::AlreadyCommitted) => true,
             Ok(DirectOutcome::Conflict { actual }) => {
-                // Another writer moved this vehicle: ownership overlapped. Keep
-                // the frontier behind these commits so a restart replays them.
-                error!(
-                    vehicle = vehicle.0,
-                    ?actual,
-                    ?revision,
-                    "deferred checkpoint lost its base; frontier held for replay"
-                );
+                adopted = self.adopt_stored_base(vehicle, revision, actual, now).await;
                 false
             }
             Ok(DirectOutcome::Busy { pending }) => {
@@ -1386,14 +1380,80 @@ where
         };
         dirty.in_flight = false;
         if !persisted {
-            // Retain the commits, oldest first, and back off before retrying.
+            // Retain the commits, oldest first, and back off before retrying,
+            // unless the base was just corrected and the retry should succeed.
             let newer = core::mem::replace(&mut dirty.sequences, sequences);
             dirty.sequences.extend(newer);
-            dirty.retry_at = Some(now + self.cfg.blocked_retry);
+            dirty.retry_at = Some(if adopted {
+                now
+            } else {
+                now + self.cfg.blocked_retry
+            });
         } else if dirty.sequences.is_empty() {
             self.dirty.remove(&vehicle);
         } else if dirty.sequences.len() >= self.cfg.checkpoint.every {
             self.start_persist(vehicle, now, false);
+        }
+    }
+
+    /// Resolve a deferred persist that found `actual` stored for `vehicle`
+    /// instead of the base this owner expected. Returns whether the vehicle's
+    /// base now matches the store.
+    ///
+    /// An earlier owner can save a vehicle after this owner restored it but
+    /// before this owner first saves it. Revisions are sequences of the one
+    /// partition log and solves are deterministic, so a stored revision at or
+    /// behind ours is a point this owner's history has passed: once a fenced
+    /// write confirms this owner still holds the newest epoch, it adopts that
+    /// revision as the base. A stored revision ahead of ours is left alone; a
+    /// later persist meets it once this owner has replayed past it.
+    async fn adopt_stored_base(
+        &mut self,
+        vehicle: VehicleId,
+        revision: Revision,
+        actual: Option<Revision>,
+        now: Instant,
+    ) -> bool {
+        let behind = actual.is_none_or(|stored| stored <= revision);
+        if self.epoch.is_none() || !behind {
+            warn!(
+                vehicle = vehicle.0,
+                ?actual,
+                ?revision,
+                "deferred checkpoint lost its base; frontier held for replay"
+            );
+            return false;
+        }
+        let frontier = PartitionFrontier {
+            partition: self.cfg.partition,
+            sequence: self.tracker.frontier(),
+        };
+        match self.write_frontier(frontier).await {
+            Ok(true) => {
+                self.last_heartbeat = now;
+                self.tracker.persisted(frontier.sequence, now);
+                warn!(
+                    vehicle = vehicle.0,
+                    ?actual,
+                    ?revision,
+                    "an earlier owner saved this vehicle; adopting its revision as the base"
+                );
+                self.persisted_base.insert(vehicle, actual);
+                true
+            }
+            Ok(false) => {
+                error!(
+                    partition = self.cfg.partition,
+                    epoch = ?self.epoch,
+                    "frontier write fenced: a newer owner holds the partition"
+                );
+                self.fenced = Some(0);
+                false
+            }
+            Err(error) => {
+                warn!(vehicle = vehicle.0, %error, "ownership check failed; will retry the persist");
+                false
+            }
         }
     }
 
