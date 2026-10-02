@@ -6,6 +6,7 @@ use crate::error::TileError;
 use crate::proto::Example;
 use crate::query::{DatedRange, MVTTile, QueryParams, Range};
 use crate::{Fragment, Query, Repo, TileQuery, layer, tile};
+use alloc::sync::Arc;
 use axum::extract::{Path, State};
 use bigtable_rs::bigtable::RowCell;
 use bigtable_rs::google::bigtable::v2::row_range::{EndKey, StartKey};
@@ -18,7 +19,6 @@ use routers_geo::TileItem;
 use routers_geo::coord::point::FeatureKey;
 use schema::proto::mvt::{Tile, Value};
 use serde::Deserialize;
-use std::sync::Arc;
 use strum::{EnumCount, EnumIter, EnumProperty, VariantArray};
 use tracing::{Level, event};
 

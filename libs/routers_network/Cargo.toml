@@ -11,8 +11,6 @@ geo-index = { workspace = true }
 serde = { workspace = true }
 tracing = { workspace = true, optional = true }
 
-num-traits = "0.2"
-
 rustc-hash = { workspace = true, optional = true }
 petgraph = { workspace = true, optional = true }
 

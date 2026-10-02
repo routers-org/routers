@@ -6,9 +6,9 @@
 //! and outgoing network shards.
 //!
 
+use alloc::sync::Arc;
 use core::fmt::Debug;
 use rustc_hash::FxHashMap;
-use std::sync::Arc;
 
 use geo::Point;
 use routers_network::{Entry, Metadata};

@@ -11,7 +11,8 @@
 
 mod common;
 
-use std::sync::Arc;
+extern crate alloc;
+use alloc::sync::Arc;
 
 use common::MemSource;
 use geo::Point;

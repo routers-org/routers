@@ -27,8 +27,6 @@ geo = { workspace = true, features = ["serde"] }
 geo-index = { workspace = true, optional = true }
 s2 = { workspace = true, optional = true }
 
-time-tz = { workspace = true }
-
 [build-dependencies]
 routers_tz_types = { workspace = true }
 

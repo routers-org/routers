@@ -62,7 +62,6 @@ rustc-hash = "2.1.1"
 log = { version = "0.4.28" }
 test-log = { version = "0.2.18", features = ["log"] }
 anyhow = "1.0.102"
-quick-error = "2.0.1"
 env_logger = "0.11"
 
 # ConnectRPC
@@ -99,7 +98,6 @@ geojson = { version = "0.24.2" }
 s2 = { version = "0.0.13" }
 wkt = { version = "0.14.0" }
 
-
 # Tracing
 tracing = { version = "0.1.41" }
 tracing-subscriber = { version = "0.3.20", features = [
@@ -133,7 +131,6 @@ opentelemetry-otlp = { version = "0.29.0", default-features = false, features = 
     # The OTLP metrics exporter (T30), paired with the SDK's `metrics` feature.
     "metrics",
 ] }
-opentelemetry-stdout = { version = "0.29.0", features = ["trace", "logs", "metrics"] }
 
 # Benchmarking
 criterion = { version = "3.0.5", features = [
@@ -156,7 +153,6 @@ thiserror = { version = "2.0.12" }
 # Schema
 bytes = { version = "1.10.1", features = ["default", "serde"] }
 prost = "0.14.1"
-prost-types = "0.14.1"
 prost-build = "0.14.1"
 
 # === Profiles ===
@@ -201,8 +197,6 @@ routers_network = { workspace = true }
 routers_shard = { workspace = true }
 routers_transition = { workspace = true }
 routers_codec = { workspace = true }
-
-serde = { workspace = true }
 
 [dev-dependencies]
 wkt = { workspace = true }

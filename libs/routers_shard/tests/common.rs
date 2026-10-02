@@ -35,7 +35,7 @@ impl MemSource {
         // which edge's metadata a shard kept.
         let mut lanes = (1u8..=u8::MAX).cycle();
         let mut tagged = |from, to| {
-            let lane_count = std::num::NonZeroU8::new(lanes.next().unwrap());
+            let lane_count = core::num::NonZeroU8::new(lanes.next().unwrap());
             (
                 from,
                 to,

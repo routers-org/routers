@@ -3,6 +3,8 @@
 
 mod common;
 
+extern crate alloc;
+
 use common::MemSource;
 use geo::Point;
 use routers_codec::osm::{OsmEdgeMetadata, OsmEntryId};
@@ -66,7 +68,7 @@ async fn second_load_hits_the_cache() {
     let _ = std::fs::remove_dir_all(&dir);
     let b = loader.load(&owned).await.expect("second");
     assert!(
-        std::sync::Arc::ptr_eq(&a, &b),
+        alloc::sync::Arc::ptr_eq(&a, &b),
         "expected same Arc on cache hit"
     );
 }

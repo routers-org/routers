@@ -20,6 +20,8 @@
 // `unsafe_code` by default, so allow it for this binding crate only.
 #![allow(unsafe_code)]
 
+extern crate alloc;
+
 pub mod engine;
 
 #[cfg(target_arch = "wasm32")]

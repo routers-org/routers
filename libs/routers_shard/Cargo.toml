@@ -17,7 +17,6 @@ log = { workspace = true }
 
 # Error Handling
 thiserror = { workspace = true }
-anyhow = { workspace = true }
 
 # Geography
 geo = { workspace = true }
@@ -28,7 +27,6 @@ s2 = { workspace = true, optional = true }
 # Utilities
 rustc-hash = { workspace = true }
 rayon = { workspace = true, optional = true }
-itertools = { workspace = true }
 
 # CLI, for the `generate-shards` binary only (native).
 clap = { workspace = true, features = ["derive", "env"], optional = true }
@@ -80,10 +78,8 @@ web = ["dep:wasm-bindgen", "dep:wasm-bindgen-futures", "dep:js-sys", "dep:web-sy
 cli = ["dep:clap", "dep:env_logger"]
 
 [dev-dependencies]
-routers_fixtures = { workspace = true }
 routers_codec = { path = "../routers_codec", version = "0.2.2", features = ["osm"] }
 
-wkt = { workspace = true }
 tokio = { workspace = true }
 
 [[bin]]

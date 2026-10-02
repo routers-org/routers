@@ -1,7 +1,5 @@
 //! Single-pass shard production.
 
-extern crate alloc;
-
 use geo::{Point, Rect};
 use log::debug;
 use rustc_hash::{FxHashMap, FxHashSet};

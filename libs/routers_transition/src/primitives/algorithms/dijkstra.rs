@@ -3,7 +3,7 @@ use core::cmp::Ordering;
 use core::hash::{BuildHasherDefault, Hash};
 use indexmap::IndexMap;
 use indexmap::map::Entry;
-use pathfinding::num_traits::Zero;
+use num_traits::Zero;
 use rustc_hash::{FxHashSet, FxHasher};
 
 use crate::primitives::WeightAndDistance;

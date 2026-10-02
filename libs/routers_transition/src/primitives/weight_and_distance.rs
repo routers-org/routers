@@ -1,6 +1,6 @@
 use core::cmp::Ordering;
 use core::ops::Add;
-use pathfinding::num_traits::Zero;
+use num_traits::Zero;
 use routers_network::edge::Weight;
 use uom::si::f64::Length;
 use uom::si::length::centimeter;

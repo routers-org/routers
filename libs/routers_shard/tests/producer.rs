@@ -17,7 +17,7 @@ type Net<S> = ShardedNetwork<OsmEntryId, OsmEdgeMetadata, S>;
 type Fingerprint = (
     BTreeSet<OsmEntryId>,
     BTreeSet<(OsmEntryId, OsmEntryId, u32)>,
-    BTreeMap<OsmEntryId, Option<std::num::NonZeroU8>>,
+    BTreeMap<OsmEntryId, Option<core::num::NonZeroU8>>,
 );
 
 /// Order-independent view of a shard's contents.

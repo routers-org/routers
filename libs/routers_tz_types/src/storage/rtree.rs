@@ -57,7 +57,7 @@ impl EncodableRTreeStorageBackend {
         Self::build_from_tzs(timezones).expect("failed to construct tree from timezones")
     }
 
-    fn build_from_tzs(tzs: &[TimezoneBuild]) -> Result<Self, Box<dyn std::error::Error>> {
+    fn build_from_tzs(tzs: &[TimezoneBuild]) -> Result<Self, Box<dyn core::error::Error>> {
         let mut builder = RTreeBuilder::new(tzs.len() as _);
         let mut names = Vec::new();
 

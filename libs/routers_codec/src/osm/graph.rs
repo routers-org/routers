@@ -201,7 +201,7 @@ impl OsmNetwork {
     /// Construct an `OsmNetwork` from a `.osm.pbf` file. Uses memory-mapped
     /// IO, multithreaded parsing and rayon; not available on WASM.
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn from_pbf(filename: &PathBuf) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn from_pbf(filename: &PathBuf) -> Result<Self, Box<dyn core::error::Error>> {
         let mut start_time = Instant::now();
         let fixed_start_time = Instant::now();
 
