@@ -14,7 +14,7 @@ buffa-descriptor = { workspace = true }
 
 connectrpc = { workspace = true, optional = true }
 
-serde = { workspace = true }
+serde = { workspace = true, features = ["std"] }
 serde_json = { workspace = true }
 http-body = { workspace = true, optional = true }
 

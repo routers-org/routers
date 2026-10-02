@@ -1,4 +1,8 @@
 #[cfg(feature = "serde")]
+use alloc::format;
+use alloc::vec;
+use alloc::vec::Vec;
+#[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
 use crate::trellis::INF_W;

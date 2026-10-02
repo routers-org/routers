@@ -16,7 +16,7 @@ routers_codec = { path = "../routers_codec", version = "0.2.2", default-features
 log = { workspace = true }
 
 # Error Handling
-thiserror = { workspace = true }
+thiserror = { workspace = true, features = ["std"] }
 
 # Geography
 geo = { workspace = true }
@@ -36,7 +36,7 @@ sha2 = "0.10"
 serde_json = { workspace = true }
 
 # Serialization
-serde = { workspace = true, features = ["derive"] }
+serde = { workspace = true, features = ["derive", "std"] }
 postcard = { workspace = true }
 
 # `web_time::Instant` is a `std::time::Instant` drop-in; std on every target

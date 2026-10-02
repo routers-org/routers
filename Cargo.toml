@@ -99,7 +99,7 @@ s2 = { version = "0.0.13" }
 wkt = { version = "0.14.0" }
 
 # Tracing
-tracing = { version = "0.1.41" }
+tracing = { version = "0.1.41", default-features = false, features = ["attributes"] }
 tracing-subscriber = { version = "0.3.20", features = [
     "tracing-log",
     "fmt",
@@ -141,14 +141,14 @@ ctor = "0.4.2"
 
 # Utilities
 strum = { version = "0.27.1", features = ["phf", "derive"] }
-serde = { version = "1.0.228", features = [] }
+serde = { version = "1.0.228", default-features = false }
 postcard = { version = "1.1.3", features = ["alloc"] }
 clap = { version = "4.6.1", features = [] }
 url = { version = "2.5", features = [] }
 lazy_static = { version = "1.5.0" }
 ouroboros = { version = "0.18.5" }
 time-tz = { version = "2.0.0" }
-thiserror = { version = "2.0.12" }
+thiserror = { version = "2.0.12", default-features = false }
 
 # Schema
 bytes = { version = "1.10.1", features = ["default", "serde"] }

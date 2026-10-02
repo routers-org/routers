@@ -36,7 +36,7 @@ s2 = { workspace = true }
 
 time-tz = { workspace = true }
 
-serde = { workspace = true }
+serde = { workspace = true, features = ["std"] }
 postcard = { workspace = true }
 rayon = { workspace = true }
 

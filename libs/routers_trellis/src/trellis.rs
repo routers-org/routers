@@ -2,6 +2,13 @@ use crate::{
     transition::Transition,
     types::{LayerId, NodeId},
 };
+#[cfg(feature = "serde")]
+use alloc::{
+    borrow::ToOwned,
+    format,
+    string::{String, ToString},
+};
+use alloc::{vec, vec::Vec};
 use thiserror::Error;
 
 #[cfg(feature = "serde")]
