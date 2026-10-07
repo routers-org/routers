@@ -82,7 +82,6 @@ jobs:
         run: >
           cargo semver-checks check-release --workspace
           --default-features
-          --release-type minor
 
       - name: 📦 Verify packages against published dependencies
         if: github.event_name == 'pull_request'

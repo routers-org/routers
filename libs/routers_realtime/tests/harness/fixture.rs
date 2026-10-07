@@ -34,29 +34,46 @@ use routers_realtime::matcher::pull::RawBytes;
 use routers_realtime::materializer::consumer::{self as materializer, Stats as MaterializerStats};
 use routers_realtime::materializer::memory::MemorySink;
 use routers_realtime::orchestrator::admission::Admission;
-use routers_realtime::orchestrator::commit::{CommitConfig, Committer};
+use routers_realtime::orchestrator::commit::{CommitConfig, CommitMode, Committer};
 use routers_realtime::orchestrator::dispatch::Dispatcher;
+use routers_realtime::orchestrator::dispatch::REPLY_HEADER;
 use routers_realtime::orchestrator::recovery::recover_partition;
 use routers_realtime::orchestrator::scheduler::SchedulerConfig;
+pub use routers_realtime::orchestrator::worker::CheckpointPolicy;
 use routers_realtime::orchestrator::worker::{PartitionWorker, WorkerConfig};
 use routers_realtime::partition::partition_of;
 use routers_realtime::protocol::ids::headers;
 use routers_realtime::protocol::ids::{GraphVersion, RegionId, SCHEMA_VERSION};
-use routers_realtime::protocol::job::{JobIdentity, SolveJob};
+use routers_realtime::protocol::job::{JobIdentity, SolveJob, SolveRequest};
 use routers_realtime::protocol::result::SolveResult;
 use routers_realtime::region::catalog::Catalog;
 use routers_realtime::store::checkpoint::{CommitPhase, PreparedCommit};
-use routers_realtime::topology::{output_subject, raw_subject, result_subject};
+use routers_realtime::topology::{output_subject, raw_subject, reply_subject};
+
+/// The inbox every harness orchestrator's answers return to.
+pub const FLEET_REPLY: &str = "_INBOX.fleet";
+
+/// Every solve request any harness orchestrator sent.
+pub const REQUESTS: &str = "solve.req.v1.>";
+
+/// The subject `partition`'s answers arrive on.
+#[must_use]
+pub fn result_subject(partition: u16) -> String {
+    reply_subject(FLEET_REPLY, partition)
+}
 
 pub use routers_realtime::event::VehicleId;
 pub use routers_realtime::orchestrator::admission::AdmissionConfig;
+pub use routers_realtime::orchestrator::commit::CommitMode as FleetCommitMode;
 pub use routers_realtime::orchestrator::worker::WorkerStats;
 pub use routers_realtime::protocol::ids::{ObservationId, Revision, SegmentId};
 pub use routers_realtime::protocol::output::{
     CommittedOutput, OutputKind, ResetReason, TerminalReason,
 };
 pub use routers_realtime::protocol::result::SolveOutcome;
-pub use routers_realtime::store::checkpoint::{CheckpointStore, MemoryCheckpointStore, Op};
+pub use routers_realtime::store::checkpoint::{
+    CheckpointStore, DirectOutcome, MemoryCheckpointStore, Op,
+};
 
 /// The network entry type the fleet solves against — the crate's test mock.
 pub type E = MockEntryId;
@@ -65,7 +82,7 @@ pub type E = MockEntryId;
 pub type Worker = PartitionWorker<
     E,
     MemoryCheckpointStore,
-    MemoryPublisher<SolveJob<E>>,
+    MemoryPublisher<SolveRequest<E>>,
     MemoryPublisher<CommittedOutput<E>>,
     MemorySource<RawBytes>,
     MemorySource<SolveResult<E>>,
@@ -164,6 +181,7 @@ pub fn solved_with_layer(timestamp: i64) -> SolveOutcome<E> {
         },
         trip: Trip::new(),
         converged_through: None,
+        trip_digest: None,
     }
 }
 
@@ -178,6 +196,7 @@ pub fn empty_solved() -> SolveOutcome<E> {
         },
         trip: Trip::new(),
         converged_through: None,
+        trip_digest: None,
     }
 }
 
@@ -247,6 +266,17 @@ impl OrchestratorHandle {
             .expect("worker ran cleanly")
     }
 
+    /// Wait for the worker to exit on its own, returning its result.
+    pub async fn join(self) -> anyhow::Result<WorkerStats> {
+        self.join.await.expect("worker task joins")
+    }
+
+    /// Whether the worker has already exited.
+    #[must_use]
+    pub fn is_finished(&self) -> bool {
+        self.join.is_finished()
+    }
+
     /// Abort the worker mid-flight without draining — a simulated crash that
     /// leaves any prepared commit, unacked raw, or un-advanced frontier to recover.
     pub fn crash(self) {
@@ -298,6 +328,8 @@ pub struct Fleet {
     pending_limit: usize,
     parked_limit: usize,
     blocked_retry: Duration,
+    commit_mode: CommitMode,
+    checkpoint: CheckpointPolicy,
 }
 
 impl Fleet {
@@ -326,6 +358,8 @@ impl Fleet {
             pending_limit: SchedulerConfig::default().pending_limit,
             parked_limit: WorkerConfig::new(0).parked_limit,
             blocked_retry: Duration::from_millis(20),
+            commit_mode: CommitMode::default(),
+            checkpoint: CheckpointPolicy::default(),
         }
     }
 
@@ -363,6 +397,20 @@ impl Fleet {
     #[must_use]
     pub fn with_blocked_retry(mut self, blocked_retry: Duration) -> Self {
         self.blocked_retry = blocked_retry;
+        self
+    }
+
+    /// Choose when a [`CommitMode::Deferred`] orchestrator persists checkpoints.
+    #[must_use]
+    pub fn with_checkpoint_policy(mut self, policy: CheckpointPolicy) -> Self {
+        self.checkpoint = policy;
+        self
+    }
+
+    /// Choose how spawned orchestrators make commits durable.
+    #[must_use]
+    pub fn with_commit_mode(mut self, mode: CommitMode) -> Self {
+        self.commit_mode = mode;
         self
     }
 
@@ -439,8 +487,7 @@ impl Fleet {
 
     /// Redeliver every delivered-but-unacked result on `partition`.
     pub fn redeliver_results(&self, partition: u16) {
-        self.bus
-            .redeliver_unacked(&result_subject(u64::from(partition)));
+        self.bus.redeliver_unacked(&result_subject(partition));
     }
 
     // ----- building identities and results for the scenarios -----
@@ -467,7 +514,7 @@ impl Fleet {
         self.bus
             .publisher::<SolveResult<E>>()
             .publish(
-                &result_subject(u64::from(partition)),
+                &result_subject(partition),
                 &result.msg_id(),
                 HeaderMap::new(),
                 &result,
@@ -485,7 +532,7 @@ impl Fleet {
         self.bus
             .publisher::<SolveResult<E>>()
             .publish(
-                &result_subject(u64::from(partition)),
+                &result_subject(partition),
                 &msg_id,
                 HeaderMap::new(),
                 &result,
@@ -500,7 +547,11 @@ impl Fleet {
     /// `bin/orchestrator.rs` sequences the two.
     pub fn spawn_orchestrator(&self, partition: u16) -> OrchestratorHandle {
         let cfg = self.worker_config(partition);
-        let dispatcher = Dispatcher::new(self.bus.publisher::<SolveJob<E>>(), cfg.dispatch);
+        let dispatcher = Dispatcher::new(
+            self.bus.publisher::<SolveRequest<E>>(),
+            cfg.dispatch,
+            FLEET_REPLY.to_owned(),
+        );
         let committer = Committer::new(
             self.store.clone(),
             self.bus.publisher::<CommittedOutput<E>>(),
@@ -511,7 +562,7 @@ impl Fleet {
             .source::<RawBytes>(&raw_subject(u64::from(partition)));
         let results = self
             .bus
-            .source::<SolveResult<E>>(&result_subject(u64::from(partition)));
+            .source::<SolveResult<E>>(&result_subject(partition));
         let shutdown = Shutdown::new();
         let store = self.store.clone();
         let catalog = self.catalog.clone();
@@ -627,6 +678,7 @@ impl Fleet {
             CommitConfig {
                 publish_attempts: 1,
                 backoff: Duration::ZERO,
+                ..CommitConfig::default()
             },
         )
         .finish_prepared(VehicleId(vehicle), partition, prepared)
@@ -717,7 +769,11 @@ impl Fleet {
                 pending_limit: self.pending_limit,
                 ..SchedulerConfig::default()
             },
-            commit: zero_backoff_commit_config(),
+            commit: CommitConfig {
+                mode: self.commit_mode,
+                ..zero_backoff_commit_config()
+            },
+            checkpoint: self.checkpoint,
             ..WorkerConfig::new(partition)
         }
     }
@@ -736,9 +792,18 @@ pub async fn advance_until(mut cond: impl FnMut() -> bool) {
     panic!("advance_until: condition never held");
 }
 
+/// The owner inbox a request asked to be answered on.
+fn reply_of(headers: &HeaderMap) -> String {
+    headers
+        .get(REPLY_HEADER)
+        .expect("requests carry a reply subject")
+        .as_str()
+        .to_owned()
+}
+
 /// The matcher's runtime: pull each job, answer per `behaviour`, ack the job.
 async fn run_matcher(bus: MemoryBus, mut behaviour: MatcherBehaviour, shutdown: Shutdown) {
-    let mut jobs = bus.source::<SolveJob<E>>("solve.v1.g.>");
+    let mut jobs = bus.source::<SolveRequest<E>>(REQUESTS);
     let publisher = bus.publisher::<SolveResult<E>>();
     loop {
         tokio::select! {
@@ -746,7 +811,11 @@ async fn run_matcher(bus: MemoryBus, mut behaviour: MatcherBehaviour, shutdown: 
             () = shutdown.triggered() => break,
             maybe = jobs.next() => match maybe {
                 Some(Ok(delivery)) => {
-                    let job = delivery.item;
+                    let reply = reply_of(&delivery.headers);
+                    let job = delivery
+                        .item
+                        .resolve(|_, _| None)
+                        .expect("a harness request carries its full continuation");
                     let outcome = match &mut behaviour {
                         MatcherBehaviour::Engine(engine) => Some(engine.solve(&job)),
                         MatcherBehaviour::Scripted(answer) => answer(&job),
@@ -757,9 +826,8 @@ async fn run_matcher(bus: MemoryBus, mut behaviour: MatcherBehaviour, shutdown: 
                     };
                     if let Some(outcome) = outcome {
                         let result = SolveResult::new(&job, outcome, 0);
-                        let subject = result_subject(u64::from(result.partition()));
                         let _ = publisher
-                            .publish(&subject, &result.msg_id(), HeaderMap::new(), &result)
+                            .publish(&reply, &result.msg_id(), HeaderMap::new(), &result)
                             .await;
                     }
                     let _ = delivery.handle.ack().await;
@@ -773,7 +841,7 @@ async fn run_matcher(bus: MemoryBus, mut behaviour: MatcherBehaviour, shutdown: 
 /// A matcher answering with one layer, delaying `slow_vehicle`'s answers by
 /// `delay` so a lower-sequence vehicle can complete after a higher-sequence one.
 async fn run_matcher_slow(bus: MemoryBus, slow_vehicle: u64, delay: Duration, shutdown: Shutdown) {
-    let mut jobs = bus.source::<SolveJob<E>>("solve.v1.g.>");
+    let mut jobs = bus.source::<SolveRequest<E>>(REQUESTS);
     let publisher = bus.publisher::<SolveResult<E>>();
     loop {
         tokio::select! {
@@ -781,16 +849,19 @@ async fn run_matcher_slow(bus: MemoryBus, slow_vehicle: u64, delay: Duration, sh
             () = shutdown.triggered() => break,
             maybe = jobs.next() => match maybe {
                 Some(Ok(delivery)) => {
-                    let job = delivery.item;
+                    let reply = reply_of(&delivery.headers);
+                    let job = delivery
+                        .item
+                        .resolve(|_, _| None)
+                        .expect("a harness request carries its full continuation");
                     if job.identity.vehicle_id == VehicleId(slow_vehicle) {
                         tokio::time::sleep(delay).await;
                     }
                     if let Some(origin) = job.head() {
                         let outcome = solved_with_layer(origin.timestamp);
                         let result = SolveResult::new(&job, outcome, 0);
-                        let subject = result_subject(u64::from(result.partition()));
                         let _ = publisher
-                            .publish(&subject, &result.msg_id(), HeaderMap::new(), &result)
+                            .publish(&reply, &result.msg_id(), HeaderMap::new(), &result)
                             .await;
                     }
                     let _ = delivery.handle.ack().await;
@@ -806,6 +877,7 @@ fn zero_backoff_commit_config() -> CommitConfig {
     CommitConfig {
         publish_attempts: 4,
         backoff: Duration::ZERO,
+        ..CommitConfig::default()
     }
 }
 
@@ -867,6 +939,7 @@ fn valid_checkpoint_bytes(vehicle: u64, partition: u16, revision: u64) -> Vec<u8
         schema: SCHEMA_VERSION,
         region: RegionId::new("r1").expect("region token"),
         routing_version: 1,
+        trip_digest: None,
     };
     let _ = vehicle;
     checkpoint.encode().expect("checkpoint encodes")
@@ -917,8 +990,13 @@ pub fn published_outputs(bus: &MemoryBus, partition: u16) -> Vec<CommittedOutput
 /// Decode every solve job in stream order.
 #[must_use]
 pub fn published_jobs(bus: &MemoryBus) -> Vec<SolveJob<E>> {
-    bus.published("solve.v1.g.>")
+    bus.published(REQUESTS)
         .into_iter()
-        .map(|(_, _, bytes)| SolveJob::<E>::decode(&bytes).expect("job decodes"))
+        .map(|(_, _, bytes)| {
+            SolveRequest::<E>::decode(&bytes)
+                .expect("request decodes")
+                .resolve(|_, _| None)
+                .expect("a harness request carries its full continuation")
+        })
         .collect()
 }

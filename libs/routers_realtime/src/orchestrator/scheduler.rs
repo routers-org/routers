@@ -481,6 +481,32 @@ impl<E: Entry, H: AckHandle> Scheduler<E, H> {
         Ok(())
     }
 
+    /// Remove and return queued observations the loaded checkpoint already
+    /// covers. They arrive when raw is replayed from a frontier that lags the
+    /// checkpoint, before the checkpoint was loaded to suppress them on entry.
+    /// The active head is never removed.
+    pub fn drain_committed(&mut self, vehicle: VehicleId) -> Vec<PendingObservation<H>> {
+        let Some(state) = self.vehicles.get_mut(&vehicle) else {
+            return Vec::new();
+        };
+        let CheckpointState::Present(checkpoint) = &state.checkpoint else {
+            return Vec::new();
+        };
+        if state.active.is_some() {
+            return Vec::new();
+        }
+        let covered = checkpoint.last_input.sequence;
+        let mut drained = Vec::new();
+        while state
+            .pending
+            .front()
+            .is_some_and(|pending| pending.id.sequence <= covered)
+        {
+            drained.extend(state.pending.pop_front());
+        }
+        drained
+    }
+
     /// Complete the active job: pop the head, take the job, clear the committing
     /// flag, and re-ready the vehicle if pending work remains.
     ///
@@ -543,11 +569,21 @@ impl<E: Entry, H: AckHandle> Scheduler<E, H> {
     /// Remove and return every idle vehicle whose `last_touch` has aged past
     /// [`SchedulerConfig::idle_ttl`].
     pub fn evict_idle(&mut self, now: Instant) -> Vec<VehicleId> {
+        self.evict_idle_except(now, |_| false)
+    }
+
+    /// As [`evict_idle`](Self::evict_idle), but never evicting a vehicle for
+    /// which `keep` holds, such as one whose checkpoint is not yet persisted.
+    pub fn evict_idle_except(
+        &mut self,
+        now: Instant,
+        keep: impl Fn(VehicleId) -> bool,
+    ) -> Vec<VehicleId> {
         let ttl = self.config.idle_ttl;
         let mut evicted = Vec::new();
         self.vehicles.retain(|&vehicle, state| {
             let expired = now.saturating_duration_since(state.last_touch) >= ttl;
-            if state.is_idle() && expired {
+            if state.is_idle() && expired && !keep(vehicle) {
                 evicted.push(vehicle);
                 false
             } else {
@@ -738,6 +774,7 @@ mod tests {
                 schema: SCHEMA_VERSION,
                 region: self.region.clone(),
                 routing_version: 1,
+                trip_digest: None,
             })
         }
     }
@@ -763,6 +800,49 @@ mod tests {
             Enqueue::Committed(_) => panic!("expected Queued, got Committed"),
             Enqueue::Overflow { .. } => panic!("expected Queued, got Overflow"),
         }
+    }
+
+    #[test]
+    fn drain_committed_removes_only_covered_heads_of_an_idle_vehicle() {
+        let fx = Fixture::new();
+        let mut sched = scheduler(&fx);
+        let now = fx.at(0);
+        for seq in [10, 11, 12, 13] {
+            feed(&mut sched, fx.obs(1, seq, now), now);
+        }
+        // Replay queued these before the checkpoint through 11 was loaded.
+        sched.set_checkpoint(VehicleId(1), fx.present_checkpoint(11));
+        let drained = sched.drain_committed(VehicleId(1));
+        assert_eq!(
+            drained.iter().map(|o| o.id.sequence).collect::<Vec<_>>(),
+            [10, 11]
+        );
+        assert_eq!(sched.head(VehicleId(1)).unwrap().id.sequence, 12);
+        assert!(sched.drain_committed(VehicleId(1)).is_empty(), "idempotent");
+
+        // Never drains past an active head.
+        sched.set_checkpoint(VehicleId(1), fx.present_checkpoint(13));
+        assert_eq!(sched.next_ready(), Some(VehicleId(1)));
+        sched.activate(VehicleId(1), fx.job(1, 12, now)).unwrap();
+        assert!(sched.drain_committed(VehicleId(1)).is_empty());
+    }
+
+    #[test]
+    fn eviction_spares_vehicles_the_caller_keeps() {
+        let fx = Fixture::new();
+        let mut sched = scheduler(&fx);
+        let now = fx.at(0);
+        for vehicle in [1, 2] {
+            feed(&mut sched, fx.obs(vehicle, vehicle * 10, now), now);
+            sched
+                .activate(VehicleId(vehicle), fx.job(vehicle, vehicle * 10, now))
+                .unwrap();
+            sched.finish(VehicleId(vehicle), now).unwrap();
+        }
+        let later = now + SchedulerConfig::default().idle_ttl + Duration::from_secs(1);
+        let evicted = sched.evict_idle_except(later, |vehicle| vehicle == VehicleId(2));
+        assert_eq!(evicted, [VehicleId(1)]);
+        assert!(sched.state(VehicleId(2)).is_some());
     }
 
     #[test]

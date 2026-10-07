@@ -7,6 +7,7 @@
 //! live connection in a test.
 
 pub mod adapter;
+pub mod core;
 pub mod jetstream;
 pub mod memory;
 mod nats;

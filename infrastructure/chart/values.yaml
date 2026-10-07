@@ -33,6 +33,9 @@ infra:
     url: ""
   kv:
     url: ""
+  materializedView:
+    # Empty uses kv.url; set a separate stable-id=URL fleet for the served view.
+    url: ""
   telemetry:
     otlpUrl: ""
 
@@ -76,6 +79,8 @@ matcher:
   # Bounds on the carried match state; 0 disables either cap.
   maxCandidates: 16
   windowLayers: 32
+  predicateCacheEntries: 131072
+  successorCacheEntries: 131072
   extraArgs: []
   env: {}
   nodeSelector: {}
@@ -83,13 +88,14 @@ matcher:
   resources:
     requests:
       cpu: 1000m
-      memory: 256Mi
+      memory: 2304Mi
     limits:
       memory: 3072Mi
 
 # Vehicle-partitioned fleet. Consumer shards are stable broker ownership units;
 # replicas may change only among divisors of `shards` so no pod splits a shard.
 orchestrator:
+  healthPort: 9092
   image:
     repository: routers-orchestrator
     tag: latest
@@ -121,6 +127,9 @@ materializer:
     pullPolicy: Never
   replicas: 1
   consumerName: materializer
+  # Storage applies overlapped within each process. CAS keeps same-vehicle
+  # races safe across both tasks and replicas.
+  maxInFlight: 32
   # Empty tails the whole plane; a range like "0-511" narrows the filter.
   partitions: ""
   rustLog: info

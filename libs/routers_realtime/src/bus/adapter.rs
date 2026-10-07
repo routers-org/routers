@@ -1,10 +1,11 @@
 //! Bus adapter traits: publication, consumption, and acknowledgement.
 //!
 //! A transport-only seam so the same calls drive the in-memory fake in
-//! [`super::memory`] under test and JetStream in production. Futures are not
-//! `Send` — callers own them on a single task, so native `async fn` in traits is fine.
+//! [`super::memory`] under test and NATS transports in production. Source futures
+//! stay task-owned; publication futures may move with bounded background work.
 #![allow(async_fn_in_trait)]
 
+use core::future::Future;
 use core::time::Duration;
 
 use async_nats::HeaderMap;
@@ -22,7 +23,7 @@ pub trait AckHandle: Send + 'static {
     /// Negatively acknowledge; `delay` is a redelivery backoff hint, `None` meaning soon.
     async fn nak(self, delay: Option<Duration>) -> anyhow::Result<()>;
 
-    /// The message's stream sequence — its durable position.
+    /// The message's stream sequence, or zero for a transient delivery.
     fn sequence(&self) -> u64;
 
     /// Delivery count including the current delivery (`1` on first delivery).
@@ -43,12 +44,13 @@ pub struct Delivery<T, H: AckHandle> {
     pub redelivered: bool,
 }
 
-/// The broker's answer to a publish that reached it.
+/// Confirmation from a publish adapter. Core NATS confirms only client-side
+/// enqueue, not broker durability.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PublishOutcome {
-    /// The stream stored the message (or recognised it as a duplicate).
+    /// The adapter accepted the message. JetStream confirms storage/deduplication.
     Acked {
-        /// The stored message's stream sequence; for a duplicate, the original's.
+        /// JetStream sequence (zero for a transient publish).
         sequence: u64,
         /// `true` when the `Nats-Msg-Id` dedup-matched, so no new copy was stored.
         duplicate: bool,
@@ -78,13 +80,13 @@ impl PublishError {
 /// Publishes messages of one wire type to subjects on the bus.
 pub trait Publisher<T: Wire>: Clone + Send + Sync + 'static {
     /// Publish pre-encoded `bytes` under `subject` with dedup key `msg_id`.
-    async fn publish_bytes(
+    fn publish_bytes(
         &self,
         subject: &str,
         msg_id: &str,
         headers: HeaderMap,
         bytes: &[u8],
-    ) -> Result<PublishOutcome, PublishError>;
+    ) -> impl Future<Output = Result<PublishOutcome, PublishError>> + Send;
 
     /// Encode `item` and publish it; an encoding failure is a [`PublishError::Failed`].
     async fn publish(

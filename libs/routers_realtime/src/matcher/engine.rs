@@ -9,6 +9,7 @@
 
 use alloc::sync::Arc;
 use core::future::Future;
+use core::time::Duration;
 
 use log::{debug, error, warn};
 use routers_network::{Entry, Network};
@@ -22,8 +23,18 @@ use routers_transition::{
 use tracing::{field, info_span};
 
 use crate::event::MatchedDiff;
-use crate::protocol::job::SolveJob;
+use crate::protocol::job::{SolveJob, TripDigest};
 use crate::protocol::result::SolveOutcome;
+
+/// Timing of one blocking-pool solve, separated from the time it waited for a worker.
+pub struct BlockingSolve<E: Entry> {
+    /// The solve's typed answer.
+    pub outcome: SolveOutcome<E>,
+    /// Time from submission until a blocking worker began executing the job.
+    pub queued_for: Duration,
+    /// Time spent executing the algorithm on that worker.
+    pub ran_for: Duration,
+}
 
 /// The shared, reusable state one region's matcher solves against.
 pub struct Engine<N: Network> {
@@ -34,6 +45,9 @@ pub struct Engine<N: Network> {
     search_distance: Option<f64>,
     max_candidates: Option<usize>,
     window_layers: Option<usize>,
+    /// Runs whole solves, so the matcher's parallel loops split work inside
+    /// this pool rather than handing off to rayon's global pool per loop.
+    solve_pool: Option<Arc<rayon::ThreadPool>>,
 }
 
 impl<N: Network> Engine<N> {
@@ -51,7 +65,26 @@ impl<N: Network> Engine<N> {
             search_distance,
             max_candidates: None,
             window_layers: None,
+            solve_pool: None,
         }
+    }
+
+    /// Run [`Engine::solve_blocking`] solves on a dedicated pool of `threads`
+    /// rather than on the runtime's blocking threads. Size it to the number of
+    /// concurrent solves the caller admits.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the pool's threads cannot be spawned.
+    #[must_use]
+    pub fn with_solve_threads(mut self, threads: core::num::NonZeroUsize) -> Self {
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(threads.get())
+            .thread_name(|index| format!("solve-{index}"))
+            .build()
+            .expect("the solve pool's threads spawn");
+        self.solve_pool = Some(Arc::new(pool));
+        self
     }
 
     /// Keep only the best `max_candidates` per observation; `None` keeps every edge in range.
@@ -65,6 +98,17 @@ impl<N: Network> Engine<N> {
     #[must_use]
     pub fn with_window_layers(mut self, window_layers: Option<usize>) -> Self {
         self.window_layers = window_layers;
+        self
+    }
+
+    /// Bound the reachability and nested successor caches independently.
+    ///
+    /// # Panics
+    ///
+    /// Panics if either bound is zero or not a power of two.
+    #[must_use]
+    pub fn with_cache_capacities(mut self, predicates: usize, successors: usize) -> Self {
+        self.cache = Arc::new(PredicateCache::with_capacities(predicates, successors));
         self
     }
 
@@ -211,10 +255,14 @@ impl<N: Network> Engine<N> {
         span.record("outcome", "success");
         span.record("severity", "ok");
 
+        // Digested here, on the blocking solve thread, once for both the
+        // trip cache and the owner's next job id.
+        let trip_digest = Some(TripDigest::of(&trip));
         SolveOutcome::Solved {
             diff,
             trip,
             converged_through,
+            trip_digest,
         }
     }
 }
@@ -233,15 +281,58 @@ where
         job: SolveJob<N::Entry>,
     ) -> impl Future<Output = SolveOutcome<N::Entry>> {
         let engine = Arc::clone(self);
-        async move {
-            tokio::task::spawn_blocking(move || engine.solve(&job))
+        async move { engine.solve_blocking_timed(job).await.outcome }
+    }
+
+    /// Solve on the blocking pool and separate worker-queue delay from execution.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "web_time reexports std::time::Instant on native targets"
+    )]
+    pub async fn solve_blocking_timed(
+        self: &Arc<Self>,
+        job: SolveJob<N::Entry>,
+    ) -> BlockingSolve<N::Entry> {
+        let engine = Arc::clone(self);
+        let queued_at = web_time::Instant::now();
+        let run = move || {
+            let started_at = web_time::Instant::now();
+            let outcome = engine.solve(&job);
+            BlockingSolve {
+                outcome,
+                queued_for: started_at.duration_since(queued_at),
+                ran_for: started_at.elapsed(),
+            }
+        };
+        let panicked = |queued_at: web_time::Instant| BlockingSolve {
+            outcome: SolveOutcome::Internal {
+                reason: "panic".to_owned(),
+            },
+            queued_for: queued_at.elapsed(),
+            ran_for: Duration::ZERO,
+        };
+        match &self.solve_pool {
+            Some(pool) => {
+                let (sender, receiver) = tokio::sync::oneshot::channel();
+                pool.spawn(move || {
+                    let solved = std::panic::catch_unwind(core::panic::AssertUnwindSafe(run));
+                    // The awaiting handler may have been cancelled; nothing to do then.
+                    let _ = sender.send(solved);
+                });
+                match receiver.await {
+                    Ok(Ok(solved)) => solved,
+                    Ok(Err(_)) | Err(_) => {
+                        error!("solve task panicked");
+                        panicked(queued_at)
+                    }
+                }
+            }
+            None => tokio::task::spawn_blocking(run)
                 .await
                 .unwrap_or_else(|err| {
                     error!("solve task panicked: {err}");
-                    SolveOutcome::Internal {
-                        reason: "panic".to_owned(),
-                    }
-                })
+                    panicked(queued_at)
+                }),
         }
     }
 }
@@ -275,6 +366,7 @@ mod tests {
     use geo::{Point, point};
     use routers_network::mock::{MockEntryId, MockNetwork, MockNetworkBuilder};
     use routers_transition::Origin;
+    use routers_transition::matcher::Trip;
 
     use crate::event::VehicleId;
     use crate::protocol::ids::{GraphVersion, Lane, ObservationId, RegionId, SCHEMA_VERSION};
@@ -346,6 +438,50 @@ mod tests {
         }
     }
 
+    /// Solve an incremental chain over `origins` (restart, then resume from
+    /// each result's trip), returning every outcome's bytes.
+    fn chain(engine: &Engine<MockNetwork>, origins: &[Origin]) -> Vec<Vec<u8>> {
+        let mut trip: Option<Trip<MockEntryId>> = None;
+        let mut bytes = Vec::new();
+        for &origin in origins {
+            let context = match trip.take() {
+                Some(trip) => Continuation::Resume {
+                    trip,
+                    fresh: vec![origin],
+                },
+                None => Continuation::Restart {
+                    fresh: vec![origin],
+                },
+            };
+            let outcome = engine.solve(&job(context));
+            bytes.push(postcard::to_allocvec(&outcome).unwrap());
+            if let SolveOutcome::Solved { trip: next, .. } = outcome {
+                trip = Some(next);
+            }
+        }
+        bytes
+    }
+
+    #[test]
+    fn solves_do_not_depend_on_the_engines_history() {
+        let origins = observations();
+        let reference = chain(&engine(bent_road()), &origins);
+
+        // Tiny caches that evict constantly, warmed by unrelated work first.
+        let thrashing = Engine::new(Arc::new(bent_road()), (), None).with_cache_capacities(64, 64);
+        for shift in 0..8 {
+            let mut shuffled = origins.clone();
+            shuffled.rotate_left(shift % origins.len());
+            let _ = chain(&thrashing, &shuffled);
+        }
+        assert_eq!(chain(&thrashing, &origins), reference);
+
+        // The same engine re-solving the chain agrees with its first run.
+        let warm = engine(bent_road());
+        assert_eq!(chain(&warm, &origins), reference);
+        assert_eq!(chain(&warm, &origins), reference);
+    }
+
     fn job(context: Continuation<MockEntryId>) -> SolveJob<MockEntryId> {
         SolveJob::new(identity(), Lane::DEFAULT, i64::MAX, context)
     }
@@ -363,11 +499,17 @@ mod tests {
             diff,
             trip,
             converged_through,
+            trip_digest,
         } = outcome
         else {
             panic!("a restart over an anchored trace must solve, got {outcome:?}");
         };
 
+        assert_eq!(
+            trip_digest,
+            Some(TripDigest::of(&trip)),
+            "the engine digests its trip"
+        );
         assert!(!diff.downgraded, "a fresh restart is never a downgrade");
         assert_eq!(
             diff.layers.len(),
@@ -475,5 +617,38 @@ mod tests {
             matches!(outcome, SolveOutcome::Solved { .. }),
             "the blocking solve mirrors the direct one, got {outcome:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn timed_blocking_solve_reports_execution() {
+        let engine = engine(bent_road());
+        let solved = engine
+            .solve_blocking_timed(job(Continuation::Restart {
+                fresh: observations(),
+            }))
+            .await;
+
+        assert!(matches!(solved.outcome, SolveOutcome::Solved { .. }));
+        assert!(solved.ran_for > Duration::ZERO);
+    }
+
+    #[tokio::test]
+    async fn pooled_solves_match_direct_ones_byte_for_byte() {
+        let direct = engine(bent_road());
+        let pooled = Arc::new(
+            Engine::new(Arc::new(bent_road()), (), None)
+                .with_solve_threads(core::num::NonZeroUsize::new(2).unwrap()),
+        );
+        let context = || Continuation::Restart {
+            fresh: observations(),
+        };
+        let expected = postcard::to_allocvec(&direct.solve(&job(context()))).unwrap();
+
+        // Concurrent solves share the pool, and each matches the direct solve.
+        let solves = (0..4).map(|_| pooled.solve_blocking_timed(job(context())));
+        for solved in futures::future::join_all(solves).await {
+            assert!(solved.ran_for > Duration::ZERO);
+            assert_eq!(postcard::to_allocvec(&solved.outcome).unwrap(), expected);
+        }
     }
 }

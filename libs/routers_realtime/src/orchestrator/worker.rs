@@ -1,16 +1,17 @@
 //! Orchestrator: the single-task partition worker loop.
 //!
 //! One worker owns one partition's state and `select!`s over raw deliveries,
-//! result deliveries and a housekeeping tick. Invariants: one
-//! active job per vehicle, per-vehicle FIFO on the raw sequence, and commits run
-//! inline on this task so they never overlap. The `bus::adapter` futures are not
-//! `Send`, so every source, publisher, and ack stays on this one task.
+//! result deliveries, commit completions, and a housekeeping tick. Per-vehicle
+//! work stays ordered while independent vehicles may wait on I/O
+//! concurrently.
 
 use alloc::collections::VecDeque;
 use alloc::sync::Arc;
 use core::time::Duration;
 use std::collections::{HashMap, HashSet};
 
+use futures::future::BoxFuture;
+use futures::stream::{FuturesUnordered, StreamExt as _};
 use routers_network::Entry;
 use tokio::time::{Instant, MissedTickBehavior, interval};
 use tracing::{debug, error, warn};
@@ -22,9 +23,12 @@ use crate::lifecycle::{Drain, Shutdown};
 use crate::matcher::pull::RawBytes;
 use crate::metrics::Metrics;
 use crate::orchestrator::admission::{Admission, HeldReason, Waiting};
-use crate::orchestrator::commit::{self, CommitConfig, CommitError, Committer, Decision};
+use crate::orchestrator::commit::{
+    self, CommitConfig, CommitError, CommitMode, Committed, Committer, Decision,
+};
 use crate::orchestrator::dispatch::{
-    DispatchConfig, DispatchError, Dispatcher, TimestampRegression, timestamp_regression,
+    DispatchConfig, DispatchError, Dispatcher, RetryRequest, STICKY_HEADER, TimestampRegression,
+    timestamp_regression,
 };
 use crate::orchestrator::frontier::{FrontierConfig, FrontierTracker};
 use crate::orchestrator::reader::{DeferReason, RawDisposition, RawEnvelope, RawReader};
@@ -33,13 +37,15 @@ use crate::orchestrator::scheduler::{
     ActiveJob, CheckpointState, JobReservation, Scheduler, SchedulerConfig, VehicleState,
 };
 use crate::orchestrator::validate::{self, QuarantineReason, RejectReason, Verdict};
-use crate::protocol::ids::{GraphVersion, RegionId, Revision, SCHEMA_VERSION, SegmentId};
-use crate::protocol::job::{BaseState, JobIdentity, SolveJob};
+use crate::protocol::ids::{GraphVersion, JobId, RegionId, Revision, SCHEMA_VERSION, SegmentId};
+use crate::protocol::job::{BaseState, JobIdentity, SolveRequest};
 use crate::protocol::output::{CommittedOutput, ResetReason, TerminalReason};
-use crate::protocol::result::SolveResult;
+use crate::protocol::result::{SolveOutcome, SolveResult};
 use crate::region::catalog::Catalog;
 use crate::region::resolver::{Pin, Resolver};
-use crate::store::checkpoint::{CheckpointStore, PartitionFrontier, VehicleCheckpoint};
+use crate::store::checkpoint::{
+    CheckpointStore, DirectOutcome, PartitionFrontier, VehicleCheckpoint,
+};
 
 /// Static configuration for a [`PartitionWorker`].
 #[derive(Clone, Debug)]
@@ -63,8 +69,42 @@ pub struct WorkerConfig {
     pub evict_every: Duration,
     /// How long a blocked vehicle waits before its prepared commit is retried.
     pub blocked_retry: Duration,
+    /// Resend a transient solve request if no result arrives by this deadline.
+    pub request_retry: Duration,
+    /// The shorter deadline for a trip-less request sent to a sticky replica,
+    /// after which the full request goes to the queue group instead.
+    pub sticky_retry: Duration,
     /// How long shutdown waits for in-flight commits to quiesce.
     pub grace: Duration,
+    /// When [`CommitMode::Deferred`] persists each vehicle's checkpoint.
+    pub checkpoint: CheckpointPolicy,
+}
+
+/// How often a [`CommitMode::Deferred`] owner persists a vehicle's checkpoint.
+///
+/// A vehicle is persisted once it has `every` unpersisted commits or its
+/// oldest unpersisted commit is `interval` old, and before it may be evicted
+/// or the worker stops. The partition frontier advances only over raw events a
+/// persisted checkpoint covers, so after a crash the owner replays at most
+/// about `interval` of traffic and deterministically re-solves it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CheckpointPolicy {
+    /// Unpersisted commits that make a vehicle due.
+    pub every: usize,
+    /// The oldest an unpersisted commit may get before its vehicle is due.
+    pub interval: Duration,
+    /// Most persists in flight per partition.
+    pub in_flight: usize,
+}
+
+impl Default for CheckpointPolicy {
+    fn default() -> Self {
+        Self {
+            every: 16,
+            interval: Duration::from_secs(2),
+            in_flight: 32,
+        }
+    }
 }
 
 impl WorkerConfig {
@@ -82,6 +122,9 @@ impl WorkerConfig {
             tick: Duration::from_millis(250),
             evict_every: Duration::from_secs(30),
             blocked_retry: Duration::from_secs(5),
+            request_retry: Duration::from_secs(3),
+            sticky_retry: Duration::from_millis(500),
+            checkpoint: CheckpointPolicy::default(),
             grace: Duration::from_secs(20),
         }
     }
@@ -127,6 +170,8 @@ pub struct WorkerStats {
     pub conflicts: u64,
     /// The current completion frontier.
     pub frontier: u64,
+    /// Deferred checkpoints persisted.
+    pub persisted: u64,
 }
 
 /// The per-vehicle provenance the worker keeps for the job currently in flight.
@@ -170,6 +215,43 @@ struct ParkedResult<E: Entry, H: AckHandle> {
     result: SolveResult<E>,
     handle: H,
 }
+
+struct CommitCompletion<E: Entry, H: AckHandle, SE> {
+    vehicle: VehicleId,
+    next: VehicleCheckpoint<E>,
+    result_delivery: Option<ParkedResult<E, H>>,
+    started: Instant,
+    completed: Instant,
+    sampled: bool,
+    is_terminal: bool,
+    terminal_reason: Option<&'static str>,
+    reset_reason: Option<&'static str>,
+    result: Result<Committed, CommitError<SE>>,
+}
+
+type CommitFuture<E, H, SE> = BoxFuture<'static, CommitCompletion<E, H, SE>>;
+
+/// A vehicle's commits not yet covered by a persisted checkpoint.
+struct Dirty {
+    /// Committed raw sequences awaiting a persisted checkpoint.
+    sequences: Vec<u64>,
+    /// When the oldest of them committed.
+    since: Instant,
+    /// A persist of this vehicle is in flight.
+    in_flight: bool,
+    /// Do not retry a failed persist before this instant.
+    retry_at: Option<Instant>,
+}
+
+struct PersistCompletion<SE> {
+    vehicle: VehicleId,
+    revision: Revision,
+    sequences: Vec<u64>,
+    started: Instant,
+    result: Result<DirectOutcome, CommitError<SE>>,
+}
+
+type PersistFuture<SE> = BoxFuture<'static, PersistCompletion<SE>>;
 
 /// The worker's own owned projection of [`Verdict`].
 enum ResultVerdict {
@@ -232,6 +314,11 @@ where
     held: HashMap<VehicleId, Waiting>,
     /// Per-vehicle provenance for the job currently in flight.
     active_meta: HashMap<VehicleId, ActiveMeta>,
+    /// Exact transient request bytes kept until a result starts committing.
+    requests: HashMap<VehicleId, (RetryRequest<E>, Instant)>,
+    /// The replica that answered a vehicle's last solve, and the revision its
+    /// cached trip will resume from once that answer commits.
+    sticky: HashMap<VehicleId, (String, Revision)>,
     /// A pending `Reset { StateLost }`, applied on the next commit.
     pending_reset: HashMap<VehicleId, PendingReset>,
     /// Early results retaining their unacknowledged broker deliveries.
@@ -240,6 +327,20 @@ where
     blocked_results: HashMap<VehicleId, ParkedResult<E, XS::Handle>>,
     /// Vehicles retired after a permanent commit fault.
     quarantined: HashSet<VehicleId>,
+    commits: FuturesUnordered<CommitFuture<E, XS::Handle, S::Error>>,
+    /// Vehicles with commits a persisted checkpoint does not yet cover.
+    dirty: HashMap<VehicleId, Dirty>,
+    /// Every sequence in `dirty`, so a suppressed redelivery cannot complete it.
+    unpersisted: HashSet<u64>,
+    /// The revision each loaded vehicle last persisted: a persist's CAS base.
+    persisted_base: HashMap<VehicleId, Option<Revision>>,
+    persists: FuturesUnordered<PersistFuture<S::Error>>,
+    /// The ownership epoch recovery acquired, fencing frontier writes.
+    epoch: Option<u64>,
+    /// A newer owner fenced one of this worker's writes: stop the partition.
+    fenced: Option<u64>,
+    /// The last fenced frontier write, which doubles as an ownership heartbeat.
+    last_heartbeat: Instant,
     shutdown: Shutdown,
     drain: Drain,
     last_evict: Instant,
@@ -252,7 +353,7 @@ impl<E, S, JP, OP, RS, XS> PartitionWorker<E, S, JP, OP, RS, XS>
 where
     E: Entry + serde::de::DeserializeOwned,
     S: CheckpointStore,
-    JP: Publisher<SolveJob<E>>,
+    JP: Publisher<SolveRequest<E>>,
     OP: Publisher<CommittedOutput<E>>,
     RS: Source<RawBytes>,
     XS: Source<SolveResult<E>>,
@@ -295,7 +396,7 @@ where
             admission,
             store,
             dispatcher,
-            committer,
+            committer: committer.with_epoch(report.epoch),
             reader,
             raw,
             results,
@@ -304,10 +405,20 @@ where
             blocked,
             held: HashMap::new(),
             active_meta: HashMap::new(),
+            requests: HashMap::new(),
+            sticky: HashMap::new(),
             pending_reset: HashMap::new(),
             parked_results: HashMap::new(),
             blocked_results: HashMap::new(),
             quarantined: HashSet::new(),
+            commits: FuturesUnordered::new(),
+            dirty: HashMap::new(),
+            unpersisted: HashSet::new(),
+            persisted_base: HashMap::new(),
+            persists: FuturesUnordered::new(),
+            epoch: report.epoch,
+            fenced: None,
+            last_heartbeat: now,
             shutdown,
             drain: Drain::new(),
             last_evict: now,
@@ -319,6 +430,7 @@ where
     /// Install a metrics handle so the worker records bounded-label instruments.
     #[must_use]
     pub fn with_metrics(mut self, metrics: Metrics) -> Self {
+        self.committer = self.committer.with_metrics(metrics.clone());
         self.metrics = metrics;
         self
     }
@@ -332,32 +444,90 @@ where
         let mut results_open = true;
 
         loop {
+            if let Some(owner) = self.fenced {
+                // Another owner holds the partition: write nothing more and let
+                // the process stop, leaving recovery to the current owner.
+                anyhow::bail!(
+                    "partition {} ownership lost to epoch {owner}",
+                    self.cfg.partition
+                );
+            }
             tokio::select! {
                 () = self.shutdown.triggered() => break,
-                maybe = self.raw.next(), if raw_open => match maybe {
-                    Some(Ok(delivery)) => self.on_raw(delivery).await,
-                    Some(Err(error)) => warn!(%error, "raw source error"),
-                    None => raw_open = false,
+                maybe = self.raw.next(), if raw_open => {
+                    let started = Instant::now();
+                    match maybe {
+                        Some(Ok(delivery)) => self.on_raw(delivery).await,
+                        Some(Err(error)) => warn!(%error, "raw source error"),
+                        None => raw_open = false,
+                    }
+                    self.metrics.worker_turn_seconds("raw", started.elapsed().as_secs_f64());
                 },
-                maybe = self.results.next(), if results_open => match maybe {
-                    Some(Ok(delivery)) => self.on_result(delivery).await,
-                    Some(Err(error)) => warn!(%error, "result source error"),
-                    None => results_open = false,
+                maybe = self.results.next(), if results_open => {
+                    let started = Instant::now();
+                    match maybe {
+                        Some(Ok(delivery)) => self.on_result(delivery).await,
+                        Some(Err(error)) => warn!(%error, "result source error"),
+                        None => results_open = false,
+                    }
+                    self.metrics.worker_turn_seconds("result", started.elapsed().as_secs_f64());
                 },
-                _ = tick.tick() => self.on_tick().await,
+                completion = self.commits.next(), if !self.commits.is_empty() => {
+                    let started = Instant::now();
+                    self.finish_commit(completion.expect("guarded by non-empty check")).await;
+                    self.pump().await;
+                    self.metrics.worker_turn_seconds("commit", started.elapsed().as_secs_f64());
+                },
+                completion = self.persists.next(), if !self.persists.is_empty() => {
+                    let started = Instant::now();
+                    self.finish_persist(completion.expect("guarded by non-empty check")).await;
+                    self.metrics.worker_turn_seconds("persist", started.elapsed().as_secs_f64());
+                },
+                _ = tick.tick() => {
+                    let started = Instant::now();
+                    self.on_tick().await;
+                    self.metrics.worker_turn_seconds("tick", started.elapsed().as_secs_f64());
+                },
             }
         }
 
-        // Commits run inline, so the quiesce returns immediately.
-        let _ = self.drain.quiesce(self.cfg.grace).await;
-        let _ = self
-            .store
-            .set_frontier(PartitionFrontier {
-                partition: self.cfg.partition,
-                sequence: self.tracker.frontier(),
-            })
-            .await;
+        let deadline = Instant::now() + self.cfg.grace;
+        while !self.commits.is_empty() {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let Ok(Some(completion)) = tokio::time::timeout(remaining, self.commits.next()).await
+            else {
+                break;
+            };
+            self.finish_commit(completion).await;
+        }
+        // Persist everything still deferred, so a clean stop replays nothing.
+        let vehicles: Vec<VehicleId> = self.dirty.keys().copied().collect();
+        for vehicle in vehicles {
+            self.start_persist(vehicle, Instant::now(), true);
+        }
+        while !self.persists.is_empty() {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let Ok(Some(completion)) = tokio::time::timeout(remaining, self.persists.next()).await
+            else {
+                break;
+            };
+            self.finish_persist(completion).await;
+        }
+        let _ = self.drain.quiesce(Duration::ZERO).await;
+        let frontier = PartitionFrontier {
+            partition: self.cfg.partition,
+            sequence: self.tracker.frontier(),
+        };
+        if let Ok(false) = self.write_frontier(frontier).await {
+            self.fenced = self.fenced.or(Some(0));
+        }
         self.stats.frontier = self.tracker.frontier();
+        if let Some(owner) = self.fenced {
+            anyhow::bail!(
+                "partition {} ownership lost to epoch {owner}",
+                self.cfg.partition
+            );
+        }
         Ok(self.stats)
     }
 
@@ -405,7 +575,11 @@ where
                 if handle.ack().await.is_ok() {
                     self.metrics.raw_acked("suppressed");
                 }
-                self.tracker.complete(seq);
+                // A redelivery of a commit not yet persisted stays open until
+                // its persist completes it.
+                if !self.unpersisted.contains(&seq) {
+                    self.tracker.complete(seq);
+                }
             }
             RawDisposition::Deferred { handle, reason } => {
                 self.stats.deferred += 1;
@@ -426,6 +600,25 @@ where
 
     /// Handle one result delivery, then drive any newly-ready vehicle.
     async fn on_result(&mut self, delivery: Delivery<SolveResult<E>, XS::Handle>) {
+        if let Some(sent_at) = delivery.sent_at
+            && let Ok(elapsed) = crate::bus::wallclock().duration_since(sent_at)
+        {
+            self.metrics
+                .result_queue_wait_seconds(elapsed.as_secs_f64());
+        }
+        if let SolveOutcome::Solved { .. } = delivery.item.outcome
+            && let Some(replica) = delivery.headers.get(STICKY_HEADER)
+        {
+            // Harmless if this answer later loses: a stale entry only yields a
+            // trip miss, which is resent in full.
+            self.sticky.insert(
+                delivery.item.identity.vehicle_id,
+                (
+                    replica.as_str().to_owned(),
+                    Revision::from(delivery.item.identity.observation),
+                ),
+            );
+        }
         self.on_result_inner(delivery.item, delivery.handle).await;
         self.pump().await;
     }
@@ -434,8 +627,15 @@ where
     async fn on_result_inner(&mut self, result: SolveResult<E>, handle: XS::Handle) {
         let vehicle = result.identity.vehicle_id;
         let now = Instant::now();
+        if let SolveOutcome::TripMiss = result.outcome {
+            // Never a decision: resend the full continuation to the queue group.
+            self.resend_after_trip_miss(vehicle, result.job, now).await;
+            let _ = handle.ack().await;
+            return;
+        }
         match self.result_verdict(vehicle, &result, now) {
             ResultVerdict::Accept => {
+                self.requests.remove(&vehicle);
                 self.stats.accepted += 1;
                 let Some(meta) = self.active_meta.get(&vehicle).cloned() else {
                     let _ = handle.ack().await;
@@ -536,20 +736,56 @@ where
             depth.active as u64,
         );
 
-        if let Some(frontier) = self.tracker.due(now)
-            && self.store.set_frontier(frontier).await.is_ok()
-        {
-            self.tracker.persisted(frontier.sequence, now);
-            self.stats.frontier = self.tracker.frontier();
+        // An owner also rewrites its unchanged frontier on the persist cadence
+        // as an ownership heartbeat, so a superseded owner that writes nothing
+        // else still discovers the newer epoch and stops.
+        let heartbeat = self.epoch.is_some()
+            && now.saturating_duration_since(self.last_heartbeat)
+                >= self.cfg.frontier.at_least_every;
+        let due = self.tracker.due(now).or_else(|| {
+            heartbeat.then_some(PartitionFrontier {
+                partition: self.cfg.partition,
+                sequence: self.tracker.frontier(),
+            })
+        });
+        if let Some(frontier) = due {
+            self.last_heartbeat = now;
+            match self.write_frontier(frontier).await {
+                Ok(true) => {
+                    self.tracker.persisted(frontier.sequence, now);
+                    self.stats.frontier = self.tracker.frontier();
+                }
+                Ok(false) => {
+                    error!(
+                        partition = self.cfg.partition,
+                        epoch = ?self.epoch,
+                        "frontier write fenced: a newer owner holds the partition"
+                    );
+                    self.fenced = Some(0);
+                }
+                Err(error) => {
+                    warn!(partition = self.cfg.partition, %error, "frontier persist failed")
+                }
+            }
         }
 
         self.retry_blocked(now).await;
+        self.retry_requests(now).await;
+
+        self.persist_due(now);
 
         if now.saturating_duration_since(self.last_evict) >= self.cfg.evict_every {
             self.last_evict = now;
-            for vehicle in self.scheduler.evict_idle(now) {
+            let dirty = &self.dirty;
+            let evicted = self
+                .scheduler
+                .evict_idle_except(now, |vehicle| dirty.contains_key(&vehicle));
+            for vehicle in evicted {
+                self.persisted_base.remove(&vehicle);
                 let _ = self.store.expire_idle(vehicle).await;
                 self.active_meta.remove(&vehicle);
+                self.requests.remove(&vehicle);
+                self.sticky.remove(&vehicle);
                 self.held.remove(&vehicle);
                 self.pending_reset.remove(&vehicle);
                 self.parked_results.remove(&vehicle);
@@ -587,7 +823,12 @@ where
         let now = Instant::now();
 
         if !self.scheduler.checkpoint(vehicle).is_loaded() {
-            match restore_vehicle(&self.store, vehicle, self.cfg.partition, &self.committer).await {
+            let started = Instant::now();
+            let restored =
+                restore_vehicle(&self.store, vehicle, self.cfg.partition, &self.committer).await;
+            self.metrics
+                .checkpoint_restore_seconds(started.elapsed().as_secs_f64());
+            match restored {
                 Ok(restored) => {
                     if let Some(reason) = restored.reset {
                         // Carry the stored revision so the reset's commit CASes against the stale checkpoint.
@@ -599,7 +840,22 @@ where
                             },
                         );
                     }
+                    self.persisted_base.insert(vehicle, restored.prior);
                     self.scheduler.set_checkpoint(vehicle, restored.checkpoint);
+                    // Replay from a lagging frontier can queue observations the
+                    // restored (persisted) checkpoint already covers.
+                    for covered in self.scheduler.drain_committed(vehicle) {
+                        let seq = covered.id.sequence;
+                        self.stats.suppressed += 1;
+                        self.metrics.suppressed("committed");
+                        if covered.handle.ack().await.is_ok() {
+                            self.metrics.raw_acked("suppressed");
+                        }
+                        self.tracker.complete(seq);
+                    }
+                    if self.scheduler.head(vehicle).is_none() {
+                        return DispatchOutcome::Skipped;
+                    }
                 }
                 Err(error) => {
                     warn!(vehicle = vehicle.0, %error, "restore failed; blocking vehicle");
@@ -644,10 +900,18 @@ where
         };
 
         let now_us = unix_micros();
+        let dispatch_started = Instant::now();
+        // Only a replica whose cached trip is for exactly this checkpoint.
+        let sticky = checkpoint.as_ref().and_then(|cp| {
+            self.sticky
+                .get(&vehicle)
+                .filter(|(_, revision)| *revision == cp.revision)
+                .map(|(replica, _)| replica.as_str())
+        });
         let dispatched = {
             let head = self.scheduler.head(vehicle).expect("head");
             self.dispatcher
-                .dispatch::<E, RS::Handle>(
+                .dispatch_to::<E, RS::Handle>(
                     vehicle,
                     head,
                     checkpoint.as_ref(),
@@ -655,12 +919,32 @@ where
                     &self.admission,
                     now,
                     now_us,
+                    sticky,
                 )
                 .await
         };
+        self.metrics.job_dispatch_seconds(
+            resolution.region.as_str(),
+            dispatch_started.elapsed().as_secs_f64(),
+        );
 
         match dispatched {
             Ok(d) => {
+                let (deadline, context) = if d.cached {
+                    (self.cfg.sticky_retry, "cached")
+                } else {
+                    (self.cfg.request_retry, "full")
+                };
+                self.metrics.solve_request(context, "dispatch");
+                self.requests.insert(vehicle, (d.request, now + deadline));
+                if self.metrics.sample_probe() {
+                    self.metrics
+                        .job_build_seconds(resolution.region.as_str(), d.built_for.as_secs_f64());
+                    self.metrics.job_publish_seconds(
+                        resolution.region.as_str(),
+                        d.published_for.as_secs_f64(),
+                    );
+                }
                 let pending = self.pending_reset.remove(&vehicle);
                 let reset = d.reset.or(pending.map(|p| p.reason));
                 // Fall back to the restore's stored `prior` so a state-lost reset CASes against the stale revision, not `None`.
@@ -684,6 +968,7 @@ where
                 );
                 if self.scheduler.activate(vehicle, d.job).is_err() {
                     self.active_meta.remove(&vehicle);
+                    self.requests.remove(&vehicle);
                     return DispatchOutcome::Skipped;
                 }
                 self.held.remove(&vehicle);
@@ -767,9 +1052,6 @@ where
         decision: Decision<E>,
         result_delivery: Option<ParkedResult<E, XS::Handle>>,
     ) {
-        let _guard = self.drain.begin();
-        let now = Instant::now();
-
         let Some(meta) = self.active_meta.get(&vehicle).cloned() else {
             if let Some(delivery) = result_delivery {
                 let _ = delivery.handle.ack().await;
@@ -814,33 +1096,93 @@ where
         );
         let next = plan.next.clone();
 
-        let commit_start = Instant::now();
-        match self
-            .committer
-            .commit(vehicle, self.cfg.partition, plan, meta.expected_base, raw)
-            .await
-        {
+        let committer = self.committer.clone();
+        let partition = self.cfg.partition;
+        let expected_base = meta.expected_base;
+        let sampled = self.metrics.sample_probe();
+        let started = Instant::now();
+        let guard = self.drain.begin();
+        self.commits.push(Box::pin(async move {
+            let result = committer
+                .commit_sampled(vehicle, partition, plan, expected_base, raw, sampled)
+                .await;
+            drop(guard);
+            CommitCompletion {
+                vehicle,
+                next,
+                result_delivery,
+                started,
+                completed: Instant::now(),
+                sampled,
+                is_terminal,
+                terminal_reason,
+                reset_reason,
+                result,
+            }
+        }));
+    }
+
+    async fn finish_commit(&mut self, completion: CommitCompletion<E, XS::Handle, S::Error>) {
+        let CommitCompletion {
+            vehicle,
+            next,
+            result_delivery,
+            started,
+            completed,
+            sampled,
+            is_terminal,
+            terminal_reason,
+            reset_reason,
+            result,
+        } = completion;
+        let now = Instant::now();
+        if sampled {
+            self.metrics
+                .commit_stage_seconds("handoff", now.duration_since(completed).as_secs_f64());
+        }
+
+        match result {
             Ok(committed) => {
                 self.scheduler
                     .set_checkpoint(vehicle, CheckpointState::Present(next));
                 if let Ok(finished) = self.scheduler.finish(vehicle, now) {
                     let seq = finished.observation.id.sequence;
-                    if finished.observation.handle.ack().await.is_ok() {
+                    let raw_ack_started = Instant::now();
+                    let raw_acked = finished.observation.handle.ack().await;
+                    if sampled {
+                        self.metrics.commit_stage_seconds(
+                            "raw_ack",
+                            raw_ack_started.elapsed().as_secs_f64(),
+                        );
+                    }
+                    if raw_acked.is_ok() {
                         self.metrics.raw_acked("committed");
                     }
                     if let Some(delivery) = result_delivery {
+                        let result_ack_started = Instant::now();
                         let _ = delivery.handle.ack().await;
+                        if sampled {
+                            self.metrics.commit_stage_seconds(
+                                "result_ack",
+                                result_ack_started.elapsed().as_secs_f64(),
+                            );
+                        }
                     }
-                    self.tracker.complete(seq);
+                    if self.cfg.commit.mode == CommitMode::Deferred {
+                        self.defer_completion(vehicle, seq, now);
+                    } else {
+                        self.tracker.complete(seq);
+                    }
                     drop(finished.job); // releases the admission permit
                 }
                 self.active_meta.remove(&vehicle);
+                self.requests.remove(&vehicle);
                 self.pending_reset.remove(&vehicle);
                 self.blocked.remove(&vehicle);
                 self.stats.committed += 1;
                 let kind = if is_terminal { "terminal" } else { "matched" };
                 self.metrics
-                    .commit_seconds(kind, commit_start.elapsed().as_secs_f64());
+                    .commit_seconds(kind, started.elapsed().as_secs_f64());
                 self.metrics.output_bytes(committed.bytes as u64);
                 // A reset commit emits the reset before the matched/terminal output.
                 if let Some(reason) = reset_reason {
@@ -855,7 +1197,7 @@ where
                 if is_terminal {
                     self.stats.terminal += 1;
                 }
-                if reset_opt.is_some() {
+                if reset_reason.is_some() {
                     self.stats.resets += 1;
                 }
                 self.stats.frontier = self.tracker.frontier();
@@ -871,12 +1213,17 @@ where
                 if let Ok(restored) =
                     restore_vehicle(&self.store, vehicle, self.cfg.partition, &self.committer).await
                 {
+                    self.persisted_base.insert(vehicle, restored.prior);
                     self.scheduler.set_checkpoint(vehicle, restored.checkpoint);
                 }
                 if let Some(delivery) = result_delivery {
                     self.blocked_results.insert(vehicle, delivery);
                 }
                 self.blocked.insert(vehicle, now + self.cfg.blocked_retry);
+            }
+            Err(CommitError::Fenced { owner }) => {
+                error!(vehicle = vehicle.0, owner, "commit fenced by a newer owner");
+                self.fenced = Some(owner);
             }
             Err(error) if is_permanent_commit_error(&error) => {
                 self.quarantine_vehicle(vehicle, &error);
@@ -887,6 +1234,225 @@ where
                     self.blocked_results.insert(vehicle, delivery);
                 }
                 self.blocked.insert(vehicle, now + self.cfg.blocked_retry);
+            }
+        }
+    }
+
+    /// Persist the partition frontier, fenced on this owner's epoch when it
+    /// holds one. `Ok(false)` means a newer owner has taken the partition.
+    async fn write_frontier(&mut self, frontier: PartitionFrontier) -> Result<bool, S::Error> {
+        match self.epoch {
+            Some(epoch) => self.store.set_frontier_fenced(frontier, epoch).await,
+            None => self.store.set_frontier(frontier).await.map(|()| true),
+        }
+    }
+
+    /// Record a [`CommitMode::Deferred`] commit of `seq`, persisting the
+    /// vehicle once enough commits are pending.
+    fn defer_completion(&mut self, vehicle: VehicleId, seq: u64, now: Instant) {
+        let dirty = self.dirty.entry(vehicle).or_insert_with(|| Dirty {
+            sequences: Vec::new(),
+            since: now,
+            in_flight: false,
+            retry_at: None,
+        });
+        if dirty.sequences.is_empty() {
+            dirty.since = now;
+        }
+        dirty.sequences.push(seq);
+        self.unpersisted.insert(seq);
+        if dirty.sequences.len() >= self.cfg.checkpoint.every {
+            self.start_persist(vehicle, now, false);
+        }
+    }
+
+    /// Persist every vehicle whose deferred commits have waited long enough or
+    /// grown numerous enough, within the in-flight bound.
+    fn persist_due(&mut self, now: Instant) {
+        if self.dirty.is_empty() {
+            return;
+        }
+        let policy = self.cfg.checkpoint;
+        let due: Vec<VehicleId> = self
+            .dirty
+            .iter()
+            .filter(|(_, dirty)| {
+                !dirty.in_flight
+                    && dirty.retry_at.is_none_or(|at| at <= now)
+                    && (dirty.sequences.len() >= policy.every
+                        || now.saturating_duration_since(dirty.since) >= policy.interval)
+            })
+            .map(|(&vehicle, _)| vehicle)
+            .collect();
+        for vehicle in due {
+            if !self.start_persist(vehicle, now, false) {
+                break;
+            }
+        }
+    }
+
+    /// Start persisting `vehicle`'s current checkpoint, covering every commit
+    /// deferred so far. Returns `false` when the in-flight bound is reached.
+    fn start_persist(&mut self, vehicle: VehicleId, now: Instant, unbounded: bool) -> bool {
+        if !unbounded && self.persists.len() >= self.cfg.checkpoint.in_flight {
+            return false;
+        }
+        let Some(dirty) = self.dirty.get_mut(&vehicle) else {
+            return true;
+        };
+        if dirty.in_flight || dirty.sequences.is_empty() {
+            return true;
+        }
+        let Some(checkpoint) = self.scheduler.checkpoint(vehicle).present().cloned() else {
+            return true;
+        };
+        dirty.in_flight = true;
+        dirty.retry_at = None;
+        let sequences = core::mem::take(&mut dirty.sequences);
+        let base = self.persisted_base.get(&vehicle).copied().flatten();
+        let committer = self.committer.clone();
+        let revision = checkpoint.revision;
+        let guard = self.drain.begin();
+        self.persists.push(Box::pin(async move {
+            let result = committer.persist(vehicle, base, &checkpoint).await;
+            drop(guard);
+            PersistCompletion {
+                vehicle,
+                revision,
+                sequences,
+                started: now,
+                result,
+            }
+        }));
+        true
+    }
+
+    /// Complete the frontier over a persisted vehicle's commits, or keep them
+    /// deferred and retry later.
+    async fn finish_persist(&mut self, completion: PersistCompletion<S::Error>) {
+        let PersistCompletion {
+            vehicle,
+            revision,
+            sequences,
+            started,
+            result,
+        } = completion;
+        let now = Instant::now();
+        self.metrics.commit_stage_seconds(
+            "checkpoint_persist",
+            now.saturating_duration_since(started).as_secs_f64(),
+        );
+        let mut adopted = false;
+        let persisted = match result {
+            Ok(DirectOutcome::Committed | DirectOutcome::AlreadyCommitted) => true,
+            Ok(DirectOutcome::Conflict { actual }) => {
+                adopted = self.adopt_stored_base(vehicle, revision, actual, now).await;
+                false
+            }
+            Ok(DirectOutcome::Busy { pending }) => {
+                warn!(vehicle = vehicle.0, %pending, "deferred checkpoint waits on a staged record");
+                false
+            }
+            Ok(DirectOutcome::Fenced { owner }) => {
+                error!(
+                    vehicle = vehicle.0,
+                    owner, "deferred checkpoint fenced by a newer owner"
+                );
+                self.fenced = Some(owner);
+                false
+            }
+            Err(error) => {
+                warn!(vehicle = vehicle.0, %error, "deferred checkpoint persist failed; will retry");
+                false
+            }
+        };
+        if persisted {
+            self.stats.persisted += 1;
+            self.persisted_base.insert(vehicle, Some(revision));
+            for seq in &sequences {
+                self.unpersisted.remove(seq);
+                self.tracker.complete(*seq);
+            }
+            self.stats.frontier = self.tracker.frontier();
+        }
+        let Some(dirty) = self.dirty.get_mut(&vehicle) else {
+            return;
+        };
+        dirty.in_flight = false;
+        if !persisted {
+            // Retain the commits, oldest first, and back off before retrying,
+            // unless the base was just corrected and the retry should succeed.
+            let newer = core::mem::replace(&mut dirty.sequences, sequences);
+            dirty.sequences.extend(newer);
+            dirty.retry_at = Some(if adopted {
+                now
+            } else {
+                now + self.cfg.blocked_retry
+            });
+        } else if dirty.sequences.is_empty() {
+            self.dirty.remove(&vehicle);
+        } else if dirty.sequences.len() >= self.cfg.checkpoint.every {
+            self.start_persist(vehicle, now, false);
+        }
+    }
+
+    /// Resolve a deferred persist that found `actual` stored for `vehicle`
+    /// instead of the base this owner expected. Returns whether the vehicle's
+    /// base now matches the store.
+    ///
+    /// An earlier owner can save a vehicle after this owner restored it but
+    /// before this owner first saves it. Revisions are sequences of the one
+    /// partition log and solves are deterministic, so a stored revision at or
+    /// behind ours is a point this owner's history has passed: once a fenced
+    /// write confirms this owner still holds the newest epoch, it adopts that
+    /// revision as the base. A stored revision ahead of ours is left alone; a
+    /// later persist meets it once this owner has replayed past it.
+    async fn adopt_stored_base(
+        &mut self,
+        vehicle: VehicleId,
+        revision: Revision,
+        actual: Option<Revision>,
+        now: Instant,
+    ) -> bool {
+        let behind = actual.is_none_or(|stored| stored <= revision);
+        if self.epoch.is_none() || !behind {
+            warn!(
+                vehicle = vehicle.0,
+                ?actual,
+                ?revision,
+                "deferred checkpoint lost its base; frontier held for replay"
+            );
+            return false;
+        }
+        let frontier = PartitionFrontier {
+            partition: self.cfg.partition,
+            sequence: self.tracker.frontier(),
+        };
+        match self.write_frontier(frontier).await {
+            Ok(true) => {
+                self.last_heartbeat = now;
+                self.tracker.persisted(frontier.sequence, now);
+                warn!(
+                    vehicle = vehicle.0,
+                    ?actual,
+                    ?revision,
+                    "an earlier owner saved this vehicle; adopting its revision as the base"
+                );
+                self.persisted_base.insert(vehicle, actual);
+                true
+            }
+            Ok(false) => {
+                error!(
+                    partition = self.cfg.partition,
+                    epoch = ?self.epoch,
+                    "frontier write fenced: a newer owner holds the partition"
+                );
+                self.fenced = Some(0);
+                false
+            }
+            Err(error) => {
+                warn!(vehicle = vehicle.0, %error, "ownership check failed; will retry the persist");
+                false
             }
         }
     }
@@ -1030,6 +1596,11 @@ where
             .collect();
 
         for vehicle in due {
+            if self.cfg.commit.mode == CommitMode::Deferred {
+                // A deferred commit stages nothing in the store.
+                self.retry_unprepared(vehicle, now).await;
+                continue;
+            }
             let prepared = match self.store.load(vehicle).await {
                 Ok((_, prepared)) => prepared,
                 Err(error) => {
@@ -1078,6 +1649,15 @@ where
             return;
         };
 
+        if self.cfg.commit.mode == CommitMode::Deferred {
+            // The failed commit wrote nothing but possibly some of its outputs,
+            // and the in-memory checkpoint (newer than the store's) is still
+            // the one it planned against. Re-dispatch the same head: the
+            // deterministic re-solve republishes identical, deduplicated ids.
+            self.retry_from_memory(vehicle);
+            return;
+        }
+
         let restored = match restore_vehicle(
             &self.store,
             vehicle,
@@ -1113,6 +1693,12 @@ where
                 },
             );
         }
+        self.retry_from_memory(vehicle);
+    }
+
+    /// Roll a blocked commit back so its head is dispatched again against the
+    /// vehicle's current in-memory checkpoint.
+    fn retry_from_memory(&mut self, vehicle: VehicleId) {
         if let Some(delivery) = self.blocked_results.remove(&vehicle) {
             self.parked_results
                 .entry(vehicle)
@@ -1123,6 +1709,7 @@ where
             drop(job);
         }
         self.active_meta.remove(&vehicle);
+        self.requests.remove(&vehicle);
         self.blocked.remove(&vehicle);
         self.held.remove(&vehicle);
     }
@@ -1149,6 +1736,53 @@ where
             let _ = delivery.handle.ack().await;
         }
         self.stats.frontier = self.tracker.frontier();
+    }
+
+    /// A core request can vanish while its raw observation remains owned here.
+    /// Re-send the identical bytes until a result starts the checkpoint commit.
+    async fn retry_requests(&mut self, now: Instant) {
+        let due: Vec<VehicleId> = self
+            .requests
+            .iter()
+            .filter(|(_, (_, at))| *at <= now)
+            .map(|(&vehicle, _)| vehicle)
+            .collect();
+        for vehicle in due {
+            if self.blocked.contains_key(&vehicle) || self.scheduler.active(vehicle).is_none() {
+                continue;
+            }
+            // The addressed replica may be gone; stop steering to it.
+            self.sticky.remove(&vehicle);
+            self.metrics.solve_request("full", "timeout");
+            let Some((request, at)) = self.requests.get_mut(&vehicle) else {
+                continue;
+            };
+            if let Err(error) = self.dispatcher.republish::<E>(request).await {
+                warn!(vehicle = vehicle.0, %error, "transient solve request retry failed");
+            }
+            *at = Instant::now() + self.cfg.request_retry;
+        }
+    }
+
+    /// A sticky replica could not supply the trip for the active job: resend the
+    /// retained full request now rather than waiting for the retry deadline.
+    async fn resend_after_trip_miss(&mut self, vehicle: VehicleId, job: JobId, now: Instant) {
+        self.sticky.remove(&vehicle);
+        let active = self
+            .scheduler
+            .active(vehicle)
+            .is_some_and(|active| active.id == job);
+        if !active || self.blocked.contains_key(&vehicle) {
+            return;
+        }
+        self.metrics.solve_request("full", "trip_miss");
+        let Some((request, at)) = self.requests.get_mut(&vehicle) else {
+            return;
+        };
+        if let Err(error) = self.dispatcher.republish::<E>(request).await {
+            warn!(vehicle = vehicle.0, %error, "full resend after trip miss failed");
+        }
+        *at = now + self.cfg.request_retry;
     }
 
     /// Re-attempt dispatch for every admission-held vehicle. A saturated region
@@ -1237,32 +1871,112 @@ fn unix_micros() -> i64 {
 mod tests {
     use super::*;
 
+    use core::sync::atomic::{AtomicUsize, Ordering};
+
     use async_nats::HeaderMap;
     use chrono::{DateTime, Utc};
     use geo::Point;
     use routers_network::mock::MockEntryId;
-    use routers_transition::matcher::Trip;
+    use routers_transition::matcher::{Origin, Trip};
+    use tokio::sync::Notify;
 
     use crate::bus::Wire;
     use crate::bus::memory::{MemoryBus, MemoryPublisher, MemorySource};
     use crate::event::{MatchedDiff, Payload, shard_of};
     use crate::orchestrator::admission::AdmissionConfig;
     use crate::partition::partition_of;
-    use crate::protocol::ids::{JobId, ObservationId, OutputId};
+    use crate::protocol::ids::{ObservationId, OutputId};
+    use crate::protocol::job::SolveJob;
+    use crate::protocol::job::SolveRequest;
     use crate::protocol::output::OutputKind;
     use crate::protocol::result::SolveOutcome;
     use crate::store::checkpoint::{CommitPhase, MemoryCheckpointStore, PreparedCommit};
-    use crate::topology::{output_subject, raw_subject, result_subject};
+    use crate::topology::{output_subject, raw_subject, reply_subject};
+
+    /// The inbox every test worker's answers return to.
+    const REPLY: &str = "_INBOX.test";
+
+    /// Every request any test worker sent.
+    const REQUESTS: &str = "solve.req.v1.>";
+
+    /// Decode a sent full request into its verified job.
+    fn full_job(bytes: &[u8]) -> SolveJob<E> {
+        SolveRequest::<E>::decode(bytes)
+            .expect("request decodes")
+            .resolve(|_, _| None)
+            .expect("a full request resolves")
+    }
+
+    fn results_subject(partition: u16) -> String {
+        reply_subject(REPLY, partition)
+    }
 
     type E = MockEntryId;
     type Worker = PartitionWorker<
         E,
         MemoryCheckpointStore,
-        MemoryPublisher<SolveJob<E>>,
+        MemoryPublisher<SolveRequest<E>>,
         MemoryPublisher<CommittedOutput<E>>,
         MemorySource<RawBytes>,
         MemorySource<SolveResult<E>>,
     >;
+
+    struct OverlapPublisher<T: Wire> {
+        inner: MemoryPublisher<T>,
+        active: Arc<AtomicUsize>,
+        peak: Arc<AtomicUsize>,
+        changed: Arc<Notify>,
+    }
+
+    impl<T: Wire> Clone for OverlapPublisher<T> {
+        fn clone(&self) -> Self {
+            Self {
+                inner: self.inner.clone(),
+                active: Arc::clone(&self.active),
+                peak: Arc::clone(&self.peak),
+                changed: Arc::clone(&self.changed),
+            }
+        }
+    }
+
+    impl<T: Wire> OverlapPublisher<T> {
+        fn new(inner: MemoryPublisher<T>) -> Self {
+            Self {
+                inner,
+                active: Arc::new(AtomicUsize::new(0)),
+                peak: Arc::new(AtomicUsize::new(0)),
+                changed: Arc::new(Notify::new()),
+            }
+        }
+    }
+
+    impl<T: Wire + Send + Sync + 'static> Publisher<T> for OverlapPublisher<T> {
+        async fn publish_bytes(
+            &self,
+            subject: &str,
+            msg_id: &str,
+            headers: HeaderMap,
+            bytes: &[u8],
+        ) -> Result<crate::bus::adapter::PublishOutcome, crate::bus::adapter::PublishError>
+        {
+            let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
+            self.peak.fetch_max(active, Ordering::SeqCst);
+            if active == 1 {
+                while self.peak.load(Ordering::SeqCst) < 2 {
+                    self.changed.notified().await;
+                }
+            } else {
+                self.changed.notify_waiters();
+            }
+
+            let result = self
+                .inner
+                .publish_bytes(subject, msg_id, headers, bytes)
+                .await;
+            self.active.fetch_sub(1, Ordering::SeqCst);
+            result
+        }
+    }
 
     /// A Sydney fix; its precision-4 cell is what the test catalog serves.
     fn point() -> Point {
@@ -1355,6 +2069,7 @@ freshness_budget_ms = 30000
             prepared_found: 0,
             prepared_finished: 0,
             prepared_failed: Vec::new(),
+            epoch: None,
         }
     }
 
@@ -1380,17 +2095,22 @@ freshness_budget_ms = 30000
         report: &RecoveryReport,
         shutdown: Shutdown,
     ) -> Worker {
-        let dispatcher = Dispatcher::new(bus.publisher::<SolveJob<E>>(), DispatchConfig::default());
+        let dispatcher = Dispatcher::new(
+            bus.publisher::<SolveRequest<E>>(),
+            DispatchConfig::default(),
+            REPLY.to_owned(),
+        );
         let committer = Committer::new(
             store.clone(),
             bus.publisher::<CommittedOutput<E>>(),
             CommitConfig {
                 publish_attempts: 4,
                 backoff: Duration::ZERO,
+                ..CommitConfig::default()
             },
         );
         let raw = bus.source::<RawBytes>(&raw_subject(u64::from(cfg.partition)));
-        let results = bus.source::<SolveResult<E>>(&result_subject(u64::from(cfg.partition)));
+        let results = bus.source::<SolveResult<E>>(&results_subject(cfg.partition));
         PartitionWorker::new(
             cfg,
             catalog,
@@ -1423,6 +2143,32 @@ freshness_budget_ms = 30000
         assert!(finished_prepared_is_active(Some(active), active));
         assert!(!finished_prepared_is_active(Some(active), foreign));
         assert!(!finished_prepared_is_active(None, active));
+    }
+
+    #[tokio::test]
+    async fn raw_owned_request_is_retained_until_answered_and_retried_on_timeout() {
+        let vehicle = 1_u64;
+        let partition = partition_for(vehicle);
+        let bus = MemoryBus::new();
+        let store = MemoryCheckpointStore::new();
+        let catalog = Arc::new(two_region_catalog());
+        let mut cfg = config(partition);
+        cfg.request_retry = Duration::from_millis(1);
+        let mut worker = build_worker(cfg, catalog, &bus, &store, Shutdown::new());
+        publish_raw_at(&bus, partition, vehicle, 1_775_000_000_000_000, point()).await;
+        enqueue_next_raw(&mut worker).await;
+        worker.pump().await;
+        assert!(worker.requests.contains_key(&VehicleId(vehicle)));
+        let (request, deadline) = worker.requests.get_mut(&VehicleId(vehicle)).unwrap();
+        assert_eq!(request.reply, results_subject(partition));
+        *deadline = Instant::now();
+        worker.retry_requests(Instant::now()).await;
+        assert!(worker.requests[&VehicleId(vehicle)].1 > Instant::now());
+        assert_eq!(
+            bus.published(REQUESTS).len(),
+            1,
+            "memory bus deduplicates the exact retry"
+        );
     }
 
     #[tokio::test]
@@ -1470,13 +2216,13 @@ freshness_budget_ms = 30000
 
         worker.pump().await;
 
-        let published = bus.published("solve.v1.g.>");
+        let published = bus.published(REQUESTS);
         assert_eq!(
             published.len(),
             1,
             "the free region dispatched in this pass"
         );
-        let job = SolveJob::<E>::decode(&published[0].2).expect("job decodes");
+        let job = full_job(&published[0].2);
         assert_eq!(job.identity.vehicle_id, VehicleId(second));
         assert_eq!(job.identity.region, RegionId::new("r2").unwrap());
         assert!(worker.held.contains_key(&VehicleId(first)));
@@ -1529,7 +2275,7 @@ freshness_budget_ms = 30000
         worker.pump().await;
 
         assert!(
-            bus.published("solve.v1.g.>").is_empty(),
+            bus.published(REQUESTS).is_empty(),
             "global pressure stops the round before another region is attempted"
         );
         assert!(worker.held.contains_key(&VehicleId(first)));
@@ -1599,9 +2345,9 @@ freshness_budget_ms = 30000
 
         worker.retry_held().await;
 
-        let published = bus.published("solve.v1.g.>");
+        let published = bus.published(REQUESTS);
         assert_eq!(published.len(), 1, "the free region retried in this pass");
-        let job = SolveJob::<E>::decode(&published[0].2).expect("job decodes");
+        let job = full_job(&published[0].2);
         assert_eq!(job.identity.vehicle_id, expected_vehicle);
         assert!(worker.held.contains_key(&first_retry));
         assert!(!worker.held.contains_key(&expected_vehicle));
@@ -1650,7 +2396,18 @@ freshness_budget_ms = 30000
 
     /// Pull one raw delivery into the scheduler without pumping it, so a test
     /// can arrange a complete dispatch round before exercising the worker.
-    async fn enqueue_next_raw(worker: &mut Worker) {
+    async fn enqueue_next_raw<OP>(
+        worker: &mut PartitionWorker<
+            E,
+            MemoryCheckpointStore,
+            MemoryPublisher<SolveRequest<E>>,
+            OP,
+            MemorySource<RawBytes>,
+            MemorySource<SolveResult<E>>,
+        >,
+    ) where
+        OP: Publisher<CommittedOutput<E>>,
+    {
         let delivery = worker
             .raw
             .next()
@@ -1678,7 +2435,7 @@ freshness_budget_ms = 30000
 
     /// A scripted matcher: every job gets a `Solved` result with an empty diff.
     async fn run_matcher(bus: MemoryBus, shutdown: Shutdown) {
-        let mut jobs = bus.source::<SolveJob<E>>("solve.v1.g.>");
+        let mut jobs = bus.source::<SolveRequest<E>>(REQUESTS);
         let publisher = bus.publisher::<SolveResult<E>>();
         loop {
             tokio::select! {
@@ -1686,7 +2443,13 @@ freshness_budget_ms = 30000
                 () = shutdown.triggered() => break,
                 maybe = jobs.next() => match maybe {
                     Some(Ok(delivery)) => {
-                        let job = delivery.item;
+                        let reply = delivery
+                            .headers
+                            .get(crate::orchestrator::dispatch::REPLY_HEADER)
+                            .expect("requests carry a reply subject")
+                            .as_str()
+                            .to_owned();
+                        let job = delivery.item.resolve(|_, _| None).expect("full request");
                         let outcome = SolveOutcome::Solved {
                             diff: MatchedDiff {
                                 revision: 1,
@@ -1695,11 +2458,11 @@ freshness_budget_ms = 30000
                             },
                             trip: Trip::new(),
                             converged_through: None,
+                            trip_digest: None,
                         };
                         let result = SolveResult::new(&job, outcome, 0);
-                        let subject = result_subject(u64::from(result.partition()));
                         let _ = publisher
-                            .publish(&subject, &result.msg_id(), HeaderMap::new(), &result)
+                            .publish(&reply, &result.msg_id(), HeaderMap::new(), &result)
                             .await;
                         let _ = delivery.handle.ack().await;
                     }
@@ -1833,6 +2596,229 @@ freshness_budget_ms = 30000
         assert!(store.load(VehicleId(b)).await.unwrap().0.is_some());
     }
 
+    #[tokio::test]
+    async fn independent_vehicle_commits_overlap_durable_io() {
+        let a = 1u64;
+        let b = same_partition_as(a);
+        let partition = partition_for(a);
+        let bus = MemoryBus::new();
+        let store = MemoryCheckpointStore::new();
+        let shutdown = Shutdown::new();
+        let catalog = Arc::new(catalog(30_000));
+
+        publish_raw(&bus, partition, a, 1_775_000_000_000_000).await;
+        publish_raw(&bus, partition, b, 1_775_000_000_000_000).await;
+
+        let output = OverlapPublisher::new(bus.publisher::<CommittedOutput<E>>());
+        let dispatcher = Dispatcher::new(
+            bus.publisher::<SolveRequest<E>>(),
+            DispatchConfig::default(),
+            REPLY.to_owned(),
+        );
+        let committer = Committer::new(
+            store.clone(),
+            output.clone(),
+            CommitConfig {
+                publish_attempts: 1,
+                backoff: Duration::ZERO,
+                ..CommitConfig::default()
+            },
+        );
+        let report = clean_report(partition);
+        let mut worker = PartitionWorker::new(
+            config(partition),
+            catalog.clone(),
+            admission_for(&catalog),
+            store,
+            dispatcher,
+            committer,
+            bus.source::<RawBytes>(&raw_subject(u64::from(partition))),
+            bus.source::<SolveResult<E>>(&results_subject(partition)),
+            &report,
+            shutdown.clone(),
+        );
+
+        enqueue_next_raw(&mut worker).await;
+        enqueue_next_raw(&mut worker).await;
+        worker.pump().await;
+
+        let result_publisher = bus.publisher::<SolveResult<E>>();
+        for (_, _, bytes) in bus.published(REQUESTS) {
+            let job = full_job(&bytes);
+            let result = SolveResult::new(
+                &job,
+                SolveOutcome::Solved {
+                    diff: MatchedDiff {
+                        revision: 1,
+                        downgraded: false,
+                        layers: Vec::new(),
+                    },
+                    trip: Trip::new(),
+                    converged_through: None,
+                    trip_digest: None,
+                },
+                0,
+            );
+            result_publisher
+                .publish(
+                    &results_subject(partition),
+                    &result.msg_id(),
+                    HeaderMap::new(),
+                    &result,
+                )
+                .await
+                .expect("result publishes");
+        }
+
+        for _ in 0..2 {
+            let delivery = worker
+                .results
+                .next()
+                .await
+                .expect("result source stays open")
+                .expect("result decodes");
+            worker.on_result(delivery).await;
+        }
+        assert_eq!(worker.commits.len(), 2);
+
+        for _ in 0..2 {
+            let completion = tokio::time::timeout(Duration::from_secs(1), worker.commits.next())
+                .await
+                .unwrap_or_else(|_| {
+                    panic!(
+                        "commit gate stalled: active={}, peak={}, outputs={}",
+                        output.active.load(Ordering::SeqCst),
+                        output.peak.load(Ordering::SeqCst),
+                        bus.published(&output_subject(u64::from(partition))).len(),
+                    )
+                })
+                .expect("a commit remains");
+            worker.finish_commit(completion).await;
+        }
+
+        assert_eq!(worker.stats.committed, 2);
+        assert_eq!(output.peak.load(Ordering::SeqCst), 2);
+    }
+
+    /// A one-layer trip anchored at `origin`, minted through a real matcher over
+    /// a short road at the fixture point.
+    fn trip_at(origin: Origin) -> Trip<E> {
+        use routers_network::mock::MockNetworkBuilder;
+        use routers_transition::Matcher;
+        use routers_transition::costing::{
+            CostingStrategies, DefaultEmissionCost, DefaultTransitionCost,
+        };
+        use routers_transition::layer::generation::StandardGenerator;
+        use routers_transition::weigh::AllCompute;
+
+        let net = MockNetworkBuilder::new()
+            .node(1, Point::new(151.2090, -33.8688))
+            .node(2, Point::new(151.2100, -33.8688))
+            .edge(1, 2)
+            .build();
+        let costing = CostingStrategies::<DefaultEmissionCost, DefaultTransitionCost, E>::default();
+        let generator = StandardGenerator::new(&net, &costing.emission);
+        let matcher = Matcher::new(&net, &costing, generator, AllCompute::default(), &());
+        let mut trip = matcher.begin();
+        matcher
+            .push(&mut trip, origin)
+            .expect("the fixture point anchors");
+        trip
+    }
+
+    #[tokio::test]
+    async fn a_sticky_answer_steers_the_next_request_and_a_trip_miss_resends_in_full() {
+        let vehicle = 1_u64;
+        let partition = partition_for(vehicle);
+        let bus = MemoryBus::new();
+        let store = MemoryCheckpointStore::new();
+        let catalog = Arc::new(catalog(30_000));
+        let mut worker = build_worker(config(partition), catalog, &bus, &store, Shutdown::new());
+        let replica = "solve.req.v1.g.g1.r.r1.m.replica";
+        let group = "solve.req.v1.g.*.r.*.q.*";
+        let t0 = 1_775_000_000_000_000;
+
+        // First observation: no trip exists yet, so the request goes to the group.
+        publish_raw_at(&bus, partition, vehicle, t0, point()).await;
+        enqueue_next_raw(&mut worker).await;
+        worker.pump().await;
+        let sent = bus.published(group);
+        assert_eq!(sent.len(), 1);
+        let first = SolveRequest::<E>::decode(&sent[0].2)
+            .unwrap()
+            .resolve(|_, _| None)
+            .expect("a first request carries everything");
+
+        // The replica answers, advertising itself; the answer commits.
+        let result = SolveResult::new(
+            &first,
+            SolveOutcome::Solved {
+                diff: MatchedDiff {
+                    revision: 1,
+                    downgraded: false,
+                    layers: Vec::new(),
+                },
+                trip: trip_at(Origin::new(point(), t0)),
+                converged_through: None,
+                trip_digest: None,
+            },
+            0,
+        );
+        let mut headers = HeaderMap::new();
+        headers.insert(STICKY_HEADER, replica);
+        bus.publisher::<SolveResult<E>>()
+            .publish(
+                &results_subject(partition),
+                &result.msg_id(),
+                headers,
+                &result,
+            )
+            .await
+            .unwrap();
+        let delivery = worker.results.next().await.unwrap().unwrap();
+        worker.on_result(delivery).await;
+        let completion = worker.commits.next().await.expect("the answer commits");
+        worker.finish_commit(completion).await;
+        assert_eq!(worker.stats.committed, 1);
+
+        // The next observation resumes that trip: it goes trip-less to the replica.
+        publish_raw_at(&bus, partition, vehicle, t0 + 5_000_000, point()).await;
+        enqueue_next_raw(&mut worker).await;
+        worker.pump().await;
+        let steered = bus.published(replica);
+        assert_eq!(steered.len(), 1, "the resume was steered to the replica");
+        let cached = SolveRequest::<E>::decode(&steered[0].2).unwrap();
+        assert!(cached.is_cached());
+        assert_eq!(bus.published(group).len(), 1, "the group saw nothing new");
+        let (retained, deadline) = &worker.requests[&VehicleId(vehicle)];
+        assert!(
+            !retained.subject.contains(".m."),
+            "a retry targets the group"
+        );
+        assert!(*deadline <= Instant::now() + worker.cfg.sticky_retry);
+
+        // The replica lost the trip: the full request goes to the group at once.
+        let miss = SolveResult::<E>::trip_miss(cached.proof.clone(), 0);
+        bus.publisher::<SolveResult<E>>()
+            .publish(
+                &results_subject(partition),
+                &miss.msg_id(),
+                HeaderMap::new(),
+                &miss,
+            )
+            .await
+            .unwrap();
+        let delivery = worker.results.next().await.unwrap().unwrap();
+        worker.on_result(delivery).await;
+        assert!(worker.commits.is_empty(), "a trip miss is never committed");
+        let resent = bus.published(group);
+        assert_eq!(resent.len(), 2, "the full request was resent to the group");
+        let full = SolveRequest::<E>::decode(&resent[1].2).unwrap();
+        assert!(!full.is_cached());
+        assert_eq!(full.job_id(), cached.job_id(), "the resend is the same job");
+        assert!(!worker.sticky.contains_key(&VehicleId(vehicle)));
+    }
+
     #[tokio::test(start_paused = true)]
     async fn overdue_freshness_target_keeps_unanswered_work_active() {
         let vehicle = 1u64;
@@ -1855,7 +2841,7 @@ freshness_budget_ms = 30000
         );
 
         let out_subject = output_subject(u64::from(partition));
-        let job_filter = "solve.v1.g.>";
+        let job_filter = REQUESTS;
         let driver = {
             let bus = bus.clone();
             let shutdown = shutdown.clone();
@@ -1898,7 +2884,7 @@ freshness_budget_ms = 30000
             shutdown.clone(),
         );
 
-        let job_filter = "solve.v1.g.>";
+        let job_filter = REQUESTS;
         let raw_sub = raw_subject(u64::from(partition));
         let driver = {
             let bus = bus.clone();
@@ -2016,6 +3002,7 @@ freshness_budget_ms = 30000
             CommitConfig {
                 publish_attempts: 4,
                 backoff: Duration::ZERO,
+                ..CommitConfig::default()
             },
         );
         committer
@@ -2123,6 +3110,7 @@ freshness_budget_ms = 30000
             prepared_found: 1,
             prepared_finished: 0,
             prepared_failed: vec![VehicleId(vehicle)],
+            epoch: None,
         };
         let worker = build_worker_with(
             config(partition),

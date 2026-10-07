@@ -8,6 +8,7 @@
 //! and segment travel outside them in [`StoredCheckpoint`] for base compares.
 
 use alloc::sync::Arc;
+use core::future::Future;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, MutexGuard};
 
@@ -21,6 +22,7 @@ use crate::event::VehicleId;
 use crate::protocol::ids::{
     GraphVersion, ObservationId, OutputId, RegionId, Revision, SchemaVersion, SegmentId,
 };
+use crate::protocol::job::TripDigest;
 
 /// The committed resume state for one vehicle: what a matcher needs to carry
 /// its match on from the last decision, plus staleness provenance. Generic over
@@ -49,12 +51,57 @@ pub struct VehicleCheckpoint<E: Entry> {
     pub region: RegionId,
     /// The routing topology under which `region` was selected.
     pub routing_version: u64,
+    /// The digest of `trip`'s encoding, set by [`seal`](Self::seal), so the
+    /// next job's id is built without re-serialising the trip.
+    pub trip_digest: Option<TripDigest>,
+}
+
+/// Every [`VehicleCheckpoint`] field after `trip`, in declaration order. postcard
+/// encodes a struct as the concatenation of its fields, so the checkpoint's
+/// encoding is the trip's encoding followed by this tail's.
+#[derive(Serialize)]
+struct CheckpointTail<'a> {
+    last_input: ObservationId,
+    revision: Revision,
+    segment: SegmentId,
+    finalized_through: Option<i64>,
+    graph: &'a GraphVersion,
+    schema: SchemaVersion,
+    region: &'a RegionId,
+    routing_version: u64,
+    trip_digest: Option<TripDigest>,
 }
 
 impl<E: Entry> VehicleCheckpoint<E> {
     /// Serialise to the opaque bytes the store persists (postcard).
     pub fn encode(&self) -> Result<Vec<u8>, postcard::Error> {
         postcard::to_allocvec(self)
+    }
+
+    /// Record the trip's digest and return the checkpoint's encoding,
+    /// serialising the trip exactly once: its bytes are both digested and
+    /// reused as the leading part of the checkpoint's encoding.
+    pub fn seal(&mut self) -> Result<StoredCheckpoint, postcard::Error> {
+        let mut bytes = postcard::to_allocvec(&self.trip)?;
+        let digest = TripDigest::of_bytes(&bytes);
+        self.trip_digest = Some(digest);
+        let tail = CheckpointTail {
+            last_input: self.last_input,
+            revision: self.revision,
+            segment: self.segment,
+            finalized_through: self.finalized_through,
+            graph: &self.graph,
+            schema: self.schema,
+            region: &self.region,
+            routing_version: self.routing_version,
+            trip_digest: self.trip_digest,
+        };
+        bytes.extend_from_slice(&postcard::to_allocvec(&tail)?);
+        Ok(StoredCheckpoint {
+            revision: self.revision,
+            segment: self.segment,
+            bytes,
+        })
     }
 
     /// Decode a checkpoint the store handed back as opaque bytes.
@@ -224,6 +271,23 @@ pub enum PrepareOutcome {
     Busy { pending: OutputId },
 }
 
+/// The result of a [`commit_direct`](CheckpointStore::commit_direct) attempt.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DirectOutcome {
+    /// The checkpoint was installed: the stored revision matched `expected_base`.
+    Committed,
+    /// The stored revision already equals the next revision; an earlier attempt
+    /// of this exact commit landed, so this retry is a safe no-op.
+    AlreadyCommitted,
+    /// The stored revision did not match `expected_base`; another commit won.
+    Conflict { actual: Option<Revision> },
+    /// A staged prepared record exists and must be re-driven by recovery first.
+    Busy { pending: OutputId },
+    /// A newer owner of the vehicle's partition already wrote it: this writer's
+    /// ownership epoch is stale and it must stop.
+    Fenced { owner: u64 },
+}
+
 /// The durable home of every vehicle's committed checkpoint and in-flight
 /// prepared commit, plus each partition's raw-journal frontier. Persists opaque
 /// bytes and small records, guaranteeing the atomicity each method documents.
@@ -246,30 +310,82 @@ pub trait CheckpointStore: Clone + Send + Sync + 'static {
     /// against `expected_base` (`None` demands no checkpoint), yielding
     /// [`Conflict`](PrepareOutcome::Conflict) or a staged
     /// [`Prepared`](PrepareOutcome::Prepared).
-    async fn prepare(
+    fn prepare(
         &self,
         vehicle: VehicleId,
         partition: u16,
         prepared: PreparedCommit,
-    ) -> Result<PrepareOutcome, Self::Error>;
+    ) -> impl Future<Output = Result<PrepareOutcome, Self::Error>> + Send;
 
     /// Mark the vehicle's prepared commit as [`CommitPhase::Published`].
     /// Idempotent for the same `output`; errors on a different staged output;
     /// succeeds as a no-op when already promoted away.
-    async fn mark_published(&self, vehicle: VehicleId, output: OutputId)
-    -> Result<(), Self::Error>;
+    fn mark_published(
+        &self,
+        vehicle: VehicleId,
+        output: OutputId,
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send;
 
     /// Promote the vehicle's published prepared commit in `partition`:
     /// atomically install the [`StoredCheckpoint`] and delete the prepared
     /// record. The best-effort partition index may be cleaned separately.
     /// Idempotent when already promoted; errors on a different staged output or
     /// when the record has not reached [`CommitPhase::Published`].
-    async fn promote(
+    fn promote(
         &self,
         vehicle: VehicleId,
         partition: u16,
         output: OutputId,
-    ) -> Result<(), Self::Error>;
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send;
+
+    /// Record a broker-acknowledged publication and promote its checkpoint.
+    ///
+    /// The default preserves the explicit two-step state machine. Stores that
+    /// can atomically promote after the broker acknowledgement may override it
+    /// to avoid an otherwise redundant storage round trip.
+    fn finish_published(
+        &self,
+        vehicle: VehicleId,
+        partition: u16,
+        output: OutputId,
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send {
+        async move {
+            self.mark_published(vehicle, output).await?;
+            self.promote(vehicle, partition, output).await
+        }
+    }
+
+    /// Compare-and-install `checkpoint` in one atomic step, without staging.
+    ///
+    /// Used after the commit's outputs are already broker-acknowledged. It is
+    /// crash-safe only because a deterministic re-solve of the still-unacked raw
+    /// event republishes identical output ids, which the broker deduplicates.
+    ///
+    /// With an `epoch`, the store also records it as the vehicle's owner and
+    /// refuses the write with [`DirectOutcome::Fenced`] if a newer epoch of the
+    /// partition has already written the vehicle.
+    fn commit_direct(
+        &self,
+        vehicle: VehicleId,
+        expected_base: Option<Revision>,
+        checkpoint: StoredCheckpoint,
+        epoch: Option<u64>,
+    ) -> impl Future<Output = Result<DirectOutcome, Self::Error>> + Send;
+
+    /// Take ownership of `partition`: atomically increment and return its
+    /// epoch. Every later write by an older epoch is refused.
+    fn acquire_partition(
+        &self,
+        partition: u16,
+    ) -> impl Future<Output = Result<u64, Self::Error>> + Send;
+
+    /// Set the partition frontier only while `epoch` is still the partition's
+    /// current epoch. `Ok(false)` means a newer owner has taken the partition.
+    fn set_frontier_fenced(
+        &self,
+        frontier: PartitionFrontier,
+        epoch: u64,
+    ) -> impl Future<Output = Result<bool, Self::Error>> + Send;
 
     /// Every staged prepared commit in `partition`, so recovery can re-drive
     /// them. The index is best-effort: a listed vehicle may have been promoted
@@ -298,7 +414,9 @@ pub enum Op {
     Prepare,
     MarkPublished,
     Promote,
+    CommitDirect,
     ListPrepared,
+    Acquire,
     Frontier,
     SetFrontier,
     Expire,
@@ -326,6 +444,8 @@ struct Inner {
     prepared: HashMap<VehicleId, PreparedCommit>,
     index: HashMap<u16, HashSet<VehicleId>>,
     frontiers: HashMap<u16, PartitionFrontier>,
+    epochs: HashMap<u16, u64>,
+    owner_epochs: HashMap<VehicleId, u64>,
     faults: HashSet<Op>,
 }
 
@@ -518,6 +638,70 @@ impl CheckpointStore for MemoryCheckpointStore {
         inner.committed_revisions.insert(vehicle, stored.revision);
         inner.checkpoints.insert(vehicle, stored);
         Ok(())
+    }
+
+    async fn commit_direct(
+        &self,
+        vehicle: VehicleId,
+        expected_base: Option<Revision>,
+        checkpoint: StoredCheckpoint,
+        epoch: Option<u64>,
+    ) -> Result<DirectOutcome, Self::Error> {
+        let mut inner = self.lock();
+        if inner.faults.remove(&Op::CommitDirect) {
+            return Err(MemoryError::Injected);
+        }
+        if let (Some(epoch), Some(&owner)) = (epoch, inner.owner_epochs.get(&vehicle))
+            && owner > epoch
+        {
+            return Ok(DirectOutcome::Fenced { owner });
+        }
+        if let Some(existing) = inner.prepared.get(&vehicle) {
+            return Ok(DirectOutcome::Busy {
+                pending: existing.output,
+            });
+        }
+        let actual = inner.committed_revisions.get(&vehicle).copied();
+        if actual == Some(checkpoint.revision) {
+            return Ok(DirectOutcome::AlreadyCommitted);
+        }
+        if actual != expected_base {
+            return Ok(DirectOutcome::Conflict { actual });
+        }
+        inner
+            .committed_revisions
+            .insert(vehicle, checkpoint.revision);
+        inner.checkpoints.insert(vehicle, checkpoint);
+        if let Some(epoch) = epoch {
+            inner.owner_epochs.insert(vehicle, epoch);
+        }
+        Ok(DirectOutcome::Committed)
+    }
+
+    async fn acquire_partition(&self, partition: u16) -> Result<u64, Self::Error> {
+        let mut inner = self.lock();
+        if inner.faults.remove(&Op::Acquire) {
+            return Err(MemoryError::Injected);
+        }
+        let epoch = inner.epochs.entry(partition).or_default();
+        *epoch += 1;
+        Ok(*epoch)
+    }
+
+    async fn set_frontier_fenced(
+        &self,
+        frontier: PartitionFrontier,
+        epoch: u64,
+    ) -> Result<bool, Self::Error> {
+        let mut inner = self.lock();
+        if inner.faults.remove(&Op::SetFrontier) {
+            return Err(MemoryError::Injected);
+        }
+        if inner.epochs.get(&frontier.partition).copied().unwrap_or(0) != epoch {
+            return Ok(false);
+        }
+        inner.frontiers.insert(frontier.partition, frontier);
+        Ok(true)
     }
 
     async fn list_prepared(
@@ -867,6 +1051,94 @@ mod tests {
     }
 
     // Flatten each op's result to `Result<(), MemoryError>` for the fault table.
+    fn stored(revision: u64) -> StoredCheckpoint {
+        StoredCheckpoint {
+            revision: Revision(revision),
+            segment: SegmentId(1),
+            bytes: vec![revision as u8],
+        }
+    }
+
+    #[tokio::test]
+    async fn commit_direct_installs_retries_and_conflicts() {
+        let s = store();
+        let v = VehicleId(3);
+        assert_eq!(
+            s.commit_direct(v, None, stored(5), None).await.unwrap(),
+            DirectOutcome::Committed
+        );
+        // A retry of the same commit is idempotent even though its base is stale.
+        assert_eq!(
+            s.commit_direct(v, None, stored(5), None).await.unwrap(),
+            DirectOutcome::AlreadyCommitted
+        );
+        assert_eq!(
+            s.commit_direct(v, Some(Revision(4)), stored(9), None)
+                .await
+                .unwrap(),
+            DirectOutcome::Conflict {
+                actual: Some(Revision(5))
+            }
+        );
+        assert_eq!(
+            s.commit_direct(v, Some(Revision(5)), stored(9), None)
+                .await
+                .unwrap(),
+            DirectOutcome::Committed
+        );
+        let (checkpoint, prepared) = s.load(v).await.unwrap();
+        assert_eq!(checkpoint.revision(), Some(Revision(9)));
+        assert!(prepared.is_none());
+        assert!(
+            s.snapshot().index.is_empty(),
+            "direct commits keep no index"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_newer_partition_epoch_fences_the_older_owner() {
+        let s = store();
+        let v = VehicleId(3);
+        let old = s.acquire_partition(9).await.unwrap();
+        let new = s.acquire_partition(9).await.unwrap();
+        assert!(new > old);
+
+        // The newer owner writes the vehicle; the older owner is then refused.
+        assert_eq!(
+            s.commit_direct(v, None, stored(5), Some(new))
+                .await
+                .unwrap(),
+            DirectOutcome::Committed
+        );
+        assert_eq!(
+            s.commit_direct(v, Some(Revision(5)), stored(6), Some(old))
+                .await
+                .unwrap(),
+            DirectOutcome::Fenced { owner: new }
+        );
+        // Frontier writes are fenced on the partition's current epoch.
+        let frontier = PartitionFrontier {
+            partition: 9,
+            sequence: 50,
+        };
+        assert!(!s.set_frontier_fenced(frontier, old).await.unwrap());
+        assert!(s.set_frontier_fenced(frontier, new).await.unwrap());
+        assert_eq!(s.frontier(9).await.unwrap(), Some(frontier));
+    }
+
+    #[tokio::test]
+    async fn commit_direct_defers_to_a_staged_record() {
+        let s = store();
+        let v = VehicleId(7);
+        s.prepare(v, 0, prepared(0x1, None)).await.unwrap();
+        assert_eq!(
+            s.commit_direct(v, None, stored(5), None).await.unwrap(),
+            DirectOutcome::Busy {
+                pending: OutputId(0x1)
+            }
+        );
+    }
+
     async fn invoke(s: &MemoryCheckpointStore, op: Op) -> Result<(), MemoryError> {
         let v = VehicleId(7);
         match op {
@@ -874,7 +1146,21 @@ mod tests {
             Op::Prepare => s.prepare(v, 0, prepared(0x1, None)).await.map(|_| ()),
             Op::MarkPublished => s.mark_published(v, OutputId(0x1)).await,
             Op::Promote => s.promote(v, 0, OutputId(0x1)).await,
+            Op::CommitDirect => s
+                .commit_direct(
+                    v,
+                    None,
+                    StoredCheckpoint {
+                        revision: Revision(1),
+                        segment: SegmentId(1),
+                        bytes: vec![1],
+                    },
+                    None,
+                )
+                .await
+                .map(|_| ()),
             Op::ListPrepared => s.list_prepared(0).await.map(|_| ()),
+            Op::Acquire => s.acquire_partition(0).await.map(|_| ()),
             Op::Frontier => s.frontier(0).await.map(|_| ()),
             Op::SetFrontier => {
                 s.set_frontier(PartitionFrontier {
@@ -894,7 +1180,9 @@ mod tests {
             Op::Prepare,
             Op::MarkPublished,
             Op::Promote,
+            Op::CommitDirect,
             Op::ListPrepared,
+            Op::Acquire,
             Op::Frontier,
             Op::SetFrontier,
             Op::Expire,
@@ -951,6 +1239,41 @@ mod tests {
     }
 
     #[test]
+    fn sealing_digests_the_trip_bytes_it_reuses() {
+        let mut checkpoint = VehicleCheckpoint::<MockEntryId> {
+            trip: Trip::new(),
+            last_input: obs(485, 42),
+            revision: Revision(42),
+            segment: SegmentId(7),
+            finalized_through: Some(1_700_000_000_000_000),
+            graph: GraphVersion::new("g1").unwrap(),
+            schema: SCHEMA_VERSION,
+            region: RegionId::new("r1").unwrap(),
+            routing_version: 1,
+            trip_digest: None,
+        };
+        let sealed = checkpoint.seal().expect("seal");
+
+        let digest = TripDigest::of(&checkpoint.trip);
+        assert_eq!(checkpoint.trip_digest, Some(digest));
+        assert_eq!(
+            sealed.bytes,
+            checkpoint.encode().unwrap(),
+            "the spliced encoding is exactly the struct's encoding"
+        );
+        assert_eq!(
+            (sealed.revision, sealed.segment),
+            (Revision(42), SegmentId(7))
+        );
+        let decoded = VehicleCheckpoint::<MockEntryId>::decode(&sealed.bytes).unwrap();
+        assert_eq!(
+            decoded.trip_digest,
+            Some(digest),
+            "restore keeps the digest"
+        );
+    }
+
+    #[test]
     fn vehicle_checkpoint_round_trips() {
         let checkpoint = VehicleCheckpoint::<MockEntryId> {
             trip: Trip::new(),
@@ -962,6 +1285,7 @@ mod tests {
             schema: SCHEMA_VERSION,
             region: RegionId::new("r1").unwrap(),
             routing_version: 1,
+            trip_digest: None,
         };
 
         let bytes = checkpoint.encode().expect("encode");
@@ -990,6 +1314,7 @@ mod tests {
             schema: SCHEMA_VERSION,
             region: RegionId::new("r").unwrap(),
             routing_version: 1,
+            trip_digest: None,
         };
 
         let stored = checkpoint.to_stored().expect("to_stored");

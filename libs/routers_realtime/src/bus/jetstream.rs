@@ -9,6 +9,7 @@ use core::future::IntoFuture;
 use core::marker::PhantomData;
 use core::num::NonZeroUsize;
 use core::time::Duration;
+use std::time::Instant;
 
 use anyhow::anyhow;
 use async_nats::HeaderMap;
@@ -21,6 +22,7 @@ use crate::bus::adapter::{
     AckHandle, Consumer, Delivery, PublishError, PublishOutcome, Publisher, Source,
 };
 use crate::bus::{Wire, inbound};
+use crate::metrics::Metrics;
 use crate::protocol::ids::headers::{msg_id_of, stamp_msg_id};
 
 /// The continuous pull-consumer message stream a [`JetStreamSource`] drives.
@@ -134,6 +136,7 @@ fn jetstream_published_at(unix_nanos: i128) -> Option<SystemTime> {
 pub struct JetStreamPublisher<T> {
     context: jetstream::Context,
     ack_timeout: Duration,
+    metrics: Option<Metrics>,
     _marker: PhantomData<fn() -> T>,
 }
 
@@ -145,8 +148,16 @@ impl<T> JetStreamPublisher<T> {
         Self {
             context,
             ack_timeout,
+            metrics: None,
             _marker: PhantomData,
         }
+    }
+
+    /// Sample client-send and broker-ack portions of output publication.
+    #[must_use]
+    pub fn with_metrics(mut self, metrics: Metrics) -> Self {
+        self.metrics = Some(metrics);
+        self
     }
 }
 
@@ -156,6 +167,7 @@ impl<T> Clone for JetStreamPublisher<T> {
         Self {
             context: self.context.clone(),
             ack_timeout: self.ack_timeout,
+            metrics: self.metrics.clone(),
             _marker: PhantomData,
         }
     }
@@ -170,17 +182,30 @@ impl<T: Wire + Send + Sync + 'static> Publisher<T> for JetStreamPublisher<T> {
         bytes: &[u8],
     ) -> Result<PublishOutcome, PublishError> {
         stamp_msg_id(&mut headers, msg_id);
+        let sampled = self.metrics.as_ref().is_some_and(Metrics::sample_probe);
 
         let operation = async {
+            let send_started = Instant::now();
             let pending = self
                 .context
                 .publish_with_headers(subject.to_owned(), headers, bytes.to_vec().into())
                 .await
                 .map_err(|err| PublishError::Failed(anyhow!("jetstream publish failed: {err}")))?;
-            pending
-                .into_future()
-                .await
-                .map_err(|err| PublishError::Failed(anyhow!("jetstream publish ack failed: {err}")))
+            if sampled && let Some(metrics) = &self.metrics {
+                metrics.commit_stage_seconds(
+                    "output_client_send",
+                    send_started.elapsed().as_secs_f64(),
+                );
+            }
+            let ack_started = Instant::now();
+            let ack = pending.into_future().await.map_err(|err| {
+                PublishError::Failed(anyhow!("jetstream publish ack failed: {err}"))
+            });
+            if sampled && let Some(metrics) = &self.metrics {
+                metrics
+                    .commit_stage_seconds("output_broker_ack", ack_started.elapsed().as_secs_f64());
+            }
+            ack
         };
 
         match tokio::time::timeout(self.ack_timeout, operation).await {

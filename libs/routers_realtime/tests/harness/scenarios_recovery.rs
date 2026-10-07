@@ -63,6 +63,412 @@ async fn crash_after_publish_before_promote_recovers_once() {
     assert!(prepared.is_none(), "the prepared record was promoted away");
 }
 
+/// Direct mode keeps no prepared record: a crash after the output is durable
+/// but before the checkpoint lands re-drives the still-unacked raw event, and
+/// the deterministic re-solve republishes the same output id, which dedups.
+#[tokio::test(start_paused = true)]
+async fn direct_crash_after_publish_before_checkpoint_redrives_once() {
+    let fleet = Fleet::bent_road().with_commit_mode(FleetCommitMode::Direct);
+    let vehicle = 1u64;
+    let partition = fleet.partition_of(vehicle);
+
+    fleet.store.fail_next(Op::CommitDirect);
+    let matcher = fleet.spawn_matcher(MatcherBehaviour::engine());
+    let orchestrator = fleet.spawn_orchestrator(partition);
+    let observation = fleet.ingest(vehicle, obs_ts(0), road_points()[0]).await;
+
+    advance_until(|| !published_outputs(&fleet.bus, partition).is_empty()).await;
+    orchestrator.crash();
+    let first = published_outputs(&fleet.bus, partition);
+    assert!(
+        fleet.store.snapshot().prepared.is_empty(),
+        "direct commits never stage"
+    );
+    assert!(
+        fleet
+            .store
+            .load(VehicleId(vehicle))
+            .await
+            .unwrap()
+            .0
+            .is_none(),
+        "the failed checkpoint write left no checkpoint"
+    );
+
+    fleet.redeliver_raw(partition);
+    let restarted = fleet.spawn_orchestrator(partition);
+    fleet.settle().await;
+    let stats = restarted.stop().await;
+    matcher.stop().await;
+
+    assert_eq!(
+        stats.committed, 1,
+        "the restart committed the re-driven raw"
+    );
+    let outputs = published_outputs(&fleet.bus, partition);
+    assert_eq!(outputs.len(), first.len(), "the re-solve deduplicated");
+    assert_eq!(
+        outputs.iter().map(|o| o.id).collect::<Vec<_>>(),
+        first.iter().map(|o| o.id).collect::<Vec<_>>(),
+        "the re-solve minted the same output ids",
+    );
+    let (checkpoint, prepared) = fleet.store.load(VehicleId(vehicle)).await.unwrap();
+    assert_eq!(
+        checkpoint.expect("checkpoint installed").revision,
+        Revision(observation.sequence),
+    );
+    assert!(prepared.is_none());
+}
+
+/// A deferred owner that stops gracefully persists every vehicle it still
+/// holds, so its frontier reaches the last raw event and nothing replays.
+#[tokio::test(start_paused = true)]
+async fn deferred_graceful_stop_persists_everything() {
+    let fleet = Fleet::bent_road()
+        .with_commit_mode(FleetCommitMode::Deferred)
+        .with_checkpoint_policy(CheckpointPolicy {
+            every: 1_000,
+            interval: Duration::from_secs(3_600),
+            in_flight: 8,
+        });
+    let vehicle = 1u64;
+    let partition = fleet.partition_of(vehicle);
+    let matcher = fleet.spawn_matcher(MatcherBehaviour::engine());
+    let orchestrator = fleet.spawn_orchestrator(partition);
+    let mut last = None;
+    for (i, &p) in road_points().iter().enumerate() {
+        last = Some(fleet.ingest(vehicle, obs_ts(i), p).await);
+    }
+    let last = last.unwrap();
+    fleet.settle().await;
+    assert!(
+        fleet
+            .store
+            .load(VehicleId(vehicle))
+            .await
+            .unwrap()
+            .0
+            .is_none(),
+        "nothing is persisted before the policy makes it due"
+    );
+    let stats = orchestrator.stop().await;
+    matcher.stop().await;
+
+    assert_eq!(stats.committed, 6);
+    assert_eq!(stats.persisted, 1, "one persist covers all six commits");
+    assert_eq!(stats.frontier, last.sequence);
+    let checkpoint = fleet.store.load(VehicleId(vehicle)).await.unwrap().0;
+    assert_eq!(checkpoint.unwrap().revision, Revision(last.sequence));
+    let frontier = fleet.store.frontier(partition).await.unwrap().unwrap();
+    assert_eq!(frontier.sequence, last.sequence);
+}
+
+/// A deferred owner that crashes with unpersisted commits leaves its frontier
+/// behind them. The restart replays those raw events from the frontier and
+/// deterministically re-solves them to the same outputs (deduplicated) and the
+/// same final checkpoint as a run that never crashed.
+#[tokio::test(start_paused = true)]
+async fn deferred_crash_replays_unpersisted_commits_identically() {
+    async fn run(crash_after: Option<usize>) -> (Vec<CommittedOutput<E>>, Revision, u64) {
+        let fleet = Fleet::bent_road()
+            .with_commit_mode(FleetCommitMode::Deferred)
+            .with_checkpoint_policy(CheckpointPolicy {
+                every: 4,
+                interval: Duration::from_secs(3_600),
+                in_flight: 8,
+            });
+        let vehicle = 1u64;
+        let partition = fleet.partition_of(vehicle);
+        let matcher = fleet.spawn_matcher(MatcherBehaviour::engine());
+        let orchestrator = fleet.spawn_orchestrator(partition);
+        for (i, &p) in road_points().iter().enumerate() {
+            fleet.ingest(vehicle, obs_ts(i), p).await;
+        }
+        let orchestrator = match crash_after {
+            Some(outputs) => {
+                advance_until(|| published_outputs(&fleet.bus, partition).len() >= outputs).await;
+                orchestrator.crash();
+                let persisted = fleet.store.load(VehicleId(vehicle)).await.unwrap().0;
+                let revision = persisted.revision().map_or(0, |r| r.0);
+                let frontier = fleet
+                    .store
+                    .frontier(partition)
+                    .await
+                    .unwrap()
+                    .map_or(0, |f| f.sequence);
+                assert!(
+                    frontier <= revision,
+                    "the frontier never passes the persisted checkpoint"
+                );
+                let last = road_points().len() as u64;
+                assert!(
+                    revision < last,
+                    "the crash left commits unpersisted (persisted through {revision})"
+                );
+                fleet.spawn_orchestrator(partition)
+            }
+            None => orchestrator,
+        };
+        fleet.settle().await;
+        let stats = orchestrator.stop().await;
+        matcher.stop().await;
+        if crash_after.is_some() {
+            assert!(
+                stats.committed > 0 && stats.suppressed > 0,
+                "the restart both re-solved unpersisted commits and suppressed persisted ones: {stats:?}"
+            );
+        }
+        let checkpoint = fleet
+            .store
+            .load(VehicleId(vehicle))
+            .await
+            .unwrap()
+            .0
+            .unwrap();
+        (
+            published_outputs(&fleet.bus, partition),
+            checkpoint.revision,
+            stats.frontier,
+        )
+    }
+
+    let (clean, clean_revision, clean_frontier) = run(None).await;
+    let (replayed, revision, frontier) = run(Some(road_points().len())).await;
+    let content = |outputs: &[CommittedOutput<E>]| {
+        outputs
+            .iter()
+            .map(|o| format!("{:?} {:?}", o.revision, o.kind))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        content(&replayed),
+        content(&clean),
+        "replay republished only deduplicated, identical outputs"
+    );
+    assert_eq!(revision, clean_revision);
+    assert_eq!(frontier, clean_frontier);
+}
+
+/// A deferred commit whose output publish fails is retried from the owner's
+/// in-memory checkpoint, which is newer than the store's, not rolled back to
+/// the store: the vehicle ends exactly as an uninterrupted run does.
+#[tokio::test(start_paused = true)]
+async fn deferred_publish_failure_retries_from_memory() {
+    use routers_realtime::bus::adapter::PublishError;
+    async fn run(fail_at: Option<usize>) -> Vec<String> {
+        let fleet = Fleet::bent_road()
+            .with_commit_mode(FleetCommitMode::Deferred)
+            .with_checkpoint_policy(CheckpointPolicy {
+                every: 2,
+                interval: Duration::from_secs(3_600),
+                in_flight: 8,
+            });
+        let vehicle = 1u64;
+        let partition = fleet.partition_of(vehicle);
+        let matcher = fleet.spawn_matcher(MatcherBehaviour::engine());
+        let orchestrator = fleet.spawn_orchestrator(partition);
+        let mut last = None;
+        for (i, &p) in road_points().iter().enumerate() {
+            if Some(i) == fail_at {
+                // Commits 0..i are in, and at least one is persisted and one
+                // is not, so a store reload would rewind the vehicle.
+                advance_until(|| published_outputs(&fleet.bus, partition).len() >= i).await;
+                fleet.bus.fail_next_publish_on(
+                    "events.matched.v1.p.>",
+                    PublishError::Failed(anyhow::anyhow!("output down")),
+                );
+            }
+            last = Some(fleet.ingest(vehicle, obs_ts(i), p).await);
+        }
+        fleet.settle().await;
+        let stats = orchestrator.stop().await;
+        matcher.stop().await;
+        assert_eq!(
+            stats.committed, 6,
+            "{fail_at:?}: every observation committed"
+        );
+        // Raw sequences are bus-global, so compare decisions, and check the
+        // final checkpoint against this run's own last raw event.
+        let revision = fleet
+            .store
+            .load(VehicleId(vehicle))
+            .await
+            .unwrap()
+            .0
+            .unwrap()
+            .revision;
+        assert_eq!(revision, Revision(last.unwrap().sequence));
+        published_outputs(&fleet.bus, partition)
+            .iter()
+            .map(|o| format!("{:?}", o.kind))
+            .collect()
+    }
+    let clean = run(None).await;
+    assert_eq!(run(Some(3)).await, clean);
+}
+
+/// Opening a partition takes a newer ownership epoch. An older owner still
+/// running is fenced on its next frontier or checkpoint write and stops the
+/// partition, and the new owner alone finishes it exactly as one owner would.
+#[tokio::test(start_paused = true)]
+async fn a_newer_owner_fences_the_old_one() {
+    async fn run(mode: FleetCommitMode, takeover: bool) -> (Vec<String>, Revision, u64) {
+        let fleet = Fleet::bent_road()
+            .with_commit_mode(mode)
+            .with_checkpoint_policy(CheckpointPolicy {
+                every: 4,
+                interval: Duration::from_secs(3_600),
+                in_flight: 8,
+            });
+        let vehicle = 1u64;
+        let partition = fleet.partition_of(vehicle);
+        let matcher = fleet.spawn_matcher(MatcherBehaviour::engine());
+        let first = fleet.spawn_orchestrator(partition);
+        let points = road_points();
+        let mut last = None;
+        for (i, &p) in points.iter().enumerate().take(3) {
+            last = Some(fleet.ingest(vehicle, obs_ts(i), p).await);
+        }
+        advance_until(|| published_outputs(&fleet.bus, partition).len() >= 3).await;
+
+        let owner = if takeover {
+            let second = fleet.spawn_orchestrator(partition);
+            advance_until(|| first.is_finished()).await;
+            let error = first.join().await.expect_err("the old owner must stop");
+            assert!(
+                error.to_string().contains("ownership lost"),
+                "{mode:?}: unexpected exit: {error:#}"
+            );
+            second
+        } else {
+            first
+        };
+        for (i, &p) in points.iter().enumerate().skip(3) {
+            last = Some(fleet.ingest(vehicle, obs_ts(i), p).await);
+        }
+        fleet.settle().await;
+        let stats = owner.stop().await;
+        matcher.stop().await;
+        let checkpoint = fleet
+            .store
+            .load(VehicleId(vehicle))
+            .await
+            .unwrap()
+            .0
+            .unwrap();
+        assert_eq!(checkpoint.revision, Revision(last.unwrap().sequence));
+        let content = published_outputs(&fleet.bus, partition)
+            .iter()
+            .map(|o| format!("{:?} {:?}", o.revision, o.kind))
+            .collect();
+        (content, checkpoint.revision, stats.frontier)
+    }
+
+    for mode in [FleetCommitMode::Deferred, FleetCommitMode::Direct] {
+        let single = run(mode, false).await;
+        let handed_over = run(mode, true).await;
+        assert_eq!(handed_over, single, "{mode:?}: the takeover is invisible");
+    }
+}
+
+/// An older owner's save can land after the newer owner restored the vehicle
+/// but before the newer owner first saves it. The newer owner's save then
+/// conflicts; still holding the newest epoch, it adopts the stored revision as
+/// its base, and finishes exactly as one owner would.
+#[tokio::test(start_paused = true)]
+async fn a_late_save_from_an_older_owner_is_adopted() {
+    let policy = CheckpointPolicy {
+        every: 4,
+        interval: Duration::from_secs(3_600),
+        in_flight: 8,
+    };
+    let vehicle = 1u64;
+    let points = road_points();
+
+    // One owner throughout: the expected history, and the checkpoint the
+    // older owner holds after three events.
+    let reference = Fleet::bent_road()
+        .with_commit_mode(FleetCommitMode::Deferred)
+        .with_checkpoint_policy(policy);
+    let partition = reference.partition_of(vehicle);
+    let matcher = reference.spawn_matcher(MatcherBehaviour::engine());
+    let owner = reference.spawn_orchestrator(partition);
+    let mut last = None;
+    for (i, &p) in points.iter().enumerate() {
+        last = Some(reference.ingest(vehicle, obs_ts(i), p).await);
+        if i == 2 {
+            reference.settle().await;
+        }
+    }
+    reference.settle().await;
+    let expected_stats = owner.stop().await;
+    matcher.stop().await;
+    let expected_outputs: Vec<String> = published_outputs(&reference.bus, partition)
+        .iter()
+        .map(|o| format!("{:?} {:?}", o.revision, o.kind))
+        .collect();
+
+    let early = Fleet::bent_road()
+        .with_commit_mode(FleetCommitMode::Direct)
+        .with_checkpoint_policy(policy);
+    let matcher = early.spawn_matcher(MatcherBehaviour::engine());
+    let owner = early.spawn_orchestrator(partition);
+    for (i, &p) in points.iter().enumerate().take(3) {
+        early.ingest(vehicle, obs_ts(i), p).await;
+    }
+    early.settle().await;
+    owner.stop().await;
+    matcher.stop().await;
+    let late_save = early.store.snapshot().checkpoints[&VehicleId(vehicle)].clone();
+
+    // The takeover: A commits three events without saving, B takes over and
+    // restores the vehicle, then A's save of those three lands.
+    let fleet = Fleet::bent_road()
+        .with_commit_mode(FleetCommitMode::Deferred)
+        .with_checkpoint_policy(policy);
+    let matcher = fleet.spawn_matcher(MatcherBehaviour::engine());
+    let first = fleet.spawn_orchestrator(partition);
+    for (i, &p) in points.iter().enumerate().take(3) {
+        fleet.ingest(vehicle, obs_ts(i), p).await;
+    }
+    advance_until(|| published_outputs(&fleet.bus, partition).len() >= 3).await;
+    let second = fleet.spawn_orchestrator(partition);
+    advance_until(|| first.is_finished()).await;
+    first.join().await.expect_err("the older owner stops");
+
+    let outcome = fleet
+        .store
+        .commit_direct(VehicleId(vehicle), None, late_save, Some(1))
+        .await
+        .unwrap();
+    assert_eq!(outcome, DirectOutcome::Committed, "the late save lands");
+
+    for (i, &p) in points.iter().enumerate().skip(3) {
+        fleet.ingest(vehicle, obs_ts(i), p).await;
+    }
+    fleet.settle().await;
+    let stats = second.stop().await;
+    matcher.stop().await;
+
+    let checkpoint = fleet
+        .store
+        .load(VehicleId(vehicle))
+        .await
+        .unwrap()
+        .0
+        .unwrap();
+    assert_eq!(checkpoint.revision, Revision(last.unwrap().sequence));
+    assert_eq!(
+        stats.frontier, expected_stats.frontier,
+        "the frontier advances"
+    );
+    let outputs: Vec<String> = published_outputs(&fleet.bus, partition)
+        .iter()
+        .map(|o| format!("{:?} {:?}", o.revision, o.kind))
+        .collect();
+    assert_eq!(outputs, expected_outputs);
+}
+
 /// A crash before publish leaves an unpublished prepared record; recovery
 /// publishes then promotes it.
 #[tokio::test(start_paused = true)]
@@ -113,7 +519,7 @@ async fn shutdown_drains_and_leaves_recoverable_state() {
     // No matcher: the job dispatches and stays in flight.
     let orchestrator = fleet.spawn_orchestrator(partition);
     fleet.ingest(vehicle, obs_ts(0), road_points()[0]).await;
-    advance_until(|| !fleet.bus.published("solve.v1.g.>").is_empty()).await;
+    advance_until(|| !fleet.bus.published(REQUESTS).is_empty()).await;
 
     let stats = orchestrator.stop().await;
     assert_eq!(stats.dispatched, 1, "the job was dispatched");
@@ -194,7 +600,7 @@ async fn duplicate_result_during_blocked_commit_is_not_acknowledged() {
     let fleet = Fleet::bent_road().with_blocked_retry(Duration::from_secs(60));
     let vehicle = 1u64;
     let partition = fleet.partition_of(vehicle);
-    let result_subject = routers_realtime::topology::result_subject(u64::from(partition));
+    let result_subject = result_subject(partition);
     fleet.store.fail_next(Op::Promote);
 
     let matcher = fleet.spawn_matcher(MatcherBehaviour::scripted_layer());

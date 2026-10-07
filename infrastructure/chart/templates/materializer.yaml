@@ -30,9 +30,11 @@ spec:
             - name: NATS
               value: {{ .Values.infra.eventBus.url | quote }}
             - name: VALKEY
-              value: {{ .Values.infra.kv.url | quote }}
+              value: {{ default .Values.infra.kv.url (get (.Values.infra.materializedView | default dict) "url") | quote }}
             - name: CONSUMER_NAME
               value: {{ .Values.materializer.consumerName | quote }}
+            - name: MAX_IN_FLIGHT
+              value: {{ .Values.materializer.maxInFlight | quote }}
             - name: POD_NAME
               valueFrom:
                 fieldRef:

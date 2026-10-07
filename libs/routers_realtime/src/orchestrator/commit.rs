@@ -3,16 +3,21 @@
 //! Turns a worker's [`Decision`] into durable, crash-safe history. [`plan`] is
 //! pure: it computes the ordered [`CommittedOutput`]s and the next
 //! [`VehicleCheckpoint`] from the previous checkpoint. [`Committer`] drives the
-//! prepare → publish → promote sequence; every publish is idempotent on the
-//! output's [`OutputId`], so [`finish_prepared`](Committer::finish_prepared) can
-//! re-drive a commit a crash left half-done.
+//! staged prepare → publish → promote sequence, [`CommitMode::Direct`]'s
+//! publish → compare-and-install, or [`CommitMode::Deferred`]'s publish with a
+//! later [`persist`](Committer::persist). Every publish is idempotent on the
+//! output's [`OutputId`], so a half-done staged commit is re-driven by
+//! [`finish_prepared`](Committer::finish_prepared), and the others by
+//! deterministically re-solving from the raw log.
 
 use core::marker::PhantomData;
 use core::time::Duration;
 use std::collections::HashSet;
+use std::time::Instant;
 
 use async_nats::HeaderMap;
 use thiserror::Error;
+use tracing::warn;
 
 use routers_network::Entry;
 use routers_transition::matcher::Trip;
@@ -21,15 +26,17 @@ use crate::bus::adapter::{PublishError, PublishOutcome, Publisher};
 use crate::bus::{Wire, outbound};
 use crate::event::MatchedDiff;
 use crate::event::VehicleId;
+use crate::metrics::Metrics;
 use crate::protocol::ids::headers::stamp_schema;
 use crate::protocol::ids::{
     GraphVersion, JobId, ObservationId, OutputId, RegionId, Revision, SCHEMA_VERSION, SegmentId,
 };
-use crate::protocol::job::JobIdentity;
+use crate::protocol::job::{JobIdentity, TripDigest};
 use crate::protocol::output::{CommittedOutput, OutputKind, ResetReason, TerminalReason, is_final};
 use crate::protocol::result::{SolveOutcome, SolveResult};
 use crate::store::checkpoint::{
-    CheckpointStore, CommitPhase, PrepareOutcome, PreparedCommit, VehicleCheckpoint,
+    CheckpointStore, CommitPhase, DirectOutcome, PrepareOutcome, PreparedCommit, StoredCheckpoint,
+    VehicleCheckpoint,
 };
 use crate::topology::output::output_subject;
 
@@ -56,6 +63,8 @@ pub enum Decision<E: Entry> {
         trip: Trip<E>,
         /// The event-time watermark through which the match has converged.
         converged_through: Option<i64>,
+        /// The matcher's digest of `trip`, or `None` to compute it here.
+        trip_digest: Option<TripDigest>,
         /// The reason a new segment was opened, or `None` to continue.
         reset: Option<ResetReason>,
         /// The segment this match belongs to (a new one when `reset` is set).
@@ -112,12 +121,14 @@ impl<E: Entry> Decision<E> {
                 diff,
                 trip,
                 converged_through,
+                trip_digest,
             } => Self::Solved {
                 job,
                 identity,
                 diff,
                 trip,
                 converged_through,
+                trip_digest,
                 reset,
                 segment,
             },
@@ -134,6 +145,11 @@ impl<E: Entry> Decision<E> {
                 Self::terminal(job, identity, TerminalReason::VersionMismatch, segment)
             }
             SolveOutcome::Oversized { .. } | SolveOutcome::Internal { .. } => {
+                Self::terminal(job, identity, TerminalReason::Internal, segment)
+            }
+            SolveOutcome::TripMiss => {
+                // The worker resends a trip miss before it reaches a decision.
+                debug_assert!(false, "a trip miss must never be committed");
                 Self::terminal(job, identity, TerminalReason::Internal, segment)
             }
         }
@@ -196,6 +212,23 @@ pub fn plan<E: Entry>(
     graph: &GraphVersion,
     routing_version: u64,
 ) -> Plan<E> {
+    plan_digested(prev, decision, observation, region, graph, routing_version)
+}
+
+/// The digest of a trip the plan carries forward: the one already known for
+/// it, or computed once when nobody has it.
+fn carried_digest<E: Entry>(trip: &Trip<E>, known: Option<TripDigest>) -> Option<TripDigest> {
+    Some(known.unwrap_or_else(|| TripDigest::of(trip)))
+}
+
+fn plan_digested<E: Entry>(
+    prev: Option<&VehicleCheckpoint<E>>,
+    decision: Decision<E>,
+    observation: ObservationId,
+    region: &RegionId,
+    graph: &GraphVersion,
+    routing_version: u64,
+) -> Plan<E> {
     let revision = Revision::from(observation);
 
     match decision {
@@ -205,9 +238,11 @@ pub fn plan<E: Entry>(
             diff,
             trip,
             converged_through,
+            trip_digest,
             reset,
             segment,
         } => {
+            let trip_digest = carried_digest(&trip, trip_digest);
             let vehicle = identity.vehicle_id;
 
             // A reset opens a new segment: its finality base is `None`.
@@ -306,6 +341,7 @@ pub fn plan<E: Entry>(
                 schema: SCHEMA_VERSION,
                 region: region.clone(),
                 routing_version,
+                trip_digest,
             };
 
             Plan {
@@ -326,14 +362,19 @@ pub fn plan<E: Entry>(
             let vehicle = identity.vehicle_id;
             // A closing terminal drops the trip and resets the watermark but
             // keeps the segment id; the next observation opens the fresh segment.
-            let (trip, finalized_through) = if closes_segment {
-                (Trip::new(), None)
+            let (trip, finalized_through, known) = if closes_segment {
+                (Trip::new(), None, None)
             } else {
                 match prev {
-                    Some(previous) => (previous.trip.clone(), previous.finalized_through),
-                    None => (Trip::new(), None),
+                    Some(previous) => (
+                        previous.trip.clone(),
+                        previous.finalized_through,
+                        previous.trip_digest,
+                    ),
+                    None => (Trip::new(), None, None),
                 }
             };
+            let trip_digest = carried_digest(&trip, known);
 
             let output = CommittedOutput::new_indexed(
                 job,
@@ -358,6 +399,7 @@ pub fn plan<E: Entry>(
                 schema: SCHEMA_VERSION,
                 region: region.clone(),
                 routing_version,
+                trip_digest,
             };
 
             Plan {
@@ -398,6 +440,7 @@ pub fn plan<E: Entry>(
                 schema: SCHEMA_VERSION,
                 region: region.clone(),
                 routing_version,
+                trip_digest: carried_digest(&Trip::<E>::new(), None),
             };
 
             Plan {
@@ -410,8 +453,36 @@ pub fn plan<E: Entry>(
     }
 }
 
-/// How the committer retries an ambiguous publish before leaving the prepared
-/// record for recovery.
+/// The next checkpoint's store encoding, serialising its trip exactly once.
+fn sealed_checkpoint<E: Entry, SE>(
+    next: &VehicleCheckpoint<E>,
+) -> Result<StoredCheckpoint, CommitError<SE>> {
+    next.clone()
+        .seal()
+        .map_err(|error| CommitError::Encode(error.into()))
+}
+
+/// How a commit is made durable.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CommitMode {
+    /// Stage the exact output bytes and next checkpoint, publish, then promote.
+    /// Crash-safe for any solver, at two checkpoint-store round trips per commit.
+    #[default]
+    Staged,
+    /// Publish the outputs, then compare-and-install the checkpoint in one
+    /// round trip. A crash in between re-drives the still-unacked raw event;
+    /// safe only because the solve is deterministic, so the re-solve mints the
+    /// same output ids and the broker (or the materializer's revision check
+    /// beyond its dedup window) discards the repeat.
+    Direct,
+    /// Publish the outputs only. The owner keeps the checkpoint in memory and
+    /// persists it every few commits with [`Committer::persist`]; its partition
+    /// frontier advances only over raw events a persisted checkpoint covers,
+    /// so a crash replays and deterministically re-solves the rest.
+    Deferred,
+}
+
+/// How the committer makes a commit durable and retries an ambiguous publish.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CommitConfig {
     /// Maximum publish attempts per output; counts the first attempt, so `1`
@@ -420,6 +491,8 @@ pub struct CommitConfig {
     /// The first inter-attempt pause; it doubles after each ambiguous attempt,
     /// capped at a fixed two-second maximum.
     pub backoff: Duration,
+    /// Whether commits stage a prepared record before publishing.
+    pub mode: CommitMode,
 }
 
 impl Default for CommitConfig {
@@ -427,6 +500,7 @@ impl Default for CommitConfig {
         Self {
             publish_attempts: 5,
             backoff: Duration::from_millis(100),
+            mode: CommitMode::default(),
         }
     }
 }
@@ -476,6 +550,13 @@ pub enum CommitError<SE> {
     /// The checkpoint store rejected an operation.
     #[error("the checkpoint store rejected the commit")]
     Store(#[source] SE),
+    /// A newer owner of the partition has written this vehicle; this owner's
+    /// epoch is stale and it must stop the partition.
+    #[error("partition ownership lost to epoch {owner}")]
+    Fenced {
+        /// The newer epoch recorded for the vehicle.
+        owner: u64,
+    },
 }
 
 /// The commit coordinator: stages a [`Plan`], publishes its outputs, and
@@ -485,6 +566,8 @@ pub struct Committer<E, S, P> {
     store: S,
     publisher: P,
     cfg: CommitConfig,
+    metrics: Option<Metrics>,
+    epoch: Option<u64>,
     _marker: PhantomData<fn() -> E>,
 }
 
@@ -503,7 +586,30 @@ where
             store,
             publisher,
             cfg,
+            metrics: None,
+            epoch: None,
             _marker: PhantomData,
+        }
+    }
+
+    /// Fence every checkpoint write with the partition ownership `epoch`
+    /// acquired during recovery, so a stale owner's writes are refused.
+    #[must_use]
+    pub fn with_epoch(mut self, epoch: Option<u64>) -> Self {
+        self.epoch = epoch;
+        self
+    }
+
+    /// Record commit-stage timings through the caller's metrics handle.
+    #[must_use]
+    pub fn with_metrics(mut self, metrics: Metrics) -> Self {
+        self.metrics = Some(metrics);
+        self
+    }
+
+    fn record_stage(&self, sampled: bool, stage: &'static str, started: Instant) {
+        if sampled && let Some(metrics) = &self.metrics {
+            metrics.commit_stage_seconds(stage, started.elapsed().as_secs_f64());
         }
     }
 
@@ -520,6 +626,40 @@ where
         expected_base: Option<Revision>,
         raw: ObservationId,
     ) -> Result<Committed, CommitError<S::Error>> {
+        let sampled = self.metrics.as_ref().is_some_and(Metrics::sample_probe);
+        self.commit_sampled(vehicle, partition, plan, expected_base, raw, sampled)
+            .await
+    }
+
+    /// Commit with the worker's per-observation timing decision.
+    pub(crate) async fn commit_sampled(
+        &self,
+        vehicle: VehicleId,
+        partition: u16,
+        plan: Plan<E>,
+        expected_base: Option<Revision>,
+        raw: ObservationId,
+        sampled: bool,
+    ) -> Result<Committed, CommitError<S::Error>> {
+        match self.cfg.mode {
+            CommitMode::Direct => {
+                return self
+                    .commit_direct(vehicle, partition, plan, expected_base, raw, sampled)
+                    .await;
+            }
+            CommitMode::Deferred => {
+                // The owner persists the checkpoint later; see `persist`.
+                let (outputs, bytes) = self.publish_plan(partition, &plan, sampled).await?;
+                return Ok(Committed {
+                    raw,
+                    outputs,
+                    republished: false,
+                    bytes,
+                });
+            }
+            CommitMode::Staged => {}
+        }
+        let encode_started = Instant::now();
         let subject = output_subject(u64::from(partition));
         let mut entries: Vec<(String, String, Vec<u8>)> = Vec::with_capacity(plan.outputs.len());
         for output in &plan.outputs {
@@ -533,10 +673,7 @@ where
         let record_output = plan.outputs.first().map(|o| o.id).ok_or_else(|| {
             CommitError::Encode(anyhow::anyhow!("a plan must produce at least one output"))
         })?;
-        let next_checkpoint = plan
-            .next
-            .encode()
-            .map_err(|e| CommitError::Encode(e.into()))?;
+        let next_checkpoint = sealed_checkpoint(&plan.next)?.bytes;
 
         let prepared = PreparedCommit {
             output: record_output,
@@ -549,19 +686,123 @@ where
             phase: CommitPhase::Prepared,
             raw,
         };
+        self.record_stage(sampled, "encode", encode_started);
 
-        match self
+        let prepare_started = Instant::now();
+        let prepare = self
             .store
             .prepare(vehicle, partition, prepared.clone())
             .await
-            .map_err(CommitError::Store)?
-        {
+            .map_err(CommitError::Store);
+        self.record_stage(sampled, "prepare", prepare_started);
+        match prepare? {
             PrepareOutcome::Prepared | PrepareOutcome::AlreadyPrepared => {}
             PrepareOutcome::Busy { pending } => return Err(CommitError::Busy { pending }),
             PrepareOutcome::Conflict { actual } => return Err(CommitError::Conflict { actual }),
         }
 
-        self.finish_prepared(vehicle, partition, prepared).await
+        self.finish_prepared_sampled(vehicle, partition, prepared, sampled)
+            .await
+    }
+
+    /// Encode and publish every output of `plan`, in plan order, returning
+    /// how many were published and their encoded bytes.
+    async fn publish_plan(
+        &self,
+        partition: u16,
+        plan: &Plan<E>,
+        sampled: bool,
+    ) -> Result<(usize, usize), CommitError<S::Error>> {
+        let encode_started = Instant::now();
+        let subject = output_subject(u64::from(partition));
+        let mut entries: Vec<(String, Vec<u8>)> = Vec::with_capacity(plan.outputs.len());
+        for output in &plan.outputs {
+            let bytes = output.encode().map_err(CommitError::Encode)?;
+            entries.push((output.msg_id(), bytes));
+        }
+        if entries.is_empty() {
+            return Err(CommitError::Encode(anyhow::anyhow!(
+                "a plan must produce at least one output"
+            )));
+        }
+        let mut headers = outbound();
+        stamp_schema(&mut headers);
+        self.record_stage(sampled, "encode", encode_started);
+
+        // Same-commit outputs share a subject and must stay in plan order.
+        for (msg_id, bytes) in &entries {
+            let publish_started = Instant::now();
+            let published = self.publish_output(&subject, msg_id, &headers, bytes).await;
+            self.record_stage(sampled, "output_publish", publish_started);
+            published?;
+        }
+        Ok((
+            entries.len(),
+            entries.iter().map(|(_, bytes)| bytes.len()).sum(),
+        ))
+    }
+
+    /// Publish every output, then compare-and-install the next checkpoint.
+    ///
+    /// A failed publish or store call leaves no durable state behind: the raw
+    /// event stays unacknowledged and a retry rebuilds the identical commit.
+    async fn commit_direct(
+        &self,
+        vehicle: VehicleId,
+        partition: u16,
+        plan: Plan<E>,
+        expected_base: Option<Revision>,
+        raw: ObservationId,
+        sampled: bool,
+    ) -> Result<Committed, CommitError<S::Error>> {
+        let checkpoint = sealed_checkpoint(&plan.next)?;
+        let (outputs, bytes) = self.publish_plan(partition, &plan, sampled).await?;
+
+        let commit_started = Instant::now();
+        let outcome = self
+            .store
+            .commit_direct(vehicle, expected_base, checkpoint, self.epoch)
+            .await
+            .map_err(CommitError::Store);
+        self.record_stage(sampled, "checkpoint_commit", commit_started);
+        let republished = match outcome? {
+            DirectOutcome::Committed => false,
+            DirectOutcome::AlreadyCommitted => true,
+            DirectOutcome::Conflict { actual } => {
+                warn!(
+                    vehicle = vehicle.0,
+                    ?actual,
+                    ?expected_base,
+                    "direct commit lost its base after publishing outputs"
+                );
+                return Err(CommitError::Conflict { actual });
+            }
+            DirectOutcome::Busy { pending } => return Err(CommitError::Busy { pending }),
+            DirectOutcome::Fenced { owner } => return Err(CommitError::Fenced { owner }),
+        };
+
+        Ok(Committed {
+            raw,
+            outputs,
+            republished,
+            bytes,
+        })
+    }
+
+    /// Persist `checkpoint` over the last persisted revision `expected_base`:
+    /// the durable half of a [`CommitMode::Deferred`] commit, run off the
+    /// commit path. Its trip is serialised exactly once, here.
+    pub async fn persist(
+        &self,
+        vehicle: VehicleId,
+        expected_base: Option<Revision>,
+        checkpoint: &VehicleCheckpoint<E>,
+    ) -> Result<DirectOutcome, CommitError<S::Error>> {
+        let stored = sealed_checkpoint(checkpoint)?;
+        self.store
+            .commit_direct(vehicle, expected_base, stored, self.epoch)
+            .await
+            .map_err(CommitError::Store)
     }
 
     /// Complete a staged commit: (re)publish every stored output, mark the
@@ -576,6 +817,19 @@ where
         partition: u16,
         prepared: PreparedCommit,
     ) -> Result<Committed, CommitError<S::Error>> {
+        let sampled = self.metrics.as_ref().is_some_and(Metrics::sample_probe);
+        self.finish_prepared_sampled(vehicle, partition, prepared, sampled)
+            .await
+    }
+
+    async fn finish_prepared_sampled(
+        &self,
+        vehicle: VehicleId,
+        partition: u16,
+        prepared: PreparedCommit,
+        sampled: bool,
+    ) -> Result<Committed, CommitError<S::Error>> {
+        let decode_started = Instant::now();
         let entries: Vec<(String, String, Vec<u8>)> = postcard::from_bytes(&prepared.output_bytes)
             .map_err(|e| CommitError::Decode(e.into()))?;
 
@@ -584,20 +838,23 @@ where
 
         let mut headers = outbound();
         stamp_schema(&mut headers);
+        self.record_stage(sampled, "decode", decode_started);
 
         for (subject, msg_id, bytes) in &entries {
-            self.publish_output(subject, msg_id, &headers, bytes)
-                .await?;
+            let publish_started = Instant::now();
+            let published = self.publish_output(subject, msg_id, &headers, bytes).await;
+            self.record_stage(sampled, "output_publish", publish_started);
+            published?;
         }
 
-        self.store
-            .mark_published(vehicle, prepared.output)
+        let promote_started = Instant::now();
+        let promoted = self
+            .store
+            .finish_published(vehicle, partition, prepared.output)
             .await
-            .map_err(CommitError::Store)?;
-        self.store
-            .promote(vehicle, partition, prepared.output)
-            .await
-            .map_err(CommitError::Store)?;
+            .map_err(CommitError::Store);
+        self.record_stage(sampled, "promote", promote_started);
+        promoted?;
 
         Ok(Committed {
             raw: prepared.raw,
@@ -729,6 +986,7 @@ mod tests {
                 diff,
                 trip,
                 converged_through: converged,
+                trip_digest: None,
             },
             0,
         )
@@ -750,6 +1008,7 @@ mod tests {
             schema: SCHEMA_VERSION,
             region: region(),
             routing_version: 1,
+            trip_digest: None,
         }
     }
 
@@ -1111,6 +1370,7 @@ mod tests {
             CommitConfig {
                 publish_attempts: 4,
                 backoff: Duration::ZERO,
+                ..CommitConfig::default()
             },
         )
     }
@@ -1309,5 +1569,139 @@ mod tests {
             Revision(100)
         );
         assert!(store.load(VehicleId(1)).await.unwrap().1.is_none());
+    }
+
+    fn direct_committer(
+        store: MemoryCheckpointStore,
+        bus: &MemoryBus,
+    ) -> Committer<E, MemoryCheckpointStore, MemoryPublisher<CommittedOutput<E>>> {
+        Committer::new(
+            store,
+            bus.publisher::<CommittedOutput<E>>(),
+            CommitConfig {
+                publish_attempts: 4,
+                backoff: Duration::ZERO,
+                mode: CommitMode::Direct,
+            },
+        )
+    }
+
+    #[tokio::test]
+    async fn direct_commit_installs_the_checkpoint_without_staging() {
+        let store = MemoryCheckpointStore::new();
+        let bus = MemoryBus::new();
+        let c = direct_committer(store.clone(), &bus);
+
+        let committed = c
+            .commit(VehicleId(1), 7, reset_matched_plan(100), None, obs(100))
+            .await
+            .expect("commit");
+
+        assert_eq!(committed.outputs, 2);
+        assert!(!committed.republished);
+        assert_eq!(bus.published(SUBJECT).len(), 2);
+        let (checkpoint, pending) = store.load(VehicleId(1)).await.unwrap();
+        assert_eq!(checkpoint.unwrap().revision, Revision(100));
+        assert!(pending.is_none(), "direct commits never stage");
+        let snapshot = store.snapshot();
+        assert!(snapshot.prepared.is_empty());
+        assert!(snapshot.index.is_empty());
+    }
+
+    #[tokio::test]
+    async fn direct_commit_matches_the_staged_output_bytes() {
+        let (staged_bus, direct_bus) = (MemoryBus::new(), MemoryBus::new());
+        committer(MemoryCheckpointStore::new(), &staged_bus)
+            .commit(VehicleId(1), 7, reset_matched_plan(100), None, obs(100))
+            .await
+            .expect("staged");
+        direct_committer(MemoryCheckpointStore::new(), &direct_bus)
+            .commit(VehicleId(1), 7, reset_matched_plan(100), None, obs(100))
+            .await
+            .expect("direct");
+        assert_eq!(
+            staged_bus.published(SUBJECT),
+            direct_bus.published(SUBJECT),
+            "both modes must publish identical ids and bytes"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_crash_before_the_direct_checkpoint_is_re_driven_idempotently() {
+        let store = MemoryCheckpointStore::new();
+        let bus = MemoryBus::new();
+        store.fail_next(Op::CommitDirect);
+        let c = direct_committer(store.clone(), &bus);
+
+        let err = c
+            .commit(VehicleId(1), 7, terminal_plan(100), None, obs(100))
+            .await
+            .expect_err("the checkpoint write fails after publication");
+        assert!(matches!(err, CommitError::Store(_)), "got {err:?}");
+        assert_eq!(bus.published(SUBJECT).len(), 1);
+        let (checkpoint, pending) = store.load(VehicleId(1)).await.unwrap();
+        assert!(checkpoint.is_none());
+        assert!(pending.is_none(), "nothing is left staged");
+
+        // Re-driving the raw event rebuilds the identical plan.
+        let committed = c
+            .commit(VehicleId(1), 7, terminal_plan(100), None, obs(100))
+            .await
+            .expect("the retry commits");
+        assert!(!committed.republished);
+        assert_eq!(
+            bus.published(SUBJECT).len(),
+            1,
+            "the republish deduplicates"
+        );
+        assert_eq!(
+            store.load(VehicleId(1)).await.unwrap().0.unwrap().revision,
+            Revision(100)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_lost_direct_commit_reply_retries_as_already_committed() {
+        let store = MemoryCheckpointStore::new();
+        let bus = MemoryBus::new();
+        let c = direct_committer(store.clone(), &bus);
+        c.commit(VehicleId(1), 7, terminal_plan(100), None, obs(100))
+            .await
+            .expect("first attempt landed");
+
+        let committed = c
+            .commit(VehicleId(1), 7, terminal_plan(100), None, obs(100))
+            .await
+            .expect("the identical retry is a no-op");
+        assert!(committed.republished);
+        assert_eq!(bus.published(SUBJECT).len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_direct_commit_on_a_stale_base_conflicts() {
+        let store = MemoryCheckpointStore::new();
+        let bus = MemoryBus::new();
+        let c = direct_committer(store.clone(), &bus);
+        c.commit(VehicleId(1), 7, terminal_plan(100), None, obs(100))
+            .await
+            .expect("seed commit");
+
+        let err = c
+            .commit(VehicleId(1), 7, terminal_plan(101), None, obs(101))
+            .await
+            .expect_err("stale base must conflict");
+        assert!(
+            matches!(
+                err,
+                CommitError::Conflict {
+                    actual: Some(Revision(100))
+                }
+            ),
+            "got {err:?}"
+        );
+        assert_eq!(
+            store.load(VehicleId(1)).await.unwrap().0.unwrap().revision,
+            Revision(100)
+        );
     }
 }

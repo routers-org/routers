@@ -5,6 +5,8 @@ infra:
   kv:
     # Stable rendezvous id separated from the rotatable connection URL.
     url: primary=redis://valkey-primary.routers-dev.svc.cluster.local:6379
+  materializedView:
+    url: view=redis://valkey-view-primary.routers-dev.svc.cluster.local:6379
   telemetry:
     otlpUrl: http://otel-collector-opentelemetry-collector.routers-dev.svc.cluster.local:4318
 

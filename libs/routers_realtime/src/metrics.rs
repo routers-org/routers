@@ -8,6 +8,7 @@
 //! [`telemetry`](crate::telemetry) installs a provider the meter is a no-op.
 
 use alloc::sync::Arc;
+use core::sync::atomic::{AtomicU64, Ordering};
 use core::time::Duration;
 
 use opentelemetry::metrics::{Counter, Gauge, Histogram, Meter, ObservableGauge};
@@ -53,6 +54,7 @@ pub struct AdmissionGauges {
 #[derive(Clone)]
 pub struct Metrics {
     meter: Meter,
+    probe_index: Arc<AtomicU64>,
 
     offered_observations: Counter<u64>,
     queued_observations: Counter<u64>,
@@ -69,24 +71,39 @@ pub struct Metrics {
 
     results_received: Counter<u64>,
     parked_results: Counter<u64>,
+    solve_requests: Counter<u64>,
+    trip_cache_lookups: Counter<u64>,
+    view_cache_lookups: Counter<u64>,
     quarantined_results: Counter<u64>,
     rejected_results: Counter<u64>,
 
     checkpoint_commit_seconds: Histogram<f64>,
+    commit_stage_seconds: Histogram<f64>,
+    checkpoint_restore_seconds: Histogram<f64>,
+    job_dispatch_seconds: Histogram<f64>,
+    job_build_seconds: Histogram<f64>,
+    job_publish_seconds: Histogram<f64>,
+    worker_turn_seconds: Histogram<f64>,
     completions: Counter<u64>,
 
     frontier_lag: Gauge<u64>,
     oldest_pending_age_seconds: Gauge<f64>,
 
     solve_seconds: Histogram<f64>,
+    solve_worker_queue_seconds: Histogram<f64>,
+    solve_worker_run_seconds: Histogram<f64>,
     solve_permit_wait_seconds: Histogram<f64>,
     raw_queue_wait_seconds: Histogram<f64>,
+    result_queue_wait_seconds: Histogram<f64>,
     queue_wait_seconds: Histogram<f64>,
     job_fetch_seconds: Histogram<f64>,
     job_fetch_batch_size: Histogram<u64>,
     matcher_handlers_in_flight: Gauge<u64>,
     matcher_solves_in_flight: Gauge<u64>,
     result_publish_seconds: Histogram<f64>,
+    result_encode_seconds: Histogram<f64>,
+    result_store_seconds: Histogram<f64>,
+    job_ack_seconds: Histogram<f64>,
     job_round_trip_seconds: Histogram<f64>,
     freshness_target_lateness_seconds: Histogram<f64>,
     freshness_target_missed: Counter<u64>,
@@ -96,6 +113,9 @@ pub struct Metrics {
     active_jobs: Gauge<u64>,
 
     materialized_outputs: Counter<u64>,
+    materializer_stage_seconds: Histogram<f64>,
+    materializer_active: Gauge<u64>,
+    materializer_keyed_queued: Gauge<u64>,
 }
 
 impl core::fmt::Debug for Metrics {
@@ -178,6 +198,24 @@ impl Metrics {
             .u64_counter("parked_results")
             .with_description("Early solve results parked for replay after dispatch.")
             .build();
+        let solve_requests = meter
+            .u64_counter("solve_requests")
+            .with_description(
+                "Transient solve requests sent, by whether they carried the trip (full) or \
+                 relied on the sticky matcher's cache (cached), and by send reason.",
+            )
+            .build();
+        let trip_cache_lookups = meter
+            .u64_counter("trip_cache_lookups")
+            .with_description("Matcher trip-cache lookups for cached solve requests, by outcome.")
+            .build();
+        let view_cache_lookups = meter
+            .u64_counter("view_cache_lookups")
+            .with_description(
+                "Materializer applies by whether the process's own last write planned them \
+                 without a read (hit) or they fell back to reading.",
+            )
+            .build();
         let quarantined_results = meter
             .u64_counter("quarantined_results")
             .with_description("Same-identity solve results kept out of the commit path.")
@@ -188,7 +226,45 @@ impl Metrics {
             .build();
         let checkpoint_commit_seconds = meter
             .f64_histogram("checkpoint_commit_seconds")
-            .with_description("Wall time to prepare, publish, and promote one commit.")
+            .with_description("Wall time from commit scheduling through worker acknowledgement.")
+            .with_unit("s")
+            .with_boundaries(SECONDS_BUCKETS.to_vec())
+            .build();
+        let commit_stage_seconds = meter
+            .f64_histogram("commit_stage_seconds")
+            .with_description("Sampled wall time of a commit stage, including awaited I/O.")
+            .with_unit("s")
+            .with_boundaries(SECONDS_BUCKETS.to_vec())
+            .build();
+        let checkpoint_restore_seconds = meter
+            .f64_histogram("checkpoint_restore_seconds")
+            .with_description("Wall time to restore one vehicle before dispatch.")
+            .with_unit("s")
+            .with_boundaries(SECONDS_BUCKETS.to_vec())
+            .build();
+        let job_dispatch_seconds = meter
+            .f64_histogram("job_dispatch_seconds")
+            .with_description("Wall time to build and publish one solve job.")
+            .with_unit("s")
+            .with_boundaries(SECONDS_BUCKETS.to_vec())
+            .build();
+        let job_build_seconds = meter
+            .f64_histogram("job_build_seconds")
+            .with_description("Wall time to build, hash and encode one solve job.")
+            .with_unit("s")
+            .with_boundaries(SECONDS_BUCKETS.to_vec())
+            .build();
+        let job_publish_seconds = meter
+            .f64_histogram("job_publish_seconds")
+            .with_description("Wall time to enqueue an encoded solve request with its transport.")
+            .with_unit("s")
+            .with_boundaries(SECONDS_BUCKETS.to_vec())
+            .build();
+        let worker_turn_seconds = meter
+            .f64_histogram("worker_turn_seconds")
+            .with_description(
+                "Wall time a partition worker spent handling one raw, result, commit or tick turn.",
+            )
             .with_unit("s")
             .with_boundaries(SECONDS_BUCKETS.to_vec())
             .build();
@@ -207,7 +283,19 @@ impl Metrics {
             .build();
         let solve_seconds = meter
             .f64_histogram("solve_seconds")
-            .with_description("Wall time spent executing one admitted matcher solve, by outcome.")
+            .with_description("Wall time awaiting one admitted matcher solve, including blocking-pool queue delay.")
+            .with_unit("s")
+            .with_boundaries(SECONDS_BUCKETS.to_vec())
+            .build();
+        let solve_worker_queue_seconds = meter
+            .f64_histogram("solve_worker_queue_seconds")
+            .with_description("Time an admitted solve waited for a Tokio blocking worker.")
+            .with_unit("s")
+            .with_boundaries(SECONDS_BUCKETS.to_vec())
+            .build();
+        let solve_worker_run_seconds = meter
+            .f64_histogram("solve_worker_run_seconds")
+            .with_description("Wall time spent running the matcher algorithm on a blocking worker.")
             .with_unit("s")
             .with_boundaries(SECONDS_BUCKETS.to_vec())
             .build();
@@ -221,6 +309,14 @@ impl Metrics {
             .f64_histogram("raw_queue_wait_seconds")
             .with_description(
                 "Time a raw observation waited in JetStream before an orchestrator claimed it.",
+            )
+            .with_unit("s")
+            .with_boundaries(SECONDS_BUCKETS.to_vec())
+            .build();
+        let result_queue_wait_seconds = meter
+            .f64_histogram("result_queue_wait_seconds")
+            .with_description(
+                "Time a solve result waited in JetStream before an orchestrator claimed it.",
             )
             .with_unit("s")
             .with_boundaries(SECONDS_BUCKETS.to_vec())
@@ -252,7 +348,25 @@ impl Metrics {
             .build();
         let result_publish_seconds = meter
             .f64_histogram("result_publish_seconds")
-            .with_description("Time to publish a solve result and have the broker acknowledge it.")
+            .with_description("Time to publish a solve result via its transport.")
+            .with_unit("s")
+            .with_boundaries(SECONDS_BUCKETS.to_vec())
+            .build();
+        let result_encode_seconds = meter
+            .f64_histogram("result_encode_seconds")
+            .with_description("Wall time to encode one solve result.")
+            .with_unit("s")
+            .with_boundaries(SECONDS_BUCKETS.to_vec())
+            .build();
+        let result_store_seconds = meter
+            .f64_histogram("result_store_seconds")
+            .with_description("Wall time to enqueue encoded result bytes with the transport.")
+            .with_unit("s")
+            .with_boundaries(SECONDS_BUCKETS.to_vec())
+            .build();
+        let job_ack_seconds = meter
+            .f64_histogram("job_ack_seconds")
+            .with_description("Wall time to acknowledge a job after result publication.")
             .with_unit("s")
             .with_boundaries(SECONDS_BUCKETS.to_vec())
             .build();
@@ -294,9 +408,17 @@ impl Metrics {
             .u64_counter("materialized_outputs")
             .with_description("Committed outputs applied to the served view, by applied kind.")
             .build();
+        let materializer_stage_seconds = meter
+            .f64_histogram("materializer_stage_seconds")
+            .with_description("Sampled materializer stage wall time.")
+            .with_unit("s")
+            .build();
+        let materializer_active = meter.u64_gauge("materializer_active").build();
+        let materializer_keyed_queued = meter.u64_gauge("materializer_keyed_queued").build();
 
         Self {
             meter,
+            probe_index: Arc::new(AtomicU64::new(0)),
             offered_observations,
             queued_observations,
             suppressed_observations,
@@ -310,21 +432,36 @@ impl Metrics {
             output_bytes,
             results_received,
             parked_results,
+            solve_requests,
+            trip_cache_lookups,
+            view_cache_lookups,
             quarantined_results,
             rejected_results,
             checkpoint_commit_seconds,
+            commit_stage_seconds,
+            checkpoint_restore_seconds,
+            job_dispatch_seconds,
+            job_build_seconds,
+            job_publish_seconds,
+            worker_turn_seconds,
             completions,
             frontier_lag,
             oldest_pending_age_seconds,
             solve_seconds,
+            solve_worker_queue_seconds,
+            solve_worker_run_seconds,
             solve_permit_wait_seconds,
             raw_queue_wait_seconds,
+            result_queue_wait_seconds,
             queue_wait_seconds,
             job_fetch_seconds,
             job_fetch_batch_size,
             matcher_handlers_in_flight,
             matcher_solves_in_flight,
             result_publish_seconds,
+            result_encode_seconds,
+            result_store_seconds,
+            job_ack_seconds,
             job_round_trip_seconds,
             freshness_target_lateness_seconds,
             freshness_target_missed,
@@ -333,6 +470,9 @@ impl Metrics {
             pending_observations,
             active_jobs,
             materialized_outputs,
+            materializer_stage_seconds,
+            materializer_active,
+            materializer_keyed_queued,
         }
     }
 
@@ -412,6 +552,33 @@ impl Metrics {
         self.parked_results.add(1, &[]);
     }
 
+    /// One transient solve request was sent. `context` is `full` or `cached`;
+    /// `reason` is `dispatch`, `timeout`, or `trip_miss`.
+    pub fn solve_request(&self, context: &'static str, reason: &'static str) {
+        self.solve_requests.add(
+            1,
+            &[
+                KeyValue::new("context", context),
+                KeyValue::new("reason", reason),
+            ],
+        );
+    }
+
+    /// One matcher trip-cache lookup: `hit`, `miss`, or `mismatch` (a cached
+    /// trip that failed job-id verification).
+    pub fn trip_cache_lookup(&self, outcome: &'static str) {
+        self.trip_cache_lookups
+            .add(1, &[KeyValue::new("outcome", outcome)]);
+    }
+
+    /// One materializer view-cache lookup: `hit` (one round trip), `miss` (no
+    /// entry), `uncovered` (an entry that cannot prove every affected field),
+    /// or `conflict` (another writer advanced the vehicle).
+    pub fn view_cache_lookup(&self, outcome: &'static str) {
+        self.view_cache_lookups
+            .add(1, &[KeyValue::new("outcome", outcome)]);
+    }
+
     /// One same-identity result was quarantined, by reason.
     pub fn quarantined(&self, reason: &str) {
         self.quarantined_results.add(1, &[reason_attr(reason)]);
@@ -426,6 +593,54 @@ impl Metrics {
     pub fn commit_seconds(&self, kind: &str, secs: f64) {
         self.checkpoint_commit_seconds
             .record(secs, &[kind_attr(kind)]);
+    }
+
+    /// Wall time for a bounded stage of the commit path.
+    pub fn commit_stage_seconds(&self, stage: &'static str, secs: f64) {
+        self.commit_stage_seconds
+            .record(secs, &[KeyValue::new("stage", stage)]);
+    }
+
+    /// Time spent restoring a vehicle before dispatch.
+    pub fn checkpoint_restore_seconds(&self, secs: f64) {
+        self.checkpoint_restore_seconds.record(secs, &[]);
+    }
+
+    /// Broker-to-worker queue wait for a solve result.
+    pub fn result_queue_wait_seconds(&self, secs: f64) {
+        self.result_queue_wait_seconds.record(secs, &[]);
+    }
+
+    /// Time spent building and durably publishing a solve job, by region.
+    pub fn job_dispatch_seconds(&self, region: &str, secs: f64) {
+        self.job_dispatch_seconds
+            .record(secs, &[region_attr(region)]);
+    }
+
+    /// Build, hash and encode one solve job before publication.
+    pub fn job_build_seconds(&self, region: &str, secs: f64) {
+        self.job_build_seconds.record(secs, &[region_attr(region)]);
+    }
+
+    /// Publish encoded job bytes and wait for the broker's acknowledgement.
+    pub fn job_publish_seconds(&self, region: &str, secs: f64) {
+        self.job_publish_seconds
+            .record(secs, &[region_attr(region)]);
+    }
+
+    /// One partition worker turn, including awaited I/O and any dispatch pump.
+    pub fn worker_turn_seconds(&self, kind: &'static str, secs: f64) {
+        if self.sample_probe() {
+            self.worker_turn_seconds
+                .record(secs, &[KeyValue::new("kind", kind)]);
+        }
+    }
+
+    /// Sample one in 32 new diagnostic observations to keep telemetry from
+    /// becoming a new hot-path bottleneck during a throughput run.
+    #[must_use]
+    pub fn sample_probe(&self) -> bool {
+        self.probe_index.fetch_add(1, Ordering::Relaxed) % 32 == 0
     }
 
     /// One committed decision, by outcome (`matched`|`terminal`|`reset`) and reason.
@@ -448,6 +663,18 @@ impl Metrics {
     pub fn solve_seconds(&self, region: &str, outcome: &str, secs: f64) {
         self.solve_seconds
             .record(secs, &[region_attr(region), outcome_attr(outcome)]);
+    }
+
+    /// Time spent awaiting a blocking worker after CPU admission.
+    pub fn solve_worker_queue_seconds(&self, region: &str, secs: f64) {
+        self.solve_worker_queue_seconds
+            .record(secs, &[region_attr(region)]);
+    }
+
+    /// Wall time of the matcher algorithm inside the blocking worker.
+    pub fn solve_worker_run_seconds(&self, region: &str, secs: f64) {
+        self.solve_worker_run_seconds
+            .record(secs, &[region_attr(region)]);
     }
 
     /// How long a validated job waited for one of this replica's CPU solve permits.
@@ -498,9 +725,24 @@ impl Metrics {
             .record(solves, &[region_attr(region)]);
     }
 
-    /// How long publishing one result took, end to broker acknowledgement.
+    /// How long publishing one result took, including transport confirmation.
     pub fn result_publish_seconds(&self, secs: f64) {
         self.result_publish_seconds.record(secs, &[]);
+    }
+
+    /// Encode one solve result before publication.
+    pub fn result_encode_seconds(&self, secs: f64) {
+        self.result_encode_seconds.record(secs, &[]);
+    }
+
+    /// Store encoded result bytes and wait for the broker's acknowledgement.
+    pub fn result_store_seconds(&self, secs: f64) {
+        self.result_store_seconds.record(secs, &[]);
+    }
+
+    /// Acknowledge a job after its result reached the broker.
+    pub fn job_ack_seconds(&self, secs: f64) {
+        self.job_ack_seconds.record(secs, &[]);
     }
 
     /// Dispatch to accepted result for one job, by region and outcome.
@@ -537,6 +779,19 @@ impl Metrics {
     /// One committed output was applied to the served view, by applied kind.
     pub fn materialized(&self, applied_kind: &str) {
         self.materialized_outputs.add(1, &[kind_attr(applied_kind)]);
+    }
+
+    /// A sampled wall-time component of applying a committed output.
+    pub fn materializer_stage_seconds(&self, stage: &'static str, secs: f64) {
+        self.materializer_stage_seconds
+            .record(secs, &[KeyValue::new("stage", stage)]);
+    }
+
+    /// Snapshot the bounded apply window and same-vehicle queue.
+    pub fn materializer_depth(&self, active: usize, keyed_queued: usize) {
+        self.materializer_active.record(active as u64, &[]);
+        self.materializer_keyed_queued
+            .record(keyed_queued as u64, &[]);
     }
 
     /// Register the two admission observable gauges (`jobs_outstanding`,
@@ -749,10 +1004,13 @@ mod tests {
         m.quarantined("duplicate");
         m.rejected("stale");
         m.commit_seconds("matched", 0.01);
+        m.commit_stage_seconds("prepare", 0.005);
         m.completion("matched", "solved");
         m.frontier_lag("c0", 3);
         m.oldest_pending_seconds(2.5);
         m.solve_seconds("syd", "solved", 0.02);
+        m.solve_worker_queue_seconds("syd", 0.003);
+        m.solve_worker_run_seconds("syd", 0.017);
         m.solve_permit_wait_seconds("syd", 0.004);
         m.raw_queue_wait_seconds("c0", 0.25);
         m.queue_wait_seconds("syd", false, 0.005);
@@ -765,6 +1023,9 @@ mod tests {
         m.result_publish_seconds(0.003);
         m.graph_ready("syd", 1);
         m.materialized("inserted");
+        m.solve_request("cached", "dispatch");
+        m.trip_cache_lookup("hit");
+        m.view_cache_lookup("hit");
 
         let collected = rig.collect();
         for name in [
@@ -781,13 +1042,19 @@ mod tests {
             "output_bytes",
             "results_received",
             "parked_results",
+            "solve_requests",
+            "trip_cache_lookups",
+            "view_cache_lookups",
             "quarantined_results",
             "rejected_results",
             "checkpoint_commit_seconds",
+            "commit_stage_seconds",
             "completions",
             "frontier_lag",
             "oldest_pending_age_seconds",
             "solve_seconds",
+            "solve_worker_queue_seconds",
+            "solve_worker_run_seconds",
             "solve_permit_wait_seconds",
             "raw_queue_wait_seconds",
             "queue_wait_seconds",
@@ -818,6 +1085,7 @@ mod tests {
         m.completion("reset", "gap");
         m.solve_seconds("mel", "unanchored", 0.01);
         m.raw_acked("committed");
+        m.commit_stage_seconds("prepare", 0.01);
 
         let collected = rig.collect();
 
@@ -835,6 +1103,9 @@ mod tests {
 
         let raw_acks = &collected["raw_acks"];
         assert!(raw_acks.contains(&("disposition".to_owned(), "committed".to_owned())));
+
+        let commit_stage = &collected["commit_stage_seconds"];
+        assert!(commit_stage.contains(&("stage".to_owned(), "prepare".to_owned())));
     }
 
     #[test]
@@ -855,6 +1126,7 @@ mod tests {
         m.quarantined("x");
         m.rejected("x");
         m.commit_seconds("terminal", 0.1);
+        m.commit_stage_seconds("promote", 0.1);
         m.completion("terminal", "internal");
         m.frontier_lag("c1", 1);
         m.oldest_pending_seconds(1.0);

@@ -41,6 +41,31 @@ spec:
         - name: orchestrator
           image: {{ include "routers.image" (dict "registry" .Values.image.registry "image" .Values.orchestrator.image) | quote }}
           imagePullPolicy: {{ .Values.orchestrator.image.pullPolicy }}
+          args:
+            - "--health-addr"
+            - {{ printf "0.0.0.0:%v" .Values.orchestrator.healthPort | quote }}
+          ports:
+            - name: health
+              containerPort: {{ .Values.orchestrator.healthPort }}
+              protocol: TCP
+          startupProbe:
+            httpGet:
+              path: /ready
+              port: health
+            periodSeconds: 10
+            failureThreshold: 60
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: health
+            periodSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /live
+              port: health
+            periodSeconds: 10
+            failureThreshold: 3
           env:
             - name: NATS
               value: {{ .Values.infra.eventBus.url | quote }}

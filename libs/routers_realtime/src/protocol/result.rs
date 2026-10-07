@@ -1,7 +1,7 @@
-//! `SolveResult`: the partitioned solve-result message. A matcher answers one
-//! [`SolveJob`] with exactly one [`SolveResult`] on the vehicle's result
-//! partition, echoing the job's [`JobId`] and [`JobIdentity`] so the owning
-//! orchestrator validates without a lookup; the [`JobId`] is the `Nats-Msg-Id`.
+//! `SolveResult`: a matcher's answer to one solve request, sent to the owning
+//! orchestrator's reply inbox for the vehicle's partition. It echoes the job's
+//! [`JobId`] and [`JobIdentity`] so the owner validates without a lookup; the
+//! [`JobId`] is the `Nats-Msg-Id`.
 //!
 //! Every outcome other than [`SolveOutcome::Solved`] is terminal; only
 //! Unanchored and Disconnected are nominal terminals that leave committed state
@@ -17,7 +17,7 @@ use crate::bus::{Wire, postcard_wire};
 use crate::event::MatchedDiff;
 use crate::partition::partition_of;
 use crate::protocol::ids::{GraphVersion, JobId};
-use crate::protocol::job::{JobIdentity, JobProof, SolveJob};
+use crate::protocol::job::{JobIdentity, JobProof, SolveJob, TripDigest};
 use crate::protocol::output::TerminalReason;
 
 /// The outcome of solving one job: either the matched emission with the resume
@@ -32,6 +32,10 @@ pub enum SolveOutcome<E: Entry> {
         diff: MatchedDiff<E>,
         trip: Trip<E>,
         converged_through: Option<i64>,
+        /// The digest of `trip`'s encoding, computed once by the matcher so the
+        /// owner never re-serialises the trip to build the next job id. `None`
+        /// asks the owner to compute it.
+        trip_digest: Option<TripDigest>,
     },
 
     /// No layer could be anchored to the network. Nominal.
@@ -55,6 +59,11 @@ pub enum SolveOutcome<E: Entry> {
     /// The solve failed for a reason that is the matcher's own fault; `reason`
     /// is a log description, never a metric label.
     Internal { reason: String },
+
+    /// A cached request reached a matcher that does not hold the exact trip it
+    /// resumes. Not a decision: the owner resends the full continuation and must
+    /// never commit this outcome. Appended last to keep earlier variant tags.
+    TripMiss,
 }
 
 impl<E: Entry> SolveOutcome<E> {
@@ -68,6 +77,7 @@ impl<E: Entry> SolveOutcome<E> {
             SolveOutcome::VersionMismatch { .. } => "version_mismatch",
             SolveOutcome::Oversized { .. } => "oversized",
             SolveOutcome::Internal { .. } => "internal",
+            SolveOutcome::TripMiss => "trip_miss",
         }
     }
 
@@ -99,6 +109,7 @@ impl<E: Entry> SolveOutcome<E> {
             SolveOutcome::VersionMismatch { .. } => Some(TerminalReason::VersionMismatch),
             SolveOutcome::Oversized { .. } => Some(TerminalReason::Internal),
             SolveOutcome::Internal { .. } => Some(TerminalReason::Internal),
+            SolveOutcome::TripMiss => Some(TerminalReason::Internal),
         }
     }
 }
@@ -125,6 +136,19 @@ pub struct SolveResult<E: Entry> {
 }
 
 impl<E: Entry> SolveResult<E> {
+    /// A [`SolveOutcome::TripMiss`] answer for a request the matcher could not
+    /// resolve; `proof` authenticates it without the continuation.
+    #[must_use]
+    pub fn trip_miss(proof: JobProof, solved_at_us: i64) -> Self {
+        Self {
+            job: proof.job_id(),
+            identity: proof.identity.clone(),
+            proof,
+            outcome: SolveOutcome::TripMiss,
+            solved_at_us,
+        }
+    }
+
     /// Build a result for `job`, copying its id and identity so the two can
     /// never drift. `solved_at_us` is the absolute unix-micros completion time.
     pub fn new(job: &SolveJob<E>, outcome: SolveOutcome<E>, solved_at_us: i64) -> Self {
@@ -154,7 +178,7 @@ impl<E: Entry> SolveResult<E> {
         Ok(())
     }
 
-    /// The broker dedup key for the result stream: the job id hex.
+    /// The broker dedup key for this result: the job id hex.
     pub fn msg_id(&self) -> String {
         self.job.to_string()
     }
@@ -242,6 +266,7 @@ mod tests {
                 },
                 trip: Trip::new(),
                 converged_through: Some(123),
+                trip_digest: None,
             },
             SolveOutcome::Unanchored,
             SolveOutcome::Disconnected,
@@ -266,6 +291,13 @@ mod tests {
         outcome: &SolveOutcome<MockEntryId>,
     ) -> (&'static str, bool, bool, bool, Option<TerminalReason>) {
         match outcome {
+            SolveOutcome::TripMiss => (
+                "trip_miss",
+                false,
+                false,
+                true,
+                Some(TerminalReason::Internal),
+            ),
             SolveOutcome::Solved { .. } => ("solved", true, false, false, None),
             SolveOutcome::Unanchored => (
                 "unanchored",
@@ -346,6 +378,7 @@ mod tests {
             },
             trip: Trip::new(),
             converged_through: Some(1_726_000_000_000_000),
+            trip_digest: None,
         };
         let result = SolveResult::new(&job, outcome, 1_726_000_000_500_000);
 

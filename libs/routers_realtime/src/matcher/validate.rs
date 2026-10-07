@@ -2,7 +2,7 @@
 //! or poison, so a matcher never solves work it cannot answer correctly.
 //!
 //! An invalid job yields a typed unsuccessful result, never silence. Wire-level
-//! decode ([`check_bytes`]) is split from the semantic checks ([`check`]) so
+//! decode ([`check_request_bytes`]) is split from the semantic checks ([`check`]) so
 //! [`check`] stays a pure, network-free function.
 
 use std::collections::HashSet;
@@ -14,7 +14,7 @@ use thiserror::Error;
 
 use crate::event::{self, VehicleId};
 use crate::protocol::ids::SchemaVersion;
-use crate::protocol::job::{JobError, SolveJob};
+use crate::protocol::job::{JobError, SolveJob, SolveRequest};
 use crate::protocol::result::SolveOutcome;
 use crate::region::Region;
 
@@ -84,10 +84,15 @@ pub enum Checked<'j, E: Entry> {
     Poison(PoisonReason),
 }
 
-/// Decode `bytes` into a verified [`SolveJob`], rejecting a buffer over
+/// Decode `bytes` into a [`SolveRequest`], rejecting a buffer over
 /// [`ValidateConfig::max_decoded_bytes`] before decoding so a hostile length
-/// prefix cannot drive an unbounded allocation.
-pub fn check_bytes<E>(bytes: &[u8], cfg: &ValidateConfig) -> Result<SolveJob<E>, PoisonReason>
+/// prefix cannot drive an unbounded allocation. Verification happens when the
+/// request is resolved, since a cached request can only be checked once its
+/// trip is supplied.
+pub fn check_request_bytes<E>(
+    bytes: &[u8],
+    cfg: &ValidateConfig,
+) -> Result<SolveRequest<E>, PoisonReason>
 where
     E: Entry + serde::de::DeserializeOwned,
 {
@@ -97,7 +102,8 @@ where
             limit: cfg.max_decoded_bytes,
         });
     }
-    Ok(SolveJob::decode_verified(bytes)?)
+    <SolveRequest<E> as crate::bus::Wire>::decode(bytes)
+        .map_err(|error| PoisonReason::Decode(error.to_string()))
 }
 
 /// Decide whether an already-decoded `job` should be solved or refused with a
@@ -181,10 +187,8 @@ mod tests {
     use super::*;
     use crate::bus::Wire;
     use crate::event::VehicleId;
-    use crate::protocol::ids::{
-        GraphVersion, JobId, Lane, ObservationId, RegionId, SCHEMA_VERSION,
-    };
-    use crate::protocol::job::JobIdentity;
+    use crate::protocol::ids::{GraphVersion, Lane, ObservationId, RegionId, SCHEMA_VERSION};
+    use crate::protocol::job::{JobIdentity, RequestContext, ResolveError};
     use core::num::{NonZeroU8, NonZeroU32};
 
     use crate::region::{LaneCount, Replicas};
@@ -251,15 +255,24 @@ mod tests {
         job(GRAPH, REGION, head_point(), 1_000_000)
     }
 
-    // --- check_bytes -------------------------------------------------------
+    // --- check_request_bytes -----------------------------------------------
+
+    /// Decode and resolve a full request the way the pull loop does.
+    fn decode_job(bytes: &[u8]) -> Result<SolveJob<MockEntryId>, PoisonReason> {
+        let request = check_request_bytes::<MockEntryId>(bytes, &ValidateConfig::default())?;
+        request.resolve(|_, _| None).map_err(|error| match error {
+            ResolveError::Job(error) => error.into(),
+            ResolveError::TripMiss(_) => panic!("a full request never misses"),
+        })
+    }
 
     #[test]
-    fn check_bytes_refuses_oversize_before_decoding() {
+    fn check_request_bytes_refuses_oversize_before_decoding() {
         let cfg = ValidateConfig {
             max_decoded_bytes: 8,
         };
         let bytes = vec![0xAB_u8; 9];
-        match check_bytes::<MockEntryId>(&bytes, &cfg) {
+        match check_request_bytes::<MockEntryId>(&bytes, &cfg) {
             Err(PoisonReason::Oversized { bytes, limit }) => {
                 assert_eq!(bytes, 9);
                 assert_eq!(limit, 8);
@@ -269,47 +282,40 @@ mod tests {
     }
 
     #[test]
-    fn check_bytes_reports_undecodable_bytes() {
-        let cfg = ValidateConfig::default();
-        match check_bytes::<MockEntryId>(&[0xff, 0xff, 0xff, 0xff], &cfg) {
+    fn check_request_bytes_reports_undecodable_bytes() {
+        match decode_job(&[0xff, 0xff, 0xff, 0xff]) {
             Err(PoisonReason::Decode(_)) => {}
             other => panic!("expected Decode poison, got {other:?}"),
         }
     }
 
     #[test]
-    fn check_bytes_reports_a_tampered_id() {
-        let cfg = ValidateConfig::default();
-        let mut job = good_job();
-        job.id = JobId(job.id.0 ^ 1);
-        let bytes = job.encode().unwrap();
-        assert!(matches!(
-            check_bytes::<MockEntryId>(&bytes, &cfg),
-            Err(PoisonReason::IdMismatch)
-        ));
+    fn a_tampered_full_request_is_poison() {
+        let mut request = SolveRequest::full(&good_job());
+        request.context = RequestContext::Full(restart(Point::new(0.0, 0.0)));
+        let bytes = request.encode().unwrap();
+        assert!(matches!(decode_job(&bytes), Err(PoisonReason::IdMismatch)));
     }
 
     #[test]
-    fn check_bytes_reports_a_foreign_schema() {
-        let cfg = ValidateConfig::default();
-        // Schema 2 so `id` still matches its identity; only the schema check fails.
+    fn a_foreign_schema_request_is_poison() {
+        // Schema 2 so the id still matches its identity; only the schema check fails.
         let mut ident = identity(GRAPH, REGION);
         ident.schema = SchemaVersion(2);
         let job =
             SolveJob::<MockEntryId>::new(ident, Lane::DEFAULT, 1_000_000, restart(head_point()));
-        let bytes = job.encode().unwrap();
-        match check_bytes::<MockEntryId>(&bytes, &cfg) {
+        let bytes = SolveRequest::full(&job).encode().unwrap();
+        match decode_job(&bytes) {
             Err(PoisonReason::Schema { got }) => assert_eq!(got, SchemaVersion(2)),
             other => panic!("expected Schema poison, got {other:?}"),
         }
     }
 
     #[test]
-    fn check_bytes_accepts_a_well_formed_job() {
-        let cfg = ValidateConfig::default();
+    fn a_well_formed_full_request_resolves() {
         let job = good_job();
-        let bytes = job.encode().unwrap();
-        let decoded = check_bytes::<MockEntryId>(&bytes, &cfg).expect("well-formed job decodes");
+        let bytes = SolveRequest::full(&job).encode().unwrap();
+        let decoded = decode_job(&bytes).expect("well-formed request decodes");
         assert_eq!(decoded.id, job.id);
         assert_eq!(decoded.identity, job.identity);
     }

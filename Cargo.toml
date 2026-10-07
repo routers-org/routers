@@ -43,7 +43,7 @@ routers_rpc = { path = "libs/routers_rpc", version = "0.1.16" }
 routers_tiles = { path = "libs/routers_tiles", version = "0.1.6" }
 routers_network = { path = "libs/routers_network", version = "0.3.0" }
 routers_shard = { path = "libs/routers_shard", version = "0.2.7" }
-routers_realtime = { path = "libs/routers_realtime", version = "0.5.0" }
+routers_realtime = { path = "libs/routers_realtime", version = "0.6.0" }
 routers_tz = { path = "libs/routers_tz", version = "0.1.2" }
 routers_tz_types = { path = "libs/routers_tz_types", version = "0.1.0" }
 routers_trellis = { path = "libs/routers_trellis", version = "0.2.1" }

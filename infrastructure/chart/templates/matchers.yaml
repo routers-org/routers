@@ -61,6 +61,10 @@ spec:
             - {{ $.Values.matcher.maxCandidates | quote }}
             - "--window-layers"
             - {{ $.Values.matcher.windowLayers | quote }}
+            - "--predicate-cache-entries"
+            - {{ $.Values.matcher.predicateCacheEntries | quote }}
+            - "--successor-cache-entries"
+            - {{ $.Values.matcher.successorCacheEntries | quote }}
             {{- range $arg := $.Values.matcher.extraArgs }}
             - {{ $arg | quote }}
             {{- end }}

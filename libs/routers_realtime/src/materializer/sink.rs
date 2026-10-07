@@ -12,6 +12,7 @@
 #![allow(async_fn_in_trait)]
 
 use alloc::collections::BTreeMap;
+use core::marker::PhantomData;
 
 use routers_network::Entry;
 
@@ -62,11 +63,44 @@ pub struct StoredLayer<E: Entry> {
     pub layer: MatchedLayer<E>,
 }
 
+/// What [`merge`] keeps per stored layer. It decides only on revisions, so a
+/// backend that writes new layers straight from the output may keep just the
+/// [`Revision`], while an in-memory view keeps the whole [`StoredLayer`].
+pub trait LayerSlot<E: Entry> {
+    /// The revision that produced this layer.
+    fn revision(&self) -> Revision;
+    /// The slot for `layer` installed at `revision`.
+    fn from_layer(revision: Revision, layer: &MatchedLayer<E>) -> Self;
+}
+
+impl<E: Entry> LayerSlot<E> for StoredLayer<E> {
+    fn revision(&self) -> Revision {
+        self.revision
+    }
+
+    fn from_layer(revision: Revision, layer: &MatchedLayer<E>) -> Self {
+        Self {
+            revision,
+            layer: layer.clone(),
+        }
+    }
+}
+
+impl<E: Entry> LayerSlot<E> for Revision {
+    fn revision(&self) -> Revision {
+        *self
+    }
+
+    fn from_layer(revision: Revision, _layer: &MatchedLayer<E>) -> Self {
+        revision
+    }
+}
+
 /// The materialised state of one continuity segment: its layers keyed by
 /// timestamp, the finality watermark, and the highest revision it has seen.
-pub struct SegmentState<E: Entry> {
+pub struct SegmentState<E: Entry, L = StoredLayer<E>> {
     /// Layers by observation timestamp (microseconds), ordered for range scans.
-    pub layers: BTreeMap<i64, StoredLayer<E>>,
+    pub layers: BTreeMap<i64, L>,
     /// Layers at or below this timestamp are final and never rewritten.
     pub finalized_through: Option<i64>,
     /// The highest revision applied to this segment, for observability.
@@ -74,17 +108,13 @@ pub struct SegmentState<E: Entry> {
     /// Retraction revisions by timestamp. Tombstones prevent a late matched
     /// output from resurrecting a layer removed by a newer commit.
     pub retractions: BTreeMap<i64, Revision>,
+    entry: PhantomData<fn() -> E>,
 }
 
 // Manual `Default` so it does not demand `E: Default`.
-impl<E: Entry> Default for SegmentState<E> {
+impl<E: Entry, L> Default for SegmentState<E, L> {
     fn default() -> Self {
-        Self {
-            layers: BTreeMap::new(),
-            finalized_through: None,
-            last_revision: None,
-            retractions: BTreeMap::new(),
-        }
+        Self::from_parts(BTreeMap::new(), None, None, BTreeMap::new())
     }
 }
 
@@ -93,6 +123,25 @@ impl<E: Entry> SegmentState<E> {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+}
+
+impl<E: Entry, L> SegmentState<E, L> {
+    /// A segment with the given contents.
+    #[must_use]
+    pub fn from_parts(
+        layers: BTreeMap<i64, L>,
+        finalized_through: Option<i64>,
+        last_revision: Option<Revision>,
+        retractions: BTreeMap<i64, Revision>,
+    ) -> Self {
+        Self {
+            layers,
+            finalized_through,
+            last_revision,
+            retractions,
+            entry: PhantomData,
+        }
     }
 }
 
@@ -108,7 +157,10 @@ pub fn target_segment<E: Entry>(output: &CommittedOutput<E>) -> SegmentId {
 /// Fold one committed output into a single segment's state, returning what it
 /// did. Idempotent under replay. The caller has already selected the correct
 /// [`SegmentState`] (see [`target_segment`] and [`VehicleMaterialized::apply`]).
-pub fn merge<E: Entry>(state: &mut SegmentState<E>, output: &CommittedOutput<E>) -> Applied {
+pub fn merge<E: Entry, L: LayerSlot<E>>(
+    state: &mut SegmentState<E, L>,
+    output: &CommittedOutput<E>,
+) -> Applied {
     match &output.kind {
         OutputKind::Matched {
             diff,
@@ -134,17 +186,13 @@ pub fn merge<E: Entry>(state: &mut SegmentState<E>, output: &CommittedOutput<E>)
                 if !supersedes(revision, retracted_at) {
                     continue;
                 }
-                let existing = state.layers.get(&timestamp).map(|stored| stored.revision);
+                let existing = state.layers.get(&timestamp).map(LayerSlot::revision);
                 if supersedes(revision, existing) {
                     let replacing = existing.is_some();
                     state.retractions.remove(&timestamp);
-                    state.layers.insert(
-                        timestamp,
-                        StoredLayer {
-                            revision,
-                            layer: layer.clone(),
-                        },
-                    );
+                    state
+                        .layers
+                        .insert(timestamp, L::from_layer(revision, layer));
                     if replacing {
                         superseded += 1;
                     } else {
@@ -198,12 +246,12 @@ pub fn merge<E: Entry>(state: &mut SegmentState<E>, output: &CommittedOutput<E>)
                 let retractable = state
                     .layers
                     .get(&timestamp)
-                    .is_some_and(|stored| stored.revision.0 < output.revision.0);
+                    .is_some_and(|stored| stored.revision().0 < output.revision.0);
                 if !is_final(timestamp, watermark) {
                     let tombstone_needed = state
                         .layers
                         .get(&timestamp)
-                        .is_none_or(|stored| stored.revision.0 < output.revision.0);
+                        .is_none_or(|stored| stored.revision().0 < output.revision.0);
                     if tombstone_needed {
                         let existing = state.retractions.get(&timestamp).copied();
                         if supersedes(output.revision, existing) {
