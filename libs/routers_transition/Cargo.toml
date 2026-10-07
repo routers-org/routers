@@ -60,5 +60,13 @@ default = ["parallel"]
 # rayon on the matching hot path; off = single-threaded (e.g. wasm32).
 parallel = ["dep:rayon"]
 
+# Keep published feature names after removing unused optional dependencies.
+routers_shard = []
+opentelemetry = []
+opentelemetry_sdk = []
+opentelemetry-otlp = []
+tracing-opentelemetry = []
+tracing-subscriber = []
+
 [lints]
 workspace = true
