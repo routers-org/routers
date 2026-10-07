@@ -71,8 +71,6 @@ jobs:
         run: |
           buf generate
 
-      # Keep these checks on both PRs and main: workflow changes must exercise
-      # the same compatibility checks after merging as they do before merging.
       - name: Select published crates for API compatibility
         id: semver-packages
         run: |
@@ -91,22 +89,18 @@ jobs:
         uses: obi1kenobi/cargo-semver-checks-action@v2
         with:
           manifest-path: Cargo.toml
-          # The action has no --workspace input; select members explicitly.
-          # `routers` and `routers_tz` use the feature sets in the checks below.
           package: ${{ steps.semver-packages.outputs.packages }}
           feature-group: all-features
           release-type: minor
           rust-toolchain: manual
 
-      # `routers` rejects enabling `osm` and `overture` together. Use explicit
-      # features so the default `osm` feature is also disabled for Overture.
+      # OSM and Overture are mutually exclusive features.
       - name: Check routers API compatibility (OSM)
         uses: obi1kenobi/cargo-semver-checks-action@v2
         with:
           package: routers
           feature-group: only-explicit-features
           features: osm
-          # The action's default cache key does not include enabled features.
           prefix-key: semver-routers-osm
           release-type: minor
           rust-toolchain: manual
@@ -121,8 +115,7 @@ jobs:
           release-type: minor
           rust-toolchain: manual
 
-      # `basic` requires source geojson that is not shipped on crates.io, so
-      # check the backends available in both the checkout and published crate.
+      # The published crate omits the data required by `basic`.
       - name: Check routers_tz API compatibility (published backends)
         uses: obi1kenobi/cargo-semver-checks-action@v2
         with:
