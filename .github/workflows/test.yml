@@ -37,10 +37,10 @@ jobs:
         with:
           setup_only: true
 
-      - name: Install nextest
+      - name: Install test tools
         uses: taiki-e/install-action@v2
         with:
-          tool: nextest
+          tool: nextest,cargo-semver-checks
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -71,59 +71,15 @@ jobs:
         run: |
           buf generate
 
-      - name: Select published crates for API compatibility
-        id: semver-packages
-        run: |
-          packages=$(cargo metadata --no-deps --format-version 1 | jq -r '
-            .workspace_members as $members |
-            [.packages[] |
-              select(.id as $id | $members | index($id)) |
-              select(.publish != []) |
-              select(.name != "routers" and .name != "routers_tz" and .name != "routers_wasm") |
-              .name] |
-            if length == 0 then error("No published crates selected") else join(",") end
-          ')
-          echo "packages=$packages" >> "$GITHUB_OUTPUT"
-
       - name: Check published crate API compatibility
-        uses: obi1kenobi/cargo-semver-checks-action@v2
-        with:
-          manifest-path: Cargo.toml
-          package: ${{ steps.semver-packages.outputs.packages }}
-          feature-group: all-features
-          release-type: minor
-          rust-toolchain: manual
-
-      # OSM and Overture are mutually exclusive features.
-      - name: Check routers API compatibility (OSM)
-        uses: obi1kenobi/cargo-semver-checks-action@v2
-        with:
-          package: routers
-          feature-group: only-explicit-features
-          features: osm
-          prefix-key: semver-routers-osm
-          release-type: minor
-          rust-toolchain: manual
-
-      - name: Check routers API compatibility (Overture)
-        uses: obi1kenobi/cargo-semver-checks-action@v2
-        with:
-          package: routers
-          feature-group: only-explicit-features
-          features: overture
-          prefix-key: semver-routers-overture
-          release-type: minor
-          rust-toolchain: manual
-
-      # The published crate omits the data required by `basic`.
-      - name: Check routers_tz API compatibility (published backends)
-        uses: obi1kenobi/cargo-semver-checks-action@v2
-        with:
-          package: routers_tz
-          feature-group: only-explicit-features
-          features: s2cell,rtree
-          release-type: minor
-          rust-toolchain: manual
+        run: >
+          cargo semver-checks check-release --workspace
+          --exclude routers-conformance
+          --exclude routers_fixtures
+          --exclude routers_viewer
+          --exclude routers_wasm
+          --default-features
+          --release-type minor
 
       - name: 📦 Verify packages against published dependencies
         if: github.event_name == 'pull_request'
