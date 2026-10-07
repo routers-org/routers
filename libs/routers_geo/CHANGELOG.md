@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.8] - 2026-10-07
+
+### ⚙️ Miscellaneous Tasks
+
+- Updated the following local packages: routers_schema
+
+
+
 ## [0.1.7] - 2026-08-30
 
 ### ⚙️ Miscellaneous Tasks

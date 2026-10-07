@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.1] - 2026-10-07
+
+### 🚀 Features
+
+- *(trellis)* Build without std
+
+### ⚙️ Miscellaneous Tasks
+
+- Drop unused deps and spell core/alloc paths ahead of no_std
+
+
+
 ## [0.3.0] - 2026-08-11
 
 ### 🚀 Features

@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.6.0] - 2026-10-07
+
+### 🚀 Features
+
+- *(trellis)* Build without std
+
+### 🐛 Bug Fixes
+
+- *(realtime)* [**breaking**] Declare pipeline API break as 0.6.0
+
+
+
 ## [0.5.0] - 2026-09-21
 
 ### 🚀 Features
