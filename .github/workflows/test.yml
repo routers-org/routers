@@ -43,13 +43,20 @@ jobs:
           tool: nextest,cargo-semver-checks
 
       - name: Install Rust toolchain
+        id: rust-toolchain
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache
         uses: Swatinem/rust-cache@v2
         with:
-          # Caches are branch-scoped, so only `main` writes one for PRs to restore.
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          shared-key: test
+
+      - name: Cache published API baselines
+        uses: actions/cache@v4
+        with:
+          path: target/semver-checks/cache
+          key: semver-${{ runner.os }}-${{ runner.arch }}-${{ steps.rust-toolchain.outputs.cachekey }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml') }}
+          restore-keys: semver-${{ runner.os }}-${{ runner.arch }}-${{ steps.rust-toolchain.outputs.cachekey }}-
 
       - name: Cache packaging plugin
         id: packager-cache
@@ -93,11 +100,4 @@ jobs:
             --allow-dirty
 
       - name: 🧪 Test
-        # Excluded crates have no tests; remove from this list when they gain some.
-        run: >
-          cargo nextest run --workspace
-          --exclude routers-conformance
-          --exclude routers_tiles
-          --exclude routers_rpc
-          --exclude routers_geo
-          --exclude routers_tz_types
+        run: cargo nextest run
