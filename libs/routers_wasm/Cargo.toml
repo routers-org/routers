@@ -1,6 +1,6 @@
 [package]
 name = "routers_wasm"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 license = "GPL-3.0-or-later"
 description = "WebAssembly Component for the Routers map-matching engine"
@@ -13,9 +13,9 @@ name = "routers_wasm"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-routers_transition = { path = "../routers_transition", version = "0.3.7", default-features = false }
-routers_codec = { path = "../routers_codec", version = "0.2.2", default-features = false, features = ["osm"] }
-routers_shard = { path = "../routers_shard", version = "0.2.7", default-features = false, features = ["osm"] }
+routers_transition = { path = "../routers_transition", version = "0.3.8", default-features = false }
+routers_codec = { path = "../routers_codec", version = "0.2.3", default-features = false, features = ["osm"] }
+routers_shard = { path = "../routers_shard", version = "0.2.8", default-features = false, features = ["osm"] }
 routers_network = { workspace = true }
 
 geo = { workspace = true }

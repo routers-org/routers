@@ -2,6 +2,39 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.4.0] - 2026-10-07
+
+### 🚀 Features
+
+- *(trellis)* Build without std
+
+### 🐛 Bug Fixes
+
+- Pin buffa-packaging, perform semver in-worktree
+- Setup docker buildx
+- Check all crates using cargo-semver-checks
+- Migrate docker base to rustc 1.98
+- *(ci)* Check supported API configurations on PRs and main
+- *(ci)* Derive API check eligibility from Cargo metadata
+- *(transition)* Retain published Cargo feature names
+- *(realtime)* [**breaking**] Declare pipeline API break as 0.6.0
+
+### ⚡ Performance
+
+- *(ci)* Narrow test builds and retain PR caches
+
+### 🚜 Refactor
+
+- *(ci)* Use one workspace compatibility check
+
+### ⚙️ Miscellaneous Tasks
+
+- *(ci)* Trim workflow comments
+- Drop unused deps and spell core/alloc paths ahead of no_std
+- Use `rustls` instead of OpenSSL ([#277](https://github.com/routers-org/routers/pull/277))
+
+
+
 ## [0.3.13] - 2026-09-07
 
 ### 🐛 Bug Fixes

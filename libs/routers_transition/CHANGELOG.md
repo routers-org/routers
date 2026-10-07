@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.8] - 2026-10-07
+
+### 🚀 Features
+
+- *(trellis)* Build without std
+
+### 🐛 Bug Fixes
+
+- *(transition)* Retain published Cargo feature names
+
+### ⚙️ Miscellaneous Tasks
+
+- Drop unused deps and spell core/alloc paths ahead of no_std
+
+
+
 ## [0.3.7] - 2026-09-21
 
 ### 🚀 Features

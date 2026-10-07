@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.2] - 2026-10-07
+
+### 🚀 Features
+
+- *(trellis)* Build without std
+
+
+
 ## [0.2.1] - 2026-08-30
 
 ### 💼 Other

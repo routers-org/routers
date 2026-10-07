@@ -1,6 +1,6 @@
 [package]
 name = "routers_shard"
-version = "0.2.7"
+version = "0.2.8"
 edition = "2024"
 license = "GPL-3.0-or-later"
 description = "Sharding Primitives for Routers"
@@ -10,7 +10,7 @@ repository = "https://github.com/routers-org/routers"
 routers_network = { workspace = true }
 # Path dep (not `workspace = true`) so `default-features = false` is allowed —
 # lets a wasm build drop codec's `parallel`/`mimalloc`. Re-enabled via features.
-routers_codec = { path = "../routers_codec", version = "0.2.2", default-features = false, optional = true }
+routers_codec = { path = "../routers_codec", version = "0.2.3", default-features = false, optional = true }
 
 # Logging
 log = { workspace = true }
@@ -78,7 +78,7 @@ web = ["dep:wasm-bindgen", "dep:wasm-bindgen-futures", "dep:js-sys", "dep:web-sy
 cli = ["dep:clap", "dep:env_logger"]
 
 [dev-dependencies]
-routers_codec = { path = "../routers_codec", version = "0.2.2", features = ["osm"] }
+routers_codec = { path = "../routers_codec", version = "0.2.3", features = ["osm"] }
 
 tokio = { workspace = true }
 

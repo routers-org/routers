@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.2] - 2026-10-07
+
+### 🚀 Features
+
+- *(realtime)* Bound the carried match state
+- *(trellis)* Build without std
+
+### 🐛 Bug Fixes
+
+- Explicit removals, stronger test harness with scenario testing
+
+### ⚙️ Miscellaneous Tasks
+
+- Drop unused deps and spell core/alloc paths ahead of no_std
+
+
+
 ## [0.2.1] - 2026-08-11
 
 ### 🚀 Features
