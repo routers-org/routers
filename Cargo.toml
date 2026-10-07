@@ -122,11 +122,10 @@ opentelemetry_sdk = { version = "0.29.0", features = [
 ] }
 opentelemetry-otlp = { version = "0.29.0", default-features = false, features = [
     "http-proto",
-    # Async reqwest — the default `reqwest-blocking-client` serialises
-    # exports behind blocking sends.
-    "reqwest-client",
+    # Async reqwest over rustls — the default `reqwest-blocking-client`
+    # serialises exports behind blocking sends.
+    "reqwest-rustls",
     "trace",
-    "tls",
     "internal-logs",
     # The OTLP metrics exporter (T30), paired with the SDK's `metrics` feature.
     "metrics",
