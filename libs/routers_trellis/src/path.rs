@@ -1,4 +1,5 @@
 use crate::types::NodeId;
+use alloc::vec::Vec;
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};

@@ -1,4 +1,4 @@
-use std::fmt::Debug;
+use core::fmt::Debug;
 
 use geo::{Contains, Rect};
 use routers_tz_types::{
@@ -12,7 +12,7 @@ pub struct BasicStorage {
 }
 
 impl Debug for BasicStorage {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_str("BasicStorage")
     }
 }

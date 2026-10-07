@@ -9,7 +9,7 @@ description = "Data Builder for the Routers Timezone Resolver"
 geo = { workspace = true, features = ["use-serde"] }
 geo-index = { workspace = true }
 
-serde = { workspace = true, features = ["derive"] }
+serde = { workspace = true, features = ["derive", "std"] }
 ouroboros = { workspace = true }
 
 time-tz = { workspace = true }

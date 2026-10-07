@@ -35,20 +35,15 @@ jobs:
         with:
           setup_only: true
 
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt,clippy
+
       - name: Cache
         uses: Swatinem/rust-cache@v2
         with:
-          # Caches are branch-scoped, so only `main` writes one for PRs to restore.
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-
-      - name: Install `toolchain`
-        run: rustup toolchain install stable
-
-      - name: Install `rustfmt`
-        run: rustup component add rustfmt
-
-      - name: Install `clippy`
-        run: rustup component add clippy
+          shared-key: format
 
       - name: Cache packaging plugin
         id: packager-cache

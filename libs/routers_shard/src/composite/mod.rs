@@ -5,8 +5,8 @@
 
 mod network;
 
+use alloc::sync::Arc;
 use core::hash::BuildHasherDefault;
-use std::sync::Arc;
 
 use petgraph::prelude::DiGraphMap;
 use rustc_hash::FxHasher;

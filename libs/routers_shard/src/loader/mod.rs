@@ -25,10 +25,10 @@ mod web;
 #[cfg(all(target_arch = "wasm32", feature = "web"))]
 pub use web::WebFetcher;
 
+use alloc::sync::Arc;
 use core::fmt::Debug;
 use log::debug;
 use rustc_hash::FxHashMap;
-use std::sync::Arc;
 
 use routers_network::{Entry, Metadata};
 

@@ -15,6 +15,8 @@
 //! [`Metadata`](routers_network::Metadata) traits. An OSM-specific ingestion
 //! adapter is provided behind the `osm` feature for convenience.
 
+extern crate alloc;
+
 pub mod artifact;
 pub mod composite;
 pub mod loader;

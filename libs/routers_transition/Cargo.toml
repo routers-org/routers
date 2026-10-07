@@ -9,16 +9,14 @@ repository = "https://github.com/routers-org/routers"
 [dependencies]
 routers_network = { workspace = true }
 routers_trellis = { workspace = true }
-routers_shard = { workspace = true, optional = true }
 
 # Algorithm
 
-serde = { workspace = true }
+serde = { workspace = true, features = ["std"] }
 
 # Root-Specific Crates
 approx = "0.5.1"
-pathfinding = "4.14.0"
-measure_time = "0.9.0"
+num-traits = "0.2"
 rustc-hash = { workspace = true }
 
 # Logging Utility
@@ -32,18 +30,13 @@ wkt = { workspace = true }
 uom = { workspace = true }
 
 # Tracing [Optional-"tracing"]
-tracing = { workspace = true, optional = true }
-tracing-subscriber = { workspace = true, optional = true }
-opentelemetry = { workspace = true, optional = true }
-opentelemetry_sdk = { workspace = true, optional = true }
-tracing-opentelemetry = { workspace = true, optional = true }
-opentelemetry-otlp = { workspace = true, optional = true }
+tracing = { workspace = true, features = ["std"], optional = true }
 
 # Optimisations and Compression
 rayon = { workspace = true, optional = true }
 itertools = { workspace = true }
 indexmap = { workspace = true }
-thiserror = { workspace = true }
+thiserror = { workspace = true, features = ["std"] }
 cfg-if = "1.0.4"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
@@ -51,10 +44,8 @@ scc = { workspace = true }
 
 [dev-dependencies]
 wkt = { workspace = true }
-insta = { workspace = true }
 serde_json = { workspace = true }
 criterion = { workspace = true }
-routers_fixtures = { workspace = true }
 routers_codec = { workspace = true }
 # Pull in the MockNetwork test-support harness for integration tests + benches.
 routers_network = { workspace = true, features = ["testing"] }
@@ -68,6 +59,14 @@ default = ["parallel"]
 
 # rayon on the matching hot path; off = single-threaded (e.g. wasm32).
 parallel = ["dep:rayon"]
+
+# Keep published feature names after removing unused optional dependencies.
+routers_shard = []
+opentelemetry = []
+opentelemetry_sdk = []
+opentelemetry-otlp = []
+tracing-opentelemetry = []
+tracing-subscriber = []
 
 [lints]
 workspace = true

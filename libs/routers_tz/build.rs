@@ -1,7 +1,7 @@
 //! Build script: extracts timezone geometries once, then hands them to each
 //! enabled storage backend. Backend implementations live in `build/`.
 
-pub type BoxError = Box<dyn std::error::Error>;
+pub type BoxError = Box<dyn core::error::Error>;
 
 #[path = "build/codegen.rs"]
 mod codegen;

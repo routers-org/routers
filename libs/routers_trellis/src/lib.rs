@@ -15,6 +15,10 @@
 //! - [`ViterbiSolver`]: Viterbi with SIMD acceleration. Stateless; usable with any trellis.
 //! - [`BruteForceSolver`]: Correctness reference — never use in production.
 
+#![cfg_attr(not(test), no_std)]
+
+extern crate alloc;
+
 mod path;
 mod solved;
 mod solver;

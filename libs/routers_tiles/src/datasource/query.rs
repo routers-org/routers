@@ -39,7 +39,7 @@ pub trait TileQuery<In, Filter, Out, Item> {
         input: Query<In, Option<Filter>>,
         params: Self::Parameters<'_>,
         conn: Self::Connection<'_>,
-    ) -> impl std::future::Future<Output = Result<Out, Self::Error>> + Send;
+    ) -> impl core::future::Future<Output = Result<Out, Self::Error>> + Send;
 
     fn batch(query: Query<Self::Parameters<'_>, (u8, u32, u32)>) -> In;
     fn filter(filter: &Self::Parameters<'_>, item: &Item) -> bool;
