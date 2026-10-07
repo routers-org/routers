@@ -37,19 +37,26 @@ jobs:
         with:
           setup_only: true
 
-      - name: Install nextest
+      - name: Install test tools
         uses: taiki-e/install-action@v2
         with:
-          tool: nextest
+          tool: nextest,cargo-semver-checks
 
       - name: Install Rust toolchain
+        id: rust-toolchain
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache
         uses: Swatinem/rust-cache@v2
         with:
-          # Caches are branch-scoped, so only `main` writes one for PRs to restore.
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          shared-key: test
+
+      - name: Cache published API baselines
+        uses: actions/cache@v4
+        with:
+          path: target/semver-checks/cache
+          key: semver-${{ runner.os }}-${{ runner.arch }}-${{ steps.rust-toolchain.outputs.cachekey }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml') }}
+          restore-keys: semver-${{ runner.os }}-${{ runner.arch }}-${{ steps.rust-toolchain.outputs.cachekey }}-
 
       - name: Cache packaging plugin
         id: packager-cache
@@ -72,14 +79,10 @@ jobs:
           buf generate
 
       - name: Check published crate API compatibility
-        if: github.event_name == 'pull_request'
-        uses: obi1kenobi/cargo-semver-checks-action@v2
-        with:
-          manifest-path: Cargo.toml
-          exclude: routers-conformance,routers_fixtures,routers_viewer,routers_wasm
-          feature-group: all-features
-          release-type: minor
-          rust-toolchain: manual
+        run: >
+          cargo semver-checks check-release --workspace
+          --default-features
+          --release-type minor
 
       - name: 📦 Verify packages against published dependencies
         if: github.event_name == 'pull_request'
@@ -97,11 +100,4 @@ jobs:
             --allow-dirty
 
       - name: 🧪 Test
-        # Excluded crates have no tests; remove from this list when they gain some.
-        run: >
-          cargo nextest run --workspace
-          --exclude routers-conformance
-          --exclude routers_tiles
-          --exclude routers_rpc
-          --exclude routers_geo
-          --exclude routers_tz_types
+        run: cargo nextest run

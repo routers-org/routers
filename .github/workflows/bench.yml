@@ -46,8 +46,7 @@ jobs:
       - name: Cache
         uses: Swatinem/rust-cache@v2
         with:
-          # Caches are branch-scoped, so only `main` writes one for PRs to restore.
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          shared-key: bench
 
       - name: Cache packaging plugin
         id: packager-cache

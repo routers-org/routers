@@ -8,4 +8,4 @@ semver_check = false
 [[package]]
 name = "routers_wasm"
 release = true
-publish = false
+git_only = true
