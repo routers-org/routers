@@ -71,13 +71,64 @@ jobs:
         run: |
           buf generate
 
+      # Keep these checks on both PRs and main: workflow changes must exercise
+      # the same compatibility checks after merging as they do before merging.
+      - name: Select published crates for API compatibility
+        id: semver-packages
+        run: |
+          packages=$(cargo metadata --no-deps --format-version 1 | jq -r '
+            .workspace_members as $members |
+            [.packages[] |
+              select(.id as $id | $members | index($id)) |
+              select(.publish != []) |
+              select(.name != "routers" and .name != "routers_tz" and .name != "routers_wasm") |
+              .name] |
+            if length == 0 then error("No published crates selected") else join(",") end
+          ')
+          echo "packages=$packages" >> "$GITHUB_OUTPUT"
+
       - name: Check published crate API compatibility
-        if: github.event_name == 'pull_request'
         uses: obi1kenobi/cargo-semver-checks-action@v2
         with:
           manifest-path: Cargo.toml
-          exclude: routers-conformance,routers_fixtures,routers_viewer,routers_wasm
+          # The action has no --workspace input; select members explicitly.
+          # `routers` and `routers_tz` use the feature sets in the checks below.
+          package: ${{ steps.semver-packages.outputs.packages }}
           feature-group: all-features
+          release-type: minor
+          rust-toolchain: manual
+
+      # `routers` rejects enabling `osm` and `overture` together. Use explicit
+      # features so the default `osm` feature is also disabled for Overture.
+      - name: Check routers API compatibility (OSM)
+        uses: obi1kenobi/cargo-semver-checks-action@v2
+        with:
+          package: routers
+          feature-group: only-explicit-features
+          features: osm
+          # The action's default cache key does not include enabled features.
+          prefix-key: semver-routers-osm
+          release-type: minor
+          rust-toolchain: manual
+
+      - name: Check routers API compatibility (Overture)
+        uses: obi1kenobi/cargo-semver-checks-action@v2
+        with:
+          package: routers
+          feature-group: only-explicit-features
+          features: overture
+          prefix-key: semver-routers-overture
+          release-type: minor
+          rust-toolchain: manual
+
+      # `basic` requires source geojson that is not shipped on crates.io, so
+      # check the backends available in both the checkout and published crate.
+      - name: Check routers_tz API compatibility (published backends)
+        uses: obi1kenobi/cargo-semver-checks-action@v2
+        with:
+          package: routers_tz
+          feature-group: only-explicit-features
+          features: s2cell,rtree
           release-type: minor
           rust-toolchain: manual
 
