@@ -74,10 +74,6 @@ jobs:
       - name: Check published crate API compatibility
         run: >
           cargo semver-checks check-release --workspace
-          --exclude routers-conformance
-          --exclude routers_fixtures
-          --exclude routers_viewer
-          --exclude routers_wasm
           --default-features
           --release-type minor
 

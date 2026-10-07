@@ -5,6 +5,7 @@ edition = "2024"
 license = "GPL-3.0-or-later"
 description = "WebAssembly Component for the Routers map-matching engine"
 repository = "https://github.com/routers-org/routers"
+publish = false
 
 [lib]
 name = "routers_wasm"
