@@ -12,11 +12,10 @@ path = "src/main.rs"
 routers = { path = ".." }
 routers_fixtures = { path = "../libs/routers_fixtures" }
 routers_codec = { workspace = true }
-routers_network = { workspace = true }
 
 # Config + serialisation
 toml = "0.8"
-serde = { workspace = true, features = ["derive"] }
+serde = { workspace = true, features = ["derive", "std"] }
 serde_json = "1"
 
 # HTTP client for external matchers

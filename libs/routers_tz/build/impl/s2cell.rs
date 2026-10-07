@@ -1,10 +1,10 @@
+use core::sync::atomic::{AtomicUsize, Ordering};
 use rayon::prelude::*;
 use routers_tz_types::storage::s2cell::S2StorageBackend;
 use routers_tz_types::timezone::internal::TimezoneBuild;
 use s2::region::RegionCoverer;
 use std::collections::HashMap;
 use std::fs;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::BoxError;
 use crate::codegen::Backend;

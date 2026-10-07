@@ -5,10 +5,10 @@
 //! boundaries. The component bindings in `bindings.rs` map the WIT interface
 //! onto this.
 
+use alloc::collections::BTreeMap;
+use alloc::sync::Arc;
 use core::cmp::Ordering;
-use std::collections::BTreeMap;
-use std::str::FromStr;
-use std::sync::Arc;
+use core::str::FromStr;
 
 use geo::{Coord, Distance, Haversine, LineString, Point};
 use routers_codec::osm::{OsmEdgeMetadata, OsmEntryId};
@@ -201,12 +201,12 @@ impl From<MatchError> for Failure {
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
+    use alloc::collections::BTreeSet;
     use geo::LineString;
     use routers_codec::osm::OsmNetwork;
     use routers_fixtures::{SYDNEY, SYNDEY_TRIP, fixture_path};
     use routers_network::edge::Weight;
     use routers_shard::{Selection, SelectionMode, ShardSource};
-    use std::collections::BTreeSet;
     use wkt::TryFromWkt;
 
     /// Adapts an `OsmNetwork` as a shard source (mirrors the generate-shards bin).

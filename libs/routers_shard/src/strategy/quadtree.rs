@@ -6,10 +6,10 @@
 //! A [`QuadKey`] encodes the path from the root to a given
 //! cell as 2 bits per level, packed LSB-first into a `u64`.
 
+use core::fmt::Display;
 use core::fmt::{self, Debug};
 use geo::{Point, Rect, coord};
 use serde::{Deserialize, Serialize};
-use std::fmt::Display;
 
 const ROOT_MIN_X: f64 = -180.0;
 const ROOT_MAX_X: f64 = 180.0;

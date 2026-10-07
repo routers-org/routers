@@ -10,10 +10,10 @@ pub mod quadtree;
 pub mod s2;
 
 use core::fmt::Debug;
+use core::fmt::Display;
 use core::hash::Hash;
 use geo::{Point, Rect};
 use serde::{Serialize, de::DeserializeOwned};
-use std::fmt::Display;
 
 /// Identifier for a single shard.
 pub trait ShardId:

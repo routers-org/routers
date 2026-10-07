@@ -30,7 +30,7 @@ fn write_neighbourhood(
     let owned = strategy.locate(anchor);
     // Wide grid so multiple cells are populated.
     let source = MemSource::grid(Point::new(-0.5, -0.5), 32, 32, 0.1);
-    for key in std::iter::once(owned).chain(strategy.neighbours(&owned)) {
+    for key in core::iter::once(owned).chain(strategy.neighbours(&owned)) {
         let selection = Selection::new(&strategy, key, SelectionMode::Owned);
         let net = ShardedNetwork::<OsmEntryId, OsmEdgeMetadata, QuadKey>::from_source(
             &source, &strategy, &selection,

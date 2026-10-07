@@ -5,7 +5,6 @@
 //! checksums before a loader touches the filesystem.
 
 use core::str::FromStr;
-extern crate alloc;
 
 use alloc::collections::BTreeMap;
 use std::io::Read;

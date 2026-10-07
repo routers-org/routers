@@ -6,8 +6,8 @@ use s2::latlng::LatLng;
 use itertools::Itertools;
 
 use crate::TimezoneResolver;
+use core::fmt::Debug;
 use routers_tz_types::TimeZone;
-use std::fmt::Debug;
 
 const MIN_LEVEL: u64 = 1;
 const MAX_LEVEL: u64 = 13;
@@ -17,7 +17,7 @@ pub struct S2CellStorage {
 }
 
 impl Debug for S2CellStorage {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_str("S2CellStorage")
     }
 }

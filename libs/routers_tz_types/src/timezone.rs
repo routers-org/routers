@@ -1,10 +1,10 @@
-use std::ops::Deref;
+use core::ops::Deref;
 use time_tz::{TimeZone as TimeZoneTrait, Tz};
 
 pub mod internal {
+    use core::ops::Deref;
     use geo::{BoundingRect, MultiPolygon, Rect};
     use serde::{Deserialize, Serialize};
-    use std::ops::Deref;
     use time_tz::Tz;
 
     /// An internal representation of a timezone used by the build

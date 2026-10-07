@@ -1,4 +1,5 @@
 use crate::{Path, Solve, SolveError, Trellis, trellis::INF_W, types::NodeId};
+use alloc::{vec, vec::Vec};
 
 /// Correctness reference: enumerates every possible path and picks the cheapest.
 ///

@@ -6,10 +6,10 @@
 //! for [`GeohashStrategy`] without touching the ingestion path.
 
 use core::fmt;
+use core::fmt::Display;
+use core::str::FromStr;
 use geo::{Point, Rect, coord};
 use serde::{Deserialize, Serialize};
-use std::fmt::Display;
-use std::str::FromStr;
 use thiserror::Error;
 
 const BASE32: &[u8; 32] = b"0123456789bcdefghjkmnpqrstuvwxyz";
