@@ -1,7 +1,7 @@
 use geo::Point;
 use routers_codec::osm::{OsmEdgeMetadata, OsmEntryId};
-use routers_network::edge::Weight;
-use routers_shard::ShardSource;
+use routers_network::DirectionAwareEdgeId;
+use routers_shard::{ShardSource, SourceEdge};
 
 /// Synthetic grid data source for tests.
 ///
@@ -10,7 +10,7 @@ use routers_shard::ShardSource;
 /// row-major: node(row * cols + col + 1).
 pub struct MemSource {
     nodes: Vec<(OsmEntryId, Point)>,
-    edges: Vec<(OsmEntryId, OsmEntryId, Weight, OsmEdgeMetadata)>,
+    edges: Vec<SourceEdge<OsmEntryId, OsmEdgeMetadata>>,
 }
 
 impl MemSource {
@@ -31,20 +31,21 @@ impl MemSource {
             }
         }
 
-        // Each edge carries a distinct-ish lane count so tests can tell
-        // which edge's metadata a shard kept.
+        // Each two-way way carries a distinct-ish lane count so tests can
+        // tell which way's metadata a shard kept.
         let mut lanes = (1u8..=u8::MAX).cycle();
-        let mut tagged = |from, to| {
-            let lane_count = core::num::NonZeroU8::new(lanes.next().unwrap());
-            (
-                from,
-                to,
-                1000,
-                OsmEdgeMetadata {
-                    lane_count,
-                    ..OsmEdgeMetadata::default()
-                },
-            )
+        let mut ways = 0;
+        let mut road = |from, to| {
+            ways += 1;
+            let id = DirectionAwareEdgeId::new(OsmEntryId::way(ways));
+            let meta = OsmEdgeMetadata {
+                lane_count: core::num::NonZeroU8::new(lanes.next().unwrap()),
+                ..OsmEdgeMetadata::default()
+            };
+            [
+                (from, to, (1000, id.forward()), meta.clone()),
+                (to, from, (1000, id.backward()), meta),
+            ]
         };
 
         for row in 0..rows {
@@ -52,13 +53,11 @@ impl MemSource {
                 let from = OsmEntryId::node((row * cols + col + 1) as i64);
                 if col + 1 < cols {
                     let to = OsmEntryId::node((row * cols + col + 2) as i64);
-                    edges.push(tagged(from, to));
-                    edges.push(tagged(to, from));
+                    edges.extend(road(from, to));
                 }
                 if row + 1 < rows {
                     let to = OsmEntryId::node(((row + 1) * cols + col + 1) as i64);
-                    edges.push(tagged(from, to));
-                    edges.push(tagged(to, from));
+                    edges.extend(road(from, to));
                 }
             }
         }
@@ -74,7 +73,7 @@ impl ShardSource<OsmEntryId, OsmEdgeMetadata> for MemSource {
 
     fn edges<'a>(
         &'a self,
-    ) -> Box<dyn Iterator<Item = (OsmEntryId, OsmEntryId, Weight, OsmEdgeMetadata)> + 'a> {
+    ) -> Box<dyn Iterator<Item = SourceEdge<OsmEntryId, OsmEdgeMetadata>> + 'a> {
         Box::new(self.edges.iter().cloned())
     }
 }

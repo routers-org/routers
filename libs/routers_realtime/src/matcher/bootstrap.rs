@@ -232,8 +232,7 @@ mod tests {
     use core::task::Poll;
 
     use geo::Point;
-    use routers_network::edge::Weight;
-    use routers_shard::{GeohashStrategy, Selection, SelectionMode, ShardSource};
+    use routers_shard::{GeohashStrategy, Selection, SelectionMode, ShardSource, SourceEdge};
 
     use super::*;
     use crate::event::SHARD_PRECISION;
@@ -253,8 +252,7 @@ mod tests {
 
         fn edges<'a>(
             &'a self,
-        ) -> Box<dyn Iterator<Item = (OsmEntryId, OsmEntryId, Weight, OsmEdgeMetadata)> + 'a>
-        {
+        ) -> Box<dyn Iterator<Item = SourceEdge<OsmEntryId, OsmEdgeMetadata>> + 'a> {
             Box::new(core::iter::empty())
         }
     }

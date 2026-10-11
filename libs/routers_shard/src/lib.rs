@@ -31,7 +31,7 @@ pub use artifact::{
 };
 pub use composite::MultiShardNetwork;
 pub use loader::{Fetcher, LoadError, ShardCache, ShardLoader, ShardMoveDelta, ShardWindow};
-pub use network::{ShardSource, ShardedNetwork};
+pub use network::{ShardSource, ShardedNetwork, SourceEdge};
 pub use partition::Partition;
 pub use selection::{Selection, SelectionMode};
 pub use strategy::{

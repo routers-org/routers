@@ -205,8 +205,7 @@ mod tests {
     use geo::LineString;
     use routers_codec::osm::OsmNetwork;
     use routers_fixtures::{SYDNEY, SYNDEY_TRIP, fixture_path};
-    use routers_network::edge::Weight;
-    use routers_shard::{Selection, SelectionMode, ShardSource};
+    use routers_shard::{Selection, SelectionMode, ShardSource, SourceEdge};
     use wkt::TryFromWkt;
 
     /// Adapts an `OsmNetwork` as a shard source (mirrors the generate-shards bin).
@@ -217,17 +216,11 @@ mod tests {
         }
         fn edges<'b>(
             &'b self,
-        ) -> Box<dyn Iterator<Item = (OsmEntryId, OsmEntryId, Weight, OsmEdgeMetadata)> + 'b>
-        {
-            Box::new(
-                self.0
-                    .graph
-                    .all_edges()
-                    .filter_map(|(from, to, (weight, edge_id))| {
-                        let meta = self.0.meta.get(&edge_id.index())?.clone();
-                        Some((from, to, *weight, meta))
-                    }),
-            )
+        ) -> Box<dyn Iterator<Item = SourceEdge<OsmEntryId, OsmEdgeMetadata>> + 'b> {
+            Box::new(self.0.graph.all_edges().filter_map(|(from, to, data)| {
+                let meta = self.0.meta.get(&data.1.index())?.clone();
+                Some((from, to, *data, meta))
+            }))
         }
     }
 

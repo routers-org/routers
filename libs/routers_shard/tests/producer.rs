@@ -28,7 +28,7 @@ fn fingerprint<S: routers_shard::ShardId>(net: &Net<S>) -> Fingerprint {
         .all_edges()
         .map(|(s, t, (w, _))| (s, t, *w))
         .collect();
-    // Which edge's metadata a node kept, not just whether it kept one.
+    // Which metadata each edge id kept, not just whether it kept one.
     let meta = net.meta.iter().map(|(k, m)| (*k, m.lane_count)).collect();
     (nodes, edges, meta)
 }

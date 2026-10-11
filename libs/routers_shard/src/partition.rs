@@ -5,7 +5,7 @@ use log::debug;
 use rustc_hash::{FxHashMap, FxHashSet};
 use web_time::Instant;
 
-use routers_network::{DirectionAwareEdgeId, Entry, Metadata, Node, RowIndex, edge::Weight};
+use routers_network::{Entry, Metadata, Node, RowIndex, network::EdgeData};
 
 use crate::network::{GraphStructure, ShardSource, ShardedNetwork};
 use crate::selection::{Selection, SelectionMode};
@@ -25,11 +25,9 @@ struct Bucket<E: Entry> {
     /// its padding.
     owned: bool,
     nodes: Vec<E>,
-    edges: Vec<(E, E, Weight, u32)>,
+    /// Each edge with the index of its id's metadata in `Partition::metas`.
+    edges: Vec<(E, E, EdgeData<E>, u32)>,
 }
-
-/// Edge metadata sentinel: see [`Bucket::edges`].
-const NO_META: u32 = u32::MAX;
 
 impl<E: Entry> Default for Bucket<E> {
     fn default() -> Self {
@@ -136,13 +134,12 @@ where
         let mut positions: FxHashMap<E, Point> = FxHashMap::default();
         let mut buckets: FxHashMap<S, Bucket<E>> = FxHashMap::default();
         let mut metas: Vec<M> = Vec::new();
+        let mut meta_of: FxHashMap<E, u32> = FxHashMap::default();
 
         // Shards a node was pulled into as the far end of an edge, over and
         // above those its position admits it to. Sparse: only boundary nodes.
         let mut rode_along: FxHashMap<E, Vec<S>> = FxHashMap::default();
 
-        let mut seen_from: FxHashSet<E> = FxHashSet::default();
-        let mut fresh: FxHashSet<E> = FxHashSet::default();
         let mut from_cells = Vec::with_capacity(9);
         let mut to_cells = Vec::with_capacity(9);
 
@@ -158,7 +155,7 @@ where
 
         let dealt_nodes = started.elapsed();
 
-        for (from, to, weight, meta) in source.edges() {
+        for (from, to, (weight, id), meta) in source.edges() {
             // `from` must already be in the shard — by padding, or as the far
             // end of an earlier edge — and `to` must have a position, or the
             // edge is dropped, exactly as `from_source` sees it.
@@ -178,15 +175,11 @@ where
                 to_cells.extend_from_slice(extra);
             }
 
-            let keeps_meta = seen_from.insert(from) | fresh.remove(&from);
-            let meta_index = if keeps_meta {
+            let meta_index = *meta_of.entry(id.index()).or_insert_with(|| {
                 metas.push(meta);
                 u32::try_from(metas.len() - 1).expect("fewer than 2^32 metadata")
-            } else {
-                NO_META
-            };
+            });
 
-            let mut rode = false;
             for cell in &from_cells {
                 let bucket = buckets.get_mut(cell).expect("dealt");
                 if !to_cells.contains(cell) {
@@ -194,12 +187,8 @@ where
                     // already in.
                     rode_along.entry(to).or_default().push(*cell);
                     bucket.nodes.push(to);
-                    rode = true;
                 }
-                bucket.edges.push((from, to, weight, meta_index));
-            }
-            if rode {
-                fresh.insert(to);
+                bucket.edges.push((from, to, (weight, id), meta_index));
             }
         }
 
@@ -264,12 +253,10 @@ where
         }
 
         let mut meta: FxHashMap<E, M> = FxHashMap::default();
-        for (from, to, weight, meta_index) in bucket.edges {
-            graph.add_edge(from, to, (weight, DirectionAwareEdgeId::new(from)));
-            if meta_index != NO_META {
-                meta.entry(from)
-                    .or_insert_with(|| self.metas[meta_index as usize].clone());
-            }
+        for (from, to, (weight, id), meta_index) in bucket.edges {
+            graph.add_edge(from, to, (weight, id));
+            meta.entry(id.index())
+                .or_insert_with(|| self.metas[meta_index as usize].clone());
         }
 
         let mut loaded = FxHashSet::default();
