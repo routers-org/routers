@@ -7490,7 +7490,7 @@ dependencies = [
 
 [[package]]
 name = "routers_shard"
-version = "0.2.8"
+version = "0.3.0"
 dependencies = [
  "clap",
  "env_logger",
