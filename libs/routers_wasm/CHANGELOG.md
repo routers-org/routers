@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.0] - 2026-10-11
+
+### 🐛 Bug Fixes
+
+- *(shard)* [**breaking**] Keep source edge ids on shard edges
+
+### ⚙️ Miscellaneous Tasks
+
+- *(shard)* Declare the ShardSource API break as 0.3.0
+
+
+
 ## [0.1.2] - 2026-10-07
 
 ### 🐛 Bug Fixes
