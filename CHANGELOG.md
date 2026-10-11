@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.0] - 2026-10-11
+
+### 🚀 Features
+
+- *(realtime)* [**breaking**] Emit the edge ids driven across each hop
+
+### 🐛 Bug Fixes
+
+- *(shard)* [**breaking**] Keep source edge ids on shard edges
+
+### ⚙️ Miscellaneous Tasks
+
+- *(shard)* Declare the ShardSource API break as 0.3.0
+- *(realtime)* Declare the hop-edge API break as 0.7.0
+
+
+
 ## [0.4.0] - 2026-10-07
 
 ### 🚀 Features
