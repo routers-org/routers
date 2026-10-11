@@ -129,6 +129,7 @@ mod tests {
                 },
                 position: Point::new(0.0, 0.0),
                 path: Vec::new(),
+                hop_edges: Vec::new(),
             }],
         };
         CommittedOutput::new(
