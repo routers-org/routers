@@ -254,6 +254,7 @@ mod tests {
                 },
                 position: Point::new(151.2, -33.8),
                 path: vec![Point::new(151.1, -33.7), Point::new(151.15, -33.75)],
+                hop_edges: vec![DirectionAwareEdgeId::new(MockEntryId(4))],
             }],
         }
     }

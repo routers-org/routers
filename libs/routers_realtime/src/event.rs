@@ -1,6 +1,6 @@
 use chrono::{DateTime, Utc};
 use geo::Point;
-use routers_network::{Edge, Entry, Network};
+use routers_network::{DirectionAwareEdgeId, Edge, Entry, Network};
 use routers_shard::{Geohash, GeohashStrategy, ShardingStrategy};
 use routers_transition::candidate::CollapsedPath;
 use routers_transition::matcher::Origin;
@@ -60,6 +60,11 @@ pub struct MatchedLayer<E: Entry> {
     /// this one. Empty on a diff's first layer: its inbound hop was emitted
     /// while both endpoints were still in the trip.
     pub path: Vec<Point>,
+
+    /// The directed edges driven between the previous layer's edge and this
+    /// one, exclusive of both, in travel order. Consecutive edges of one way
+    /// share an id. Empty for a same-edge hop and on a diff's first layer.
+    pub hop_edges: Vec<DirectionAwareEdgeId<E>>,
 }
 
 /// Everything a solve could still change, emitted whole: one layer per trip
@@ -82,7 +87,7 @@ pub struct MatchedDiff<E: Entry> {
 
 impl<E: Entry> MatchedDiff<E> {
     /// Lift a solved trip into its emission: one layer per observation, hops
-    /// resolved to geometry against the (matcher-local) network.
+    /// resolved to edges and geometry against the (matcher-local) network.
     pub fn new<N: Network<Entry = E>>(
         solution: &CollapsedPath<'_, E>,
         origins: &[Origin],
@@ -99,16 +104,21 @@ impl<E: Entry> MatchedDiff<E> {
 
                 // Hop `i - 1` carries the roads driven into layer `i`; the
                 // endpoints' own positions live on their layers.
-                let path = match index.checked_sub(1) {
-                    Some(hop) => solution.hop_geometry(hop, map),
-                    None => Vec::new(),
-                };
+                let hop = index.checked_sub(1);
+                let path = hop
+                    .map(|hop| solution.hop_geometry(hop, map))
+                    .unwrap_or_default();
+                let hop_edges = hop
+                    .and_then(|hop| solution.interpolated.get(hop))
+                    .map(|reachable| reachable.path.iter().map(|edge| edge.id).collect())
+                    .unwrap_or_default();
 
                 Some(MatchedLayer {
                     timestamp: origin.timestamp,
                     edge: candidate.edge,
                     position: candidate.position,
                     path,
+                    hop_edges,
                 })
             })
             .collect();

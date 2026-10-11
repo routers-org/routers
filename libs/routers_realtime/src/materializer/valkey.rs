@@ -1028,6 +1028,7 @@ mod tests {
                     },
                     position: Point::new(0.0, 0.0),
                     path: Vec::new(),
+                    hop_edges: Vec::new(),
                 }],
             },
             finalized_through,
@@ -1410,6 +1411,7 @@ mod tests {
             },
             position: Point::new(0.0, 0.0),
             path: vec![Point::new(1.0, 1.0)],
+            hop_edges: vec![DirectionAwareEdgeId::new(MockEntryId(timestamp + 1))],
         };
         let mut outputs = Vec::new();
         let mut segment = SegmentId(1);

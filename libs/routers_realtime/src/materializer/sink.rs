@@ -379,6 +379,7 @@ mod tests {
             },
             position: Point::new(151.2, -33.8),
             path: Vec::new(),
+            hop_edges: Vec::new(),
         }
     }
 

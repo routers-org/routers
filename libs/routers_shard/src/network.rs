@@ -21,7 +21,9 @@ use web_time::Instant;
 
 use routers_network::{
     DirectionAwareEdgeId, Discovery, Edge, Entry, Metadata, Node, Route, RowIndex, Scan,
-    edge::Weight, envelope_of, network::GraphEdge,
+    edge::Weight,
+    envelope_of,
+    network::{EdgeData, GraphEdge},
 };
 
 use crate::selection::Selection;
@@ -33,13 +35,18 @@ pub type GraphStructure<E> =
 /// A data source from which a [`ShardedNetwork`] can be built.
 ///
 /// Implement this trait on any type that provides an iterable collection of
-/// nodes (id + position) and directed edges (from, to, weight, metadata).
+/// nodes (id + position) and directed edges (from, to, weight and edge id,
+/// metadata). Edges that share an id must share metadata.
 /// [`ShardedNetwork::from_source`] then filters and assembles these into the
 /// sharded graph structure.
 pub trait ShardSource<E: Entry, M: Metadata> {
     fn nodes<'a>(&'a self) -> Box<dyn Iterator<Item = (E, Point)> + 'a>;
-    fn edges<'a>(&'a self) -> Box<dyn Iterator<Item = (E, E, Weight, M)> + 'a>;
+    fn edges<'a>(&'a self) -> Box<dyn Iterator<Item = SourceEdge<E, M>> + 'a>;
 }
+
+/// One directed edge yielded by a [`ShardSource`]: from, to, weight and edge
+/// id, metadata.
+pub type SourceEdge<E, M> = (E, E, EdgeData<E>, M);
 
 /// Magic header + schema fingerprint prepended to every shard cache file.
 /// `CACHE_VERSION` is derived in `build.rs` from the serialised type
@@ -47,7 +54,11 @@ pub trait ShardSource<E: Entry, M: Metadata> {
 const CACHE_MAGIC: &[u8; 4] = b"SHRD";
 
 include!(concat!(env!("OUT_DIR"), "/format_hash.rs"));
-const CACHE_VERSION: u64 = FORMAT_HASH;
+
+/// Bumped when a serialised field changes meaning but not type, which the
+/// format hash cannot see. 1: `meta` is keyed by edge id, not source node.
+const FORMAT_REVISION: u64 = 1;
+const CACHE_VERSION: u64 = FORMAT_HASH ^ FORMAT_REVISION;
 
 /// A routing network restricted to a single shard selection.
 ///
@@ -71,6 +82,7 @@ where
 {
     pub graph: GraphStructure<E>,
     pub hash: FxHashMap<E, Node<E>>,
+    /// Edge metadata, keyed by edge id.
     pub meta: FxHashMap<E, M>,
 
     /// Spatial index over node ids.
@@ -135,7 +147,7 @@ where
             }
         }
 
-        for (from, to, weight, m) in source.edges() {
+        for (from, to, (weight, id), m) in source.edges() {
             if !hash.contains_key(&from) {
                 continue;
             }
@@ -149,8 +161,8 @@ where
                 }
             }
 
-            graph.add_edge(from, to, (weight, DirectionAwareEdgeId::new(from)));
-            meta.entry(from).or_insert(m);
+            graph.add_edge(from, to, (weight, id));
+            meta.entry(id.index()).or_insert(m);
         }
 
         let mut net = Self {
