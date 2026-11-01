@@ -30,7 +30,7 @@ walkers = { version = "0.47", features = ["serde"] } # Version compatible with e
 tokio = { workspace = true }
 
 # Realtime event ingestion (realtime bin)
-async-nats = "0.38.0"
+async-nats = "0.51.0"
 futures = "0.3.32"
 web-time = "1"
 
