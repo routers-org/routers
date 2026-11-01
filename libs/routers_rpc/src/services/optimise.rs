@@ -1,9 +1,8 @@
-use buffa::view::OwnedView;
-use connectrpc::{ConnectError, RequestContext, ServiceResult};
+use connectrpc::{ConnectError, RequestContext, ServiceRequest, ServiceResult};
 use geo::Point;
 use routers_network::Network;
 use schema::connect::routers::api::optimise::v1::OptimiseService;
-use schema::proto::routers::api::optimise::v1::{__buffa::view::RouteRequestView, RouteResponse};
+use schema::proto::routers::api::optimise::v1::{RouteRequest, RouteResponse};
 #[cfg(feature = "telemetry")]
 use tracing::Level;
 
@@ -19,7 +18,7 @@ where
     async fn route(
         &self,
         _ctx: RequestContext,
-        request: OwnedView<RouteRequestView<'static>>,
+        request: ServiceRequest<'_, RouteRequest>,
     ) -> ServiceResult<RouteResponse> {
         let owned = request.to_owned_message();
 
