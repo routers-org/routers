@@ -1,7 +1,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use egui::{Color32, RichText, ScrollArea, SidePanel};
+use egui::{Color32, RichText, ScrollArea, Panel};
 use geo::LineString;
 use routers_viewer::{
     ColourFactory, Component, Context, Map, Regular, SharedMapMemory, plugins::LineStringPlugin,
@@ -175,13 +175,14 @@ impl SnapDiffApp {
 }
 
 impl eframe::App for SnapDiffApp {
-    fn update(&mut self, ctx: &egui::Context, _: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, _: &mut eframe::Frame) {
+        let ctx = ui.ctx().clone();
         let context = Context {
             scheme: ColourFactory::get_scheme(ctx.theme()),
             layout: Box::new(Regular),
         };
 
-        SidePanel::left("fixtures").show(ctx, |ui| {
+        Panel::left("fixtures").show(ui, |ui| {
             ui.heading("Snapshot Diff");
             ui.label(RichText::new(&self.base_label).monospace().weak());
             ui.separator();
@@ -240,7 +241,7 @@ impl eframe::App for SnapDiffApp {
             ));
         }
 
-        egui::CentralPanel::default().show(ctx, |ui| {
+        egui::CentralPanel::default().show(ui, |ui| {
             ui.columns(2, |columns| {
                 columns[0].vertical(|ui| {
                     Self::pane_header(

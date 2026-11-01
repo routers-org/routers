@@ -21,7 +21,7 @@ impl Plugin for PluginBox {
         self: Box<Self>,
         ui: &mut egui::Ui,
         response: &egui::Response,
-        projector: &Projector,
+        projector: &Projector<'_>,
         map_memory: &MapMemory,
     ) {
         let PluginBox(inner) = *self;

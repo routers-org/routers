@@ -33,7 +33,7 @@ impl Plugin for LineStringPlugin {
         self: Box<Self>,
         ui: &mut egui::Ui,
         response: &egui::Response,
-        projector: &Projector,
+        projector: &Projector<'_>,
         _map_memory: &MapMemory,
     ) {
         let mut pts: Vec<_> = self

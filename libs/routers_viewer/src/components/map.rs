@@ -2,7 +2,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use egui::Response;
-use walkers::{HttpTiles, MapMemory, Plugin, Position, Projector};
+use walkers::{HttpTiles, MapMemory, MercatorProjection, Plugin, Position, Projector};
 
 use crate::{Component, Context, plugins::PluginBox};
 
@@ -54,8 +54,13 @@ impl Map {
     /// Build a `Projector` for the given clip rect (typically `response.rect`
     /// after drawing). Lets callers convert screen positions to geo coordinates
     /// without needing access to internal map state.
-    pub fn projector(&self, clip_rect: egui::Rect) -> Projector {
-        Projector::new(clip_rect, &*self.map_memory.borrow(), self.position)
+    pub fn projector(&self, clip_rect: egui::Rect) -> Projector<'_> {
+        Projector::new(
+            clip_rect,
+            &MercatorProjection,
+            &self.map_memory.borrow(),
+            self.position,
+        )
     }
 }
 
