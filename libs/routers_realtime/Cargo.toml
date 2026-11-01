@@ -33,7 +33,6 @@ humantime = "2.1"
 web-time = "1"
 
 # Utilities
-fnv_rs = "0.4.4"
 rustc-hash = { workspace = true }
 scc = { workspace = true }
 rayon = { workspace = true }

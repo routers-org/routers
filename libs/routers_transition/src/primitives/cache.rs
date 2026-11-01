@@ -30,14 +30,14 @@ mod backing {
             }
         }
 
-        pub(crate) fn read<R>(&self, key: &K, reader: impl FnOnce(&K, &V) -> R) -> Option<R> {
+        pub(crate) fn read_sync<R>(&self, key: &K, reader: impl FnOnce(&K, &V) -> R) -> Option<R> {
             let map = self.map.lock().expect("cache lock");
             map.get_key_value(key).map(|(k, v)| reader(k, v))
         }
 
         /// Wholesale eviction at the bound — cruder than the native LRU, but
         /// bounded, and refill is just cache misses.
-        pub(crate) fn put(&self, key: K, value: V) -> Result<(), (K, V)> {
+        pub(crate) fn put_sync(&self, key: K, value: V) -> Result<(), (K, V)> {
             let mut map = self.map.lock().expect("cache lock");
             if map.len() >= self.capacity {
                 map.clear();
@@ -161,12 +161,12 @@ where
     /// consumes an owned value of the key, [`N::Entry`], which is required
     /// for the call to the [`Calculable::calculate`] function.
     pub fn query(&self, ctx: &RoutingContext<N>, key: N::Entry) -> Arc<V> {
-        if let Some(value) = self.0.map.read(&key, |_, v| Arc::clone(v)) {
+        if let Some(value) = self.0.map.read_sync(&key, |_, v| Arc::clone(v)) {
             return value;
         }
 
         let calculated = Arc::new(self.calculate(ctx, key));
-        let _ = self.0.map.put(key, Arc::clone(&calculated));
+        let _ = self.0.map.put_sync(key, Arc::clone(&calculated));
 
         calculated
     }
@@ -486,7 +486,7 @@ mod tests {
         let cache = PredicateCache::<MockNetwork>::default();
 
         for key in 0..(DEFAULT_CACHE_CAPACITY as i64 * 10) {
-            let _ = cache.0.map.put(MockEntryId(key), Arc::default());
+            let _ = cache.0.map.put_sync(MockEntryId(key), Arc::default());
         }
 
         assert_eq!(
@@ -506,7 +506,7 @@ mod tests {
     fn predicate_cache_accepts_an_explicit_power_of_two_bound() {
         let cache = PredicateCache::<MockNetwork>::with_capacity(16_384);
         for key in 0..32_768 {
-            let _ = cache.0.map.put(MockEntryId(key), Arc::default());
+            let _ = cache.0.map.put_sync(MockEntryId(key), Arc::default());
         }
         assert_eq!(cache.0.map.capacity(), 16_384);
     }
