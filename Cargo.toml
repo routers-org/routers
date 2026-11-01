@@ -52,7 +52,7 @@ routers = { path = ".", version = "0.4.0" }
 
 # Optimisation Crates
 rayon = "1.10.0"
-scc = "2.3.4"
+scc = "3.8.4"
 itertools = "0.14.0"
 indexmap = "2.9.0"
 petgraph = { version = "0.8.2", features = ["serde-1", "graphmap", "rayon"] }
@@ -95,7 +95,7 @@ uom = { version = "0.38.0", default-features = false, features = [
 geo = { version = "0.31.0", features = ["use-serde"] }
 geo-index = { version = "0.3.1" }
 geojson = { version = "0.24.2" }
-s2 = { version = "0.0.13" }
+s2 = { version = "0.2" }
 wkt = { version = "0.14.0" }
 
 # Tracing
@@ -132,7 +132,7 @@ opentelemetry-otlp = { version = "0.29.0", default-features = false, features = 
 ] }
 
 # Benchmarking
-criterion = { version = "3.0.5", features = [
+criterion = { version = "6.0.0", features = [
     "async_tokio",
 ], package = "codspeed-criterion-compat" }
 insta = { version = "1.43.2", features = ["ron", "redactions"] }

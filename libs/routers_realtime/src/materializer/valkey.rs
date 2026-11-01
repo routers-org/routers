@@ -443,11 +443,11 @@ impl ViewCache {
     }
 
     fn take(&self, vehicle: VehicleId) -> Option<CachedView> {
-        self.views.remove(&vehicle).map(|(_, view)| view)
+        self.views.remove_sync(&vehicle).map(|(_, view)| view)
     }
 
     fn put(&self, vehicle: VehicleId, view: CachedView) {
-        match self.views.entry(vehicle) {
+        match self.views.entry_sync(vehicle) {
             scc::hash_cache::Entry::Occupied(mut occupied) => {
                 occupied.put(view);
             }

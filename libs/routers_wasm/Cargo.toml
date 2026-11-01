@@ -24,8 +24,8 @@ wit-bindgen = "0.46"
 [dev-dependencies]
 routers_fixtures = { workspace = true }
 wkt = { workspace = true }
-wasmtime = "36"
-wasmtime-wasi = "36"
+wasmtime = "50"
+wasmtime-wasi = "50"
 
 [[example]]
 name = "wasmtime_host"

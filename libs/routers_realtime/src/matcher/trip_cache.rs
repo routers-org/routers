@@ -52,7 +52,7 @@ impl<E: Entry> TripCache<E> {
         trip: Trip<E>,
         digest: TripDigest,
     ) {
-        match self.trips.entry(vehicle) {
+        match self.trips.entry_sync(vehicle) {
             CacheEntry::Occupied(mut occupied) => {
                 occupied.put((revision, trip, digest));
             }
@@ -68,7 +68,7 @@ impl<E: Entry> TripCache<E> {
     /// inserts its successor, and a retried request always carries the full trip.
     pub fn take(&self, vehicle: VehicleId, revision: Revision) -> Option<(Trip<E>, TripDigest)> {
         self.trips
-            .remove_if(&vehicle, |(cached, _, _)| *cached == revision)
+            .remove_if_sync(&vehicle, |(cached, _, _)| *cached == revision)
             .map(|(_, (_, trip, digest))| (trip, digest))
     }
 

@@ -17,7 +17,6 @@ use std::path::PathBuf;
 use anyhow::Context;
 use async_nats::{ConnectOptions, ServerAddr, jetstream};
 use clap::Parser;
-use fnv_rs::{Fnv64, FnvHasher};
 use futures::{StreamExt, future::BoxFuture, stream::FuturesUnordered};
 use geo::Point;
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressState, ProgressStyle};
@@ -536,11 +535,7 @@ fn copied_vehicle(original: VehicleId, copy: usize) -> VehicleId {
     let mut input = [0_u8; 16];
     input[..8].copy_from_slice(&original.0.to_be_bytes());
     input[8..].copy_from_slice(&(copy as u64).to_be_bytes());
-    let digest: [u8; 8] = Fnv64::hash(input)
-        .as_bytes()
-        .try_into()
-        .expect("FNV-64 bytes");
-    VehicleId(u64::from_be_bytes(digest))
+    VehicleId(partition::fnv1a(&input))
 }
 
 fn validate_vehicle_copies(df: &DataFrame, copies: usize) -> anyhow::Result<()> {
@@ -552,13 +547,7 @@ fn validate_vehicle_copies(df: &DataFrame, copies: usize) -> anyhow::Result<()> 
         .str()?
         .into_iter()
         .flatten()
-        .map(|value| {
-            let digest: [u8; 8] = Fnv64::hash(value)
-                .as_bytes()
-                .try_into()
-                .expect("FNV-64 bytes");
-            VehicleId(u64::from_be_bytes(digest))
-        })
+        .map(|value| VehicleId(partition::fnv1a(value.as_bytes())))
         .collect();
     let mut mapped = HashSet::with_capacity(originals.len().saturating_mul(copies));
     for copy in 0..copies {
@@ -936,12 +925,11 @@ fn rows_of(df: &DataFrame) -> PolarsResult<impl Iterator<Item = (u64, Payload)> 
     )
     .filter_map(|(vehicle, _, etime, lat, lon)| {
         // The id contract (schema: realtime/v1/event.proto): the FNV-1a
-        // 64-bit hash of the upstream string, as an integer. `as_bytes`
-        // yields it big-endian.
-        let vehicle_id: [u8; 8] = Fnv64::hash(vehicle?).as_bytes().try_into().ok()?;
+        // 64-bit hash of the upstream string, as an integer.
+        let vehicle_id = partition::fnv1a(vehicle?.as_bytes());
 
         let payload = Payload {
-            vehicle_id: VehicleId(u64::from_be_bytes(vehicle_id)),
+            vehicle_id: VehicleId(vehicle_id),
             // The column is parsed as microseconds since the Unix epoch.
             timestamp: chrono::DateTime::from_timestamp_micros(etime.unwrap_or_default())
                 .unwrap_or_default(),
