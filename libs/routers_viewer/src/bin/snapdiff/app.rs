@@ -1,7 +1,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use egui::{Color32, RichText, ScrollArea, Panel};
+use egui::{Color32, Panel, RichText, ScrollArea};
 use geo::LineString;
 use routers_viewer::{
     ColourFactory, Component, Context, Map, Regular, SharedMapMemory, plugins::LineStringPlugin,
