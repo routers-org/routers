@@ -7134,7 +7134,7 @@ dependencies = [
 
 [[package]]
 name = "routers"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "codspeed-criterion-compat",
  "geo",
@@ -7166,7 +7166,7 @@ dependencies = [
 
 [[package]]
 name = "routers_codec"
-version = "0.2.3"
+version = "0.3.0"
 dependencies = [
  "arrow",
  "bitflags 2.13.2",
@@ -7229,7 +7229,7 @@ dependencies = [
 
 [[package]]
 name = "routers_realtime"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "async-nats",
@@ -7277,7 +7277,7 @@ dependencies = [
 
 [[package]]
 name = "routers_rpc"
-version = "0.1.17"
+version = "0.2.0"
 dependencies = [
  "buffa",
  "clap",
@@ -7301,7 +7301,7 @@ dependencies = [
 
 [[package]]
 name = "routers_schema"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "buffa",
  "buffa-descriptor",
