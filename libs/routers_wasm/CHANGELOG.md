@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.0] - 2026-11-02
+
+### 🐛 Bug Fixes
+
+- *(shard)* [**breaking**] Keep source edge ids on shard edges
+- Upgrade scc, s2, wasmtime, tabled and codspeed for RUSTSEC advisories
+
+### ⚙️ Miscellaneous Tasks
+
+- *(shard)* Declare the ShardSource API break as 0.3.0
+- Declare the buffa 0.8 API break in schema, codec, rpc, realtime and routers
+
+
+
 ## [0.1.2] - 2026-10-07
 
 ### 🐛 Bug Fixes
