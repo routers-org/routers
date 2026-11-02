@@ -1,8 +1,6 @@
 [graph]
-# osmpbf (and its memmap2 0.5) is only a routers_codec dev-dependency; nothing we ship links dev deps.
 exclude-dev = true
 
 [advisories]
-# cargo-audit only warns on unmaintained; fail only for crates we depend on directly.
 unmaintained = "workspace"
 ignore = []

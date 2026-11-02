@@ -9,7 +9,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # --workspace: the root manifest is also a package, so without it only `routers` is checked.
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check advisories
