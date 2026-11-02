@@ -2,6 +2,36 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.0] - 2026-11-02
+
+### 🚀 Features
+
+- *(realtime)* [**breaking**] Emit the edge ids driven across each hop
+
+### 🐛 Bug Fixes
+
+- *(shard)* [**breaking**] Keep source edge ids on shard edges
+- Refresh lockfile and bump async-nats to resolve RUSTSEC advisories
+- Upgrade scc, s2, wasmtime, tabled and codspeed for RUSTSEC advisories
+- Pick up zstd 0.13.4 / zstd-safe 7.4.0 backported safety fixes
+- Bump connectrpc to 0.8.2 for RUSTSEC-2026-0304
+- *(viewer)* Upgrade egui/eframe to 0.37 and walkers to 0.65
+- Bump `connectrpc` to `0.8.2` ([#319](https://github.com/routers-org/routers/pull/319))
+- Upgrade `egui/eframe` to `0.37` ([#320](https://github.com/routers-org/routers/pull/320))
+
+### 🎨 Styling
+
+- *(viewer)* Cargo fmt
+
+### ⚙️ Miscellaneous Tasks
+
+- *(shard)* Declare the ShardSource API break as 0.3.0
+- *(realtime)* Declare the hop-edge API break as 0.7.0
+- Drop temporary zstd audit ignores
+- Declare the buffa 0.8 API break in schema, codec, rpc, realtime and routers
+
+
+
 ## [0.4.0] - 2026-10-07
 
 ### 🚀 Features

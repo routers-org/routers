@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.9] - 2026-11-02
+
+### 🐛 Bug Fixes
+
+- Upgrade scc, s2, wasmtime, tabled and codspeed for RUSTSEC advisories
+
+
+
 ## [0.3.8] - 2026-10-07
 
 ### 🚀 Features

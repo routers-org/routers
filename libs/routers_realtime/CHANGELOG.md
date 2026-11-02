@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.8.0] - 2026-11-02
+
+### 🐛 Bug Fixes
+
+- Refresh lockfile and bump async-nats to resolve RUSTSEC advisories
+- Upgrade scc, s2, wasmtime, tabled and codspeed for RUSTSEC advisories
+
+### ⚙️ Miscellaneous Tasks
+
+- Declare the buffa 0.8 API break in schema, codec, rpc, realtime and routers
+
+
+
 ## [0.6.0] - 2026-10-07
 
 ### 🚀 Features

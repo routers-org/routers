@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.0] - 2026-11-02
+
+### ⚙️ Miscellaneous Tasks
+
+- Declare the buffa 0.8 API break in schema, codec, rpc, realtime and routers
+
+
+
 ## [0.2.2] - 2026-10-07
 
 ### 🚀 Features

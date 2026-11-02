@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.0] - 2026-11-02
+
+### 🐛 Bug Fixes
+
+- Bump connectrpc to 0.8.2 for RUSTSEC-2026-0304
+
+### ⚙️ Miscellaneous Tasks
+
+- Declare the buffa 0.8 API break in schema, codec, rpc, realtime and routers
+
+
+
 ## [0.1.17] - 2026-10-07
 
 ### 🚀 Features
