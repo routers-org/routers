@@ -1,17 +1,12 @@
 use alloc::sync::Arc;
 use buffa::MessageField;
-use buffa::view::OwnedView;
-use connectrpc::{ConnectError, RequestContext, ServiceResult};
+use connectrpc::{ConnectError, RequestContext, ServiceRequest, ServiceResult};
 use geo::{BoundingRect, Coord, LineString, Point, Polygon, Rect};
 use routers_tz::{TimeZone, TimezoneResolver};
 use schema::connect::routers::api::timezone::v1::TimezoneService;
 use schema::proto::routers::api::timezone::v1::{
-    __buffa::view::{
-        BatchGetFromBoundingBoxRequestView, BatchGetFromPointsRequestView,
-        BatchGetFromPolygonRequestView, GetFromBoundingBoxRequestView, GetFromPointRequestView,
-        GetFromPolygonRequestView,
-    },
-    BatchGetFromBoundingBoxResponse, BatchGetFromPointsResponse, BatchGetFromPolygonResponse,
+    BatchGetFromBoundingBoxRequest, BatchGetFromBoundingBoxResponse, BatchGetFromPointsRequest,
+    BatchGetFromPointsResponse, BatchGetFromPolygonRequest, BatchGetFromPolygonResponse,
     GetFromBoundingBoxResponse, GetFromPointResponse, GetFromPolygonResponse,
 };
 use schema::proto::routers::api::timezone::v1::{
@@ -90,7 +85,7 @@ where
     async fn get_from_point(
         &self,
         _ctx: RequestContext,
-        request: OwnedView<GetFromPointRequestView<'static>>,
+        request: ServiceRequest<'_, GetFromPointRequest>,
     ) -> ServiceResult<GetFromPointResponse> {
         let GetFromPointRequest { coordinate, .. } = request.to_owned_message();
         let point = coordinate
@@ -115,7 +110,7 @@ where
     async fn batch_get_from_points(
         &self,
         _ctx: RequestContext,
-        request: OwnedView<BatchGetFromPointsRequestView<'static>>,
+        request: ServiceRequest<'_, BatchGetFromPointsRequest>,
     ) -> ServiceResult<BatchGetFromPointsResponse> {
         let owned = request.to_owned_message();
 
@@ -145,7 +140,7 @@ where
     async fn get_from_bounding_box(
         &self,
         _ctx: RequestContext,
-        request: OwnedView<GetFromBoundingBoxRequestView<'static>>,
+        request: ServiceRequest<'_, GetFromBoundingBoxRequest>,
     ) -> ServiceResult<GetFromBoundingBoxResponse> {
         let GetFromBoundingBoxRequest { bounding_box, .. } = request.to_owned_message();
 
@@ -171,7 +166,7 @@ where
     async fn batch_get_from_bounding_box(
         &self,
         _ctx: RequestContext,
-        request: OwnedView<BatchGetFromBoundingBoxRequestView<'static>>,
+        request: ServiceRequest<'_, BatchGetFromBoundingBoxRequest>,
     ) -> ServiceResult<BatchGetFromBoundingBoxResponse> {
         let owned = request.to_owned_message();
 
@@ -202,7 +197,7 @@ where
     async fn get_from_polygon(
         &self,
         _ctx: RequestContext,
-        request: OwnedView<GetFromPolygonRequestView<'static>>,
+        request: ServiceRequest<'_, GetFromPolygonRequest>,
     ) -> ServiceResult<GetFromPolygonResponse> {
         let GetFromPolygonRequest { polygon, .. } = request.to_owned_message();
 
@@ -228,7 +223,7 @@ where
     async fn batch_get_from_polygon(
         &self,
         _ctx: RequestContext,
-        request: OwnedView<BatchGetFromPolygonRequestView<'static>>,
+        request: ServiceRequest<'_, BatchGetFromPolygonRequest>,
     ) -> ServiceResult<BatchGetFromPolygonResponse> {
         let owned = request.to_owned_message();
 

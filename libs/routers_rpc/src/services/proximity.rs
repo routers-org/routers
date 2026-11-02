@@ -1,16 +1,15 @@
 use crate::sdk::r#match::coordinate;
 use crate::services::RPCAdapter;
 use buffa::MessageField;
-use buffa::view::OwnedView;
-use connectrpc::{ConnectError, RequestContext, ServiceResult};
+use connectrpc::{ConnectError, RequestContext, ServiceRequest, ServiceResult};
 use core::cmp::Ordering;
 use geo::{Distance, Haversine, Point};
 use log::{debug, info};
 use routers_network::Network;
 use schema::connect::routers::api::scan::v1::ScanService;
 use schema::proto::routers::api::scan::v1::{
-    __buffa::view::{EdgeRequestView, PointRequestView, PointSnappedRequestView},
-    EdgeResponse, PointResponse, PointSnappedResponse,
+    EdgeRequest, EdgeResponse, PointRequest, PointResponse, PointSnappedRequest,
+    PointSnappedResponse,
 };
 #[cfg(feature = "telemetry")]
 use tracing::Level;
@@ -24,7 +23,7 @@ where
     async fn point(
         &self,
         _ctx: RequestContext,
-        request: OwnedView<PointRequestView<'static>>,
+        request: ServiceRequest<'_, PointRequest>,
     ) -> ServiceResult<PointResponse> {
         let owned = request.to_owned_message();
 
@@ -50,7 +49,7 @@ where
     async fn point_snapped(
         &self,
         _ctx: RequestContext,
-        request: OwnedView<PointSnappedRequestView<'static>>,
+        request: ServiceRequest<'_, PointSnappedRequest>,
     ) -> ServiceResult<PointSnappedResponse> {
         let owned = request.to_owned_message();
 
@@ -95,7 +94,7 @@ where
     async fn edge(
         &self,
         _ctx: RequestContext,
-        _request: OwnedView<EdgeRequestView<'static>>,
+        _request: ServiceRequest<'_, EdgeRequest>,
     ) -> ServiceResult<EdgeResponse> {
         Err(ConnectError::unimplemented("edge lookup not implemented"))
     }

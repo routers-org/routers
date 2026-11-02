@@ -1144,35 +1144,39 @@ dependencies = [
 
 [[package]]
 name = "buffa"
-version = "0.6.0"
+version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "941c714734a660caa93a210c531dec553cc0ef417890409914d24032c94ab840"
+checksum = "33f29a40702df4b86ccd84211bfde8cee0bce6d0811450ade4a86a7d0958a23a"
 dependencies = [
  "base64 0.22.1",
  "bytes",
+ "foldhash 0.1.5",
  "hashbrown 0.15.5",
  "once_cell",
+ "rustversion",
  "serde",
  "serde_json",
+ "smoothutf8",
  "thiserror 2.0.21",
 ]
 
 [[package]]
 name = "buffa-descriptor"
-version = "0.6.0"
+version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ad8df83adfcb525621f5a96c88e610f90aff1112ec57522d9b48a943df327394"
+checksum = "57ed423c4ecec86d1500879ce42e7e5f6def01bc632985ac756c1fd723fa21fc"
 dependencies = [
  "buffa",
+ "rustversion",
  "serde",
  "serde_json",
 ]
 
 [[package]]
 name = "buffa-types"
-version = "0.6.0"
+version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fc84fac1e7efc335e74934a4ebe0534a30411ec2ea6a5a17ed294201c6b3b23c"
+checksum = "22cb54bcbf6946c58e550eeaf6209047146363dbc7cbdc87e49e67089ed2ff5f"
 dependencies = [
  "buffa",
  "bytes",
@@ -1635,9 +1639,9 @@ dependencies = [
 
 [[package]]
 name = "connectrpc"
-version = "0.6.1"
+version = "0.8.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1da5e4adde184f69e64ef112c6f8b645afe9ff82466761f8fc348dbd36aaee7e"
+checksum = "9427cfdfde21ced38118af1fa5fa4256327b8f4fa45119b97f9a79a80c7d7c6f"
 dependencies = [
  "async-compression",
  "async-trait",
@@ -7130,7 +7134,7 @@ dependencies = [
 
 [[package]]
 name = "routers"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "codspeed-criterion-compat",
  "geo",
@@ -7162,7 +7166,7 @@ dependencies = [
 
 [[package]]
 name = "routers_codec"
-version = "0.2.3"
+version = "0.3.0"
 dependencies = [
  "arrow",
  "bitflags 2.13.2",
@@ -7225,7 +7229,7 @@ dependencies = [
 
 [[package]]
 name = "routers_realtime"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "async-nats",
@@ -7273,7 +7277,7 @@ dependencies = [
 
 [[package]]
 name = "routers_rpc"
-version = "0.1.17"
+version = "0.2.0"
 dependencies = [
  "buffa",
  "clap",
@@ -7297,7 +7301,7 @@ dependencies = [
 
 [[package]]
 name = "routers_schema"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "buffa",
  "buffa-descriptor",
@@ -8246,6 +8250,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dd538fb6910ac1099850255cf94a94df6551fbdd602454387d0adb2d1ca6dead"
 dependencies = [
  "serde",
+]
+
+[[package]]
+name = "smoothutf8"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "36358427d32ecdb1624616deed99eccfef0a167fe5bf40ddb51efe6980bc1ec8"
+dependencies = [
+ "simdutf8",
 ]
 
 [[package]]

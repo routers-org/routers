@@ -13,7 +13,7 @@ concurrency:
 
 env:
   PROTOC_VERSION: 3.20.3
-  BUFFA_VERSION: 0.6.0
+  BUFFA_VERSION: 0.8.1
   CARGO_TERM_COLOR: always
 
 jobs:

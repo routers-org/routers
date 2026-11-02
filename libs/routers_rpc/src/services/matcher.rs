@@ -1,14 +1,12 @@
 use buffa::MessageField;
-use buffa::view::OwnedView;
-use connectrpc::{ConnectError, RequestContext, ServiceResult};
+use connectrpc::{ConnectError, RequestContext, ServiceRequest, ServiceResult};
 use core::marker::PhantomData;
 use geo::{Distance, Geodesic};
 use routers_network::Network;
 use routers_transition::candidate::{Path, RoutedPath};
 use schema::connect::routers::api::r#match::v1::MatchService;
 use schema::proto::routers::api::r#match::v1::{
-    __buffa::view::{MatchRequestView, SnapRequestView},
-    MatchResponse, SnapResponse,
+    MatchRequest, MatchResponse, SnapRequest, SnapResponse,
 };
 use schema::proto::routers::model::v1::{
     Edge, EdgeIdentifier, MatchedRoute, NodeIdentifier, RouteEdge, RouteElement,
@@ -102,7 +100,7 @@ where
     async fn r#match(
         &self,
         _ctx: RequestContext,
-        request: OwnedView<MatchRequestView<'static>>,
+        request: ServiceRequest<'_, MatchRequest>,
     ) -> ServiceResult<MatchResponse> {
         let owned = request.to_owned_message();
 
@@ -152,7 +150,7 @@ where
     async fn snap(
         &self,
         _ctx: RequestContext,
-        request: OwnedView<SnapRequestView<'static>>,
+        request: ServiceRequest<'_, SnapRequest>,
     ) -> ServiceResult<SnapResponse> {
         let owned = request.to_owned_message();
 
