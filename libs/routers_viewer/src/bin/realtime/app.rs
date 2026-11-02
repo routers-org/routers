@@ -2,7 +2,7 @@ use core::time::Duration;
 use std::sync::mpsc::Receiver;
 
 use eframe::CreationContext;
-use egui::SidePanel;
+use egui::Panel;
 use futures::StreamExt;
 use routers_realtime::bus::NATSStream;
 use routers_realtime::protocol::{CommittedOutput, OutputKind};
@@ -59,7 +59,8 @@ impl RealtimeApp {
 }
 
 impl eframe::App for RealtimeApp {
-    fn update(&mut self, ctx: &egui::Context, _: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, _: &mut eframe::Frame) {
+        let ctx = ui.ctx().clone();
         let context = Context {
             scheme: ColourFactory::get_scheme(ctx.theme()),
             layout: Box::new(Regular),
@@ -80,10 +81,10 @@ impl eframe::App for RealtimeApp {
         }
         self.store.evict_idle();
 
-        SidePanel::left("realtime_stats")
+        Panel::left("realtime_stats")
             .resizable(false)
-            .exact_width(180.0)
-            .show(ctx, |ui| draw_stats(ui, &self.store.stats()));
+            .exact_size(180.0)
+            .show(ui, |ui| draw_stats(ui, &self.store.stats()));
 
         let traces = self
             .store
@@ -98,7 +99,7 @@ impl eframe::App for RealtimeApp {
         self.map
             .set_plugins(vec![Box::new(TracesPlugin::new(traces))]);
 
-        egui::CentralPanel::default().show(ctx, |ui| {
+        egui::CentralPanel::default().show(ui, |ui| {
             self.map.draw(&context, ui);
         });
 

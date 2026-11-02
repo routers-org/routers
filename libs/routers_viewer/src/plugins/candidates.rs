@@ -13,7 +13,7 @@ impl Plugin for CandidatesPlugin {
         self: Box<Self>,
         ui: &mut egui::Ui,
         _response: &egui::Response,
-        projector: &Projector,
+        projector: &Projector<'_>,
         _map_memory: &MapMemory,
     ) {
         let painter = ui.painter();

@@ -19,7 +19,7 @@ impl Plugin for ShardPlugin {
         self: Box<Self>,
         ui: &mut egui::Ui,
         _response: &egui::Response,
-        projector: &Projector,
+        projector: &Projector<'_>,
         _map_memory: &MapMemory,
     ) {
         let painter = ui.painter();
@@ -92,6 +92,6 @@ impl Plugin for ShardPlugin {
     }
 }
 
-fn proj(projector: &Projector, lon: f64, lat: f64) -> Pos2 {
+fn proj(projector: &Projector<'_>, lon: f64, lat: f64) -> Pos2 {
     projector.project(lon_lat(lon, lat)).to_pos2()
 }

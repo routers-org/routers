@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use anyhow::Context as _;
 use eframe::CreationContext;
-use egui::{Color32, CursorIcon, SidePanel};
+use egui::{Color32, CursorIcon, Panel};
 use geo::Coord;
 use routers_codec::osm::OsmNetwork;
 use routers_fixtures::{LOS_ANGELES, LOS_ANGELES_SAVED, fixture};
@@ -113,14 +113,15 @@ impl Application {
 }
 
 impl eframe::App for Application {
-    fn update(&mut self, ctx: &egui::Context, _: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, _: &mut eframe::Frame) {
+        let ctx = ui.ctx().clone();
         let scheme = ColourFactory::get_scheme(ctx.theme());
         let context = Context {
             scheme,
             layout: Box::new(Regular),
         };
 
-        SidePanel::left("controls").show(ctx, |ui| {
+        Panel::left("controls").show(ui, |ui| {
             ui.heading("Routers Map Matcher");
             ui.separator();
 
@@ -198,7 +199,7 @@ impl eframe::App for Application {
 
         self.map.set_plugins(self.build_map_plugins());
 
-        egui::CentralPanel::default().show(ctx, |ui| {
+        egui::CentralPanel::default().show(ui, |ui| {
             let (response, _) = self.map.draw(&context, ui);
 
             if self.state.draw.is_active() {

@@ -37,7 +37,7 @@ impl Plugin for TracesPlugin {
         self: Box<Self>,
         ui: &mut egui::Ui,
         response: &egui::Response,
-        projector: &Projector,
+        projector: &Projector<'_>,
         _map_memory: &MapMemory,
     ) {
         let painter = ui
