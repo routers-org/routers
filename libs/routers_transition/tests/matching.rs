@@ -232,6 +232,17 @@ fn map_match_interpolated_path_includes_candidate_edges() {
         nodes.contains(&2) && nodes.contains(&3),
         "bridging edge (2→3) must appear"
     );
+
+    // The path starts and ends at the matched positions, not the edge's nodes.
+    let (path, matched) = (&result.interpolated.elements, &result.discretized.elements);
+    assert_eq!(
+        path.first().map(|e| e.point),
+        matched.first().map(|e| e.point)
+    );
+    assert_eq!(
+        path.last().map(|e| e.point),
+        matched.last().map(|e| e.point)
+    );
 }
 
 /// The trip-momentum regression: drifted layers near a weight-10 side road must
