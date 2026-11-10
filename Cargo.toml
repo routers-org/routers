@@ -36,7 +36,7 @@ routers_fixtures = { path = "libs/routers_fixtures" }
 routers_viewer = { path = "libs/routers_viewer" }
 
 # Members
-schema = { path = "schema", package = "routers_schema", version = "0.3.0" }
+schema = { path = "schema", package = "routers_schema", version = "0.4.0" }
 routers_codec = { path = "libs/routers_codec", version = "0.3.0" }
 routers_geo = { path = "libs/routers_geo", version = "0.1.8" }
 routers_rpc = { path = "libs/routers_rpc", version = "0.2.1" }
