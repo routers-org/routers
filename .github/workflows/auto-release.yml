@@ -226,6 +226,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ${{ env.TAG }}
+          lfs: true
 
       - name: Install protoc
         uses: taiki-e/install-action@v2
@@ -270,11 +271,6 @@ jobs:
           $JCO opt "../../target/wasm32-wasip2/release/$CRATE.wasm" \
             -o "$TAG.component.wasm" -- -Oz
 
-      - name: Attach to release
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload "$TAG" "$TAG.component.wasm" --clobber
-
       - name: Transpile to JS
         run: $JCO transpile "$TAG.component.wasm" --name "$CRATE" -o dist/transpiled
 
@@ -282,6 +278,11 @@ jobs:
         run: |
           pnpm install --frozen-lockfile
           pnpm test
+
+      - name: Attach to release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "$TAG" "$TAG.component.wasm" --clobber
 
       - name: Update Package Version
         env:
