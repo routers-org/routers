@@ -9,3 +9,8 @@ semver_check = false
 name = "routers_wasm"
 release = true
 git_only = true
+
+[[package]]
+name = "routers_tz_wasm"
+release = true
+git_only = true

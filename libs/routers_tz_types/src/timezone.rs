@@ -1,5 +1,6 @@
 use core::ops::Deref;
-use time_tz::{TimeZone as TimeZoneTrait, Tz};
+use time::{OffsetDateTime, UtcOffset};
+use time_tz::{Offset, TimeZone as TimeZoneTrait, Tz};
 
 pub mod internal {
     use core::ops::Deref;
@@ -82,11 +83,53 @@ impl TimeZone {
     pub fn name(&self) -> &'static str {
         self.0.name()
     }
+
+    /// The offset from UTC this zone observes at `instant`.
+    pub fn offset_at(&self, instant: &OffsetDateTime) -> UtcOffset {
+        self.0.get_offset_utc(instant).to_utc()
+    }
+
+    /// Whether this zone observes daylight saving time at `instant`.
+    pub fn is_dst_at(&self, instant: &OffsetDateTime) -> bool {
+        self.0.get_offset_utc(instant).is_dst()
+    }
 }
 
 impl Deref for TimeZone {
     type Target = Tz;
     fn deref(&self) -> &Self::Target {
         self.0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TimeZone;
+    use time::macros::{datetime, offset};
+    use time_tz::timezones::db::{america, asia, australia};
+
+    #[test]
+    fn offset_follows_daylight_saving() {
+        let sydney = TimeZone::new(australia::SYDNEY);
+        let (summer, winter) = (
+            datetime!(2026-01-15 0:00 UTC),
+            datetime!(2026-07-15 0:00 UTC),
+        );
+
+        assert_eq!(sydney.offset_at(&summer), offset!(+11));
+        assert!(sydney.is_dst_at(&summer));
+        assert_eq!(sydney.offset_at(&winter), offset!(+10));
+        assert!(!sydney.is_dst_at(&winter));
+    }
+
+    #[test]
+    fn offset_keeps_fractional_hours() {
+        let at = datetime!(2026-01-15 0:00 UTC);
+
+        assert_eq!(TimeZone::new(asia::KOLKATA).offset_at(&at), offset!(+5:30));
+        assert_eq!(
+            TimeZone::new(america::ST_JOHNS).offset_at(&at),
+            offset!(-3:30)
+        );
     }
 }

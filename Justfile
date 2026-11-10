@@ -16,18 +16,20 @@ bench:
 bench-review:
     git diff benches/snapshots/
 
-# === WebAssembly component (libs/routers_wasm) ===
+# === WebAssembly components (libs/routers_wasm, libs/routers_tz_wasm) ===
 
 jco := "pnpm dlx @bytecodealliance/jco@1.32"
 
-# Build the map-matching component (needs the wasm32-wasip2 toolchain from the flake).
+# Build the routing and timezone components (needs the wasm32-wasip2 toolchain from the flake).
 wasm-build:
-    cargo build -p routers_wasm --target wasm32-wasip2 --release
+    cargo build -p routers_wasm -p routers_tz_wasm --target wasm32-wasip2 --release
 
-# Optimise the WASM build using binaryen.
+# Optimise the WASM builds using binaryen.
 wasm-opt: wasm-build
-    {{ jco }} opt target/wasm32-wasip2/release/routers_wasm.wasm \
-      -o target/wasm32-wasip2/release/routers_wasm.opt.wasm -- -Oz
+    for c in routers_wasm routers_tz_wasm; do \
+      {{ jco }} opt target/wasm32-wasip2/release/$c.wasm \
+        -o target/wasm32-wasip2/release/$c.opt.wasm -- -Oz; \
+    done
 
 # Split the Sydney fixture into shard blobs the demos load on demand.
 wasm-shards:
@@ -36,14 +38,17 @@ wasm-shards:
       --pbf libs/routers_fixtures/resources/sydney-minified.osm.pbf \
       --precision 6 --output libs/routers_wasm/dist/shards
 
-# Transpile the optimised component to typed JS/TS.
+# Transpile the optimised components to typed JS/TS.
 wasm-transpile: wasm-opt
     {{ jco }} transpile target/wasm32-wasip2/release/routers_wasm.opt.wasm \
       --name routers_wasm -o libs/routers_wasm/dist/transpiled
+    {{ jco }} transpile target/wasm32-wasip2/release/routers_tz_wasm.opt.wasm \
+      --name routers_tz_wasm -o libs/routers_tz_wasm/dist/transpiled
 
-# Stage the @routers-org/wasm npm tarball (what CI publishes on release).
+# Stage the @routers-org/router and @routers-org/timezone npm tarballs (what CI publishes on release).
 wasm-npm: wasm-transpile
     cd libs/routers_wasm && pnpm install && pnpm test && pnpm pack
+    cd libs/routers_tz_wasm && pnpm install && pnpm test && pnpm pack
 
 # E2E in Node: simulate map navigation, loading/evicting shards, then match.
 wasm-e2e-node: wasm-shards wasm-transpile

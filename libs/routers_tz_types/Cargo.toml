@@ -12,7 +12,11 @@ geo-index = { workspace = true }
 serde = { workspace = true, features = ["derive", "std"] }
 ouroboros = { workspace = true }
 
+time = { workspace = true }
 time-tz = { workspace = true }
+
+[dev-dependencies]
+time = { workspace = true, features = ["macros"] }
 
 [lints]
 workspace = true

@@ -6,7 +6,7 @@ members = [
     "libs/routers_network", "libs/routers_viewer", "libs/routers_realtime",
     "libs/routers_tz", "libs/routers_tz_types",
     "libs/routers_trellis", "libs/routers_transition",
-    "libs/routers_wasm",
+    "libs/routers_wasm", "libs/routers_tz_wasm",
     "conformance", "schema"
 ]
 
@@ -36,7 +36,7 @@ routers_fixtures = { path = "libs/routers_fixtures" }
 routers_viewer = { path = "libs/routers_viewer" }
 
 # Members
-schema = { path = "schema", package = "routers_schema", version = "0.3.0" }
+schema = { path = "schema", package = "routers_schema", version = "0.4.0" }
 routers_codec = { path = "libs/routers_codec", version = "0.3.0" }
 routers_geo = { path = "libs/routers_geo", version = "0.1.8" }
 routers_rpc = { path = "libs/routers_rpc", version = "0.2.1" }
@@ -146,6 +146,7 @@ clap = { version = "4.6.1", features = [] }
 url = { version = "2.5", features = [] }
 lazy_static = { version = "1.5.0" }
 ouroboros = { version = "0.18.5" }
+time = { version = "0.3.55" }
 time-tz = { version = "2.0.0" }
 thiserror = { version = "2.0.12", default-features = false }
 

@@ -1,5 +1,5 @@
 {
-  "name": "@routers-org/wasm",
+  "name": "@routers-org/router",
   "version": "0.0.0-managed",
   "description": "Map-match, route, and run proximity queries in the browser or Node: the Routers engine as a WebAssembly component, transpiled to typed ES modules.",
   "license": "GPL-3.0-or-later",

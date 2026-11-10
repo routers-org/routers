@@ -3,17 +3,18 @@ syntax = "proto3";
 package routers.model.v1;
 
 message Timezone {
-  // The seconds, minutes and hours offset from UTC.
+  // The offset from UTC in effect at the requested instant.
   UtcOffset utc_offset = 1;
 
   // The IANA time zone code, i.e. "America/New_York".
   string iana_code = 2;
 
-  // Whether the timezone is currently in Daylight Saving Time.
+  // Whether the timezone observes Daylight Saving Time at the requested instant.
   bool is_dst = 3;
 }
 
-// Stores up to ±25:59:59.
+// Stores up to ±25:59:59 as clock parts, each carrying the offset's sign;
+// i.e. +05:30 is { hours: 5, minutes: 30 } and -03:30 is { hours: -3, minutes: -30 }.
 message UtcOffset {
   int32 seconds = 1;
   int32 minutes = 2;
