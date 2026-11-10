@@ -74,15 +74,6 @@ where
         let interpolated = {
             let mut elements = Vec::new();
 
-            // Include initial edge source
-            if let Some(first) = matched.first() {
-                if let Some(fat) = network.fatten(&first.edge) {
-                    if let Some(pe) = PathElement::from_edge_source(fat, network) {
-                        elements.push(pe);
-                    }
-                }
-            }
-
             for (i, reachable) in collapsed_path.interpolated.iter().enumerate() {
                 let current = &matched[i];
 
