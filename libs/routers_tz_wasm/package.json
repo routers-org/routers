@@ -1,0 +1,50 @@
+{
+  "name": "@routers-org/timezone",
+  "version": "0.0.0-managed",
+  "description": "Resolve the IANA timezone of a point, bounding box, or polygon in the browser or Node: the Routers timezone resolver as a WebAssembly component, transpiled to typed ES modules.",
+  "license": "GPL-3.0-or-later",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/routers-org/routers.git",
+    "directory": "libs/routers_tz_wasm"
+  },
+  "homepage": "https://github.com/routers-org/routers/tree/main/libs/routers_tz_wasm",
+  "type": "module",
+  "sideEffects": false,
+  "main": "./index.js",
+  "types": "./index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./index.js"
+    }
+  },
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "dist/transpiled"
+  ],
+  "scripts": {
+    "test": "node examples/js/smoke.mjs"
+  },
+  "keywords": [
+    "timezone",
+    "iana",
+    "tz",
+    "geolocation",
+    "gis",
+    "wasm",
+    "webassembly",
+    "component-model"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "packageManager": "pnpm@11.9.0",
+  "publishConfig": {
+    "access": "public"
+  },
+  "dependencies": {
+    "@bytecodealliance/preview2-shim": "^0.23.0"
+  }
+}

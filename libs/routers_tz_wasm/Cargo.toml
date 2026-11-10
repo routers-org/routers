@@ -1,0 +1,23 @@
+[package]
+name = "routers_tz_wasm"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+description = "WebAssembly Component for the Routers timezone resolver"
+repository = "https://github.com/routers-org/routers"
+publish = false
+
+[lib]
+name = "routers_tz_wasm"
+# `cdylib` is the wasm component; `rlib` keeps the pure core testable on the host.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+routers_tz = { workspace = true }
+
+geo = { workspace = true }
+time = { workspace = true }
+wit-bindgen = "0.46"
+
+[lints]
+workspace = true

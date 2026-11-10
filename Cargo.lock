@@ -7686,6 +7686,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "routers_tz_wasm"
+version = "0.1.0"
+dependencies = [
+ "geo",
+ "routers_tz",
+ "time",
+ "wit-bindgen 0.46.0",
+]
+
+[[package]]
 name = "routers_viewer"
 version = "0.1.0"
 dependencies = [

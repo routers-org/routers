@@ -24,8 +24,9 @@ conformance/external
 conformance/results
 conformance/.*
 
-# npm-package build output (libs/routers_wasm): shards, transpiled JS, tarballs.
+# npm-package build output (libs/routers_wasm, libs/routers_tz_wasm): shards, transpiled JS, tarballs.
 libs/routers_wasm/dist/
+libs/routers_tz_wasm/dist/
 node_modules/
 package-lock.json
 *.tgz

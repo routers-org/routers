@@ -1,0 +1,77 @@
+package routers:timezone@0.1.0;
+
+/// Timezone lookup over the bundled IANA boundary data. Records mirror
+/// `routers.model.v1` and calls mirror `api.timezone.v1.TimezoneService`.
+interface resolver {
+  /// A WGS84 position. Mirrors `model.v1.Coordinate`.
+  record coordinate {
+    latitude: f64,
+    longitude: f64,
+  }
+
+  /// Mirrors `model.v1.BoundingBox`.
+  record bounding-box {
+    top-left: coordinate,
+    bottom-right: coordinate,
+  }
+
+  /// A closed ring of coordinates. Mirrors `model.v1.Polygon`.
+  record polygon {
+    coordinates: list<coordinate>,
+  }
+
+  /// An offset as hours, minutes and seconds, all with the offset's sign.
+  /// Mirrors `model.v1.UtcOffset`, i.e. +05:30 is `{ hours: 5, minutes: 30 }`.
+  record utc-offset {
+    seconds: s32,
+    minutes: s32,
+    hours: s32,
+  }
+
+  /// A resolved timezone, as observed at the requested instant. Mirrors
+  /// `model.v1.Timezone`.
+  record timezone {
+    utc-offset: utc-offset,
+    /// The IANA code, i.e. "Australia/Sydney".
+    iana-code: string,
+    is-dst: bool,
+  }
+
+  /// An instant since the Unix epoch. Mirrors `google.protobuf.Timestamp`.
+  record timestamp {
+    seconds: s64,
+    nanos: s32,
+  }
+
+  /// Why a lookup failed.
+  enum error {
+    /// The timestamp is outside the years -9999 to 9999.
+    invalid-timestamp,
+  }
+
+  // Every call resolves offsets at `timestamp`, or now when it is unset.
+
+  /// The timezone(s) at a point; empty where no zone is mapped.
+  get-from-point: func(coordinate: coordinate, timestamp: option<timestamp>) -> result<list<timezone>, error>;
+
+  /// The timezone of each point, in input order.
+  batch-get-from-points: func(coordinates: list<coordinate>, timestamp: option<timestamp>) -> result<list<option<timezone>>, error>;
+
+  /// The timezone(s) at the centre of a bounding box.
+  get-from-bounding-box: func(bounding-box: bounding-box, timestamp: option<timestamp>) -> result<list<timezone>, error>;
+
+  /// The timezone of each bounding box, in input order.
+  batch-get-from-bounding-box: func(bounding-boxes: list<bounding-box>, timestamp: option<timestamp>) -> result<list<option<timezone>>, error>;
+
+  /// The timezone(s) at the centre of a polygon's bounds.
+  get-from-polygon: func(polygon: polygon, timestamp: option<timestamp>) -> result<list<timezone>, error>;
+
+  /// The timezone of each polygon, in input order.
+  batch-get-from-polygon: func(polygons: list<polygon>, timestamp: option<timestamp>) -> result<list<option<timezone>>, error>;
+}
+
+/// The Routers timezone resolver, separate from the routing engine so a
+/// consumer only downloads the boundary data when it needs it.
+world timezones {
+  export resolver;
+}

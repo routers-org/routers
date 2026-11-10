@@ -27,6 +27,7 @@ jobs:
       contents: write
     outputs:
       tag: ${{ steps.version.outputs.tag }}
+      wasm: ${{ steps.wasm.outputs.packages }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -75,6 +76,35 @@ jobs:
 
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "Current version: ${TAG:-none}"
+
+      - name: Resolve unpublished wasm packages
+        id: wasm
+        run: |
+          set -euo pipefail
+
+          declare -A npm=([routers_wasm]=@routers-org/router [routers_tz_wasm]=@routers-org/timezone)
+          packages='[]'
+          for crate in "${!npm[@]}"; do
+            tag=$(git tag --list "$crate-v*" --sort=-v:refname | head -n1)
+            if [ -z "$tag" ]; then
+              echo "$crate: not tagged yet."
+              continue
+            fi
+
+            version="${tag#"$crate"-v}"
+            name=$(git show "$tag:libs/$crate/package.json" 2>/dev/null | jq -r '.name // empty' || true)
+            if [ "$name" != "${npm[$crate]}" ]; then
+              echo "$tag packages '${name:-nothing}', not ${npm[$crate]}; skipping."
+            elif npm view "$name@$version" version >/dev/null 2>&1; then
+              echo "$name@$version already published, nothing to do."
+            else
+              echo "$name@$version not found, publishing."
+              packages=$(jq -c --arg crate "$crate" --arg tag "$tag" --arg version "$version" \
+                --arg npm "$name" '. + [$ARGS.named]' <<< "$packages")
+            fi
+          done
+
+          echo "packages=$packages" >> "$GITHUB_OUTPUT"
 
   build-containers:
     name: Build and push containers
@@ -173,16 +203,24 @@ jobs:
             ${{ env.IMAGE }}:${{ env.TAG }}
 
   build-wasm:
-    name: Build wasm component artifact
+    name: Publish ${{ matrix.package.npm }}
     runs-on: ubuntu-latest
     needs: release-plz-release
-    if: needs.release-plz-release.outputs.tag != ''
+    if: needs.release-plz-release.outputs.wasm != '' && needs.release-plz-release.outputs.wasm != '[]'
+    strategy:
+      fail-fast: false
+      matrix:
+        package: ${{ fromJSON(needs.release-plz-release.outputs.wasm) }}
     permissions:
       contents: write
       id-token: write
     env:
-      TAG: ${{ needs.release-plz-release.outputs.tag }}
+      TAG: ${{ matrix.package.tag }}
+      CRATE: ${{ matrix.package.crate }}
       JCO: pnpm dlx @bytecodealliance/jco@1.32
+    defaults:
+      run:
+        working-directory: libs/${{ matrix.package.crate }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -207,7 +245,7 @@ jobs:
       - name: Install pnpm
         uses: pnpm/action-setup@v4
         with:
-          package_json_file: libs/routers_wasm/package.json
+          package_json_file: libs/${{ matrix.package.crate }}/package.json
 
       - name: Install Node
         uses: actions/setup-node@v4
@@ -221,61 +259,36 @@ jobs:
             protoc-gen-buffa-packaging@${{ env.BUFFA_VERSION }}
 
       - name: Generate Schema
+        working-directory: .
         run: buf generate
 
       - name: Build component
-        run: cargo build --release -p routers_wasm --target wasm32-wasip2
+        run: cargo build --release -p "$CRATE" --target wasm32-wasip2
 
       - name: Optimise component (wasm-opt -Oz)
         run: |
-          $JCO opt target/wasm32-wasip2/release/routers_wasm.wasm \
-            -o "routers_wasm-${TAG}.component.wasm" -- -Oz
+          $JCO opt "../../target/wasm32-wasip2/release/$CRATE.wasm" \
+            -o "$TAG.component.wasm" -- -Oz
 
       - name: Attach to release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload "$TAG" "routers_wasm-${TAG}.component.wasm" --clobber
+        run: gh release upload "$TAG" "$TAG.component.wasm" --clobber
 
       - name: Transpile to JS
-        run: |
-          $JCO transpile "routers_wasm-${TAG}.component.wasm" \
-            --name routers_wasm -o libs/routers_wasm/dist/transpiled
+        run: $JCO transpile "$TAG.component.wasm" --name "$CRATE" -o dist/transpiled
 
       - name: Smoke-test package
-        working-directory: libs/routers_wasm
         run: |
           pnpm install --frozen-lockfile
           pnpm test
 
-      - name: Resolve package version
-        id: versioning
-        working-directory: libs/routers_wasm
-        run: |
-          set -euo pipefail
-
-          VERSION="${TAG#routers-v}"
-          NAME=$(npm pkg get name | tr -d '"')
-
-          if npm view "$NAME@$VERSION" version --json >/dev/null 2>&1; then
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-            echo "$NAME@$VERSION already published, nothing to do."
-          else
-            echo "exists=false" >> "$GITHUB_OUTPUT"
-            echo "$NAME@$VERSION not found, publishing."
-          fi
-
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-
       - name: Update Package Version
-        if: steps.versioning.outputs.exists == 'false'
-        working-directory: libs/routers_wasm
         env:
-          VERSION: ${{ steps.versioning.outputs.version }}
+          VERSION: ${{ matrix.package.version }}
         run: npm pkg set version="$VERSION"
 
-      - name: Publish @routers-org/wasm
-        if: steps.versioning.outputs.exists == 'false'
-        working-directory: libs/routers_wasm
+      - name: Publish ${{ matrix.package.npm }}
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: pnpm publish --provenance --no-git-checks
