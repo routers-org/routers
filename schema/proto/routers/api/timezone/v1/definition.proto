@@ -1,11 +1,15 @@
 syntax = "proto3";
 package routers.api.timezone.v1;
 
+import "google/protobuf/timestamp.proto";
 import "routers/model/v1/geo.proto";
 import "routers/model/v1/timezone.proto";
 
 message GetFromPointRequest {
   routers.model.v1.Coordinate coordinate = 1;
+
+  // The instant to resolve offsets at; defaults to now.
+  google.protobuf.Timestamp timestamp = 2;
 }
 
 message GetFromPointResponse {
@@ -14,6 +18,9 @@ message GetFromPointResponse {
 
 message BatchGetFromPointsRequest {
   repeated routers.model.v1.Coordinate coordinates = 1;
+
+  // The instant to resolve offsets at; defaults to now.
+  google.protobuf.Timestamp timestamp = 2;
 }
 
 message BatchGetFromPointsResponse {
@@ -22,6 +29,9 @@ message BatchGetFromPointsResponse {
 
 message GetFromBoundingBoxRequest {
   routers.model.v1.BoundingBox bounding_box = 1;
+
+  // The instant to resolve offsets at; defaults to now.
+  google.protobuf.Timestamp timestamp = 2;
 }
 
 message GetFromBoundingBoxResponse {
@@ -30,6 +40,9 @@ message GetFromBoundingBoxResponse {
 
 message BatchGetFromBoundingBoxRequest {
   repeated routers.model.v1.BoundingBox bounding_boxes = 1;
+
+  // The instant to resolve offsets at; defaults to now.
+  google.protobuf.Timestamp timestamp = 2;
 }
 
 message BatchGetFromBoundingBoxResponse {
@@ -38,6 +51,9 @@ message BatchGetFromBoundingBoxResponse {
 
 message GetFromPolygonRequest {
   routers.model.v1.Polygon polygon = 1;
+
+  // The instant to resolve offsets at; defaults to now.
+  google.protobuf.Timestamp timestamp = 2;
 }
 
 message GetFromPolygonResponse {
@@ -46,6 +62,9 @@ message GetFromPolygonResponse {
 
 message BatchGetFromPolygonRequest {
   repeated routers.model.v1.Polygon polygons = 1;
+
+  // The instant to resolve offsets at; defaults to now.
+  google.protobuf.Timestamp timestamp = 2;
 }
 
 message BatchGetFromPolygonResponse {

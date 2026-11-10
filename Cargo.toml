@@ -146,6 +146,7 @@ clap = { version = "4.6.1", features = [] }
 url = { version = "2.5", features = [] }
 lazy_static = { version = "1.5.0" }
 ouroboros = { version = "0.18.5" }
+time = { version = "0.3.55" }
 time-tz = { version = "2.0.0" }
 thiserror = { version = "2.0.12", default-features = false }
 

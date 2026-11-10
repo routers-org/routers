@@ -7526,6 +7526,7 @@ name = "routers_rpc"
 version = "0.2.1"
 dependencies = [
  "buffa",
+ "buffa-types",
  "clap",
  "connectrpc",
  "dotenvy",
@@ -7537,6 +7538,7 @@ dependencies = [
  "routers_schema",
  "routers_transition",
  "routers_tz",
+ "time",
  "time-tz",
  "tokio",
  "tracing",
@@ -7679,6 +7681,7 @@ dependencies = [
  "geo-index",
  "ouroboros",
  "serde",
+ "time",
  "time-tz",
 ]
 
