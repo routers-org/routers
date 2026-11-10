@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.1] - 2026-11-10
+
+### 🐛 Bug Fixes
+
+- *(transition)* Start interpolated path at the matched origin
+- Update snapshots
+
+
+
 ## [0.5.0] - 2026-11-02
 
 ### 🚀 Features
