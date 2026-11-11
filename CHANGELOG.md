@@ -2,6 +2,31 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.6.0] - 2026-11-11
+
+### 🚀 Features
+
+- *(wasm)* [**breaking**] Ship the timezone resolver as its own component
+- *(tz)* [**breaking**] Resolve zones from jiff's bundled tz database
+
+### 🐛 Bug Fixes
+
+- *(rpc)* [**breaking**] Resolve timezone offsets at an instant, as clock parts
+- *(ci)* Check out LFS data for wasm releases
+
+### ⚡ Performance
+
+- *(tz)* [**breaking**] Delta-encode the s2 cell index
+- *(tz)* [**breaking**] Resolve each zone once and read its offset in one search
+
+### ⚙️ Miscellaneous Tasks
+
+- *(schema)* Declare the timezone request API break as 0.4.0
+- *(tz)* Declare the S2StorageBackend API break as 0.2.0
+- *(tz)* Declare the TimeZone API break as 0.2.0
+
+
+
 ## [0.5.1] - 2026-11-10
 
 ### 🐛 Bug Fixes
