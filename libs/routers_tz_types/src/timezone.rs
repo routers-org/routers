@@ -1,18 +1,17 @@
-use core::ops::Deref;
+use jiff::Timestamp;
+use jiff::tz::TimeZoneOffsetInfo;
 use time::{OffsetDateTime, UtcOffset};
-use time_tz::{Offset, TimeZone as TimeZoneTrait, Tz};
 
 pub mod internal {
+    use super::TimeZone;
     use core::ops::Deref;
     use geo::{BoundingRect, MultiPolygon, Rect};
     use serde::{Deserialize, Serialize};
-    use time_tz::Tz;
 
     /// An internal representation of a timezone used by the build
     /// steps to construct a timezone storage mechanism.
     #[derive(Debug)]
     pub struct TimezoneBuild {
-        pub tz: &'static Tz,
         pub name: TimeZoneName,
         pub geometry: TimeZoneGeometry,
     }
@@ -54,14 +53,14 @@ pub mod internal {
         /// as a function of the inverted operation in timezone creation.
         ///
         /// If this is a concern, use `try_tz`
-        pub fn tz(&self) -> &'static Tz {
-            time_tz::timezones::get_by_name(self).expect("TimeZoneName not found in tz")
+        pub fn tz(&self) -> TimeZone {
+            self.try_tz().expect("TimeZoneName not found in tz")
         }
 
         /// Tries to obtain the timezone information
         /// for a given timezone IANA name.
-        pub fn try_tz(&self) -> Option<&'static Tz> {
-            time_tz::timezones::get_by_name(self)
+        pub fn try_tz(&self) -> Option<TimeZone> {
+            TimeZone::get(self)
         }
     }
 
@@ -72,33 +71,40 @@ pub mod internal {
     }
 }
 
-#[derive(Debug, PartialEq)]
-pub struct TimeZone(&'static Tz);
+#[derive(Debug, Clone, PartialEq)]
+pub struct TimeZone(jiff::tz::TimeZone);
 
 impl TimeZone {
-    pub fn new(tz: &'static Tz) -> Self {
-        TimeZone(tz)
+    /// The zone with this IANA name, from the bundled tz database.
+    pub fn get(name: &str) -> Option<Self> {
+        jiff::tz::TimeZone::get(name).ok().map(TimeZone)
     }
 
-    pub fn name(&self) -> &'static str {
-        self.0.name()
+    pub fn name(&self) -> &str {
+        self.0.iana_name().unwrap_or_default()
     }
 
     /// The offset from UTC this zone observes at `instant`.
     pub fn offset_at(&self, instant: &OffsetDateTime) -> UtcOffset {
-        self.0.get_offset_utc(instant).to_utc()
+        let seconds = self.info_at(instant).offset().seconds();
+        UtcOffset::from_whole_seconds(seconds).unwrap_or(UtcOffset::UTC)
     }
 
     /// Whether this zone observes daylight saving time at `instant`.
     pub fn is_dst_at(&self, instant: &OffsetDateTime) -> bool {
-        self.0.get_offset_utc(instant).is_dst()
+        self.info_at(instant).dst().is_dst()
     }
-}
 
-impl Deref for TimeZone {
-    type Target = Tz;
-    fn deref(&self) -> &Self::Target {
+    fn info_at(&self, instant: &OffsetDateTime) -> TimeZoneOffsetInfo<'_> {
+        let nanos = instant.unix_timestamp_nanos();
+        // jiff's range is slightly narrower than `time`'s, so clamp at the ends.
+        let clamped = if nanos < 0 {
+            Timestamp::MIN
+        } else {
+            Timestamp::MAX
+        };
         self.0
+            .to_offset_info(Timestamp::from_nanosecond(nanos).unwrap_or(clamped))
     }
 }
 
@@ -106,11 +112,14 @@ impl Deref for TimeZone {
 mod tests {
     use super::TimeZone;
     use time::macros::{datetime, offset};
-    use time_tz::timezones::db::{america, asia, australia};
+
+    fn zone(name: &str) -> TimeZone {
+        TimeZone::get(name).expect("zone is in the bundled database")
+    }
 
     #[test]
     fn offset_follows_daylight_saving() {
-        let sydney = TimeZone::new(australia::SYDNEY);
+        let sydney = zone("Australia/Sydney");
         let (summer, winter) = (
             datetime!(2026-01-15 0:00 UTC),
             datetime!(2026-07-15 0:00 UTC),
@@ -126,10 +135,7 @@ mod tests {
     fn offset_keeps_fractional_hours() {
         let at = datetime!(2026-01-15 0:00 UTC);
 
-        assert_eq!(TimeZone::new(asia::KOLKATA).offset_at(&at), offset!(+5:30));
-        assert_eq!(
-            TimeZone::new(america::ST_JOHNS).offset_at(&at),
-            offset!(-3:30)
-        );
+        assert_eq!(zone("Asia/Kolkata").offset_at(&at), offset!(+5:30));
+        assert_eq!(zone("America/St_Johns").offset_at(&at), offset!(-3:30));
     }
 }

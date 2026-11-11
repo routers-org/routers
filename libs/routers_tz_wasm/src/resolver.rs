@@ -28,8 +28,8 @@ mod tests {
     use super::*;
     use geo::{LineString, coord, point};
 
-    fn names(zones: Vec<TimeZone>) -> Vec<&'static str> {
-        zones.iter().map(|tz| tz.name()).collect()
+    fn names(zones: Vec<TimeZone>) -> Vec<String> {
+        zones.iter().map(|tz| tz.name().to_string()).collect()
     }
 
     #[test]

@@ -3,7 +3,7 @@
 A **WebAssembly Component** for the Routers timezone resolver. It answers which
 IANA timezone covers a point, bounding box, or polygon — in a browser, Node, or
 any Wasmtime host, with no network access. The boundary and tz database data
-(~2.2 MiB) is bundled, so it ships apart from the routing engine
+(~1 MiB) is bundled, so it ships apart from the routing engine
 ([`@routers-org/router`](../routers_wasm/README.md)).
 
 ## Interface

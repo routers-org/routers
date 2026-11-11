@@ -147,7 +147,8 @@ url = { version = "2.5", features = [] }
 lazy_static = { version = "1.5.0" }
 ouroboros = { version = "0.18.5" }
 time = { version = "0.3.55" }
-time-tz = { version = "2.0.0" }
+# Bundled tz database only; no system zoneinfo, so every target resolves offsets identically.
+jiff = { version = "0.2.42", default-features = false, features = ["std", "tzdb-bundle-always"] }
 thiserror = { version = "2.0.12", default-features = false }
 
 # Schema

@@ -52,9 +52,7 @@ impl TimezoneResolver for S2CellStorage {
             .unique()
             .map(|pos| {
                 let tz_idx = self.backend.tz_indices[pos] as usize;
-                let tz = self.backend.names[tz_idx].tz();
-
-                TimeZone::new(tz)
+                self.backend.names[tz_idx].tz()
             })
             .collect::<Vec<_>>();
 
@@ -62,5 +60,19 @@ impl TimezoneResolver for S2CellStorage {
             [] => Err(()),
             _ => Ok(timezones),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn every_stored_name_is_in_the_tz_database() {
+        let names = &crate::generated::s2cell::storage().names;
+        let missing: Vec<&str> = (names.iter())
+            .filter(|name| name.try_tz().is_none())
+            .map(|name| &**name)
+            .collect();
+
+        assert!(missing.is_empty(), "not in the tz database: {missing:?}");
     }
 }

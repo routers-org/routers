@@ -42,7 +42,6 @@ tracing-subscriber = { workspace = true }
 
 [dev-dependencies]
 time = { workspace = true, features = ["macros"] }
-time-tz = { workspace = true }
 
 # Client + server examples need the corresponding connectrpc features.
 connectrpc = { workspace = true, features = ["client", "server"] }

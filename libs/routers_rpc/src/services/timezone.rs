@@ -295,10 +295,10 @@ where
 mod tests {
     use super::*;
     use time::macros::datetime;
-    use time_tz::timezones::db::{america, asia, australia};
 
-    fn offset(tz: &'static time_tz::Tz, instant: OffsetDateTime) -> (i32, i32, i32, bool) {
-        let message = timezone_message(TimeZone::new(tz), &instant);
+    fn offset(name: &str, instant: OffsetDateTime) -> (i32, i32, i32, bool) {
+        let tz = TimeZone::get(name).expect("zone is in the bundled database");
+        let message = timezone_message(tz, &instant);
         let offset = message.utc_offset.as_option().expect("offset is set");
         (offset.hours, offset.minutes, offset.seconds, message.is_dst)
     }
@@ -310,16 +310,16 @@ mod tests {
             datetime!(2026-07-15 0:00 UTC),
         );
 
-        assert_eq!(offset(australia::SYDNEY, summer), (11, 0, 0, true));
-        assert_eq!(offset(australia::SYDNEY, winter), (10, 0, 0, false));
+        assert_eq!(offset("Australia/Sydney", summer), (11, 0, 0, true));
+        assert_eq!(offset("Australia/Sydney", winter), (10, 0, 0, false));
     }
 
     #[test]
     fn offset_is_split_into_signed_clock_parts() {
         let at = datetime!(2026-01-15 0:00 UTC);
 
-        assert_eq!(offset(asia::KOLKATA, at), (5, 30, 0, false));
-        assert_eq!(offset(america::ST_JOHNS, at), (-3, -30, 0, false));
+        assert_eq!(offset("Asia/Kolkata", at), (5, 30, 0, false));
+        assert_eq!(offset("America/St_Johns", at), (-3, -30, 0, false));
     }
 
     #[test]

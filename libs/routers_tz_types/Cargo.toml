@@ -13,7 +13,7 @@ serde = { workspace = true, features = ["derive", "std"] }
 ouroboros = { workspace = true }
 
 time = { workspace = true }
-time-tz = { workspace = true }
+jiff = { workspace = true }
 
 [dev-dependencies]
 time = { workspace = true, features = ["macros"] }
