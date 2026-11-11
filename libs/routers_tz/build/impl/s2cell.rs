@@ -1,6 +1,6 @@
 use core::sync::atomic::{AtomicUsize, Ordering};
 use rayon::prelude::*;
-use routers_tz_types::storage::s2cell::S2StorageBackend;
+use routers_tz_types::storage::s2cell::{CELL_SHIFT, S2StorageBackend};
 use routers_tz_types::timezone::internal::TimezoneBuild;
 use s2::region::RegionCoverer;
 use std::collections::HashMap;
@@ -13,6 +13,9 @@ use crate::geojson::geojson_path;
 const MIN_LEVEL: u8 = 1;
 const MAX_LEVEL: u8 = 13;
 const MAX_CELLS: usize = 1000;
+
+// A CellID is 3 face bits, 2 bits per level, then the sentinel; shifting must not drop any.
+const _: () = assert!(CELL_SHIFT == 60 - 2 * MAX_LEVEL as u32);
 
 pub fn build(timezones: &[TimezoneBuild]) -> Result<(), BoxError> {
     let backend = Backend { module: "s2cell" };
@@ -60,8 +63,11 @@ fn compute_backend(timezones: &[TimezoneBuild]) -> S2StorageBackend {
     );
 
     S2StorageBackend {
-        cell_ids,
-        tz_indices,
+        cell_ids: cell_ids
+            .into_iter()
+            .map(|id| (id >> CELL_SHIFT) as u32)
+            .collect(),
+        tz_indices: tz_indices.into_iter().map(|idx| idx as u16).collect(),
         names: timezones.iter().map(|tz| tz.name.clone()).collect(),
     }
 }

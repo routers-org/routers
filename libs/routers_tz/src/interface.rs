@@ -69,6 +69,12 @@ mod tests {
         assert_singular(point! { x: 151.208211, y: -33.871075 }, "Australia/Sydney");
     }
 
+    // Split from America/Ojinaga in tzdata 2022g.
+    #[test]
+    fn locate_ciudad_juarez() {
+        assert_singular(point! { x: -106.45, y: 31.45 }, "America/Ciudad_Juarez")
+    }
+
     #[test]
     fn locate_chicago() {
         assert_singular(point! { x: -87.64, y: 41.86350 }, "America/Chicago")

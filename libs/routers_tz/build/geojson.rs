@@ -54,14 +54,14 @@ pub fn extract_timezones() -> Result<Option<Vec<TimezoneBuild>>, BoxError> {
         let geometry = feature.geometry.ok_or("Missing geometry")?;
         let multi_polygon = to_multi_polygon(&geometry)?;
 
-        let Some(tz) = time_tz::timezones::get_by_name(tzid.as_str()) else {
-            eprintln!("Could not find timezone '{tzid}' in the database");
+        let name = TimeZoneName::new(tzid);
+        if name.try_tz().is_none() {
+            eprintln!("Could not find timezone '{}' in the database", &*name);
             continue;
-        };
+        }
 
         timezones.push(TimezoneBuild {
-            tz,
-            name: TimeZoneName::new(tzid),
+            name,
             geometry: TimeZoneGeometry(multi_polygon),
         });
     }

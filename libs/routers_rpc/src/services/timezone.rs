@@ -3,7 +3,7 @@ use buffa::MessageField;
 use buffa_types::google::protobuf::Timestamp;
 use connectrpc::{ConnectError, RequestContext, ServiceRequest, ServiceResult};
 use geo::{BoundingRect, Coord, LineString, Point, Polygon, Rect};
-use routers_tz::{TimeZone, TimezoneResolver};
+use routers_tz::{TimeZone, Timestamp as Instant, TimezoneResolver};
 use schema::connect::routers::api::timezone::v1::TimezoneService;
 use schema::proto::routers::api::timezone::v1::{
     BatchGetFromBoundingBoxRequest, BatchGetFromBoundingBoxResponse, BatchGetFromPointsRequest,
@@ -17,7 +17,6 @@ use schema::proto::routers::model::v1::{
     BoundingBox as BoundingBoxMessage, Coordinate as CoordinateMessage, Polygon as PolygonMessage,
     Timezone as TimezoneMessage, UtcOffset,
 };
-use time::OffsetDateTime;
 #[cfg(feature = "telemetry")]
 use tracing::Level;
 
@@ -31,30 +30,30 @@ impl<R> TimezoneAdapter<R> {
     }
 }
 
-fn timezone_message(tz: TimeZone, instant: &OffsetDateTime) -> TimezoneMessage {
-    let (hours, minutes, seconds) = tz.offset_at(instant).as_hms();
+fn timezone_message(tz: TimeZone, instant: Instant) -> TimezoneMessage {
+    let observed = tz.at(instant);
+    let offset = observed.offset().seconds();
 
     TimezoneMessage {
         iana_code: tz.name().to_string(),
         utc_offset: MessageField::some(UtcOffset {
-            seconds: seconds.into(),
-            minutes: minutes.into(),
-            hours: hours.into(),
+            seconds: offset % 60,
+            minutes: offset / 60 % 60,
+            hours: offset / 3600,
             ..Default::default()
         }),
-        is_dst: tz.is_dst_at(instant),
+        is_dst: observed.dst().is_dst(),
         ..Default::default()
     }
 }
 
 /// The requested instant, or now when the request leaves it unset.
-fn instant_of(timestamp: &MessageField<Timestamp>) -> Result<OffsetDateTime, ConnectError> {
+fn instant_of(timestamp: &MessageField<Timestamp>) -> Result<Instant, ConnectError> {
     let Some(ts) = timestamp.as_option() else {
-        return Ok(OffsetDateTime::now_utc());
+        return Ok(Instant::now());
     };
 
-    let nanos = i128::from(ts.seconds) * 1_000_000_000 + i128::from(ts.nanos);
-    OffsetDateTime::from_unix_timestamp_nanos(nanos)
+    Instant::new(ts.seconds, ts.nanos)
         .map_err(|_| ConnectError::invalid_argument("Timestamp out of range"))
 }
 
@@ -116,7 +115,7 @@ where
             .search(&point.bounding_rect())
             .map(|tzs| {
                 tzs.into_iter()
-                    .map(|tz| timezone_message(tz, &instant))
+                    .map(|tz| timezone_message(tz, instant))
                     .collect()
             })
             .map_err(|e| ConnectError::internal(format!("{:?}", e)))?;
@@ -147,7 +146,7 @@ where
             let tz = found
                 .into_iter()
                 .next()
-                .map(|tz| timezone_message(tz, &instant))
+                .map(|tz| timezone_message(tz, instant))
                 .ok_or_else(|| ConnectError::not_found("No timezone found for coordinate"))?;
             timezones.push(tz);
         }
@@ -182,7 +181,7 @@ where
             .search(&rect)
             .map(|tzs| {
                 tzs.into_iter()
-                    .map(|tz| timezone_message(tz, &instant))
+                    .map(|tz| timezone_message(tz, instant))
                     .collect()
             })
             .map_err(|e| ConnectError::internal(format!("{:?}", e)))?;
@@ -214,7 +213,7 @@ where
             let tz = found
                 .into_iter()
                 .next()
-                .map(|tz| timezone_message(tz, &instant))
+                .map(|tz| timezone_message(tz, instant))
                 .ok_or_else(|| ConnectError::not_found("No timezone found for bounding box"))?;
             timezones.push(tz);
         }
@@ -247,7 +246,7 @@ where
             .search_polygon(&polygon)
             .map(|tzs| {
                 tzs.into_iter()
-                    .map(|tz| timezone_message(tz, &instant))
+                    .map(|tz| timezone_message(tz, instant))
                     .collect()
             })
             .map_err(|e| ConnectError::internal(format!("{:?}", e)))?;
@@ -278,7 +277,7 @@ where
             let tz = found
                 .into_iter()
                 .next()
-                .map(|tz| timezone_message(tz, &instant))
+                .map(|tz| timezone_message(tz, instant))
                 .ok_or_else(|| ConnectError::not_found("No timezone found for polygon"))?;
             timezones.push(tz);
         }
@@ -294,40 +293,36 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use time::macros::datetime;
-    use time_tz::timezones::db::{america, asia, australia};
 
-    fn offset(tz: &'static time_tz::Tz, instant: OffsetDateTime) -> (i32, i32, i32, bool) {
-        let message = timezone_message(TimeZone::new(tz), &instant);
+    fn offset(name: &str, instant: &str) -> (i32, i32, i32, bool) {
+        let tz = TimeZone::get(name).expect("zone is in the bundled database");
+        let message = timezone_message(tz, instant.parse().expect("valid timestamp"));
         let offset = message.utc_offset.as_option().expect("offset is set");
         (offset.hours, offset.minutes, offset.seconds, message.is_dst)
     }
 
     #[test]
     fn offset_is_the_one_in_effect_at_the_instant() {
-        let (summer, winter) = (
-            datetime!(2026-01-15 0:00 UTC),
-            datetime!(2026-07-15 0:00 UTC),
-        );
+        let (summer, winter) = ("2026-01-15T00:00:00Z", "2026-07-15T00:00:00Z");
 
-        assert_eq!(offset(australia::SYDNEY, summer), (11, 0, 0, true));
-        assert_eq!(offset(australia::SYDNEY, winter), (10, 0, 0, false));
+        assert_eq!(offset("Australia/Sydney", summer), (11, 0, 0, true));
+        assert_eq!(offset("Australia/Sydney", winter), (10, 0, 0, false));
     }
 
     #[test]
     fn offset_is_split_into_signed_clock_parts() {
-        let at = datetime!(2026-01-15 0:00 UTC);
+        let at = "2026-01-15T00:00:00Z";
 
-        assert_eq!(offset(asia::KOLKATA, at), (5, 30, 0, false));
-        assert_eq!(offset(america::ST_JOHNS, at), (-3, -30, 0, false));
+        assert_eq!(offset("Asia/Kolkata", at), (5, 30, 0, false));
+        assert_eq!(offset("America/St_Johns", at), (-3, -30, 0, false));
     }
 
     #[test]
     fn instant_defaults_to_now() {
-        let before = OffsetDateTime::now_utc();
+        let before = Instant::now();
         let instant = instant_of(&MessageField::none()).expect("now is in range");
 
-        assert!(instant >= before && instant <= OffsetDateTime::now_utc());
+        assert!(instant >= before && instant <= Instant::now());
     }
 
     #[test]
@@ -336,7 +331,9 @@ mod tests {
 
         assert_eq!(
             instant_of(&timestamp).expect("in range"),
-            datetime!(2026-01-15 0:00:00.000_000_5 UTC)
+            "2026-01-15T00:00:00.0000005Z"
+                .parse()
+                .expect("valid timestamp")
         );
     }
 

@@ -1,7 +1,7 @@
 //! A WebAssembly **component** for the Routers timezone resolver.
 //!
 //! The interface is defined in [`wit/world.wit`](../wit/world.wit). It ships
-//! apart from the routing component, as the boundary data is ~2.8 MiB.
+//! apart from the routing component, as the boundary and tz database data is ~1 MiB.
 //!
 //! ```js
 //! import { resolver } from "import-path";

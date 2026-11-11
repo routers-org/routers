@@ -16,7 +16,6 @@ crate-type = ["cdylib", "rlib"]
 routers_tz = { workspace = true }
 
 geo = { workspace = true }
-time = { workspace = true }
 wit-bindgen = "0.46"
 
 [lints]

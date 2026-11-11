@@ -15,17 +15,27 @@ pub(crate) mod generated {
     #[cfg(all(feature = "basic", have_basic_prebuilt))]
     pub mod basic {
         use lazy_static::lazy_static;
+        use routers_tz_types::TimeZone;
         use routers_tz_types::storage::basic::BasicStorageBackend;
+        use std::sync::OnceLock;
 
         const DATA: &[u8] = include_bytes!("../data/prebuilt/basic_timezone_data.postcard.bin");
 
         lazy_static! {
             pub static ref STORAGE: BasicStorageBackend =
                 postcard::from_bytes(DATA).expect("Failed to deserialize basic timezone data");
+            static ref ZONES: Vec<OnceLock<TimeZone>> =
+                STORAGE.names.iter().map(|_| OnceLock::new()).collect();
         }
 
         pub fn storage() -> &'static BasicStorageBackend {
             &STORAGE
+        }
+
+        /// The zone at `index`, resolved from the tz database on first use.
+        pub fn zone(index: usize) -> Option<TimeZone> {
+            let zone = ZONES.get(index)?;
+            Some(zone.get_or_init(|| STORAGE.names[index].tz()).clone())
         }
     }
 
@@ -42,34 +52,54 @@ pub(crate) mod generated {
     #[cfg(feature = "rtree")]
     pub mod rtree {
         use lazy_static::lazy_static;
+        use routers_tz_types::TimeZone;
         use routers_tz_types::storage::rtree::RTreeStorageBackend;
+        use std::sync::OnceLock;
 
         const DATA: &[u8] = include_bytes!("../data/prebuilt/rtree_timezone_data.postcard.bin");
 
         lazy_static! {
             pub static ref STORAGE: RTreeStorageBackend =
                 postcard::from_bytes(DATA).expect("Failed to deserialize rtree timezone data");
+            static ref ZONES: Vec<OnceLock<TimeZone>> =
+                STORAGE.names.iter().map(|_| OnceLock::new()).collect();
         }
 
         pub fn storage() -> &'static RTreeStorageBackend {
             &STORAGE
+        }
+
+        /// The zone at `index`, resolved from the tz database on first use.
+        pub fn zone(index: usize) -> Option<TimeZone> {
+            let zone = ZONES.get(index)?;
+            Some(zone.get_or_init(|| STORAGE.names[index].tz()).clone())
         }
     }
 
     #[cfg(feature = "s2cell")]
     pub mod s2cell {
         use lazy_static::lazy_static;
+        use routers_tz_types::TimeZone;
         use routers_tz_types::storage::s2cell::S2StorageBackend;
+        use std::sync::OnceLock;
 
         const DATA: &[u8] = include_bytes!("../data/prebuilt/s2cell_timezone_data.postcard.bin");
 
         lazy_static! {
             pub static ref STORAGE: S2StorageBackend =
                 postcard::from_bytes(DATA).expect("Failed to deserialize s2cell timezone data");
+            static ref ZONES: Vec<OnceLock<TimeZone>> =
+                STORAGE.names.iter().map(|_| OnceLock::new()).collect();
         }
 
         pub fn storage() -> &'static S2StorageBackend {
             &STORAGE
+        }
+
+        /// The zone at `index`, resolved from the tz database on first use.
+        pub fn zone(index: usize) -> Option<TimeZone> {
+            let zone = ZONES.get(index)?;
+            Some(zone.get_or_init(|| STORAGE.names[index].tz()).clone())
         }
     }
 }
@@ -78,7 +108,7 @@ pub(crate) mod generated {
 pub use interface::TimezoneResolver;
 
 // Timezone Type
-pub use routers_tz_types::TimeZone;
+pub use routers_tz_types::{TimeZone, Timestamp};
 
 // Basic Storage Impl
 #[cfg(feature = "basic")]

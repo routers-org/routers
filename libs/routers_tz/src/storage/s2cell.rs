@@ -1,5 +1,5 @@
 use geo::Rect;
-use routers_tz_types::storage::s2cell::S2StorageBackend;
+use routers_tz_types::storage::s2cell::{CELL_SHIFT, S2StorageBackend};
 use s2::cellid::CellID;
 use s2::latlng::LatLng;
 
@@ -42,7 +42,7 @@ impl TimezoneResolver for S2CellStorage {
 
         let timezones = (MIN_LEVEL..=MAX_LEVEL)
             .rev()
-            .map(|level| leaf.parent(level).0)
+            .map(|level| (leaf.parent(level).0 >> CELL_SHIFT) as u32)
             .filter_map(
                 |ancestor| match self.backend.cell_ids.binary_search(&ancestor) {
                     Ok(pos) => Some(pos),
@@ -50,11 +50,9 @@ impl TimezoneResolver for S2CellStorage {
                 },
             )
             .unique()
-            .map(|pos| {
+            .filter_map(|pos| {
                 let tz_idx = self.backend.tz_indices[pos] as usize;
-                let tz = self.backend.names[tz_idx].tz();
-
-                TimeZone::new(tz)
+                crate::generated::s2cell::zone(tz_idx)
             })
             .collect::<Vec<_>>();
 
@@ -62,5 +60,19 @@ impl TimezoneResolver for S2CellStorage {
             [] => Err(()),
             _ => Ok(timezones),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn every_stored_name_is_in_the_tz_database() {
+        let names = &crate::generated::s2cell::storage().names;
+        let missing: Vec<&str> = (names.iter())
+            .filter(|name| name.try_tz().is_none())
+            .map(|name| &**name)
+            .collect();
+
+        assert!(missing.is_empty(), "not in the tz database: {missing:?}");
     }
 }
