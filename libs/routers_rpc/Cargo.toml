@@ -17,7 +17,6 @@ routers_network = { workspace = true }
 routers_tz = { workspace = true }
 schema = { workspace = true, features = ["connect"] }
 
-time = { workspace = true }
 
 # Protobuf Handling
 buffa = { workspace = true }
@@ -41,7 +40,6 @@ tracing = { workspace = true, features = ["std"] }
 tracing-subscriber = { workspace = true }
 
 [dev-dependencies]
-time = { workspace = true, features = ["macros"] }
 
 # Client + server examples need the corresponding connectrpc features.
 connectrpc = { workspace = true, features = ["client", "server"] }

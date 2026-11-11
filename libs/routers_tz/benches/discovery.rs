@@ -39,6 +39,31 @@ fn search_sparse() {
     run_singular(&rect);
 }
 
+/// A lookup plus the offset and DST flag at an instant, as the services do.
+fn resolve_offset() {
+    let rect = point! { x: 151.208211, y: -33.871075 }.bounding_rect();
+    let at = routers_tz::Timestamp::from_second(1_784_073_600).expect("in range");
+
+    let resolver = RESOLVER.get().expect("timezones not initialized");
+    for tz in resolver.search(&rect).expect("should have been resolved") {
+        let info = tz.at(at);
+        black_box((info.offset(), info.dst()));
+    }
+}
+
+/// `resolve_offset` from several threads at once; each thread's time per lookup.
+fn resolve_offset_parallel(iters: u64) -> std::time::Duration {
+    const THREADS: usize = 8;
+
+    let start = std::time::Instant::now();
+    std::thread::scope(|scope| {
+        for _ in 0..THREADS {
+            scope.spawn(|| (0..iters).for_each(|_| resolve_offset()));
+        }
+    });
+    start.elapsed()
+}
+
 #[cfg(feature = "rtree")]
 const BACKEND: &str = "rtree";
 #[cfg(feature = "s2cell")]
@@ -53,6 +78,10 @@ fn discovery_benchmark(c: &mut criterion::Criterion) {
     init();
 
     group.bench_function("search_sparse", |b| b.iter(search_sparse));
+    group.bench_function("resolve_offset", |b| b.iter(resolve_offset));
+    group.bench_function("resolve_offset_parallel", |b| {
+        b.iter_custom(resolve_offset_parallel)
+    });
     group.finish();
 }
 

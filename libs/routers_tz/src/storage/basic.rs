@@ -36,7 +36,7 @@ impl TimezoneResolver for BasicStorage {
             .enumerate()
             .filter_map(|(index, TimeZoneGeometry(geometry))| {
                 if geometry.contains(rect) {
-                    Some(self.backend.names[index].tz())
+                    crate::generated::basic::zone(index)
                 } else {
                     None
                 }

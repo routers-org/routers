@@ -6,8 +6,7 @@ use alloc::string::ToString;
 use alloc::vec::Vec;
 
 use geo::{Coord, LineString, Point, Polygon, Rect};
-use routers_tz::TimeZone;
-use time::OffsetDateTime;
+use routers_tz::{TimeZone, Timestamp};
 
 use crate::resolver;
 
@@ -27,7 +26,7 @@ impl wit::Guest for Component {
         timestamp: Option<wit::Timestamp>,
     ) -> Resolved<Vec<wit::Timezone>> {
         let instant = instant_of(timestamp)?;
-        Ok(all(resolver::at_point(point_of(&coordinate)), &instant))
+        Ok(all(resolver::at_point(point_of(&coordinate)), instant))
     }
 
     fn batch_get_from_points(
@@ -37,7 +36,7 @@ impl wit::Guest for Component {
         let instant = instant_of(timestamp)?;
         Ok(coordinates
             .iter()
-            .map(|c| first(resolver::at_point(point_of(c)), &instant))
+            .map(|c| first(resolver::at_point(point_of(c)), instant))
             .collect())
     }
 
@@ -46,7 +45,7 @@ impl wit::Guest for Component {
         timestamp: Option<wit::Timestamp>,
     ) -> Resolved<Vec<wit::Timezone>> {
         let instant = instant_of(timestamp)?;
-        Ok(all(resolver::in_rect(&rect_of(&bounding_box)), &instant))
+        Ok(all(resolver::in_rect(&rect_of(&bounding_box)), instant))
     }
 
     fn batch_get_from_bounding_box(
@@ -56,7 +55,7 @@ impl wit::Guest for Component {
         let instant = instant_of(timestamp)?;
         Ok(bounding_boxes
             .iter()
-            .map(|bb| first(resolver::in_rect(&rect_of(bb)), &instant))
+            .map(|bb| first(resolver::in_rect(&rect_of(bb)), instant))
             .collect())
     }
 
@@ -65,7 +64,7 @@ impl wit::Guest for Component {
         timestamp: Option<wit::Timestamp>,
     ) -> Resolved<Vec<wit::Timezone>> {
         let instant = instant_of(timestamp)?;
-        Ok(all(resolver::in_polygon(&polygon_of(&polygon)), &instant))
+        Ok(all(resolver::in_polygon(&polygon_of(&polygon)), instant))
     }
 
     fn batch_get_from_polygon(
@@ -75,19 +74,20 @@ impl wit::Guest for Component {
         let instant = instant_of(timestamp)?;
         Ok(polygons
             .iter()
-            .map(|p| first(resolver::in_polygon(&polygon_of(p)), &instant))
+            .map(|p| first(resolver::in_polygon(&polygon_of(p)), instant))
             .collect())
     }
 }
 
 /// The requested instant, or now when the caller leaves it unset.
-fn instant_of(timestamp: Option<wit::Timestamp>) -> Resolved<OffsetDateTime> {
-    let Some(ts) = timestamp else {
-        return Ok(OffsetDateTime::now_utc());
-    };
-
-    let nanos = i128::from(ts.seconds) * 1_000_000_000 + i128::from(ts.nanos);
-    OffsetDateTime::from_unix_timestamp_nanos(nanos).map_err(|_| wit::Error::InvalidTimestamp)
+fn instant_of(timestamp: Option<wit::Timestamp>) -> Resolved<Timestamp> {
+    // Not `Timestamp::now()`: its panic path formats a jiff error, which
+    // links ~230 KiB of formatting code into the component.
+    match timestamp {
+        Some(ts) => Timestamp::new(ts.seconds, ts.nanos),
+        None => Timestamp::try_from(std::time::SystemTime::now()),
+    }
+    .map_err(|_| wit::Error::InvalidTimestamp)
 }
 
 fn coord_of(c: &wit::Coordinate) -> Coord {
@@ -110,28 +110,29 @@ fn polygon_of(p: &wit::Polygon) -> Polygon {
     Polygon::new(LineString::from(ring), Vec::new())
 }
 
-fn timezone_of(tz: TimeZone, instant: &OffsetDateTime) -> wit::Timezone {
-    let (hours, minutes, seconds) = tz.offset_at(instant).as_hms();
+fn timezone_of(tz: TimeZone, instant: Timestamp) -> wit::Timezone {
+    let observed = tz.at(instant);
+    let offset = observed.offset().seconds();
 
     wit::Timezone {
         utc_offset: wit::UtcOffset {
-            seconds: seconds.into(),
-            minutes: minutes.into(),
-            hours: hours.into(),
+            seconds: offset % 60,
+            minutes: offset / 60 % 60,
+            hours: offset / 3600,
         },
         iana_code: tz.name().to_string(),
-        is_dst: tz.is_dst_at(instant),
+        is_dst: observed.dst().is_dst(),
     }
 }
 
-fn all(zones: Vec<TimeZone>, instant: &OffsetDateTime) -> Vec<wit::Timezone> {
+fn all(zones: Vec<TimeZone>, instant: Timestamp) -> Vec<wit::Timezone> {
     zones
         .into_iter()
         .map(|tz| timezone_of(tz, instant))
         .collect()
 }
 
-fn first(zones: Vec<TimeZone>, instant: &OffsetDateTime) -> Option<wit::Timezone> {
+fn first(zones: Vec<TimeZone>, instant: Timestamp) -> Option<wit::Timezone> {
     zones.into_iter().next().map(|tz| timezone_of(tz, instant))
 }
 

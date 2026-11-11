@@ -1,6 +1,5 @@
 use jiff::Timestamp;
 use jiff::tz::TimeZoneOffsetInfo;
-use time::{OffsetDateTime, UtcOffset};
 
 pub mod internal {
     use super::TimeZone;
@@ -84,58 +83,44 @@ impl TimeZone {
         self.0.iana_name().unwrap_or_default()
     }
 
-    /// The offset from UTC this zone observes at `instant`.
-    pub fn offset_at(&self, instant: &OffsetDateTime) -> UtcOffset {
-        let seconds = self.info_at(instant).offset().seconds();
-        UtcOffset::from_whole_seconds(seconds).unwrap_or(UtcOffset::UTC)
-    }
-
-    /// Whether this zone observes daylight saving time at `instant`.
-    pub fn is_dst_at(&self, instant: &OffsetDateTime) -> bool {
-        self.info_at(instant).dst().is_dst()
-    }
-
-    fn info_at(&self, instant: &OffsetDateTime) -> TimeZoneOffsetInfo<'_> {
-        let nanos = instant.unix_timestamp_nanos();
-        // jiff's range is slightly narrower than `time`'s, so clamp at the ends.
-        let clamped = if nanos < 0 {
-            Timestamp::MIN
-        } else {
-            Timestamp::MAX
-        };
-        self.0
-            .to_offset_info(Timestamp::from_nanosecond(nanos).unwrap_or(clamped))
+    /// The offset, DST flag and abbreviation this zone observes at `instant`.
+    pub fn at(&self, instant: Timestamp) -> TimeZoneOffsetInfo<'_> {
+        self.0.to_offset_info(instant)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::TimeZone;
-    use time::macros::{datetime, offset};
+    use jiff::Timestamp;
+    use jiff::tz::Offset;
 
     fn zone(name: &str) -> TimeZone {
         TimeZone::get(name).expect("zone is in the bundled database")
     }
 
+    fn instant(rfc3339: &str) -> Timestamp {
+        rfc3339.parse().expect("valid timestamp")
+    }
+
     #[test]
     fn offset_follows_daylight_saving() {
         let sydney = zone("Australia/Sydney");
-        let (summer, winter) = (
-            datetime!(2026-01-15 0:00 UTC),
-            datetime!(2026-07-15 0:00 UTC),
-        );
+        let summer = sydney.at(instant("2026-01-15T00:00:00Z"));
+        let winter = sydney.at(instant("2026-07-15T00:00:00Z"));
 
-        assert_eq!(sydney.offset_at(&summer), offset!(+11));
-        assert!(sydney.is_dst_at(&summer));
-        assert_eq!(sydney.offset_at(&winter), offset!(+10));
-        assert!(!sydney.is_dst_at(&winter));
+        assert_eq!(summer.offset(), Offset::constant(11));
+        assert!(summer.dst().is_dst());
+        assert_eq!(summer.abbreviation(), "AEDT");
+        assert_eq!(winter.offset(), Offset::constant(10));
+        assert!(!winter.dst().is_dst());
     }
 
     #[test]
     fn offset_keeps_fractional_hours() {
-        let at = datetime!(2026-01-15 0:00 UTC);
+        let at = instant("2026-01-15T00:00:00Z");
 
-        assert_eq!(zone("Asia/Kolkata").offset_at(&at), offset!(+5:30));
-        assert_eq!(zone("America/St_Johns").offset_at(&at), offset!(-3:30));
+        assert_eq!(zone("Asia/Kolkata").at(at).offset().seconds(), 19_800);
+        assert_eq!(zone("America/St_Johns").at(at).offset().seconds(), -12_600);
     }
 }

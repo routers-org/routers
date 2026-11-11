@@ -50,9 +50,9 @@ impl TimezoneResolver for S2CellStorage {
                 },
             )
             .unique()
-            .map(|pos| {
+            .filter_map(|pos| {
                 let tz_idx = self.backend.tz_indices[pos] as usize;
-                self.backend.names[tz_idx].tz()
+                crate::generated::s2cell::zone(tz_idx)
             })
             .collect::<Vec<_>>();
 

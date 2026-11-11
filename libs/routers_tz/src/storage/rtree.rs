@@ -36,8 +36,7 @@ impl TimezoneResolver for RTreeStorage {
 
         let timezones = cache_hits
             .into_iter()
-            .filter_map(|index| self.backend.names.get(index as usize))
-            .map(|name| name.tz())
+            .filter_map(|index| crate::generated::rtree::zone(index as usize))
             .collect::<Vec<TimeZone>>();
 
         match timezones[..] {

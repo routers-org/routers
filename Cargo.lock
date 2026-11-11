@@ -7520,7 +7520,6 @@ dependencies = [
  "routers_schema",
  "routers_transition",
  "routers_tz",
- "time",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -7662,7 +7661,6 @@ dependencies = [
  "jiff",
  "ouroboros",
  "serde",
- "time",
 ]
 
 [[package]]
@@ -7671,7 +7669,6 @@ version = "0.1.0"
 dependencies = [
  "geo",
  "routers_tz",
- "time",
  "wit-bindgen 0.46.0",
 ]
 
