@@ -28,15 +28,14 @@ impl TimezoneResolver for RTreeStorage {
     type Error = ();
 
     fn search(&self, rect: &Rect) -> Result<Vec<TimeZone>, Self::Error> {
-        let cache_hits =
-            self.backend
-                .tree
-                .borrow_this()
-                .neighbors_coord(&rect.center(), Some(1), None);
-
-        let timezones = cache_hits
-            .into_iter()
-            .filter_map(|index| crate::generated::rtree::zone(index as usize))
+        let (x, y) = (rect.center().x as f32, rect.center().y as f32);
+        let timezones = (self.backend.tree.borrow_this())
+            .search(x, y, x, y)
+            .first()
+            .map(|&item| self.backend.zones(item as usize))
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|&zone| crate::generated::rtree::zone(zone as usize))
             .collect::<Vec<TimeZone>>();
 
         match timezones[..] {
@@ -45,3 +44,4 @@ impl TimezoneResolver for RTreeStorage {
         }
     }
 }
+
