@@ -2,6 +2,28 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.0] - 2026-11-13
+
+### 🚀 Features
+
+- *(tz)* [**breaking**] Return every zone where timezone polygons overlap
+
+### 🐛 Bug Fixes
+
+- *(tz)* Partition the globe into disjoint s2 cells
+- *(tz)* Build the rtree index from disjoint lng/lat boxes
+
+### ⚡ Performance
+
+- *(tz)* Store s2cell zone indices as runs
+
+### 🧪 Testing
+
+- *(tz)* Check the partition and every backend against more places
+- *(tz)* Check the rtree backend and run it in CI
+
+
+
 ## [0.1.4] - 2026-11-02
 
 ### ⚙️ Miscellaneous Tasks
