@@ -10,6 +10,9 @@ mod geojson;
 #[cfg(feature = "s2cell")]
 #[path = "build/partition.rs"]
 mod partition;
+#[cfg(feature = "s2cell")]
+#[path = "build/s2_cells.rs"]
+mod s2_cells;
 
 #[cfg(feature = "basic")]
 #[path = "build/impl/basic.rs"]

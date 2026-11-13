@@ -9,7 +9,7 @@ pub const CELL_SHIFT: u32 = 34;
 ///
 /// Cells are stored as S2 CellID values shifted right by [`CELL_SHIFT`] (level still
 /// encoded via S2's sentinel bit), sorted in ascending order. The parallel `tz_indices`
-/// vec maps each cell to a timezone index into `names`. Lookup walks up the S2 ancestor
+/// vec maps each cell to its zones (see [`super::zones`]). Lookup walks up the S2 ancestor
 /// chain from a leaf cell, doing a binary search at each level until the one stored cell is found.
 #[derive(Serialize, Deserialize, Debug)]
 pub struct S2StorageBackend {
@@ -17,12 +17,18 @@ pub struct S2StorageBackend {
     /// Serialised as deltas, which keeps the varints to a byte or two each.
     #[serde(with = "delta")]
     pub cell_ids: Vec<u32>,
-    /// Timezone index for each cell (parallel to cell_ids).
-    /// Serialised as runs of one zone, which neighbouring cells mostly share.
+    /// Zone index for each cell (parallel to cell_ids).
     #[serde(with = "runs")]
     pub tz_indices: Vec<u16>,
-    /// Timezone names, indexed by values in tz_indices.
     pub names: Vec<TimeZoneName>,
+    /// Sorted zones of each place where timezone polygons overlap.
+    pub overlaps: Vec<Vec<u16>>,
+}
+
+impl S2StorageBackend {
+    pub fn zones(&self, pos: usize) -> &[u16] {
+        super::zones(&self.tz_indices[pos], self.names.len(), &self.overlaps)
+    }
 }
 
 mod delta {
@@ -44,16 +50,13 @@ mod delta {
     }
 }
 
-/// Each run of one zone is a varint `len << 2 | tag`. Tags 0–2 reuse the zone
-/// of the 2nd–4th most recent run, as a border mostly alternates two zones;
-/// [`runs::ESCAPE`] puts the zone itself in the next element.
+/// Runs of one zone as varints `len << 2 | tag`: tags 0–2 reuse a recent run's zone, `ESCAPE` is followed by the zone.
 mod runs {
     use serde::de::Error;
     use serde::{Deserialize, Deserializer, Serializer};
 
     pub const ESCAPE: u32 = 3;
 
-    /// Moves `zone` to the front of the most recent run zones.
     fn touch(recent: &mut Vec<u16>, zone: u16) {
         recent.retain(|z| *z != zone);
         recent.insert(0, zone);

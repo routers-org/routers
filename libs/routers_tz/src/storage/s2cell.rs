@@ -38,13 +38,14 @@ impl TimezoneResolver for S2CellStorage {
         let ll = LatLng::from_degrees(center.y, center.x);
         let leaf = CellID::from(&ll);
 
-        // Cells partition the globe, so the first stored ancestor is the only one.
         let timezones = (MIN_LEVEL..=MAX_LEVEL)
             .rev()
             .map(|level| (leaf.parent(level).0 >> CELL_SHIFT) as u32)
             .find_map(|ancestor| self.backend.cell_ids.binary_search(&ancestor).ok())
-            .and_then(|pos| crate::generated::s2cell::zone(self.backend.tz_indices[pos] as usize))
-            .into_iter()
+            .map(|pos| self.backend.zones(pos))
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|&zone| crate::generated::s2cell::zone(zone as usize))
             .collect::<Vec<_>>();
 
         match timezones[..] {

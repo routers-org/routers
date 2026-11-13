@@ -22,8 +22,7 @@ impl Backend<'_> {
         PathBuf::from(PREBUILT_DIR).join(format!("{}_timezone_data.postcard.bin", self.module))
     }
 
-    /// The pre-built file *is* the cache: it is fresh when newer than the source
-    /// geojson. Touch the geojson to rebuild after changing a backend's builder.
+    /// Touch the geojson to rebuild after changing a backend's builder.
     pub fn is_fresh(&self) -> bool {
         let path = self.data_path();
         let modified = |path: &std::path::Path| fs::metadata(path).and_then(|m| m.modified()).ok();
@@ -31,7 +30,11 @@ impl Backend<'_> {
             .zip(modified(crate::geojson::geojson_path().as_ref()))
             .is_some_and(|(built, source)| built >= source);
         if fresh {
-            eprintln!("[{}] pre-built {} is fresh, skipping recompute", self.module, path.display());
+            eprintln!(
+                "[{}] pre-built {} is fresh, skipping recompute",
+                self.module,
+                path.display()
+            );
         }
         fresh
     }
