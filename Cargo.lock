@@ -7669,6 +7669,7 @@ dependencies = [
  "geo-index",
  "jiff",
  "ouroboros",
+ "postcard",
  "serde",
 ]
 
