@@ -7653,7 +7653,6 @@ dependencies = [
  "geo",
  "geo-index",
  "geojson",
- "itertools 0.14.0",
  "lazy_static",
  "postcard",
  "rayon",
@@ -7664,12 +7663,13 @@ dependencies = [
 
 [[package]]
 name = "routers_tz_types"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "geo",
  "geo-index",
  "jiff",
  "ouroboros",
+ "postcard",
  "serde",
 ]
 

@@ -7,6 +7,15 @@ pub type BoxError = Box<dyn core::error::Error>;
 mod codegen;
 #[path = "build/geojson.rs"]
 mod geojson;
+#[cfg(feature = "rtree")]
+#[path = "build/grid.rs"]
+mod grid;
+#[cfg(any(feature = "rtree", feature = "s2cell"))]
+#[path = "build/partition.rs"]
+mod partition;
+#[cfg(feature = "s2cell")]
+#[path = "build/s2_cells.rs"]
+mod s2_cells;
 
 #[cfg(feature = "basic")]
 #[path = "build/impl/basic.rs"]
