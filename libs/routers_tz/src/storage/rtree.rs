@@ -45,3 +45,27 @@ impl TimezoneResolver for RTreeStorage {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use geo_index::rtree::RTreeIndex;
+
+    #[test]
+    fn stored_boxes_are_disjoint_and_name_known_zones() {
+        let storage = crate::generated::rtree::storage();
+        let tree = storage.tree.borrow_this();
+        assert_eq!(tree.num_items() as usize, storage.zones.len());
+
+        let (zones, overlaps) = (storage.names.len(), &storage.overlaps);
+        super::super::assert_valid_indices(&storage.zones, zones, overlaps);
+
+        let leaves = tree.boxes_at_level(0).expect("tree has leaves");
+        for b in leaves.chunks_exact(4) {
+            let (x, y) = ((b[0] + b[2]) / 2.0, (b[1] + b[3]) / 2.0);
+            assert_eq!(
+                tree.search(x, y, x, y).len(),
+                1,
+                "boxes overlap at ({x}, {y})"
+            );
+        }
+    }
+}

@@ -75,13 +75,8 @@ mod tests {
                 .all(|w| w[0].range_max() < w[1].range_min())
         );
 
-        let indices = storage.names.len() + storage.overlaps.len();
-        assert!((storage.tz_indices.iter()).all(|&index| (index as usize) < indices));
-        assert!((storage.overlaps.iter()).all(|zones| {
-            zones.len() > 1
-                && zones.windows(2).all(|w| w[0] < w[1])
-                && (zones.iter()).all(|&zone| (zone as usize) < storage.names.len())
-        }));
+        let (zones, overlaps) = (storage.names.len(), &storage.overlaps);
+        super::super::assert_valid_indices(&storage.tz_indices, zones, overlaps);
     }
 
     #[test]

@@ -1,9 +1,11 @@
+#[path = "../build/grid.rs"]
+mod grid;
 #[path = "../build/partition.rs"]
 mod partition;
 #[path = "../build/s2_cells.rs"]
 mod s2_cells;
 
-use geo::{Contains, Coord, LineString, MultiPolygon, Point, Polygon, coord};
+use geo::{Contains, Coord, Intersects, LineString, MultiPolygon, Point, Polygon, Rect, coord};
 use partition::{ZoneSets, partition};
 use routers_tz_types::timezone::internal::{TimeZoneGeometry, TimeZoneName, TimezoneBuild};
 use s2::cellid::CellID;
@@ -88,9 +90,13 @@ fn samples(zones: &[TimezoneBuild], per_zone: usize) -> Vec<Coord> {
     (zones.iter())
         .flat_map(|zone| {
             let bounds = zone.geometry.0.bounding_rect().expect("zone has bounds");
-            let (min, max) = (bounds.min() - coord! { x: 1.0, y: 1.0 }, bounds.max() + coord! { x: 1.0, y: 1.0 });
+            let margin = coord! { x: 1.0, y: 1.0 };
+            let (min, max) = (bounds.min() - margin, bounds.max() + margin);
             (0..per_zone)
-                .map(|_| coord! { x: min.x + unit() * (max.x - min.x), y: (min.y + unit() * (max.y - min.y)).clamp(-89.99, 89.99) })
+                .map(|_| {
+                    let y = min.y + unit() * (max.y - min.y);
+                    coord! { x: min.x + unit() * (max.x - min.x), y: y.clamp(-89.99, 89.99) }
+                })
                 .collect::<Vec<_>>()
         })
         .collect()
@@ -167,10 +173,8 @@ fn s2_cells_are_disjoint_with_sorted_zones() {
     );
 }
 
-#[test]
-fn s2_cells_hold_overlaps_enclaves_and_both_sides_of_the_antimeridian() {
-    let cells = s2_partition();
-    let at = |x, y| s2_lookup(&cells, coord! { x: x, y: y });
+fn assert_spot_checks(lookup: impl Fn(Coord) -> Option<Vec<u16>>) {
+    let at = |x, y| lookup(coord! { x: x, y: y });
     assert_eq!(at(17.5, 7.5), Some(vec![1, 6]));
     assert_eq!(at(5.0, 5.0), Some(vec![2]));
     assert_eq!(at(177.5, -15.0), Some(vec![3]));
@@ -178,6 +182,91 @@ fn s2_cells_hold_overlaps_enclaves_and_both_sides_of_the_antimeridian() {
     assert_eq!(at(-90.0, -70.0), Some(vec![4]));
     assert_eq!(at(-45.0, -70.0), Some(vec![5]));
     assert_eq!(at(90.0, 45.0), None);
+}
+
+#[test]
+fn s2_cells_hold_overlaps_enclaves_and_both_sides_of_the_antimeridian() {
+    let cells = s2_partition();
+    assert_spot_checks(|at| s2_lookup(&cells, at));
+}
+
+fn grid_partition() -> Vec<(Rect, Vec<u16>)> {
+    let zones = zones();
+    let mut sets = ZoneSets::new(zones.len());
+    let boxes = (partition(grid::roots(), &zones).into_iter())
+        .map(|(cell, set)| (cell.rect, sets.index(set)))
+        .collect();
+
+    (grid::merge(boxes).into_iter())
+        .map(|(rect, index)| {
+            let set = (index as usize).checked_sub(zones.len());
+            (
+                rect,
+                set.map_or(vec![index], |set| sets.overlaps[set].clone()),
+            )
+        })
+        .collect()
+}
+
+fn grid_lookup(boxes: &[(Rect, Vec<u16>)], at: Coord) -> Option<Vec<u16>> {
+    (boxes.iter())
+        .find(|(rect, _)| rect.intersects(&at))
+        .map(|(_, zones)| zones.clone())
+}
+
+#[test]
+fn grid_boxes_match_exact_containment() {
+    let zones = zones();
+    let boxes = grid_partition();
+    let checked = assert_matches_truth(&zones, |at| grid_lookup(&boxes, at), 0.03);
+    assert!(
+        checked > 5000,
+        "only {checked} samples were away from a border"
+    );
+}
+
+#[test]
+fn grid_boxes_are_disjoint() {
+    let mut boxes = grid_partition();
+    boxes.sort_unstable_by(|(a, _), (b, _)| a.min().x.total_cmp(&b.min().x));
+    for (i, (a, _)) in boxes.iter().enumerate() {
+        let overlapping = (boxes[i + 1..].iter())
+            .take_while(|(b, _)| b.min().x < a.max().x)
+            .find(|(b, _)| b.min().y < a.max().y && a.min().y < b.max().y);
+        assert!(overlapping.is_none(), "{a:?} overlaps {overlapping:?}");
+    }
+}
+
+#[test]
+fn grid_boxes_hold_overlaps_enclaves_and_both_sides_of_the_antimeridian() {
+    let boxes = grid_partition();
+    assert_spot_checks(|at| grid_lookup(&boxes, at));
+}
+
+#[test]
+fn merge_joins_same_index_boxes_that_share_a_whole_side() {
+    let rect = |x0, y0, x1, y1| Rect::new(coord! { x: x0, y: y0 }, coord! { x: x1, y: y1 });
+    let boxes = vec![
+        (rect(0.0, 0.0, 1.0, 1.0), 1),
+        (rect(1.0, 0.0, 2.0, 1.0), 1),
+        (rect(0.0, 1.0, 1.0, 2.0), 1),
+        (rect(1.0, 1.0, 2.0, 2.0), 1),
+        (rect(2.0, 0.0, 3.0, 2.0), 2),
+        (rect(5.0, 0.0, 6.0, 1.0), 1),
+        (rect(6.0, 0.0, 7.0, 2.0), 1),
+    ];
+
+    let mut merged = grid::merge(boxes);
+    merged.sort_unstable_by(|(a, _), (b, _)| a.min().x.total_cmp(&b.min().x));
+    assert_eq!(
+        merged,
+        vec![
+            (rect(0.0, 0.0, 2.0, 2.0), 1),
+            (rect(2.0, 0.0, 3.0, 2.0), 2),
+            (rect(5.0, 0.0, 6.0, 1.0), 1),
+            (rect(6.0, 0.0, 7.0, 2.0), 1),
+        ]
+    );
 }
 
 #[test]

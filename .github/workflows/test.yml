@@ -100,3 +100,6 @@ jobs:
 
       - name: 🧪 Test
         run: cargo nextest run
+
+      - name: 🧪 Test timezone backends
+        run: cargo nextest run -p routers_tz --features rtree

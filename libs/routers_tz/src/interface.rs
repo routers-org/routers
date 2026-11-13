@@ -186,4 +186,42 @@ mod tests {
             (35.2137, 31.7683, &["Asia/Jerusalem"]),
         ]);
     }
+
+    #[test]
+    #[cfg(all(feature = "rtree", feature = "s2cell"))]
+    fn backends_agree_inland() {
+        let names = |resolver: &Resolver, x: f64, y: f64| {
+            let found = resolver.search(&point! { x: x, y: y }.bounding_rect());
+            let mut names: Vec<String> = found
+                .map(|zones| zones.iter().map(|z| z.name().to_string()).collect())
+                .unwrap_or_default();
+            names.sort_unstable();
+            names
+        };
+        let rtree = RTREE.get().expect("initialised");
+        let s2cell = S2CELL.get().expect("initialised");
+
+        // (min lng, min lat, max lng, max lat) of inland areas crossed by many borders.
+        let areas = [
+            (-104.0, 33.0, -84.0, 46.0),
+            (2.0, 44.0, 24.0, 53.0),
+            (135.0, -36.0, 150.0, -26.0),
+            (30.0, 48.0, 60.0, 60.0),
+            (-60.0, -20.0, -45.0, -5.0),
+            (75.0, 20.0, 85.0, 28.0),
+            (95.0, 25.0, 115.0, 40.0),
+        ];
+        let (mut total, mut differ) = (0, 0);
+        for (x0, y0, x1, y1) in areas {
+            for i in 0..200 {
+                for j in 0..100 {
+                    let x = x0 + (x1 - x0) * (i as f64 + 0.37) / 200.0;
+                    let y = y0 + (y1 - y0) * (j as f64 + 0.61) / 100.0;
+                    total += 1;
+                    differ += usize::from(names(rtree, x, y) != names(s2cell, x, y));
+                }
+            }
+        }
+        assert!(differ * 100 < total, "{differ} of {total} points differ");
+    }
 }
