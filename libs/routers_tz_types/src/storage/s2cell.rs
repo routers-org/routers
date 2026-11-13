@@ -1,7 +1,7 @@
 use crate::timezone::internal::TimeZoneName;
 use serde::{Deserialize, Serialize};
 
-/// Bits dropped from a raw S2 CellID. The covering stops at level 13, so the
+/// Bits dropped from a raw S2 CellID. The partition stops at level 13, so the
 /// low 34 bits (below the level-13 sentinel) are always zero.
 pub const CELL_SHIFT: u32 = 34;
 
@@ -10,10 +10,10 @@ pub const CELL_SHIFT: u32 = 34;
 /// Cells are stored as S2 CellID values shifted right by [`CELL_SHIFT`] (level still
 /// encoded via S2's sentinel bit), sorted in ascending order. The parallel `tz_indices`
 /// vec maps each cell to a timezone index into `names`. Lookup walks up the S2 ancestor
-/// chain from a leaf cell, doing a binary search at each level until a stored cell is found.
+/// chain from a leaf cell, doing a binary search at each level until the one stored cell is found.
 #[derive(Serialize, Deserialize, Debug)]
 pub struct S2StorageBackend {
-    /// Shifted S2 CellID values from the covering, sorted ascending.
+    /// Shifted S2 CellID values of a partition with no overlaps, sorted ascending.
     /// Serialised as deltas, which keeps the varints to a byte or two each.
     #[serde(with = "delta")]
     pub cell_ids: Vec<u32>,

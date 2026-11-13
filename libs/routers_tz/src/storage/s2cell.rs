@@ -3,13 +3,11 @@ use routers_tz_types::storage::s2cell::{CELL_SHIFT, S2StorageBackend};
 use s2::cellid::CellID;
 use s2::latlng::LatLng;
 
-use itertools::Itertools;
-
 use crate::TimezoneResolver;
 use core::fmt::Debug;
 use routers_tz_types::TimeZone;
 
-const MIN_LEVEL: u64 = 1;
+const MIN_LEVEL: u64 = 0;
 const MAX_LEVEL: u64 = 13;
 
 pub struct S2CellStorage {
@@ -40,20 +38,13 @@ impl TimezoneResolver for S2CellStorage {
         let ll = LatLng::from_degrees(center.y, center.x);
         let leaf = CellID::from(&ll);
 
+        // Cells partition the globe, so the first stored ancestor is the only one.
         let timezones = (MIN_LEVEL..=MAX_LEVEL)
             .rev()
             .map(|level| (leaf.parent(level).0 >> CELL_SHIFT) as u32)
-            .filter_map(
-                |ancestor| match self.backend.cell_ids.binary_search(&ancestor) {
-                    Ok(pos) => Some(pos),
-                    _ => None,
-                },
-            )
-            .unique()
-            .filter_map(|pos| {
-                let tz_idx = self.backend.tz_indices[pos] as usize;
-                crate::generated::s2cell::zone(tz_idx)
-            })
+            .find_map(|ancestor| self.backend.cell_ids.binary_search(&ancestor).ok())
+            .and_then(|pos| crate::generated::s2cell::zone(self.backend.tz_indices[pos] as usize))
+            .into_iter()
             .collect::<Vec<_>>();
 
         match timezones[..] {
