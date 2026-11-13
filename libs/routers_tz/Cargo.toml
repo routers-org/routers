@@ -39,6 +39,8 @@ rayon = { workspace = true }
 
 [dev-dependencies]
 criterion = { workspace = true }
+rayon = { workspace = true }
+s2 = { workspace = true }
 
 [[bench]]
 name = "discovery"

@@ -57,6 +57,33 @@ impl TimezoneResolver for S2CellStorage {
 
 #[cfg(test)]
 mod tests {
+    use super::{CELL_SHIFT, MAX_LEVEL};
+    use s2::cellid::CellID;
+
+    #[test]
+    fn stored_cells_are_disjoint_and_name_known_zones() {
+        let storage = crate::generated::s2cell::storage();
+        let cells: Vec<CellID> = (storage.cell_ids.iter())
+            .map(|&id| CellID(u64::from(id) << CELL_SHIFT))
+            .collect();
+
+        assert_eq!(cells.len(), storage.tz_indices.len());
+        assert!((cells.iter()).all(|cell| cell.is_valid() && cell.level() <= MAX_LEVEL));
+        assert!(
+            cells
+                .windows(2)
+                .all(|w| w[0].range_max() < w[1].range_min())
+        );
+
+        let indices = storage.names.len() + storage.overlaps.len();
+        assert!((storage.tz_indices.iter()).all(|&index| (index as usize) < indices));
+        assert!((storage.overlaps.iter()).all(|zones| {
+            zones.len() > 1
+                && zones.windows(2).all(|w| w[0] < w[1])
+                && (zones.iter()).all(|&zone| (zone as usize) < storage.names.len())
+        }));
+    }
+
     #[test]
     fn every_stored_name_is_in_the_tz_database() {
         let names = &crate::generated::s2cell::storage().names;
