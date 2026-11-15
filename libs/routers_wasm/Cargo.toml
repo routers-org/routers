@@ -26,6 +26,7 @@ routers_fixtures = { workspace = true }
 wkt = { workspace = true }
 wasmtime = "50"
 wasmtime-wasi = "50"
+tokio = { workspace = true }
 
 [[example]]
 name = "wasmtime_host"

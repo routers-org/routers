@@ -167,6 +167,12 @@ debug = 0
 opt-level = 3
 lto = "fat"
 
+# The WebAssembly components (`just wasm-build`).
+[profile.wasm]
+inherits = "release"
+codegen-units = 1
+panic = "abort"
+
 [profile.dev]
 opt-level = 0
 lto = "off"
