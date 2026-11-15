@@ -9,6 +9,7 @@ use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use core::cmp::Ordering;
 use core::str::FromStr;
+use std::sync::{Mutex, PoisonError};
 
 use geo::{Coord, Distance, Haversine, LineString, Point};
 use routers_codec::osm::{OsmEdgeMetadata, OsmEntryId};
@@ -19,7 +20,7 @@ use routers_shard::{
     Geohash, GeohashStrategy, MultiShardNetwork, ShardedNetwork, ShardingStrategy,
 };
 use routers_transition::candidate::RoutedPath;
-use routers_transition::primitives::{MatchError, PredicateCache};
+use routers_transition::primitives::{DEFAULT_REACH_DISTANCE, MatchError, PredicateCache};
 use routers_transition::uom::si::f64::Length;
 use routers_transition::uom::si::length::meter;
 use routers_transition::weigh::SolverVariant;
@@ -32,10 +33,27 @@ pub const SHARD_PRECISION: u8 = 6;
 type Shard = ShardedNetwork<OsmEntryId, OsmEdgeMetadata, Geohash>;
 type Composite = MultiShardNetwork<OsmEntryId, OsmEdgeMetadata, Geohash>;
 
+type Runtime = <OsmEdgeMetadata as Metadata>::Runtime;
+
+/// Reachability searches the engine keeps between matches. Enough for a
+/// vehicle followed through a neighbourhood; past it the cache starts over.
+const CACHE_CAPACITY: usize = 512;
+
 /// A routing engine over a dynamic set of loaded shards.
 pub struct Engine {
     shards: BTreeMap<String, Arc<Shard>>,
     composite: Composite,
+    /// The reachability cache of the last match, kept for the next.
+    warm: Mutex<Option<Warm>>,
+}
+
+/// A reachability cache and what it was computed for. Its entries hold for
+/// one reach and one runtime over one set of shards, so it serves the next
+/// match only while all three are unchanged.
+struct Warm {
+    reach: Option<f64>,
+    runtime: Runtime,
+    cache: Arc<PredicateCache<Composite>>,
 }
 
 /// Resolved match tuning (the WIT `match-options` with defaults applied).
@@ -68,11 +86,48 @@ impl Engine {
         Engine {
             shards: BTreeMap::new(),
             composite: MultiShardNetwork::new(Vec::new()),
+            warm: Mutex::new(None),
         }
     }
 
     fn rebuild(&mut self) {
         self.composite = MultiShardNetwork::new(self.shards.values().cloned().collect());
+
+        // What is reachable depends on which shards are resident.
+        *self.warm.get_mut().unwrap_or_else(PoisonError::into_inner) = None;
+    }
+
+    /// The cache to match with at `reach` under `runtime`: the last match's,
+    /// if it was computed for the same, else a fresh one that replaces it.
+    ///
+    /// Matching repeatedly with the same options is the common case — a
+    /// driver following one vehicle — and a warm cache spares each match the
+    /// road searches the last one already ran.
+    fn cache(&self, reach: Option<f64>, runtime: &Runtime) -> Arc<PredicateCache<Composite>> {
+        let mut warm = self.warm.lock().unwrap_or_else(PoisonError::into_inner);
+
+        match &*warm {
+            Some(kept) if kept.reach == reach && &kept.runtime == runtime => {
+                Arc::clone(&kept.cache)
+            }
+            _ => {
+                // Bounded well below the default: this cache now lives as
+                // long as the shard set does, in a linear memory that never
+                // shrinks, and a long reach makes each entry large.
+                let distance = reach.map_or(DEFAULT_REACH_DISTANCE, Length::new::<meter>);
+                let cache = Arc::new(PredicateCache::with_reach_and_capacity(
+                    distance,
+                    CACHE_CAPACITY,
+                ));
+
+                *warm = Some(Warm {
+                    reach,
+                    runtime: runtime.clone(),
+                    cache: Arc::clone(&cache),
+                });
+                cache
+            }
+        }
     }
 
     /// Load a shard (`.shard.rt` bytes) under `id`, replacing any existing one,
@@ -129,15 +184,13 @@ impl Engine {
             .map(|transport_mode| TripContext { transport_mode });
         let runtime = <OsmEdgeMetadata as Metadata>::runtime(context);
 
-        let mut match_opts = MatchOptions::<Composite>::default()
+        let cache = self.cache(opts.reach_distance, &runtime);
+
+        let match_opts = MatchOptions::<Composite>::default()
             .with_runtime(runtime)
             .with_search_distance(opts.search_distance)
-            .with_solver(opts.solver);
-        if let Some(reach) = opts.reach_distance {
-            let cache =
-                PredicateCache::<Composite>::with_reach_distance(Length::new::<meter>(reach));
-            match_opts = match_opts.with_cache(Arc::new(cache));
-        }
+            .with_solver(opts.solver)
+            .with_cache(cache);
 
         self.composite
             .r#match(line, match_opts)
@@ -261,22 +314,47 @@ mod tests {
 
         assert_eq!(engine.loaded().len(), cells.len());
 
+        let options = || Options {
+            search_distance: Some(50.0),
+            reach_distance: Some(5000.0),
+            solver: SolverVariant::Fastest,
+            transport: None,
+        };
+        let shape = |routed: &RoutedPath<OsmEntryId, OsmEdgeMetadata>| {
+            routed
+                .interpolated
+                .iter()
+                .map(|element| element.point)
+                .collect::<Vec<_>>()
+        };
+
         let routed = engine
-            .match_trace(
-                &coords,
-                Options {
-                    search_distance: Some(50.0),
-                    reach_distance: Some(5000.0),
-                    solver: SolverVariant::Fastest,
-                    transport: None,
-                },
-            )
+            .match_trace(&coords, options())
             .expect("match succeeds across shards");
         assert!(!routed.discretized.is_empty());
+
+        // The second match is answered from the first's cache, and must not
+        // differ for it.
+        let runtime = <OsmEdgeMetadata as Metadata>::runtime(None);
+        let kept = engine.cache(Some(5000.0), &runtime);
+        let searched = kept.searches();
+        assert!(searched > 0, "the first match searched the network");
+
+        let again = engine
+            .match_trace(&coords, options())
+            .expect("match succeeds again");
+        assert_eq!(shape(&again), shape(&routed));
+        assert_eq!(kept.searches(), searched, "a warm match searches nothing");
+
+        // Other options are other reachability: they get a cache of their own.
+        assert!(!Arc::ptr_eq(&kept, &engine.cache(Some(2500.0), &runtime)));
 
         // Evicting a crossed shard drops the engine below full coverage.
         let first = cells.iter().next().unwrap().to_string();
         assert!(engine.unload_shard(&first));
         assert_eq!(engine.loaded().len(), cells.len() - 1);
+
+        // ...and what was reachable with it resident no longer holds.
+        assert!(engine.warm.lock().unwrap().is_none());
     }
 }

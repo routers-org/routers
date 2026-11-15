@@ -167,6 +167,14 @@ debug = 0
 opt-level = 3
 lto = "fat"
 
+# The WebAssembly components (`just wasm-build`). One codegen unit makes the
+# shipped bundle both smaller and faster. `panic = "abort"` states what the
+# wasm targets do regardless: a panic in a component traps.
+[profile.wasm]
+inherits = "release"
+codegen-units = 1
+panic = "abort"
+
 [profile.dev]
 opt-level = 0
 lto = "off"
