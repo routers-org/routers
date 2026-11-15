@@ -26,6 +26,9 @@ routers_fixtures = { workspace = true }
 wkt = { workspace = true }
 wasmtime = "50"
 wasmtime-wasi = "50"
+# Drives the host example: a component built for WASI 0.3 is only callable
+# through Wasmtime's async API.
+tokio = { workspace = true }
 
 [[example]]
 name = "wasmtime_host"

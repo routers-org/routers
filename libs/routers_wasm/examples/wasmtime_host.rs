@@ -8,11 +8,15 @@
 use std::fs;
 
 use wasmtime::component::{Component, Linker, ResourceAny};
-use wasmtime::{Engine, Store};
+use wasmtime::{Config, Engine, Store};
 use wasmtime_wasi::{ResourceTable, WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
 
 mod bindings {
-    wasmtime::component::bindgen!({ world: "routers", path: "wit" });
+    wasmtime::component::bindgen!({
+        world: "routers",
+        path: "wit",
+        exports: { default: async },
+    });
 }
 
 use bindings::exports::routers::routing::router::{Coordinate, MatchOptions};
@@ -39,7 +43,8 @@ fn coord(longitude: f64, latitude: f64) -> Coordinate {
     }
 }
 
-fn main() -> wasmtime::Result<()> {
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> wasmtime::Result<()> {
     let mut args = std::env::args().skip(1);
     let component_path = args
         .next()
@@ -48,10 +53,17 @@ fn main() -> wasmtime::Result<()> {
         .next()
         .unwrap_or_else(|| "libs/routers_wasm/dist/shards".to_string());
 
-    let engine = Engine::default();
+    // The component's std imports are WASI 0.2 or 0.3, by the target it was
+    // built for (`wasm32-wasip2`/`wasm32-wasip3`). Offering both lets one host
+    // run either; 0.3 is why everything below is async.
+    let mut config = Config::new();
+    config.wasm_component_model_async(true);
+    let engine = Engine::new(&config)?;
+
     let component = Component::from_file(&engine, &component_path)?;
     let mut linker = Linker::new(&engine);
-    wasmtime_wasi::p2::add_to_linker_sync(&mut linker)?;
+    wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
+    wasmtime_wasi::p3::add_to_linker(&mut linker)?;
     let mut store = Store::new(
         &engine,
         Host {
@@ -60,9 +72,9 @@ fn main() -> wasmtime::Result<()> {
         },
     );
 
-    let world = bindings::Routers::instantiate(&mut store, &component, &linker)?;
+    let world = bindings::Routers::instantiate_async(&mut store, &component, &linker).await?;
     let router = world.routers_routing_router();
-    let handle: ResourceAny = router.engine().call_constructor(&mut store)?;
+    let handle: ResourceAny = router.engine().call_constructor(&mut store).await?;
 
     // Load every `{id}.shard.rt` in the directory.
     let mut loaded = 0;
@@ -80,13 +92,17 @@ fn main() -> wasmtime::Result<()> {
         let bytes = fs::read(&path)?;
         router
             .engine()
-            .call_load_shard(&mut store, handle, &id, &bytes)?
+            .call_load_shard(&mut store, handle, &id, &bytes)
+            .await?
             .map_err(|e| wasmtime::Error::msg(format!("load-shard {id}: {e:?}")))?;
         loaded += 1;
     }
     println!(
         "loaded {loaded} shards: {:?}",
-        router.engine().call_loaded_shards(&mut store, handle)?
+        router
+            .engine()
+            .call_loaded_shards(&mut store, handle)
+            .await?
     );
 
     // Match a trace over the loaded shards.
@@ -106,7 +122,8 @@ fn main() -> wasmtime::Result<()> {
     };
     let matched = router
         .engine()
-        .call_match(&mut store, handle, &trace, options)?
+        .call_match(&mut store, handle, &trace, options)
+        .await?
         .map_err(|e| wasmtime::Error::msg(format!("match failed: {e:?}")))?;
     println!("match: {} discretized points", matched.discretized.len());
 

@@ -7720,6 +7720,7 @@ dependencies = [
  "routers_network",
  "routers_shard",
  "routers_transition",
+ "tokio",
  "wasmtime",
  "wasmtime-wasi",
  "wit-bindgen 0.46.0",

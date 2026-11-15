@@ -36,6 +36,7 @@
           fenixPkgs.targets.wasm32-unknown-unknown.stable.rust-std
           fenixPkgs.targets.wasm32-wasip1.stable.rust-std
           fenixPkgs.targets.wasm32-wasip2.stable.rust-std
+          fenixPkgs.targets.wasm32-wasip3.stable.rust-std
         ];
 
         # Linked by openssl-sys/aws-lc-sys, dlopen'd by eframe in routers_viewer.

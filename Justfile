@@ -20,7 +20,9 @@ bench-review:
 
 jco := "pnpm dlx @bytecodealliance/jco@1.32"
 
-# The WASI target the components are built for.
+# The WASI target the components are built for. `wasm32-wasip3` also builds
+# (`just wasm_target=wasm32-wasip3 wasm-build`) and runs under Wasmtime, but is
+# not what ships: see "WASI 0.3" in libs/routers_wasm/README.md.
 wasm_target := "wasm32-wasip2"
 wasm_out := "target" / wasm_target / "wasm"
 
