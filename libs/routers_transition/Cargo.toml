@@ -60,6 +60,10 @@ default = ["parallel"]
 # rayon on the matching hot path; off = single-threaded (e.g. wasm32).
 parallel = ["dep:rayon"]
 
+# Debug-level spans over the matching pipeline (generate, solve, weigh,
+# viterbi, collapse). Compiled out entirely when off.
+tracing = ["dep:tracing", "routers_trellis/tracing", "routers_network/tracing"]
+
 # Keep published feature names after removing unused optional dependencies.
 routers_shard = []
 opentelemetry = []

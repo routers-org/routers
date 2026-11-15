@@ -10,7 +10,9 @@ license = "GPL-3.0-or-later"
 routers_codec = { workspace = true, features = ["osm"] }
 routers_network = { workspace = true }
 routers_shard = { workspace = true }
-routers_transition = { workspace = true }
+# `tracing`: debug-level spans inside a solve (weigh, viterbi, collapse), under
+# the engine's own; filtered out unless `RUST_LOG` asks for them.
+routers_transition = { workspace = true, features = ["tracing"] }
 schema = { workspace = true }
 
 # Logging & Telemetry

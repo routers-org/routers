@@ -140,6 +140,10 @@ where
     /// An observation with no road candidate within the generator's search
     /// radius is rejected ([`UnanchoredError`]) and leaves the trip unchanged,
     /// so the caller may drop or retry it.
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(level = "debug", name = "generate", skip_all, fields(points = 1))
+    )]
     pub fn push(&self, trip: &mut Trip<N::Entry>, origin: Origin) -> Result<LayerId, MatchError> {
         let layer = trip.next_id();
         let candidates = self.generator.candidates(&origin.point, layer);
@@ -163,6 +167,15 @@ where
     /// Any observation with no candidate rejects the whole batch
     /// ([`UnanchoredError`] reporting *every* such point) and leaves the trip
     /// unchanged.
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(
+            level = "debug",
+            name = "generate",
+            skip_all,
+            fields(points = origins.len())
+        )
+    )]
     pub fn extend(&self, trip: &mut Trip<N::Entry>, origins: &[Origin]) -> Result<(), MatchError> {
         let first_layer = trip.next_id();
 
@@ -197,6 +210,10 @@ where
     ///
     /// Already-resolved boundaries are never recomputed, so re-solving after an
     /// append weighs only the new boundaries (plus a µs-scale full DP pass).
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(level = "debug", skip_all, fields(layers = trip.layers()))
+    )]
     pub fn solve<'b>(&self, trip: &'b mut Trip<N::Entry>) -> Result<&'b Path, MatchError> {
         let mut trellis = match trip.take_state() {
             TripState::Empty => return Err(TrellisError::Empty.into()),
@@ -334,6 +351,10 @@ where
 
     /// Solve (if pending) and derive the collapse: total cost, the chosen
     /// candidate per layer, and each hop's routed geometry.
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(level = "debug", skip_all, fields(layers = trip.layers()))
+    )]
     fn collapse(&self, trip: &mut Trip<N::Entry>) -> Result<Collapse<N::Entry>, MatchError> {
         let path = self.solve(trip)?;
         let cost = path.cost;

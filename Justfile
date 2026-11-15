@@ -16,6 +16,23 @@ bench:
 bench-review:
     git diff benches/snapshots/
 
+# Where a match spends its time, phase by phase (`just phases cold` for a cold cache).
+phases *ARGS:
+    cargo run --release --example match_phases -- {{ ARGS }}
+
+# Sample a benchmark with `perf` and print its hottest functions, e.g.
+# `just profile "match: LAX_LYNWOOD"`. Built with the `profiling` profile
+# (release + debug info); user-space samples only, so it needs no privileges.
+profile FILTER="match: LAX_LYNWOOD" SECONDS="8":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    exe=$(cargo bench -p routers --bench map_match --profile profiling --no-run --message-format=json \
+      | sed -n 's/.*"executable":"\([^"]*map_match[^"]*\)".*/\1/p' | tail -n1)
+    INSTA_UPDATE=no perf record -e cpu-clock:u -F 2000 -g -o target/profile.perf -- \
+      "$exe" --bench --profile-time {{ SECONDS }} "{{ FILTER }}" > /dev/null
+    perf report -i target/profile.perf --no-children --percent-limit 1 --stdio -g none | grep -v '^#' | grep -v '^$'
+    echo "full profile: perf report -i target/profile.perf"
+
 # === WebAssembly components (libs/routers_wasm, libs/routers_tz_wasm) ===
 
 jco := "pnpm dlx @bytecodealliance/jco@1.32"

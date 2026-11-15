@@ -156,6 +156,18 @@ where
     /// A boundary nothing could bridge is left `Pending` rather than
     /// resolved-but-empty: an unresolved boundary is exactly how the trellis
     /// records a gap (see [`Trellis::disconnections`]).
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(
+            level = "debug",
+            skip_all,
+            fields(
+                boundaries = tracing::field::Empty,
+                hops = tracing::field::Empty,
+                searches = tracing::field::Empty
+            )
+        )
+    )]
     fn weigh<Emmis, Trans>(
         &self,
         ctx: &RoutingContext<N>,
@@ -183,6 +195,9 @@ where
             })
             .collect::<Vec<_>>();
 
+        #[cfg(feature = "tracing")]
+        let searches = self.cache().searches();
+
         // Through `weigh_boundary`, so that a weigher which overrides it is
         // the one that weighs.
         let weigh = |&(boundary, _, _): &(LayerId, _, _)| {
@@ -205,6 +220,23 @@ where
             } else {
                 let weighed = pending.iter().map(weigh).collect::<Vec<_>>();
             }
+        }
+
+        // What this pass cost, and why: a warm pass searches nothing, so
+        // `searches` is what tells a slow solve apart from a cold one. The
+        // count is the cache's, so concurrent matches sharing it overlap.
+        #[cfg(feature = "tracing")]
+        {
+            let span = tracing::Span::current();
+            span.record("boundaries", pending.len());
+            span.record(
+                "hops",
+                pending
+                    .iter()
+                    .map(|(_, from_layer, to_layer)| from_layer.len() * to_layer.len())
+                    .sum::<usize>(),
+            );
+            span.record("searches", self.cache().searches() - searches);
         }
 
         for (boundary, matrix) in weighed {
