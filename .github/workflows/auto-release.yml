@@ -264,11 +264,11 @@ jobs:
         run: buf generate
 
       - name: Build component
-        run: cargo build --release -p "$CRATE" --target wasm32-wasip2
+        run: cargo build --profile wasm -p "$CRATE" --target wasm32-wasip2
 
       - name: Optimise component (wasm-opt -Oz)
         run: |
-          $JCO opt "../../target/wasm32-wasip2/release/$CRATE.wasm" \
+          $JCO opt "../../target/wasm32-wasip2/wasm/$CRATE.wasm" \
             -o "$TAG.component.wasm" -- -Oz
 
       - name: Transpile to JS
