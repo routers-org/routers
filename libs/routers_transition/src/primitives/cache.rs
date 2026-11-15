@@ -51,10 +51,9 @@ mod backing {
 /// Entries retained before the cache starts evicting.
 pub const DEFAULT_CACHE_CAPACITY: usize = 8_192;
 
-/// Entries a cache built to be kept has room for from the start. One begun
-/// at nothing evicts from full buckets all the way up, and each eviction is a
-/// search to run again. A cache made for a single match starts empty instead:
-/// it is built and dropped too often to be worth the room.
+/// Entries a cache has room for from the start. One begun at nothing evicts
+/// from full buckets all the way up, and each eviction is a search to run
+/// again.
 const INITIAL_CACHE_CAPACITY: usize = 1_024;
 
 /// `HashCache` would round up and allocate too much, so enforced explicitly.
@@ -201,24 +200,20 @@ where
     /// The only way to build one, so no construction site can quietly
     /// reintroduce an unbounded map — which is how the bound was lost before.
     pub(crate) fn with_metadata(metadata: Meta) -> Self {
-        Self::sized(DEFAULT_CACHE_CAPACITY, 0, metadata)
+        Self::with_capacity_and_metadata(DEFAULT_CACHE_CAPACITY, metadata)
     }
 
-    /// A cache given its bound is one meant to be kept, so it starts with
-    /// room: see [`INITIAL_CACHE_CAPACITY`].
     pub(crate) fn with_capacity_and_metadata(capacity: usize, metadata: Meta) -> Self {
-        Self::sized(capacity, capacity.min(INITIAL_CACHE_CAPACITY), metadata)
-    }
-
-    /// A cache bounded at `capacity` entries, with room for `initial` from
-    /// the start.
-    fn sized(capacity: usize, initial: usize, metadata: Meta) -> Self {
         assert!(
             capacity.is_power_of_two(),
             "cache capacity must be a nonzero power of two"
         );
         Self {
-            map: Backing::with_capacity_and_hasher(initial, capacity, FxBuildHasher),
+            map: Backing::with_capacity_and_hasher(
+                capacity.min(INITIAL_CACHE_CAPACITY),
+                capacity,
+                FxBuildHasher::default(),
+            ),
             metadata,
         }
     }
@@ -420,15 +415,14 @@ mod predicate {
     {
         /// `capacity` bounds the geometry kept, and is that of the
         /// reachability maps it sits beside.
-        fn new(
-            successors: SuccessorsCache<N>,
-            reach: Length,
-            capacity: usize,
-            initial: usize,
-        ) -> Self {
+        fn new(successors: SuccessorsCache<N>, reach: Length, capacity: usize) -> Self {
             Self {
                 successors,
-                geometry: Backing::with_capacity_and_hasher(initial, capacity, FxBuildHasher),
+                geometry: Backing::with_capacity_and_hasher(
+                    capacity.min(INITIAL_CACHE_CAPACITY),
+                    capacity,
+                    FxBuildHasher,
+                ),
                 reach,
                 searches: AtomicU64::new(0),
                 capacity,
@@ -448,7 +442,6 @@ mod predicate {
                 SuccessorsCache::default(),
                 DEFAULT_REACH_DISTANCE,
                 DEFAULT_CACHE_CAPACITY,
-                0,
             )
         }
     }
@@ -508,7 +501,6 @@ mod predicate {
                     SuccessorsCache::with_cache_capacity(successors),
                     DEFAULT_REACH_DISTANCE,
                     predicates,
-                    predicates.min(INITIAL_CACHE_CAPACITY),
                 ),
             )))
         }
@@ -523,7 +515,6 @@ mod predicate {
                 SuccessorsCache::default(),
                 reach_distance,
                 DEFAULT_CACHE_CAPACITY,
-                0,
             ))))
         }
 
@@ -549,7 +540,6 @@ mod predicate {
                     SuccessorsCache::with_cache_capacity(capacity),
                     reach_distance,
                     capacity,
-                    capacity.min(INITIAL_CACHE_CAPACITY),
                 ),
             )))
         }
@@ -580,7 +570,6 @@ mod predicate {
                 SuccessorsCache::default(),
                 reach_distance,
                 DEFAULT_CACHE_CAPACITY,
-                0,
             );
             metadata.adaptive = Some(Adaptive { factor, ceiling });
 
@@ -625,15 +614,14 @@ mod predicate {
                     adaptive.ceiling
                 };
 
-                let mut wider = PredicateMetadata::new(
-                    metadata.successors.clone(),
-                    reach,
-                    metadata.capacity,
-                    0,
-                );
+                let mut wider =
+                    PredicateMetadata::new(metadata.successors.clone(), reach, metadata.capacity);
                 wider.adaptive = Some(adaptive);
 
-                LockedMap(Arc::new(CacheMap::sized(metadata.capacity, 0, wider)))
+                LockedMap(Arc::new(CacheMap::with_capacity_and_metadata(
+                    metadata.capacity,
+                    wider,
+                )))
             })
         }
 
