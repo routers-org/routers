@@ -1,13 +1,6 @@
-//! The batched form of [`Weigher::hop`]: weighing a whole boundary at once.
-//!
-//! Little of a hop's geometry is unique to its pair. A candidate's heading,
-//! tail and joint belong to the candidate ([`Anchor`]); the length, bearing
-//! and turn of each road segment belong to the search tree it lies on
-//! ([`Tree`]), which every hop from the same root shares — in this boundary,
-//! the next, and every later match against the same cache.
-//!
-//! The arithmetic is unchanged: the same values, combined in the same order,
-//! so the weights are bit-for-bit those of [`Weigher::hop`].
+//! The batched form of [`Weigher::hop`]: weighing a whole boundary at once,
+//! from geometry its hops share. The weights are bit-for-bit those of
+//! [`Weigher::hop`].
 
 use std::sync::{PoisonError, RwLockReadGuard};
 
@@ -35,19 +28,17 @@ use crate::{
 /// The geometry of a candidate that every hop through it shares.
 #[derive(Clone, Copy)]
 struct Anchor {
-    /// The candidate's position, ready to be measured against the positions
-    /// of the candidates across the boundary.
+    /// The candidate's position.
     station: Station,
     /// Bearing of the candidate's edge; see [`Candidate::edge_heading`].
     heading: Option<f64>,
     /// The joint between the candidate's position and the end of its edge
-    /// that a hop passes through. Its length is the virtual tail.
+    /// that a hop passes through.
     joint: Option<Joint>,
 }
 
 impl Anchor {
-    /// A candidate being left: it joins the route at its edge's target,
-    /// turning off its edge onto the joint.
+    /// A candidate being left: it joins the route at its edge's target.
     fn departing<N: Network>(map: &N, candidate: &Candidate<N::Entry>) -> Self {
         let (source, target) = endpoints(map, candidate);
         let heading = edge_heading(source, target);
@@ -69,8 +60,7 @@ impl Anchor {
         }
     }
 
-    /// A candidate being arrived at: the route joins it at its edge's source,
-    /// turning off the joint onto its edge.
+    /// A candidate being arrived at: the route joins it at its edge's source.
     fn arriving<N: Network>(map: &N, candidate: &Candidate<N::Entry>) -> Self {
         let (source, target) = endpoints(map, candidate);
         let heading = edge_heading(source, target);
@@ -112,16 +102,14 @@ fn edge_heading(source: Option<Point>, target: Option<Point>) -> Option<f64> {
     Segment::between(source?, target?).heading()
 }
 
-/// The buffers a [`Departure`] works in. They outlive it, so that a run of
-/// departures allocates for its widest, not once each.
+/// The buffers a [`Departure`] works in, reused across departures.
 struct Scratch<E: Entry> {
     /// Where each candidate of the next layer sits in the departure's tree.
     leaves: Vec<Leaf>,
     /// The part of the tree the hops to `leaves` cross.
     span: Span,
-    /// The turns taken from the current source to each step of `span`. Empty
-    /// when they could not be carried there, for want of a span or of the
-    /// source's joint onto the tree.
+    /// The turns taken from the current source to each step of `span`; empty
+    /// when they could not be carried.
     turns: Vec<Turns>,
 
     /// One hop's path, where it has to be gathered.
@@ -141,8 +129,7 @@ impl<E: Entry> Default for Scratch<E> {
     }
 }
 
-/// Weighs the hops leaving one road node: every source candidate of a
-/// boundary whose edge ends there.
+/// Weighs the hops leaving one road node.
 struct Departure<'a, 's, N, W, Emmis, Trans>
 where
     N: Network,
@@ -154,11 +141,9 @@ where
     ctx: &'a RoutingContext<'a, N>,
     costing: &'a CostingStrategies<Emmis, Trans, N::Entry>,
 
-    /// The root's walked geometry. `None` when the map cannot place the
-    /// root; hops then fall back.
+    /// The root's walked geometry; `None` when the map cannot place the root.
     tree: Option<RwLockReadGuard<'a, Tree<N::Entry>>>,
-    /// Whether the strategy leaves the paths unwalked, so that their turns
-    /// are carried down the tree's span instead.
+    /// Whether turns are carried down the tree's span rather than walked.
     spanned: bool,
 
     scratch: &'s mut Scratch<N::Entry>,
@@ -204,8 +189,7 @@ where
         }
     }
 
-    /// One row of the boundary's matrix: `source`'s weight to each of
-    /// `to_layer`, `NO_EDGE` where absent.
+    /// One row of the boundary's matrix: `source`'s weight to each of `to_layer`.
     fn row(
         &mut self,
         source: &Candidate<N::Entry>,
@@ -225,9 +209,7 @@ where
         }
     }
 
-    /// Carry the turns of the source leaving by `departing` down the span,
-    /// so that each hop of its row finds the turns of its path, in path
-    /// order, waiting at its leaf.
+    /// Carry the turns of the source leaving by `departing` down the span.
     fn depart(&mut self, departing: &Anchor) {
         let Scratch { span, turns, .. } = &mut *self.scratch;
         turns.clear();
@@ -245,11 +227,8 @@ where
         }
     }
 
-    /// The hop to `leaf` as its summary, when the turns of the row's source
-    /// were [carried](Self::depart) there and `arriving` can close them.
-    ///
-    /// A hop ending on the root itself crosses no edge and is costed as a
-    /// path of no nodes, which has no summary of this kind.
+    /// The hop to `leaf` as its summary, when the source's turns were
+    /// [carried](Self::depart) there and `arriving` can close them.
     fn summary(
         &self,
         tree: &Tree<N::Entry>,
@@ -261,12 +240,10 @@ where
             return None;
         }
 
-        // No turns were carried anywhere unless the tree was spanned.
         let turns = self.scratch.turns.get(self.scratch.span.step(leaf)?)?;
         let joint = arriving.joint?;
 
-        // As `TransitionContext::lengths`: the road between the two edges,
-        // and each candidate's tail along its own.
+        // As `TransitionContext::lengths`.
         let lengths = departing
             .tail()
             .zip(arriving.tail())
@@ -306,9 +283,7 @@ where
                 Leaf::Unplaced => return self.fallback(source, target),
             };
 
-            // A strategy that does not walk the path is costed from the
-            // hop's summary: no nodes gathered, no context built around
-            // them.
+            // A strategy that does not walk the path is costed from the summary.
             if let Some(hop) = self.summary(tree, leaf, (source, departing), (target, arriving)) {
                 let cost = self.costing.transition.summarised_cost(&hop);
                 return Some(cost.min(MAX_WEIGHT));
@@ -318,9 +293,7 @@ where
                 let Scratch { links, nodes, .. } = &mut *self.scratch;
                 tree.path(leaf, links);
 
-                // A route that starts and ends on the same node crosses
-                // no edge, and so has no path at all — not a path of one
-                // node.
+                // A route that starts and ends on the same node has no path at all.
                 if links.len() < 2 {
                     links.clear();
                 }
@@ -360,8 +333,7 @@ where
         Some(self.costing.transition(context).min(MAX_WEIGHT))
     }
 
-    /// The pair-at-a-time hop, for the maps too irregular to share geometry
-    /// over (a routed node with no position).
+    /// The pair-at-a-time hop, for a routed node with no position.
     #[cold]
     fn fallback(&self, source: &Candidate<N::Entry>, target: &Candidate<N::Entry>) -> Option<u32> {
         self.weigher
@@ -369,10 +341,8 @@ where
     }
 }
 
-/// Find where each candidate of `to_layer` sits in the tree, measuring
-/// whatever part of the way there is new, and hand the tree back held for
-/// reading. A root weighed before is only read, so departures sharing it do
-/// not wait on one another.
+/// Find where each candidate of `to_layer` sits in the tree, extending it
+/// as needed, and hand the tree back held for reading.
 fn locate<'a, N>(
     geometry: &'a Geometry<N::Entry>,
     parents: &FxHashMap<N::Entry, N::Entry>,
@@ -404,11 +374,8 @@ where
     geometry.read().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// One boundary's dense row-major weight matrix, between `from_layer` and
-/// `to_layer`.
-///
-/// Sources are grouped by the road node their edge ends at, since those share
-/// a Dijkstra tree; groups weigh in parallel.
+/// One boundary's dense row-major weight matrix. Sources are grouped by
+/// the road node their edge ends at, since those share a search tree.
 pub(crate) fn weigh<N, W, Emmis, Trans>(
     weigher: &W,
     ctx: &RoutingContext<N>,
@@ -433,8 +400,7 @@ where
         .map(|target| Anchor::arriving(ctx.map, target))
         .collect::<Vec<_>>();
 
-    // Order rows by root so that each run of equal roots is one departure,
-    // then hand each run the matrix rows it owns.
+    // Order rows by root so that each run of equal roots is one departure.
     let mut order = (0..from_layer.len() as u32).collect::<Vec<_>>();
     order.sort_unstable_by_key(|&row| (from_layer[row as usize].edge.target, row));
 
@@ -442,8 +408,7 @@ where
         .chunk_by(|&a, &b| from_layer[a as usize].edge.target == from_layer[b as usize].edge.target)
         .collect::<Vec<_>>();
 
-    // One reach for the whole boundary: how far apart its two layers are
-    // decides how far any hop between them may route.
+    // One reach for the whole boundary.
     let cache = weigher.cache().reaching(from_layer, to_layer);
 
     let weigh = |scratch: &mut Scratch<N::Entry>, sources: &&[u32]| {
@@ -526,8 +491,7 @@ mod tests {
 
     const SIDE: i64 = 6;
 
-    /// A city-block grid, every street two-way, ~90 m between junctions —
-    /// so that hops turn corners, double back and share roots.
+    /// A city-block grid, every street two-way, ~90 m between junctions.
     fn grid() -> MockNetwork {
         let id = |row: i64, column: i64| row * SIDE + column + 1;
 
@@ -558,9 +522,7 @@ mod tests {
         builder.build()
     }
 
-    /// East along one street, north up another, then back west: straight
-    /// runs, right-angle turns, a U-turn's worth of heading change, and
-    /// consecutive points on one edge.
+    /// East along one street, north up another, then back west.
     fn wander() -> Vec<Origin> {
         [
             (-118.1497, 34.15005),
@@ -580,8 +542,7 @@ mod tests {
         .collect()
     }
 
-    /// The default transition cost, as a strategy that has not said whether
-    /// it walks the path — and so is handed every path whole.
+    /// The default transition cost, as a strategy that walks the path.
     struct Walking;
 
     impl<'a, E: Entry> Strategy<TransitionContext<'a, E>> for Walking {
@@ -591,7 +552,6 @@ mod tests {
         const BETA: f64 = 1.;
 
         fn calculate(&self, context: TransitionContext<'a, E>) -> Option<f64> {
-            // What a strategy that walks the path is owed: the path.
             assert_eq!(
                 context.optimal_path.linestring().0.len(),
                 context.map_path.len()
@@ -602,15 +562,12 @@ mod tests {
     }
 
     /// Weighing a boundary as a batch must cost every hop exactly as hopping
-    /// pair by pair does — on a cold cache and again once its geometry is
-    /// warm.
+    /// pair by pair does, cold and warm.
     fn matches_hop_by_hop<W: Weigher<MockNetwork> + Sync>(weigher: W) -> usize {
         costs_hop_by_hop(&weigher, DefaultTransitionCost) + costs_hop_by_hop(&weigher, Walking)
     }
 
-    /// As [`matches_hop_by_hop`], under one transition strategy: the paths
-    /// are summarised for one that does not walk them, and gathered for one
-    /// that does.
+    /// As [`matches_hop_by_hop`], under one transition strategy.
     fn costs_hop_by_hop<W, Trans>(weigher: &W, transition: Trans) -> usize
     where
         W: Weigher<MockNetwork> + Sync,
@@ -671,8 +628,7 @@ mod tests {
         matches_hop_by_hop(Selective::default().use_cache(cache));
     }
 
-    /// With too short a reach to cross the trip's corners, some targets lie
-    /// beyond it — and are absent from both, not costed by one.
+    /// With too short a reach, some targets are absent from both.
     #[test]
     fn a_short_reach_matches_hop_by_hop() {
         let short = || {
@@ -718,8 +674,7 @@ mod tests {
         }
     }
 
-    /// `weigh` must weigh through `weigh_boundary`: a weigher that overrides
-    /// it is otherwise ignored, without a word.
+    /// `weigh` must weigh through `weigh_boundary`, so an override is honoured.
     #[test]
     fn weighing_honours_an_overridden_boundary() {
         let map = grid();
@@ -749,8 +704,7 @@ mod tests {
         }
     }
 
-    /// A strategy that opts out of the path, and never says how to cost a
-    /// hop without it.
+    /// A strategy that opts out of the path without implementing `summarised`.
     struct Silent;
 
     impl<'a, E: Entry> Strategy<TransitionContext<'a, E>> for Silent {
@@ -765,7 +719,7 @@ mod tests {
         }
     }
 
-    /// ...which must fail loudly, not price every routed hop at the ceiling.
+    /// ...which must panic.
     #[test]
     #[should_panic(expected = "must implement `Strategy::summarised`")]
     fn opting_out_of_the_path_needs_a_summary() {

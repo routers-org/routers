@@ -224,8 +224,8 @@ fn analyse_cost3() {
     assert_relative_eq!(complexity, 0.80, max_relative = 0.1);
 }
 
-/// A road that runs straight, bends, doubles back, and passes two nodes
-/// less than a metre apart — which have no heading between them.
+/// A road that runs straight, bends, doubles back, and has two nodes under
+/// a metre apart.
 fn winding() -> Vec<geo::Point> {
     [
         (151.2001, -33.8701),
@@ -242,8 +242,7 @@ fn winding() -> Vec<geo::Point> {
     .collect()
 }
 
-/// A station's distance must be geo's Haversine distance to the bit, since
-/// the two are used interchangeably when costing a hop.
+/// A station's distance must equal geo's Haversine distance to the bit.
 #[test]
 fn station_distance_is_haversine() {
     use geo::{Distance, Haversine, Point};
@@ -268,9 +267,7 @@ fn station_distance_is_haversine() {
     }
 }
 
-/// Carrying a path's turns along it stride by stride — as a boundary does
-/// down a tree — must give, to the bit, the complexity of the path taken
-/// whole from its nodes.
+/// Turns carried stride by stride must give the whole path's complexity.
 #[test]
 fn carried_turns_are_the_paths() {
     let points = winding();
