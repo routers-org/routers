@@ -93,10 +93,6 @@ just wasm-e2e-wasmtime   # load the shard set from a native Wasmtime host + matc
 just wasm-e2e            # both
 ```
 
-The components build under the `wasm` cargo profile (`release` with one
-codegen unit), which makes the shipped bundle both smaller and faster than
-plain `--release`.
-
 On release, CI runs the same pipeline: the optimised component is attached to
 the GitHub release, and `@routers-org/router` is published to npm at the crate's
 version (bump `routers_wasm` to publish).
