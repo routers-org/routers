@@ -21,8 +21,7 @@ use routers_trellis::LayerId;
 
 use crate::candidate::Candidate;
 
-/// The longest input generated without the thread pool: a streaming window's
-/// worth of points.
+/// The longest input generated without the thread pool.
 #[cfg(feature = "parallel")]
 const SERIAL_POINTS: usize = 8;
 
@@ -44,8 +43,6 @@ pub trait LayerGeneration<E: Entry>: Send + Sync {
 
         cfg_if! {
             if #[cfg(feature = "parallel")] {
-                // A handful of points is generated where it stands: handing
-                // them to the pool costs more than generating them does.
                 if input.len() <= SERIAL_POINTS {
                     input.iter().enumerate().map(layer).collect()
                 } else {
