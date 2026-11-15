@@ -12,8 +12,7 @@ type FxIndexMap<K, V> = IndexMap<K, V, BuildHasherDefault<FxHasher>>;
 
 type Cost = WeightAndDistance;
 
-/// A frontier entry. Ordered by `key` alone — the cost's [`repr`](Cost::repr),
-/// taken once when the entry is made rather than on every heap comparison.
+/// A frontier entry, ordered by `key`: the cost's [`repr`](Cost::repr).
 #[derive(Debug)]
 struct SmallestHolder {
     key: u32,
@@ -44,8 +43,7 @@ impl Ord for SmallestHolder {
     }
 }
 
-/// What is known of a discovered node: the node it was best reached from
-/// (as an index into the same map), and that route's cost and its `key`.
+/// A discovered node's best parent, by index, and the cost of that route.
 #[derive(Debug, Clone, Copy)]
 struct Reached {
     parent: u32,
