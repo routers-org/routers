@@ -1,23 +1,18 @@
-//! The walked part of a bounded-Dijkstra tree, with its road geometry.
-//!
-//! Costing a hop needs the length, bearing and turn of every road segment on
-//! its route. Hops from one root overlap heavily, so a [`Tree`] measures each
-//! segment the first time a hop crosses it and keeps the answer.
+//! The walked part of a bounded-Dijkstra tree, with its road geometry,
+//! measured the first time a hop crosses each segment.
 
 use routers_network::{Entry, Network, Node};
 use rustc_hash::FxHashMap;
 
 use crate::map_path::{Segment, Stride};
 
-/// One node of a [`Tree`]: where it is, which node it was reached from, and
-/// the geometry of the road travelled to get there.
+/// One node of a [`Tree`].
 #[derive(Debug)]
 pub(crate) struct Link<E: Entry> {
     pub(crate) node: Node<E>,
     /// The road segment from the parent, and the turn taken onto it.
     pub(crate) stride: Stride,
-    /// The most recent heading on the way here from the root, if any segment
-    /// has had one: what a child's turn is measured from.
+    /// The most recent heading on the way here from the root, if any.
     heading: Option<f64>,
     /// Metres of road from the root, summed in path order.
     pub(crate) length: f64,
@@ -35,8 +30,7 @@ pub(crate) enum Leaf {
 }
 
 /// The part of a [`Tree`] that the paths to some set of leaves cross: each
-/// link once, and never before the link it was reached from — so that what
-/// accumulates along a path can be carried down it and read off at a leaf.
+/// link once, and never before its parent.
 #[derive(Debug, Default)]
 pub(crate) struct Span {
     steps: Vec<Step>,
@@ -50,8 +44,7 @@ pub(crate) struct Span {
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Step {
     pub(crate) link: u32,
-    /// The step of the link this one was reached from: always an earlier
-    /// one.
+    /// The step of this link's parent: always an earlier one.
     pub(crate) parent: u32,
 }
 
@@ -78,10 +71,8 @@ impl Span {
 #[derive(Debug)]
 pub(crate) struct Tree<E: Entry> {
     links: Vec<Link<E>>,
-    /// Per link, the link it was reached from and how many links lie between
-    /// it and the root. Held apart from `links`, and small: walking a path
-    /// back to the root reads nothing else, so it should not have to pull a
-    /// whole link through the cache for each step.
+    /// Per link, its parent and depth. Held apart from `links` so that walking
+    /// a path to the root stays in cache.
     parents: Vec<u32>,
     depths: Vec<u32>,
     index: FxHashMap<E, u32>,
@@ -122,8 +113,8 @@ impl<E: Entry> Tree<E> {
         })
     }
 
-    /// Resolve `leaf`, extending the tree with whatever part of its path to
-    /// the root is not yet known. `parents` is the root's parent-pointer map.
+    /// Resolve `leaf`, extending the tree with the unknown part of its path to
+    /// the root. `parents` is the root's parent-pointer map.
     pub(crate) fn resolve<N>(&mut self, leaf: E, parents: &FxHashMap<E, E>, map: &N) -> Leaf
     where
         N: Network<Entry = E> + ?Sized,
@@ -174,8 +165,7 @@ impl<E: Entry> Tree<E> {
         Leaf::At(base)
     }
 
-    /// Remember everything still pending as `dead`, so that the next hop to
-    /// meet any of it stops at once.
+    /// Mark everything still pending as `dead`.
     fn abandon(&mut self, dead: Leaf) -> Leaf {
         let mark = match dead {
             Leaf::Unplaced => Self::UNPLACED,
@@ -190,10 +180,6 @@ impl<E: Entry> Tree<E> {
     }
 
     /// The links from the root down to `leaf`, inclusive.
-    ///
-    /// The path's length is known before it is walked, so it is written
-    /// back to front into place: a counted loop, with no growth checks and
-    /// no reversal after.
     pub(crate) fn path(&self, leaf: u32, into: &mut Vec<u32>) {
         into.clear();
         into.resize(self.depths[leaf as usize] as usize + 1, Self::ROOT);
@@ -207,8 +193,6 @@ impl<E: Entry> Tree<E> {
 
     /// Lay out in `span` the links that the paths to `leaves` cross.
     pub(crate) fn span(&self, leaves: impl IntoIterator<Item = u32>, span: &mut Span) {
-        // A span is some part of the tree, so the tree bounds it: sized once
-        // here rather than regrown leaf by leaf.
         span.steps.clear();
         span.steps.reserve(self.links.len());
         span.steps.push(Step {
@@ -221,8 +205,7 @@ impl<E: Entry> Tree<E> {
         span.slots[Self::ROOT as usize] = 0;
 
         for leaf in leaves {
-            // Climb to a link already placed, then place what was climbed
-            // through beneath it, top down.
+            // Climb to a link already placed, then place the climb beneath it.
             let mut cursor = leaf;
             while span.slots[cursor as usize] == Span::ABSENT {
                 span.pending.push(cursor);

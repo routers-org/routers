@@ -92,12 +92,9 @@ where
     /// One source's outgoing weights: one row of a boundary's matrix, `NO_EDGE`
     /// where absent.
     ///
-    /// This is the hop-at-a-time reference. [`weigh_boundary`] produces the
-    /// same rows without calling it (or [`hop`]), so a weigher that changes
-    /// how a hop is costed must override [`weigh_boundary`] too.
-    ///
-    /// [`weigh_boundary`]: Self::weigh_boundary
-    /// [`hop`]: Self::hop
+    /// [`weigh_boundary`](Self::weigh_boundary) produces the same rows without
+    /// calling this, so a weigher that changes how a hop is costed must
+    /// override it too.
     fn weigh_source<Emmis, Trans>(
         &self,
         ctx: &RoutingContext<N>,
@@ -124,11 +121,7 @@ where
     /// One boundary's dense row-major weight matrix (source rows stacked in order).
     ///
     /// Equal to stacking [`weigh_source`](Self::weigh_source) over the
-    /// boundary's sources, but weighed as a batch: geometry that many hops
-    /// share — a candidate's heading, a road segment's length and bearing —
-    /// is derived once for the boundary rather than once per hop. Sources
-    /// weigh in parallel, so a boundary weighed alone — the realtime append —
-    /// still uses the cores.
+    /// boundary's sources, but weighed as a batch from shared geometry.
     fn weigh_boundary<Emmis, Trans>(
         &self,
         ctx: &RoutingContext<N>,
@@ -167,9 +160,7 @@ where
         Trans: TransitionStrategy<N::Entry> + Send + Sync,
         Self: Sync,
     {
-        /// Hops a parallel task should hold, at the least. Narrow boundaries
-        /// are a few hops each, so they are batched until a task is worth
-        /// more than the cost of handing it to another thread.
+        /// Hops a parallel task should hold, at the least.
         #[cfg(feature = "parallel")]
         const TASK_HOPS: usize = 32;
 

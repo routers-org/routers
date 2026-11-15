@@ -11,8 +11,7 @@ use routers_network::{Entry, Network, Node};
 pub(crate) struct Segment {
     /// Haversine length, in metres.
     pub(crate) distance: f64,
-    /// Haversine bearing in degrees. Only meaningful when
-    /// [`heading`](Self::heading) is `Some`.
+    /// Haversine bearing in degrees.
     bearing: f64,
 }
 
@@ -39,8 +38,7 @@ impl Segment {
     }
 }
 
-/// A position with the cosine of its latitude, taken once rather than for
-/// every distance measured from or to it.
+/// A position with the cosine of its latitude precomputed.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Station {
     position: Point,
@@ -57,8 +55,7 @@ impl Station {
         }
     }
 
-    /// `Haversine.distance(self, other)`, to the bit: geo's formula term for
-    /// term, with the two cosines read rather than taken.
+    /// `Haversine.distance(self, other)`, to the bit.
     #[inline]
     pub(crate) fn distance(&self, other: &Station) -> f64 {
         let (origin, destination) = (self.position, other.position);
@@ -73,25 +70,21 @@ impl Station {
     }
 }
 
-/// One [`Segment`] of a path whose geometry is already known, together with
-/// the cost of the turn taken onto it.
+/// One [`Segment`] of a path, with the cost of the turn taken onto it.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Stride {
     pub(crate) segment: Segment,
 
-    /// The reciprocal [`turn_cost`] of the turn onto this segment from the
-    /// nearest earlier segment of the path with a heading; [`BLOCKED`] for a
-    /// turn of zero cost. `None` when either has no heading.
+    /// The reciprocal [`turn_cost`] of the turn onto this segment; [`BLOCKED`]
+    /// for a turn of zero cost, `None` when either segment has no heading.
     pub(crate) turn: Option<f64>,
 }
 
-/// The reciprocal standing for a turn of zero cost. No positive turn cost is
-/// small enough for its reciprocal to reach it.
+/// The reciprocal standing for a turn of zero cost.
 const BLOCKED: f64 = f64::INFINITY;
 
 impl Stride {
-    /// The stride following a segment whose most recent heading was
-    /// `previous`.
+    /// The stride following a segment whose last heading was `previous`.
     #[inline]
     pub(crate) fn after(previous: Option<f64>, segment: Segment) -> Self {
         let turn = previous.zip(segment.heading()).map(|(previous, heading)| {
@@ -123,15 +116,12 @@ impl Turn {
     }
 }
 
-/// A [`Segment`] joining a candidate position to one end of the path, tagged
-/// with the position it was measured from/to so it is only ever applied to
-/// the endpoint it describes.
+/// A [`Segment`] joining a candidate position to one end of the path.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Joint {
     pub(crate) position: Point,
     pub(crate) segment: Segment,
-    /// The turn between this joint and the heading of the candidate's own
-    /// edge, where both have a heading.
+    /// The turn between this joint and the candidate's edge heading.
     pub(crate) turn: Option<Turn>,
 }
 
@@ -152,13 +142,11 @@ where
 {
     nodes: Vec<Node<E>>,
 
-    /// Precomputed geometry of each consecutive node pair (`nodes.len() - 1`
-    /// entries) and their summed length, when the builder already had it.
-    /// `None` derives on demand.
+    /// Precomputed geometry of each consecutive node pair and their summed
+    /// length; `None` derives on demand.
     strides: Option<(Vec<Stride>, f64)>,
 
-    /// Precomputed joints from a source position onto the first node, and
-    /// from the last node onto a target position.
+    /// Precomputed joints onto the first node and off the last.
     lead: Option<Joint>,
     trail: Option<Joint>,
 }
@@ -186,8 +174,7 @@ where
     }
 
     /// A path whose geometry is already known: `strides[i]` is the segment
-    /// from `nodes[i]` to `nodes[i + 1]`, and `length` their distances
-    /// summed in order.
+    /// from `nodes[i]` to `nodes[i + 1]`.
     pub(crate) fn with_geometry(
         nodes: Vec<Node<E>>,
         strides: Vec<Stride>,
@@ -516,16 +503,14 @@ fn heading_delta(prev: f64, curr: f64) -> f64 {
     }
 }
 
-/// Out of line on purpose: inline, the compiler computes the remainder
-/// unconditionally, which is the `fmod` per turn the caller is avoiding.
+/// Out of line: inline, the remainder is computed unconditionally.
 #[cold]
 #[inline(never)]
 fn wound(delta: f64) -> f64 {
     delta.rem(360.0)
 }
 
-/// The cost of a single turn of `angle` degrees: `1` for straight on, falling
-/// to `0` for turns of 112.5° and beyond.
+/// The cost of a turn of `angle` degrees: `1` straight on, `0` from 112.5°.
 #[inline]
 fn turn_cost(angle: f64) -> f64 {
     // The maximum knowable rotation in differential angles is between [-180, +180].
@@ -538,15 +523,11 @@ fn turn_cost(angle: f64) -> f64 {
 }
 
 /// Streaming form of [`MapPath::complexity_from_deltas`]: the same harmonic
-/// mean of turn costs, in the same order, fed one heading at a time.
-///
-/// Paths that share their first strides share its state up to there, so a
-/// boundary takes each stride of a tree once per source.
+/// mean of turn costs, fed one heading at a time.
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct Turns {
     previous: Option<f64>,
-    /// Whether `previous` is the heading of a [`Stride`], which is what a
-    /// following stride's precomputed turn is measured from.
+    /// Whether `previous` is the heading of a [`Stride`].
     striding: bool,
     count: usize,
     harmonic_sum: f64,
@@ -554,9 +535,8 @@ pub(crate) struct Turns {
 }
 
 impl Turns {
-    /// The turns made on the way onto a path: off the candidate edge's
-    /// heading, if it has one, onto the `lead` joining it to the path's
-    /// first node. `onto` is that turn, where it has been measured.
+    /// The turns made on the way onto a path, via the `lead` joint; `onto` is
+    /// that turn, where it has been measured.
     #[inline]
     pub(crate) fn leaving(start_heading: Option<f64>, lead: Segment, onto: Option<Turn>) -> Self {
         let mut turns = Self::default();
@@ -578,9 +558,8 @@ impl Turns {
         self
     }
 
-    /// The complexity of the whole path, once it has left its last node by
-    /// the `trail` and turned — by `off`, where that has been measured —
-    /// onto the heading of the edge it ends on.
+    /// The complexity of the whole path, once it has left by the `trail` and
+    /// turned (`off`, where measured) onto the edge it ends on.
     #[inline(always)]
     pub(crate) fn arriving(
         mut self,
@@ -604,8 +583,7 @@ impl Turns {
         }
     }
 
-    /// As [`push_segment`](Self::push_segment), taking the turn's cost from
-    /// the stride where it was measured from the same heading.
+    /// As [`push_segment`](Self::push_segment), with the stride's measured turn.
     #[inline]
     fn push_stride(&mut self, stride: Stride) {
         let Some(heading) = stride.segment.heading() else {
@@ -624,8 +602,7 @@ impl Turns {
         self.striding = true;
     }
 
-    /// [`push_stride`](Self::push_stride) over a run of strides, summed in
-    /// locals: through `self` the total round-trips memory every iteration.
+    /// [`push_stride`](Self::push_stride) over a run of strides.
     fn push_strides(&mut self, strides: &[Stride]) {
         let mut strides = strides.iter();
 
@@ -669,8 +646,7 @@ impl Turns {
         self.push_turn(heading, None);
     }
 
-    /// As [`push`](Self::push), taking the turn's cost from `measured` if
-    /// that is the turn being made.
+    /// As [`push`](Self::push), using `measured` if that is the turn made.
     #[inline]
     fn push_turn(&mut self, heading: f64, measured: Option<Turn>) {
         self.striding = false;

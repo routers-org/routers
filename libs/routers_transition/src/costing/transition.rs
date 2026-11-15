@@ -93,9 +93,8 @@ pub struct TransitionLengths {
     pub route_length: f64,
 }
 
-/// What a transition strategy that does not walk the path is given of a
-/// routed hop: each value exactly what the [`TransitionContext`] of the same
-/// hop would have answered.
+/// A routed hop, as given to a transition strategy that does not walk the
+/// path.
 #[derive(Clone, Debug)]
 pub struct HopSummary {
     /// As [`TransitionContext::lengths`].
@@ -189,12 +188,6 @@ where
     }
 
     /// Builds the context from geometry the caller has already derived.
-    ///
-    /// The weighing pipeline costs every candidate pair of a boundary, and
-    /// most of what [`new`](Self::new) computes depends on only one of the
-    /// two candidates — so it is derived once per candidate and passed in
-    /// here, rather than once per pair. The result is field-for-field what
-    /// [`new`](Self::new) would have built.
     pub(crate) fn from_parts(
         candidates: &'a CandidateStore<E>,
         (source, target): (&Candidate<E>, &Candidate<E>),
@@ -256,8 +249,7 @@ where
         )
     }
 
-    /// The road-class weights of the edges the transition leaves and
-    /// arrives on.
+    /// The road-class weights of the edges left and arrived on.
     pub(crate) fn classes(&self) -> (Weight, Weight) {
         let (source, target) = self.candidates();
 

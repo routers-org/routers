@@ -579,8 +579,7 @@ fn an_adaptive_reach_bridges_sparse_observations() {
     assert!(capped.is_err(), "the ceiling still bounds the search");
 }
 
-/// Dense observations never leave the base reach, so an adaptive cache
-/// matches them exactly as a fixed one does, at the same cost.
+/// Dense observations never leave the base reach: same result, same cost.
 #[test]
 fn an_adaptive_reach_leaves_dense_observations_alone() {
     let net = westbound_road(80);
@@ -611,8 +610,7 @@ fn an_adaptive_reach_leaves_dense_observations_alone() {
     assert_eq!(adaptive.searches(), fixed.searches());
 }
 
-/// A reach of nothing would never widen to anything: refused outright,
-/// rather than left to double zero forever.
+/// A zero reach is refused outright.
 #[test]
 #[should_panic(expected = "positive, finite reach")]
 fn an_adaptive_reach_needs_somewhere_to_start() {
