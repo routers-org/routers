@@ -16,31 +16,14 @@ pub trait Strategy<Ctx> {
     /// The beta (β) value in the decay function.
     const BETA: f64;
 
-    /// Whether this strategy needs the routed path itself — the nodes of a
-    /// transition's [`optimal_path`] or [`map_path`].
-    ///
-    /// A transition strategy that sets this `false` is asked to cost each routed
-    /// hop through [`summarised`] instead, and is spared the gathering of the
-    /// path and the context built around it. Hops with no routed path, or that
-    /// the map is too irregular to summarise, still come through [`calculate`].
-    /// It has no bearing on an emission strategy.
-    ///
-    /// [`calculate`]: Strategy::calculate
-    /// [`summarised`]: Strategy::summarised
-    /// [`optimal_path`]: TransitionContext::optimal_path
-    /// [`map_path`]: TransitionContext::map_path
+    /// Whether this strategy needs the routed path itself. One that sets this
+    /// `false` is asked to cost each routed hop through
+    /// [`summarised`](Strategy::summarised) instead.
     const WALKS_PATH: bool = true;
 
     /// [`calculate`](Strategy::calculate), for a routed hop known only by
-    /// its [`HopSummary`]. Asked only of a strategy that has set
-    /// [`WALKS_PATH`](Strategy::WALKS_PATH) to `false`, which must then
-    /// answer here exactly as `calculate` would for the same hop.
-    ///
-    /// # Panics
-    ///
-    /// The provided body panics: a strategy that opts out of the path
-    /// without saying how to cost a hop from its summary would otherwise
-    /// price every routed hop at the ceiling, and say nothing.
+    /// its [`HopSummary`]. Must be implemented by a strategy that sets
+    /// [`WALKS_PATH`](Strategy::WALKS_PATH) to `false`; the default panics.
     fn summarised(&self, _hop: &HopSummary) -> Option<Self::Cost> {
         unimplemented!("a strategy with `WALKS_PATH = false` must implement `Strategy::summarised`")
     }
@@ -75,9 +58,7 @@ pub trait Strategy<Ctx> {
 
         let v = value.map_or(0.0, |v| v.into()).clamp(EPSILON, 1.0);
 
-        // `x.powf(1.0)` is exactly `x`, and β = 1 is what both default
-        // strategies use; the branch is on a constant, so it costs nothing and
-        // spares them a `pow` per candidate pair.
+        // `x.powf(1.0)` is exactly `x`; spares the default strategies a `pow`.
         let cost = if Self::BETA == 1.0 {
             1.0 / v
         } else {

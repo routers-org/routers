@@ -51,9 +51,7 @@ mod backing {
 /// Entries retained before the cache starts evicting.
 pub const DEFAULT_CACHE_CAPACITY: usize = 8_192;
 
-/// Entries a cache has room for from the start. One begun at nothing evicts
-/// from full buckets all the way up, and each eviction is a search to run
-/// again.
+/// Entries a cache has room for from the start.
 const INITIAL_CACHE_CAPACITY: usize = 1_024;
 
 /// `HashCache` would round up and allocate too much, so enforced explicitly.
@@ -184,8 +182,7 @@ where
     V: Debug,
     Meta: Debug,
 {
-    /// The value held for `key`, if it has been calculated and not since
-    /// evicted. Never calculates.
+    /// The value held for `key`, if cached. Never calculates.
     pub(crate) fn cached(&self, key: &N::Entry) -> Option<Arc<V>> {
         self.0.map.read_sync(key, |_, v| Arc::clone(v))
     }
@@ -334,8 +331,7 @@ mod predicate {
         value: 1_000.0,
     };
 
-    /// Where a layer sits: the mean position of its candidates, which all lie
-    /// within the search radius of the observation they anchor.
+    /// The mean position of a layer's candidates.
     fn centre<E: routers_network::Entry>(layer: &[Candidate<E>]) -> Option<Point> {
         let count = layer.len() as f64;
         let (x, y) = layer.iter().fold((0.0, 0.0), |(x, y), candidate| {
@@ -356,18 +352,14 @@ mod predicate {
         /// prevent repeated calculations.
         successors: SuccessorsCache<N>,
 
-        /// The geometry of each root's reachability tree, measured as hops
-        /// walk it. Bounded in entries like the reachability maps it
-        /// describes — though not in bytes: a tree grows with the part of
-        /// its root's reach that hops have walked, and a walked node costs
-        /// several times what its entry in the reachability map does.
+        /// The geometry of each root's reachability tree. Bounded in entries,
+        /// not bytes.
         geometry: Backing<N::Entry, Geometry<N::Entry>>,
 
         /// How far the solver reaches.
         reach: Length,
 
-        /// Reachability searches run: every query the cache could not
-        /// answer.
+        /// Reachability searches run.
         searches: AtomicU64,
 
         /// Entry bound of the reachability maps, kept to size a wider tier.
@@ -376,8 +368,7 @@ mod predicate {
         /// How the reach grows for sparse observations, if it does.
         adaptive: Option<Adaptive>,
 
-        /// The next tier out: this cache again at twice the reach, made the
-        /// first time a gap is too wide for this one.
+        /// The next tier out: this cache at twice the reach, made on demand.
         wider: OnceLock<PredicateCache<N>>,
 
         /// The runtime this cache is bound to, set on first query. Its stored
@@ -385,8 +376,7 @@ mod predicate {
         bound_runtime: OnceLock<N::Runtime>,
     }
 
-    /// How far to reach for observations further apart than the base reach
-    /// was chosen for.
+    /// How the reach grows for sparse observations.
     #[derive(Clone, Copy, Debug)]
     struct Adaptive {
         /// Reach wanted per metre between consecutive observations.
@@ -413,8 +403,6 @@ mod predicate {
     where
         N: Network,
     {
-        /// `capacity` bounds the geometry kept, and is that of the
-        /// reachability maps it sits beside.
         fn new(successors: SuccessorsCache<N>, reach: Length, capacity: usize) -> Self {
             Self {
                 successors,
@@ -519,11 +507,7 @@ mod predicate {
         }
 
         /// An empty cache whose entries reach `reach_distance`, holding at
-        /// most `capacity` of them (and as many successor lists).
-        ///
-        /// For where memory is tight and the default bound is not: each entry
-        /// is every node within reach of one root, so a long reach makes for
-        /// large entries.
+        /// most `capacity` of them.
         ///
         /// # Panics
         ///
@@ -544,13 +528,9 @@ mod predicate {
             )))
         }
 
-        /// An empty cache whose reach widens for sparse observations.
-        ///
-        /// Consecutive observations are searched between at `reach_distance`. Where
-        /// two are further apart, the search reaches `factor` times the gap between
-        /// them instead, in doublings of `reach_distance` up to `ceiling` — so only
-        /// the long gaps of a trace pay for a long reach. A `factor` of 3–5 leaves
-        /// room for the road to wind. Each doubling caches its own searches.
+        /// An empty cache whose reach widens for sparse observations: where two
+        /// are further apart than `reach_distance`, the search reaches `factor`
+        /// times the gap, in doublings up to `ceiling`.
         ///
         /// # Panics
         ///
@@ -576,10 +556,8 @@ mod predicate {
             LockedMap(Arc::new(CacheMap::with_metadata(metadata)))
         }
 
-        /// The cache to search between two consecutive layers with: this one, or the
-        /// narrowest wider tier that reaches far enough. A function of the two
-        /// layers alone, so weighing a boundary and re-deriving one of its hops
-        /// agree.
+        /// The cache to search between two consecutive layers with: this one, or
+        /// the narrowest wider tier that reaches far enough.
         pub(crate) fn reaching(
             &self,
             from_layer: &[Candidate<N::Entry>],
@@ -601,8 +579,7 @@ mod predicate {
             tier
         }
 
-        /// This cache at twice the reach (the ceiling permitting), sharing
-        /// its successor lists: those do not depend on how far a search goes.
+        /// This cache at twice the reach, sharing its successor lists.
         fn wider(&self, adaptive: Adaptive) -> &Self {
             let metadata = &self.0.metadata;
 
@@ -635,8 +612,7 @@ mod predicate {
             let tree = Arc::new(RwLock::new(Tree::new(root)));
             match trees.put_sync(root.id, Arc::clone(&tree)) {
                 Ok(_) => tree,
-                // Lost a race to insert: share the winner's, so its
-                // measurements are not made twice.
+                // Lost a race to insert: share the winner's.
                 Err(_) => trees
                     .read_sync(&root.id, |_, tree| Arc::clone(tree))
                     .unwrap_or(tree),
@@ -648,9 +624,8 @@ mod predicate {
             self.0.metadata.reach
         }
 
-        /// How many reachability searches this cache has had to run — its misses,
-        /// wider tiers included. A warm cache answers a match without searching, so
-        /// this tells a slow match from a cold one.
+        /// How many reachability searches this cache has run, wider tiers
+        /// included.
         pub fn searches(&self) -> u64 {
             let wider = self.0.metadata.wider.get().map_or(0, Self::searches);
 
@@ -690,9 +665,7 @@ mod predicate {
                 })
                 .collect::<Vec<_>>();
 
-            // Sized once, now the count is known: the search itself cannot
-            // say how many nodes it will settle, so collecting straight into
-            // the map would regrow and rehash it all the way up.
+            // Sized once, now the count is known.
             let mut predicates = Predicates::with_capacity_and_hasher(reached.len(), FxBuildHasher);
             predicates.extend(reached);
             predicates
