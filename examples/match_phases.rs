@@ -1,17 +1,9 @@
-//! Where a match spends its time: each phase of the pipeline, timed apart.
+//! Times each phase of a match apart.
 //!
 //! ```sh
 //! cargo run --release --example match_phases           # warm cache
 //! cargo run --release --example match_phases -- cold   # a fresh cache per match
-//! RAYON_NUM_THREADS=1 cargo run --release --example match_phases   # CPU cost, unparallelised
 //! ```
-//!
-//! The facade ([`Match::match`](routers::Match)) runs these phases back to
-//! back; driving the [`Matcher`] by hand is what lets them be told apart.
-//! `searches` is how many reachability searches the phase ran — zero once the
-//! cache is warm, and the usual reason a match is slow when it is not.
-//!
-//! For a sampled profile rather than phase totals, see `just profile`.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};

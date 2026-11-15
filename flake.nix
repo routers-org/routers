@@ -99,7 +99,6 @@
             cargo-codspeed
             cargo-insta
             cargo-nextest
-            # `just profile`.
             perf
             git-cliff
 

@@ -222,9 +222,6 @@ where
             }
         }
 
-        // What this pass cost, and why: a warm pass searches nothing, so
-        // `searches` is what tells a slow solve apart from a cold one. The
-        // count is the cache's, so concurrent matches sharing it overlap.
         #[cfg(feature = "tracing")]
         {
             let span = tracing::Span::current();

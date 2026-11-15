@@ -20,9 +20,7 @@ bench-review:
 phases *ARGS:
     cargo run --release --example match_phases -- {{ ARGS }}
 
-# Sample a benchmark with `perf` and print its hottest functions, e.g.
-# `just profile "match: LAX_LYNWOOD"`. Built with the `profiling` profile
-# (release + debug info); user-space samples only, so it needs no privileges.
+# Sample a benchmark with `perf` and print its hottest functions.
 profile FILTER="match: LAX_LYNWOOD" SECONDS="8":
     #!/usr/bin/env bash
     set -euo pipefail
