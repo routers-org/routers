@@ -258,6 +258,7 @@ mod tests {
     use geo::LineString;
     use routers_codec::osm::OsmNetwork;
     use routers_fixtures::{SYDNEY, SYNDEY_TRIP, fixture_path};
+    use routers_network::DataPlane;
     use routers_shard::{Selection, SelectionMode, ShardSource, SourceEdge};
     use wkt::TryFromWkt;
 
@@ -265,14 +266,14 @@ mod tests {
     struct OsmSource<'a>(&'a OsmNetwork);
     impl ShardSource<OsmEntryId, OsmEdgeMetadata> for OsmSource<'_> {
         fn nodes<'b>(&'b self) -> Box<dyn Iterator<Item = (OsmEntryId, Point)> + 'b> {
-            Box::new(self.0.hash.values().map(|n| (n.id, n.position)))
+            Box::new(self.0.nodes().map(|n| (n.id, n.position)))
         }
         fn edges<'b>(
             &'b self,
         ) -> Box<dyn Iterator<Item = SourceEdge<OsmEntryId, OsmEdgeMetadata>> + 'b> {
-            Box::new(self.0.graph.all_edges().filter_map(|(from, to, data)| {
-                let meta = self.0.meta.get(&data.1.index())?.clone();
-                Some((from, to, *data, meta))
+            Box::new(self.0.edges().filter_map(|(from, to, data)| {
+                let meta = self.0.metadata(&data.1.index())?.clone();
+                Some((from, to, data, meta))
             }))
         }
     }

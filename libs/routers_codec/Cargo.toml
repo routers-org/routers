@@ -1,6 +1,6 @@
 [package]
 name = "routers_codec"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 include = ["docs/**", "build.rs", "proto/**", "src/**"]
 description = "Encoding and Decoding Primitives for Routers"
@@ -26,6 +26,7 @@ rayon = { workspace = true }
 log = { workspace = true }
 postcard = { workspace = true }
 rustc-hash = "2.1.1"
+uom = { workspace = true }
 
 # Tracing
 tracing = { workspace = true, features = ["std"], optional = true }

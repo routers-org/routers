@@ -7404,7 +7404,7 @@ dependencies = [
 
 [[package]]
 name = "routers_codec"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "arrow",
  "bitflags 2.13.2",
@@ -7433,6 +7433,7 @@ dependencies = [
  "strum",
  "test-log",
  "tracing",
+ "uom",
  "web-time",
  "wkb",
 ]
@@ -7450,23 +7451,6 @@ dependencies = [
  "log",
  "routers_schema",
  "strum",
- "wkt",
-]
-
-[[package]]
-name = "routers_graph_poc"
-version = "0.0.0"
-dependencies = [
- "geo",
- "petgraph 0.8.3",
- "postcard",
- "rayon",
- "routers_codec",
- "routers_fixtures",
- "routers_network",
- "routers_transition",
- "rustc-hash 2.1.3",
- "uom",
  "wkt",
 ]
 
