@@ -1,30 +1,13 @@
 //! The batched form of [`Weigher::hop`]: weighing a whole boundary at once.
 //!
-//! A boundary of `F` source and `T` target candidates is `F × T` hops, but
-//! very little of a hop's geometry is unique to its pair:
+//! Little of a hop's geometry is unique to its pair. A candidate's heading,
+//! tail and joint belong to the candidate ([`Anchor`]); the length, bearing
+//! and turn of each road segment belong to the search tree it lies on
+//! ([`Tree`]), which every hop from the same root shares — in this boundary,
+//! the next, and every later match against the same cache.
 //!
-//! - each candidate's edge heading, virtual tail and joint onto the routed
-//!   path depend on that candidate alone ([`Anchor`]);
-//! - every hop leaving the same road node walks the same bounded-Dijkstra
-//!   tree, so the length and bearing of each road segment along it are shared
-//!   by every path through that segment ([`Tree`]) — in this boundary, the
-//!   next, and every later match against the same cache.
-//!
-//! Hopping pair-by-pair re-derives all of it — Haversine trigonometry, graph
-//! and point lookups, and a handful of allocations — for every pair. Here it
-//! is derived once per candidate and once per road segment instead, leaving a
-//! pair only its own straight-line distance to compute.
-//!
-//! What is left is the path itself. A hop's turns are summed in path order,
-//! and a strategy may ask for the nodes, so each pair's path is gathered out
-//! of the tree and handed over — unless the strategy
-//! [never looks](Strategy::WALKS_PATH). The paths out of one root to a layer
-//! of nearby candidates are mostly one path, so for such a strategy the turns
-//! are instead carried down the [`Span`] of the tree those paths cross: once
-//! per source over each shared segment, rather than once per pair.
-//!
-//! The arithmetic is unchanged — the same values, combined in the same order
-//! — so the weights are bit-for-bit those of [`Weigher::hop`].
+//! The arithmetic is unchanged: the same values, combined in the same order,
+//! so the weights are bit-for-bit those of [`Weigher::hop`].
 
 use std::sync::{PoisonError, RwLockReadGuard};
 
@@ -386,13 +369,10 @@ where
     }
 }
 
-/// Find where each candidate of `to_layer` sits in the tree, walking — and so
-/// measuring — whatever part of the way there is new, and hand the tree back
-/// held for reading.
-///
-/// Once a root's hops have been weighed before, everything is already known
-/// and the tree is only ever read, so departures sharing a root do not wait
-/// on one another.
+/// Find where each candidate of `to_layer` sits in the tree, measuring
+/// whatever part of the way there is new, and hand the tree back held for
+/// reading. A root weighed before is only read, so departures sharing it do
+/// not wait on one another.
 fn locate<'a, N>(
     geometry: &'a Geometry<N::Entry>,
     parents: &FxHashMap<N::Entry, N::Entry>,

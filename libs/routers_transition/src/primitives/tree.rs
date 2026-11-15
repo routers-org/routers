@@ -1,11 +1,8 @@
 //! The walked part of a bounded-Dijkstra tree, with its road geometry.
 //!
-//! The predicate cache answers *whether* and *by which nodes* one road node
-//! reaches another. Costing a hop also needs the geometry of that route — the
-//! length and bearing of every road segment along it, and the turn taken at
-//! each joint. All of it is a pure function of the tree, and the hops leaving
-//! one root overlap heavily, so a [`Tree`] measures each segment the first
-//! time a hop crosses it and keeps the answer for every hop after.
+//! Costing a hop needs the length, bearing and turn of every road segment on
+//! its route. Hops from one root overlap heavily, so a [`Tree`] measures each
+//! segment the first time a hop crosses it and keeps the answer.
 
 use routers_network::{Entry, Network, Node};
 use rustc_hash::FxHashMap;
@@ -38,12 +35,8 @@ pub(crate) enum Leaf {
 }
 
 /// The part of a [`Tree`] that the paths to some set of leaves cross: each
-/// link once, however many of the paths share it, and never before the link
-/// it was reached from.
-///
-/// Anything accumulated along a path — the turns taken, in order — can then
-/// be carried down the span from link to link, and read off at each leaf,
-/// without walking any one path from end to end.
+/// link once, and never before the link it was reached from — so that what
+/// accumulates along a path can be carried down it and read off at a leaf.
 #[derive(Debug, Default)]
 pub(crate) struct Span {
     steps: Vec<Step>,

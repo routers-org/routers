@@ -6,13 +6,7 @@ use core::{
 use geo::{Bearing, Distance, Haversine, LineString, Point};
 use routers_network::{Entry, Network, Node};
 
-/// The great-circle geometry of one hop between two positions: how far, and
-/// in which direction.
-///
-/// Both are pure functions of the two endpoints, which is what lets a caller
-/// that walks the same road segments for many candidate pairs compute them
-/// once and hand them to [`MapPath::with_geometry`], instead of having every
-/// path re-derive them.
+/// The great-circle length and bearing between two positions.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Segment {
     /// Haversine length, in metres.
@@ -45,12 +39,8 @@ impl Segment {
     }
 }
 
-/// A position that many great-circle distances are measured from or to.
-///
-/// Half of the Haversine formula's trigonometry is the cosine of each end's
-/// latitude, which belongs to that end alone. A boundary measures every
-/// source candidate against every target, so each candidate's cosine is taken
-/// once here instead of once per pair.
+/// A position with the cosine of its latitude, taken once rather than for
+/// every distance measured from or to it.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Station {
     position: Point,
@@ -67,11 +57,8 @@ impl Station {
         }
     }
 
-    /// The Haversine distance to `other`, in metres.
-    ///
-    /// This is `Haversine.distance(self, other)` to the bit: geo's own
-    /// formula, term for term and in its order, with the two cosines read
-    /// rather than taken. A test holds it to that.
+    /// `Haversine.distance(self, other)`, to the bit: geo's formula term for
+    /// term, with the two cosines read rather than taken.
     #[inline]
     pub(crate) fn distance(&self, other: &Station) -> f64 {
         let (origin, destination) = (self.position, other.position);
@@ -92,19 +79,14 @@ impl Station {
 pub(crate) struct Stride {
     pub(crate) segment: Segment,
 
-    /// The reciprocal of the [`turn_cost`] of the turn onto this segment
-    /// from the nearest earlier segment *of the path* that has a heading —
-    /// the term a path's harmonic mean sums, so held ready to add. A turn
-    /// too sharp to take (cost zero) is [`BLOCKED`].
-    ///
-    /// `None` when there is no such segment (the turn is then onto the path
-    /// from outside it), or when this segment has no heading of its own.
+    /// The reciprocal [`turn_cost`] of the turn onto this segment from the
+    /// nearest earlier segment of the path with a heading; [`BLOCKED`] for a
+    /// turn of zero cost. `None` when either has no heading.
     pub(crate) turn: Option<f64>,
 }
 
-/// The reciprocal standing for a turn of zero cost. No takeable turn's
-/// reciprocal reaches it: the smallest positive turn cost is a cosine many
-/// orders of magnitude above the point where its reciprocal would overflow.
+/// The reciprocal standing for a turn of zero cost. No positive turn cost is
+/// small enough for its reciprocal to reach it.
 const BLOCKED: f64 = f64::INFINITY;
 
 impl Stride {
@@ -122,10 +104,7 @@ impl Stride {
     }
 }
 
-/// The cost of one particular turn, measured ahead of time.
-///
-/// A turn's cost is a pure function of the two headings it lies between, so
-/// one measured earlier stands for any later turn between the same two.
+/// The cost of the turn between two headings, measured ahead of time.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Turn {
     from: f64,
@@ -206,13 +185,9 @@ where
         Self::from(nodes.into_iter().collect::<Vec<_>>())
     }
 
-    /// A path whose geometry is already known.
-    ///
-    /// `strides[i]` must describe the segment from `nodes[i]` to
-    /// `nodes[i + 1]`, and `length` be their distances summed in order;
-    /// `lead`/`trail` are the joints onto the first and from the last node.
-    /// Every geometric answer is then identical to deriving it from the
-    /// positions — the trigonometry is just not repeated.
+    /// A path whose geometry is already known: `strides[i]` is the segment
+    /// from `nodes[i]` to `nodes[i + 1]`, and `length` their distances
+    /// summed in order.
     pub(crate) fn with_geometry(
         nodes: Vec<Node<E>>,
         strides: Vec<Stride>,
@@ -428,10 +403,6 @@ where
 
     /// Like [`angular_complexity_with_endpoints`](Self::angular_complexity_with_endpoints), but also
     /// explicitly includes the required initial and final vehicle headings at the source and target candidates.
-    ///
-    /// This is the transition-costing hot path, so it streams: no heading,
-    /// delta or cost vectors are built, and any precomputed geometry is used
-    /// in place of fresh trigonometry.
     pub fn angular_complexity_with_headings(
         &self,
         start_heading: Option<f64>,
@@ -529,10 +500,7 @@ where
 /// The signed change in heading from `prev` to `curr`, in `(-180, +180]`.
 #[inline]
 fn heading_delta(prev: f64, curr: f64) -> f64 {
-    // Bearings lie within one turn — `[0, 360)` — so two of them differ by
-    // less than a full turn and the remainder is the difference itself.
-    // Deciding that here spares an out-of-line `fmod` per turn; anything
-    // wider still takes it.
+    // Bearings lie in `[0, 360)`, so their difference is its own remainder.
     let delta = curr - prev;
     let delta = if delta.abs() < 360.0 {
         delta
@@ -548,13 +516,8 @@ fn heading_delta(prev: f64, curr: f64) -> f64 {
     }
 }
 
-/// A difference of headings a full turn or more apart, wound back within
-/// one.
-///
-/// Kept out of line on purpose. A float remainder has no side effects, so
-/// written inline the compiler computes it unconditionally and then selects
-/// between it and the difference — which is the `fmod` call per turn that
-/// the test above exists to avoid.
+/// Out of line on purpose: inline, the compiler computes the remainder
+/// unconditionally, which is the `fmod` per turn the caller is avoiding.
 #[cold]
 #[inline(never)]
 fn wound(delta: f64) -> f64 {
@@ -574,16 +537,11 @@ fn turn_cost(angle: f64) -> f64 {
     (angle.mul(PI).div(MAX_ANGLE).mul(COST_DAMPING).cos()).clamp(0.0, 1.0)
 }
 
-/// Streaming form of [`MapPath::complexity_from_deltas`]: fed headings one at
-/// a time, it accumulates the same harmonic mean of turn costs, in the same
-/// order, without materialising the headings, deltas or costs.
+/// Streaming form of [`MapPath::complexity_from_deltas`]: the same harmonic
+/// mean of turn costs, in the same order, fed one heading at a time.
 ///
-/// It is also the running state of a path walked a piece at a time: the
-/// turns [`leaving`](Self::leaving) a candidate, carried
-/// [`along`](Self::along) each stride, and closed by
-/// [`arriving`](Self::arriving) at another. Paths that share their first
-/// strides share those states, which is what lets a boundary take each
-/// stride of a tree once per source rather than once per path through it.
+/// Paths that share their first strides share its state up to there, so a
+/// boundary takes each stride of a tree once per source.
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct Turns {
     previous: Option<f64>,
@@ -666,13 +624,8 @@ impl Turns {
         self.striding = true;
     }
 
-    /// [`push_stride`](Self::push_stride) over a whole run of strides.
-    ///
-    /// Past the first stride with a heading, every turn is one already
-    /// measured, and the run is nothing but a sum. It is kept in locals for
-    /// that stretch: summed through `self`, the total is stored to and
-    /// reloaded from memory on every iteration, which is what bounds the
-    /// loop.
+    /// [`push_stride`](Self::push_stride) over a run of strides, summed in
+    /// locals: through `self` the total round-trips memory every iteration.
     fn push_strides(&mut self, strides: &[Stride]) {
         let mut strides = strides.iter();
 

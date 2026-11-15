@@ -84,7 +84,7 @@ where
     pub virtual_tails: VirtualTails,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct TransitionLengths {
     /// The great circle distance between source and target
     pub straightline_distance: f64,
@@ -96,7 +96,7 @@ pub struct TransitionLengths {
 /// What a transition strategy that does not walk the path is given of a
 /// routed hop: each value exactly what the [`TransitionContext`] of the same
 /// hop would have answered.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct HopSummary {
     /// As [`TransitionContext::lengths`].
     pub lengths: Option<TransitionLengths>,

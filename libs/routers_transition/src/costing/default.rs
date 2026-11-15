@@ -140,7 +140,7 @@ pub mod transition {
             let lengths = context.lengths()?;
 
             Some(combine(
-                lengths,
+                &lengths,
                 context.angular_complexity(),
                 context.classes(),
             ))
@@ -148,7 +148,11 @@ pub mod transition {
 
         #[inline]
         fn summarised(&self, hop: &HopSummary) -> Option<Self::Cost> {
-            Some(combine(hop.lengths?, hop.angular_complexity, hop.classes))
+            Some(combine(
+                hop.lengths.as_ref()?,
+                hop.angular_complexity,
+                hop.classes,
+            ))
         }
     }
 
@@ -156,7 +160,7 @@ pub mod transition {
     /// between edges of the given road classes.
     #[inline]
     fn combine(
-        lengths: TransitionLengths,
+        lengths: &TransitionLengths,
         angular_complexity: f64,
         (source, target): (Weight, Weight),
     ) -> f64 {

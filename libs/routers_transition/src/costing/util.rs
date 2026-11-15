@@ -17,18 +17,13 @@ pub trait Strategy<Ctx> {
     const BETA: f64;
 
     /// Whether this strategy needs the routed path itself — the nodes of a
-    /// transition's [`optimal_path`] or [`map_path`] — rather than only what
-    /// is derived from it.
+    /// transition's [`optimal_path`] or [`map_path`].
     ///
-    /// Weighing a boundary gathers each hop's nodes only to hand them over,
-    /// which is most of the work of a long hop, and builds a context around
-    /// them. A transition strategy that sets this `false` is spared both: it
-    /// is asked to cost each routed hop through [`summarised`] instead, from
-    /// the hop's lengths and turning alone. Hops with no routed path to
-    /// summarise — those that never leave an edge, or that end on the node
-    /// they start from — still come through [`calculate`], as does any hop
-    /// the map is too irregular to summarise. It has no bearing on an
-    /// emission strategy.
+    /// A transition strategy that sets this `false` is asked to cost each routed
+    /// hop through [`summarised`] instead, and is spared the gathering of the
+    /// path and the context built around it. Hops with no routed path, or that
+    /// the map is too irregular to summarise, still come through [`calculate`].
+    /// It has no bearing on an emission strategy.
     ///
     /// [`calculate`]: Strategy::calculate
     /// [`summarised`]: Strategy::summarised

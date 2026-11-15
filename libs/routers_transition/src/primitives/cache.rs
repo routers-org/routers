@@ -51,13 +51,9 @@ mod backing {
 /// Entries retained before the cache starts evicting.
 pub const DEFAULT_CACHE_CAPACITY: usize = 8_192;
 
-/// Entries a cache has room for from the start.
-///
-/// The cache evicts from a full bucket rather than wait to grow, so one begun
-/// at nothing sheds entries all the way up — each a search to run again. A
-/// match fills hundreds of entries at once; starting with room for them
-/// costs some tens of kilobytes per cache and keeps what the first match
-/// learned.
+/// Entries a cache has room for from the start. One begun at nothing evicts
+/// from full buckets all the way up, and each eviction is a search to run
+/// again.
 const INITIAL_CACHE_CAPACITY: usize = 1_024;
 
 /// `HashCache` would round up and allocate too much, so enforced explicitly.
@@ -550,25 +546,16 @@ mod predicate {
 
         /// An empty cache whose reach widens for sparse observations.
         ///
-        /// Consecutive observations are normally searched between at
-        /// `reach_distance`, exactly as [`with_reach_distance`] would. Where
-        /// two are further apart than that can bridge, the search instead
-        /// reaches `factor` times the gap between them, up to `ceiling` — so
-        /// a trace that is dense in town and sparse on the motorway pays for
-        /// the long reach only across its long gaps, rather than everywhere
-        /// or not at all.
-        ///
-        /// A `factor` of 3–5 leaves room for the road to wind between the
-        /// two points. The widening happens in doublings of
-        /// `reach_distance`, each with its own cached searches, so memory is
-        /// bounded per doubling rather than overall.
-        ///
-        /// [`with_reach_distance`]: Self::with_reach_distance
+        /// Consecutive observations are searched between at `reach_distance`. Where
+        /// two are further apart, the search reaches `factor` times the gap between
+        /// them instead, in doublings of `reach_distance` up to `ceiling` — so only
+        /// the long gaps of a trace pay for a long reach. A `factor` of 3–5 leaves
+        /// room for the road to wind. Each doubling caches its own searches.
         ///
         /// # Panics
         ///
-        /// Panics unless `reach_distance` is positive and all three arguments
-        /// are finite: a reach of nothing never doubles its way to a gap.
+        /// Panics unless `reach_distance` is positive and all three arguments are
+        /// finite.
         pub fn with_adaptive_reach(reach_distance: Length, factor: f64, ceiling: Length) -> Self {
             assert!(
                 reach_distance.value.is_finite() && reach_distance.value > 0.0,
@@ -589,12 +576,10 @@ mod predicate {
             LockedMap(Arc::new(CacheMap::with_metadata(metadata)))
         }
 
-        /// The cache to search between two consecutive layers with: this one,
-        /// or — when adaptive, and the layers are too far apart for it — the
-        /// narrowest wider tier that reaches far enough.
-        ///
-        /// The choice is a function of the two layers alone, so weighing a
-        /// boundary and later re-deriving one of its hops agree on it.
+        /// The cache to search between two consecutive layers with: this one, or the
+        /// narrowest wider tier that reaches far enough. A function of the two
+        /// layers alone, so weighing a boundary and re-deriving one of its hops
+        /// agree.
         pub(crate) fn reaching(
             &self,
             from_layer: &[Candidate<N::Entry>],
@@ -663,14 +648,9 @@ mod predicate {
             self.0.metadata.reach
         }
 
-        /// How many reachability searches this cache has had to run — its
-        /// misses, each a bounded Dijkstra over the network — wider tiers
-        /// included.
-        ///
-        /// A warm cache answers a match without searching at all, so the rate
-        /// this climbs at is the direct measure of how cold it is running:
-        /// sample it around a match (or export it as a counter) to tell a
-        /// slow match from one that simply had to search.
+        /// How many reachability searches this cache has had to run — its misses,
+        /// wider tiers included. A warm cache answers a match without searching, so
+        /// this tells a slow match from a cold one.
         pub fn searches(&self) -> u64 {
             let wider = self.0.metadata.wider.get().map_or(0, Self::searches);
 
