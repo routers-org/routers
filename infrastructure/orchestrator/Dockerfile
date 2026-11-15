@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1.7
-FROM rust:1.98-slim AS builder
+FROM rust:1.100-slim AS builder
 
 ARG CARGO_BUILD_JOBS=8
 ENV CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS}
