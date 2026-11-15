@@ -35,8 +35,7 @@ type Composite = MultiShardNetwork<OsmEntryId, OsmEdgeMetadata, Geohash>;
 
 type Runtime = <OsmEdgeMetadata as Metadata>::Runtime;
 
-/// Reachability searches the engine keeps between matches. Enough for a
-/// vehicle followed through a neighbourhood; past it the cache starts over.
+/// Reachability searches the engine keeps between matches.
 const CACHE_CAPACITY: usize = 512;
 
 /// A routing engine over a dynamic set of loaded shards.
@@ -47,9 +46,7 @@ pub struct Engine {
     warm: Mutex<Option<Warm>>,
 }
 
-/// A reachability cache and what it was computed for. Its entries hold for
-/// one reach and one runtime over one set of shards, so it serves the next
-/// match only while all three are unchanged.
+/// A reachability cache, and the reach and runtime it was computed for.
 struct Warm {
     reach: Option<f64>,
     runtime: Runtime,
@@ -99,10 +96,6 @@ impl Engine {
 
     /// The cache to match with at `reach` under `runtime`: the last match's,
     /// if it was computed for the same, else a fresh one that replaces it.
-    ///
-    /// Matching repeatedly with the same options is the common case — a
-    /// driver following one vehicle — and a warm cache spares each match the
-    /// road searches the last one already ran.
     fn cache(&self, reach: Option<f64>, runtime: &Runtime) -> Arc<PredicateCache<Composite>> {
         let mut warm = self.warm.lock().unwrap_or_else(PoisonError::into_inner);
 
@@ -111,9 +104,7 @@ impl Engine {
                 Arc::clone(&kept.cache)
             }
             _ => {
-                // Bounded well below the default: this cache now lives as
-                // long as the shard set does, in a linear memory that never
-                // shrinks, and a long reach makes each entry large.
+                // Bounded: this cache lives as long as the shard set does.
                 let distance = reach.map_or(DEFAULT_REACH_DISTANCE, Length::new::<meter>);
                 let cache = Arc::new(PredicateCache::with_reach_and_capacity(
                     distance,
@@ -333,8 +324,7 @@ mod tests {
             .expect("match succeeds across shards");
         assert!(!routed.discretized.is_empty());
 
-        // The second match is answered from the first's cache, and must not
-        // differ for it.
+        // The second match is answered from the first's cache.
         let runtime = <OsmEdgeMetadata as Metadata>::runtime(None);
         let kept = engine.cache(Some(5000.0), &runtime);
         let searched = kept.searches();
@@ -354,7 +344,6 @@ mod tests {
         assert!(engine.unload_shard(&first));
         assert_eq!(engine.loaded().len(), cells.len() - 1);
 
-        // ...and what was reachable with it resident no longer holds.
         assert!(engine.warm.lock().unwrap().is_none());
     }
 }
