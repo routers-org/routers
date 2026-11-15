@@ -7,6 +7,7 @@ pub mod element;
 
 pub mod graph;
 pub mod parsers;
+mod search;
 
 // Hidden modules
 #[doc(hidden)]
