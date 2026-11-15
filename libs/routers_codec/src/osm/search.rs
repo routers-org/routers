@@ -11,8 +11,7 @@ use super::graph::{Columns, NodeIx};
 /// "No such node", where a [`NodeIx`] is optional.
 pub(super) const NO_NODE: NodeIx = NodeIx::MAX;
 
-/// A path cost as the matcher accumulates it: a running road-class average,
-/// kept as its sum and count, and the distance so far.
+/// A path cost as the matcher accumulates it.
 #[derive(Clone, Copy, Debug, Default)]
 struct Cost {
     class_sum: u32,
@@ -77,10 +76,6 @@ impl Ord for Open {
 }
 
 /// A reusable search workspace.
-///
-/// Per-node state lives in arrays sized to the graph and is invalidated by
-/// bumping a generation, so a search touches only the nodes it reaches and
-/// allocates nothing once warm.
 #[derive(Debug, Default)]
 pub(super) struct Search {
     /// Generation each node was last discovered in, and its label then.
@@ -106,9 +101,6 @@ impl Search {
     /// The matcher's bounded search: every node settled before the first one
     /// at `reach` or beyond, as `(node, parent)` in the order settled. The
     /// root's parent is [`NO_NODE`].
-    ///
-    /// The cost model and tie-breaking are `routers_transition`'s own, so
-    /// the two settle the same nodes with the same parents.
     pub(super) fn reach(
         &mut self,
         graph: &Columns,

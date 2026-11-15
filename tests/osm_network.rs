@@ -1,5 +1,4 @@
-//! `OsmNetwork` runs the matcher's bounded search over its own storage. It
-//! must answer exactly as the matcher's own search over the same network.
+//! `OsmNetwork`'s own search must answer exactly as the matcher's does.
 
 use geo::{Point, Rect};
 use routers::candidate::CandidateStore;
@@ -144,8 +143,6 @@ fn the_network_survives_the_disk() {
     assert!(restored.edges().eq(network.edges()));
     assert_eq!(restored.to_bytes().expect("serialises"), bytes);
 
-    // Bytes off a disk may be anything: a graph that does not hold together
-    // is refused when it is read, not discovered when it is searched.
     for cut in (0..bytes.len()).step_by(bytes.len() / 257 + 1) {
         assert!(
             OsmNetwork::from_bytes(&bytes[..cut]).is_err(),

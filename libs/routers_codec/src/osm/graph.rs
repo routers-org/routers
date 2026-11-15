@@ -1,10 +1,5 @@
-//! The OSM routing network, held as flat columns.
-//!
-//! Nodes are dense indices, numbered along a Z-order curve so that neighbours
-//! on the road are neighbours in memory. Adjacency is CSR — one offset per
-//! node into contiguous edge columns — with each edge's length and road class
-//! beside its target, which is all a search reads. OSM ids are translated at
-//! the boundary: once on the way in, once on the way out.
+//! The OSM routing network, held as flat columns: nodes in Z-order, edges in
+//! CSR, with each edge's length and road class beside its target.
 
 use alloc::sync::Arc;
 use core::fmt::Debug;
@@ -84,8 +79,7 @@ impl Columns {
         self.nodes[node as usize].position
     }
 
-    /// Check that the columns describe a graph. Bytes from disk are not to
-    /// be trusted to.
+    /// Check that the columns describe a graph.
     fn validate(&self) -> Result<(), String> {
         let (nodes, edges) = (self.nodes.len(), self.targets.len());
         let check = |holds: bool, what: &str| holds.then_some(()).ok_or(format!("graph: {what}"));
@@ -213,9 +207,7 @@ impl OsmNetwork {
         }
     }
 
-    /// Decode a previously-encoded `OsmNetwork` from a byte slice and rebuild
-    /// its spatial indices. Filesystem-free; suitable for WASM targets where
-    /// bytes arrive via `fetch()` or similar.
+    /// Decode an encoded `OsmNetwork` from bytes and rebuild its indices.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, String> {
         const HEADER_LEN: usize = SAVE_MAGIC.len() + 8;
 
@@ -375,7 +367,6 @@ impl OsmNetwork {
                     ProcessedElement::Way(way) => {
                         let metadata = OsmEdgeMetadata::pick(way.tags());
 
-                        // Not traversable: not a road.
                         let Some(class) = metadata.road_class.map(|class| class.weighting()) else {
                             return parts;
                         };
@@ -557,8 +548,6 @@ fn assemble(
     edges: Vec<RawEdge>,
     mut ways: Vec<(OsmEntryId, OsmEdgeMetadata)>,
 ) -> Columns {
-    // The nodes of the graph are the endpoints of its edges; the PBF also
-    // carries nodes no road touches.
     let mut endpoints = edges
         .par_iter()
         .flat_map_iter(|edge| [edge.source, edge.target])
@@ -670,8 +659,6 @@ fn assemble(
     columns.nodes = nodes;
     (columns.ways, columns.meta) = ways.into_iter().unzip();
 
-    // What a search needs of an edge beyond its target, measured once here
-    // rather than on every visit.
     columns.length_cm = (0..columns.nodes.len() as NodeIx)
         .into_par_iter()
         .flat_map_iter(|node| {
@@ -687,8 +674,7 @@ fn assemble(
     columns
 }
 
-/// Interleave the bits of a quantised position: nodes close on the map sort
-/// close together.
+/// Interleave the bits of a quantised position (Z-order).
 #[cfg(not(target_arch = "wasm32"))]
 fn morton(at: Point) -> u64 {
     fn spread(value: u32) -> u64 {
