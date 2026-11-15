@@ -6,6 +6,7 @@
 //! solely in [which next-layer candidates they weigh](Weigher::select).
 
 mod all_compute;
+mod boundary;
 mod expansion;
 mod selective;
 mod variant;
@@ -90,6 +91,13 @@ where
 
     /// One source's outgoing weights: one row of a boundary's matrix, `NO_EDGE`
     /// where absent.
+    ///
+    /// This is the hop-at-a-time reference. [`weigh_boundary`] produces the
+    /// same rows without calling it (or [`hop`]), so a weigher that changes
+    /// how a hop is costed must override [`weigh_boundary`] too.
+    ///
+    /// [`weigh_boundary`]: Self::weigh_boundary
+    /// [`hop`]: Self::hop
     fn weigh_source<Emmis, Trans>(
         &self,
         ctx: &RoutingContext<N>,
@@ -115,9 +123,12 @@ where
 
     /// One boundary's dense row-major weight matrix (source rows stacked in order).
     ///
-    /// Source rows weigh in parallel so that a boundary weighed alone — the
-    /// realtime append — still uses the cores, but chunked (`with_min_len`) so
-    /// narrow boundaries don't drown the row's work in task overhead.
+    /// Equal to stacking [`weigh_source`](Self::weigh_source) over the
+    /// boundary's sources, but weighed as a batch: geometry that many hops
+    /// share — a candidate's heading, a road segment's length and bearing —
+    /// is derived once for the boundary rather than once per hop. Sources
+    /// weigh in parallel, so a boundary weighed alone — the realtime append —
+    /// still uses the cores.
     fn weigh_boundary<Emmis, Trans>(
         &self,
         ctx: &RoutingContext<N>,
@@ -136,21 +147,7 @@ where
             return Vec::new();
         };
 
-        cfg_if::cfg_if! {
-            if #[cfg(feature = "parallel")] {
-                from_layer
-                    .par_iter()
-                    .with_min_len(8)
-                    .map(|source| self.weigh_source(ctx, costing, source, to_layer))
-                    .flatten_iter()
-                    .collect()
-            } else {
-                from_layer
-                    .iter()
-                    .flat_map(|source| self.weigh_source(ctx, costing, source, to_layer))
-                    .collect()
-            }
-        }
+        boundary::weigh(self, ctx, costing, from_layer, to_layer)
     }
 
     /// Weigh every **pending** boundary of `trellis` (resolved boundaries are
@@ -170,24 +167,45 @@ where
         Trans: TransitionStrategy<N::Entry> + Send + Sync,
         Self: Sync,
     {
+        /// Hops a parallel task should hold, at the least. Narrow boundaries
+        /// are a few hops each, so they are batched until a task is worth
+        /// more than the cost of handing it to another thread.
+        #[cfg(feature = "parallel")]
+        const TASK_HOPS: usize = 32;
+
         let pending = trellis
             .boundaries()
             .filter(|&boundary| !trellis.is_resolved(boundary))
+            .filter_map(|boundary| {
+                let from_layer = ctx.candidates.layer(boundary)?;
+                let to_layer = ctx.candidates.layer(LayerId(boundary.0 + 1))?;
+                Some((boundary, from_layer, to_layer))
+            })
             .collect::<Vec<_>>();
 
-        let weighed = {
-            cfg_if! {
-                if #[cfg(feature = "parallel")] {
-                    pending.into_par_iter()
-                        .map(|boundary| (boundary, self.weigh_boundary(ctx, costing, boundary)))
-                        .collect::<Vec<_>>()
-                } else {
-                    pending.into_iter()
-                        .map(|boundary| (boundary, self.weigh_boundary(ctx, costing, boundary)))
-                        .collect::<Vec<_>>()
-                }
-            }
+        // Through `weigh_boundary`, so that a weigher which overrides it is
+        // the one that weighs.
+        let weigh = |&(boundary, _, _): &(LayerId, _, _)| {
+            (boundary, self.weigh_boundary(ctx, costing, boundary))
         };
+
+        cfg_if! {
+            if #[cfg(feature = "parallel")] {
+                let hops = pending
+                    .iter()
+                    .map(|(_, from_layer, to_layer)| from_layer.len() * to_layer.len())
+                    .sum::<usize>();
+                let batch = (TASK_HOPS * pending.len()).div_ceil(hops.max(1));
+
+                let weighed = pending
+                    .par_iter()
+                    .with_min_len(batch)
+                    .map(weigh)
+                    .collect::<Vec<_>>();
+            } else {
+                let weighed = pending.iter().map(weigh).collect::<Vec<_>>();
+            }
+        }
 
         for (boundary, matrix) in weighed {
             if matrix.iter().all(|&w| w == NO_EDGE) {

@@ -67,6 +67,6 @@ mod util;
 pub use default::{CostingStrategies, DefaultEmissionCost, DefaultTransitionCost};
 pub use emission::{EmissionContext, EmissionStrategy};
 pub use transition::{
-    Headings, TransitionContext, TransitionLengths, TransitionStrategy, VirtualTails,
+    Headings, HopSummary, TransitionContext, TransitionLengths, TransitionStrategy, VirtualTails,
 };
 pub use util::{Costing, Strategy};

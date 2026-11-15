@@ -51,6 +51,11 @@ mod backing {
 /// Entries retained before the cache starts evicting.
 pub const DEFAULT_CACHE_CAPACITY: usize = 8_192;
 
+/// Entries a cache has room for from the start. One begun at nothing evicts
+/// from full buckets all the way up, and each eviction is a search to run
+/// again.
+const INITIAL_CACHE_CAPACITY: usize = 1_024;
+
 /// `HashCache` would round up and allocate too much, so enforced explicitly.
 const _: () = assert!(
     DEFAULT_CACHE_CAPACITY.is_power_of_two(),
@@ -161,7 +166,7 @@ where
     /// consumes an owned value of the key, [`N::Entry`], which is required
     /// for the call to the [`Calculable::calculate`] function.
     pub fn query(&self, ctx: &RoutingContext<N>, key: N::Entry) -> Arc<V> {
-        if let Some(value) = self.0.map.read_sync(&key, |_, v| Arc::clone(v)) {
+        if let Some(value) = self.cached(&key) {
             return value;
         }
 
@@ -169,6 +174,20 @@ where
         let _ = self.0.map.put_sync(key, Arc::clone(&calculated));
 
         calculated
+    }
+}
+
+impl<V, N, Meta> LockedMap<V, N, Meta>
+where
+    LockedMap<V, N, Meta>: Calculable<N, V>,
+    N: Network,
+    V: Debug,
+    Meta: Debug,
+{
+    /// The value held for `key`, if it has been calculated and not since
+    /// evicted. Never calculates.
+    pub(crate) fn cached(&self, key: &N::Entry) -> Option<Arc<V>> {
+        self.0.map.read_sync(key, |_, v| Arc::clone(v))
     }
 }
 
@@ -190,7 +209,11 @@ where
             "cache capacity must be a nonzero power of two"
         );
         Self {
-            map: Backing::with_capacity_and_hasher(0, capacity, FxBuildHasher::default()),
+            map: Backing::with_capacity_and_hasher(
+                capacity.min(INITIAL_CACHE_CAPACITY),
+                capacity,
+                FxBuildHasher::default(),
+            ),
             metadata,
         }
     }
@@ -285,10 +308,17 @@ mod successor {
 mod predicate {
     use std::sync::OnceLock;
 
+    use core::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::RwLock;
+
+    use crate::candidate::Candidate;
+    use crate::primitives::tree::Tree;
     use crate::primitives::{Dijkstra, algorithms::DijkstraReachableItem};
     use core::marker::PhantomData;
-    use routers_network::Network;
+    use geo::{Haversine, Point};
+    use routers_network::{Network, Node};
     use uom::si::f64::Length;
+    use uom::si::length::meter;
 
     use super::*;
 
@@ -304,7 +334,20 @@ mod predicate {
         value: 1_000.0,
     };
 
-    #[derive(Debug)]
+    /// Where a layer sits: the mean position of its candidates, which all lie
+    /// within the search radius of the observation they anchor.
+    fn centre<E: routers_network::Entry>(layer: &[Candidate<E>]) -> Option<Point> {
+        let count = layer.len() as f64;
+        let (x, y) = layer.iter().fold((0.0, 0.0), |(x, y), candidate| {
+            (x + candidate.position.x(), y + candidate.position.y())
+        });
+
+        (!layer.is_empty()).then(|| Point::new(x / count, y / count))
+    }
+
+    /// The road geometry walked so far from one root; see [`Tree`].
+    pub(crate) type Geometry<E> = Arc<RwLock<Tree<E>>>;
+
     pub struct PredicateMetadata<N>
     where
         N: Network,
@@ -313,12 +356,81 @@ mod predicate {
         /// prevent repeated calculations.
         successors: SuccessorsCache<N>,
 
+        /// The geometry of each root's reachability tree, measured as hops
+        /// walk it. Bounded in entries like the reachability maps it
+        /// describes — though not in bytes: a tree grows with the part of
+        /// its root's reach that hops have walked, and a walked node costs
+        /// several times what its entry in the reachability map does.
+        geometry: Backing<N::Entry, Geometry<N::Entry>>,
+
         /// How far the solver reaches.
         reach: Length,
+
+        /// Reachability searches run: every query the cache could not
+        /// answer.
+        searches: AtomicU64,
+
+        /// Entry bound of the reachability maps, kept to size a wider tier.
+        capacity: usize,
+
+        /// How the reach grows for sparse observations, if it does.
+        adaptive: Option<Adaptive>,
+
+        /// The next tier out: this cache again at twice the reach, made the
+        /// first time a gap is too wide for this one.
+        wider: OnceLock<PredicateCache<N>>,
 
         /// The runtime this cache is bound to, set on first query. Its stored
         /// reachability is only valid for that runtime.
         bound_runtime: OnceLock<N::Runtime>,
+    }
+
+    /// How far to reach for observations further apart than the base reach
+    /// was chosen for.
+    #[derive(Clone, Copy, Debug)]
+    struct Adaptive {
+        /// Reach wanted per metre between consecutive observations.
+        factor: f64,
+        /// The reach never grows past this.
+        ceiling: Length,
+    }
+
+    impl<N> Debug for PredicateMetadata<N>
+    where
+        N: Network,
+    {
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            f.debug_struct("PredicateMetadata")
+                .field("successors", &self.successors)
+                .field("reach", &self.reach)
+                .field("searches", &self.searches)
+                .field("bound_runtime", &self.bound_runtime)
+                .finish_non_exhaustive()
+        }
+    }
+
+    impl<N> PredicateMetadata<N>
+    where
+        N: Network,
+    {
+        /// `capacity` bounds the geometry kept, and is that of the
+        /// reachability maps it sits beside.
+        fn new(successors: SuccessorsCache<N>, reach: Length, capacity: usize) -> Self {
+            Self {
+                successors,
+                geometry: Backing::with_capacity_and_hasher(
+                    capacity.min(INITIAL_CACHE_CAPACITY),
+                    capacity,
+                    FxBuildHasher,
+                ),
+                reach,
+                searches: AtomicU64::new(0),
+                capacity,
+                adaptive: None,
+                wider: OnceLock::new(),
+                bound_runtime: OnceLock::new(),
+            }
+        }
     }
 
     impl<N> Default for PredicateMetadata<N>
@@ -326,11 +438,11 @@ mod predicate {
         N: Network,
     {
         fn default() -> Self {
-            Self {
-                successors: SuccessorsCache::default(),
-                reach: DEFAULT_REACH_DISTANCE,
-                bound_runtime: OnceLock::new(),
-            }
+            Self::new(
+                SuccessorsCache::default(),
+                DEFAULT_REACH_DISTANCE,
+                DEFAULT_CACHE_CAPACITY,
+            )
         }
     }
 
@@ -378,13 +490,18 @@ mod predicate {
         ///
         /// Panics if either bound is zero or not a power of two.
         pub fn with_capacities(predicates: usize, successors: usize) -> Self {
+            assert!(
+                predicates.is_power_of_two(),
+                "cache capacity must be a nonzero power of two"
+            );
+
             LockedMap(Arc::new(CacheMap::with_capacity_and_metadata(
                 predicates,
-                PredicateMetadata {
-                    successors: SuccessorsCache::with_cache_capacity(successors),
-                    reach: DEFAULT_REACH_DISTANCE,
-                    bound_runtime: OnceLock::new(),
-                },
+                PredicateMetadata::new(
+                    SuccessorsCache::with_cache_capacity(successors),
+                    DEFAULT_REACH_DISTANCE,
+                    predicates,
+                ),
             )))
         }
 
@@ -394,16 +511,150 @@ mod predicate {
         /// motorway driving. The cost is superlinear: a Dijkstra reaching
         /// twice as far settles far more than twice the nodes.
         pub fn with_reach_distance(reach_distance: Length) -> Self {
-            LockedMap(Arc::new(CacheMap::with_metadata(PredicateMetadata {
-                successors: SuccessorsCache::default(),
-                reach: reach_distance,
-                bound_runtime: OnceLock::new(),
-            })))
+            LockedMap(Arc::new(CacheMap::with_metadata(PredicateMetadata::new(
+                SuccessorsCache::default(),
+                reach_distance,
+                DEFAULT_CACHE_CAPACITY,
+            ))))
+        }
+
+        /// An empty cache whose entries reach `reach_distance`, holding at
+        /// most `capacity` of them (and as many successor lists).
+        ///
+        /// For where memory is tight and the default bound is not: each entry
+        /// is every node within reach of one root, so a long reach makes for
+        /// large entries.
+        ///
+        /// # Panics
+        ///
+        /// Panics if `capacity` is zero or not a power of two.
+        pub fn with_reach_and_capacity(reach_distance: Length, capacity: usize) -> Self {
+            assert!(
+                capacity.is_power_of_two(),
+                "cache capacity must be a nonzero power of two"
+            );
+
+            LockedMap(Arc::new(CacheMap::with_capacity_and_metadata(
+                capacity,
+                PredicateMetadata::new(
+                    SuccessorsCache::with_cache_capacity(capacity),
+                    reach_distance,
+                    capacity,
+                ),
+            )))
+        }
+
+        /// An empty cache whose reach widens for sparse observations.
+        ///
+        /// Consecutive observations are searched between at `reach_distance`. Where
+        /// two are further apart, the search reaches `factor` times the gap between
+        /// them instead, in doublings of `reach_distance` up to `ceiling` — so only
+        /// the long gaps of a trace pay for a long reach. A `factor` of 3–5 leaves
+        /// room for the road to wind. Each doubling caches its own searches.
+        ///
+        /// # Panics
+        ///
+        /// Panics unless `reach_distance` is positive and all three arguments are
+        /// finite.
+        pub fn with_adaptive_reach(reach_distance: Length, factor: f64, ceiling: Length) -> Self {
+            assert!(
+                reach_distance.value.is_finite() && reach_distance.value > 0.0,
+                "an adaptive reach must start from a positive, finite reach"
+            );
+            assert!(
+                factor.is_finite() && ceiling.value.is_finite(),
+                "an adaptive reach needs a finite factor and ceiling"
+            );
+
+            let mut metadata = PredicateMetadata::new(
+                SuccessorsCache::default(),
+                reach_distance,
+                DEFAULT_CACHE_CAPACITY,
+            );
+            metadata.adaptive = Some(Adaptive { factor, ceiling });
+
+            LockedMap(Arc::new(CacheMap::with_metadata(metadata)))
+        }
+
+        /// The cache to search between two consecutive layers with: this one, or the
+        /// narrowest wider tier that reaches far enough. A function of the two
+        /// layers alone, so weighing a boundary and re-deriving one of its hops
+        /// agree.
+        pub(crate) fn reaching(
+            &self,
+            from_layer: &[Candidate<N::Entry>],
+            to_layer: &[Candidate<N::Entry>],
+        ) -> &Self {
+            let Some(adaptive) = self.0.metadata.adaptive else {
+                return self;
+            };
+            let (Some(from), Some(to)) = (centre(from_layer), centre(to_layer)) else {
+                return self;
+            };
+
+            let wanted = Length::new::<meter>(adaptive.factor * Haversine.distance(from, to));
+
+            let mut tier = self;
+            while tier.reach_distance() < wanted && tier.reach_distance() < adaptive.ceiling {
+                tier = tier.wider(adaptive);
+            }
+            tier
+        }
+
+        /// This cache at twice the reach (the ceiling permitting), sharing
+        /// its successor lists: those do not depend on how far a search goes.
+        fn wider(&self, adaptive: Adaptive) -> &Self {
+            let metadata = &self.0.metadata;
+
+            metadata.wider.get_or_init(|| {
+                let reach = metadata.reach + metadata.reach;
+                let reach = if reach < adaptive.ceiling {
+                    reach
+                } else {
+                    adaptive.ceiling
+                };
+
+                let mut wider =
+                    PredicateMetadata::new(metadata.successors.clone(), reach, metadata.capacity);
+                wider.adaptive = Some(adaptive);
+
+                LockedMap(Arc::new(CacheMap::with_capacity_and_metadata(
+                    metadata.capacity,
+                    wider,
+                )))
+            })
+        }
+
+        /// The geometry walked from `root`, shared by every hop leaving it.
+        pub(crate) fn geometry(&self, root: Node<N::Entry>) -> Geometry<N::Entry> {
+            let trees = &self.0.metadata.geometry;
+            if let Some(tree) = trees.read_sync(&root.id, |_, tree| Arc::clone(tree)) {
+                return tree;
+            }
+
+            let tree = Arc::new(RwLock::new(Tree::new(root)));
+            match trees.put_sync(root.id, Arc::clone(&tree)) {
+                Ok(_) => tree,
+                // Lost a race to insert: share the winner's, so its
+                // measurements are not made twice.
+                Err(_) => trees
+                    .read_sync(&root.id, |_, tree| Arc::clone(tree))
+                    .unwrap_or(tree),
+            }
         }
 
         /// How far this cache's entries reach.
         pub fn reach_distance(&self) -> Length {
             self.0.metadata.reach
+        }
+
+        /// How many reachability searches this cache has had to run — its misses,
+        /// wider tiers included. A warm cache answers a match without searching, so
+        /// this tells a slow match from a cold one.
+        pub fn searches(&self) -> u64 {
+            let wider = self.0.metadata.wider.get().map_or(0, Self::searches);
+
+            self.0.metadata.searches.load(Ordering::Relaxed) + wider
         }
     }
 
@@ -424,9 +675,11 @@ mod predicate {
                  resolved for a different routing configuration. Use one cache per runtime."
             );
 
+            self.0.metadata.searches.fetch_add(1, Ordering::Relaxed);
+
             let reach = self.0.metadata.reach;
 
-            Dijkstra
+            let reached = Dijkstra
                 .reach(&key, move |node| {
                     ArcIter::new(self.0.metadata.successors.query(ctx, *node))
                         .map(|(a, _, b)| (a, b))
@@ -435,7 +688,14 @@ mod predicate {
                 .map(|DijkstraReachableItem { node, parent, .. }| {
                     (node, parent.unwrap_or_default())
                 })
-                .collect::<Predicates<N::Entry>>()
+                .collect::<Vec<_>>();
+
+            // Sized once, now the count is known: the search itself cannot
+            // say how many nodes it will settle, so collecting straight into
+            // the map would regrow and rehash it all the way up.
+            let mut predicates = Predicates::with_capacity_and_hasher(reached.len(), FxBuildHasher);
+            predicates.extend(reached);
+            predicates
         }
     }
 }
@@ -467,6 +727,7 @@ where
     }
 }
 
+pub(crate) use predicate::Geometry;
 pub use predicate::{DEFAULT_REACH_DISTANCE, PredicateCache};
 pub use successor::SuccessorsCache;
 
