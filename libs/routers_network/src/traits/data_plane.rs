@@ -63,6 +63,24 @@ pub trait DataPlane: Debug + Send + Sync {
     }
 
     fn fatten(&self, edge: &Edge<Self::Entry>) -> Option<Edge<Node<Self::Entry>>>;
+
+    /// The matcher's bounded reachability search from `root`, run by the
+    /// network itself: every node settled before the search first settles
+    /// one at `reach` metres or beyond, each with the node it was reached
+    /// from (the root with the default entry).
+    ///
+    /// `None` — the default — leaves the search to the matcher, which walks
+    /// [`edges_outof`](Self::edges_outof). A network whose storage can run
+    /// it faster may answer instead, and must then settle exactly the nodes,
+    /// with exactly the parents, that the matcher's own search would.
+    fn reach(
+        &self,
+        _root: &Self::Entry,
+        _reach: f64,
+        _runtime: &Self::Runtime,
+    ) -> Option<Vec<(Self::Entry, Self::Entry)>> {
+        None
+    }
 }
 
 // Blanket forward through `Arc<T>` so consumers (e.g. a viewer that swaps
@@ -105,5 +123,14 @@ where
 
     fn fatten(&self, edge: &Edge<Self::Entry>) -> Option<Edge<Node<Self::Entry>>> {
         (**self).fatten(edge)
+    }
+
+    fn reach(
+        &self,
+        root: &Self::Entry,
+        reach: f64,
+        runtime: &Self::Runtime,
+    ) -> Option<Vec<(Self::Entry, Self::Entry)>> {
+        (**self).reach(root, reach, runtime)
     }
 }

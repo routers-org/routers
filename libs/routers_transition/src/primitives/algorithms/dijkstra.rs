@@ -4,7 +4,7 @@ use core::hash::{BuildHasherDefault, Hash};
 use indexmap::IndexMap;
 use indexmap::map::Entry;
 use num_traits::Zero;
-use rustc_hash::{FxHashSet, FxHasher};
+use rustc_hash::FxHasher;
 
 use crate::primitives::WeightAndDistance;
 
@@ -12,16 +12,19 @@ type FxIndexMap<K, V> = IndexMap<K, V, BuildHasherDefault<FxHasher>>;
 
 type Cost = WeightAndDistance;
 
+/// A frontier entry. Ordered by `key` alone — the cost's [`repr`](Cost::repr),
+/// taken once when the entry is made rather than on every heap comparison.
 #[derive(Debug)]
 struct SmallestHolder {
+    key: u32,
     cost: Cost,
-    index: usize,
+    index: u32,
 }
 
 impl PartialEq for SmallestHolder {
     #[inline]
     fn eq(&self, other: &Self) -> bool {
-        self.cost == other.cost
+        self.key == other.key
     }
 }
 
@@ -37,9 +40,21 @@ impl PartialOrd for SmallestHolder {
 impl Ord for SmallestHolder {
     #[inline]
     fn cmp(&self, other: &Self) -> Ordering {
-        other.cost.cmp(&self.cost)
+        other.key.cmp(&self.key)
     }
 }
+
+/// What is known of a discovered node: the node it was best reached from
+/// (as an index into the same map), and that route's cost and its `key`.
+#[derive(Debug, Clone, Copy)]
+struct Reached {
+    parent: u32,
+    cost: Cost,
+    key: u32,
+}
+
+/// The root has no parent.
+const NO_PARENT: u32 = u32::MAX;
 
 /// Struct returned by [`dijkstra_reach`].
 pub struct DijkstraReachable<FN, E>
@@ -47,8 +62,9 @@ where
     E: routers_network::Entry,
 {
     to_see: BinaryHeap<SmallestHolder>,
-    seen: FxHashSet<usize>,
-    parents: FxIndexMap<E, (usize, Cost)>,
+    /// Settled nodes, by index into `parents`.
+    seen: Vec<bool>,
+    parents: FxIndexMap<E, Reached>,
     successors: FN,
 }
 
@@ -76,17 +92,20 @@ where
     type Item = DijkstraReachableItem<E>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        while let Some(SmallestHolder { cost, index }) = self.to_see.pop() {
-            if !self.seen.insert(index) {
+        while let Some(SmallestHolder { cost, index, .. }) = self.to_see.pop() {
+            if core::mem::replace(&mut self.seen[index as usize], true) {
                 continue;
             }
 
             let (item, successors) = {
-                let (node, (parent_index, cost)) = self.parents.get_index(index).unwrap();
+                let (node, reached) = self.parents.get_index(index as usize).unwrap();
                 let item = Some(DijkstraReachableItem {
                     node: *node,
-                    parent: self.parents.get_index(*parent_index).map(|x| *x.0),
-                    total_cost: *cost,
+                    parent: self
+                        .parents
+                        .get_index(reached.parent as usize)
+                        .map(|x| *x.0),
+                    total_cost: reached.cost,
                 });
 
                 (item, (self.successors)(node))
@@ -94,16 +113,23 @@ where
 
             for (successor, move_cost) in successors {
                 let new_cost = cost + move_cost;
+                let key = new_cost.repr();
+                let reached = Reached {
+                    parent: index,
+                    cost: new_cost,
+                    key,
+                };
 
                 let index = match self.parents.entry(successor) {
                     Entry::Vacant(e) => {
                         let n = e.index();
-                        e.insert((index, new_cost));
+                        e.insert(reached);
+                        self.seen.push(false);
                         n
                     }
                     Entry::Occupied(mut e) => {
-                        if e.get().1 > new_cost {
-                            e.insert((index, new_cost));
+                        if e.get().key > key {
+                            e.insert(reached);
                             e.index()
                         } else {
                             continue;
@@ -112,8 +138,9 @@ where
                 };
 
                 self.to_see.push(SmallestHolder {
+                    key,
                     cost: new_cost,
-                    index,
+                    index: index as u32,
                 });
             }
 
@@ -138,17 +165,29 @@ impl Dijkstra {
         FN: FnMut(&E) -> IN,
         IN: Iterator<Item = (E, Cost)>,
     {
+        let origin: Cost = Zero::zero();
+
         let mut to_see: BinaryHeap<SmallestHolder> = BinaryHeap::with_capacity(256);
         to_see.push(SmallestHolder {
-            cost: Zero::zero(),
+            key: origin.repr(),
+            cost: origin,
             index: 0,
         });
 
-        let mut parents: FxIndexMap<E, (usize, Cost)> =
+        let mut parents: FxIndexMap<E, Reached> =
             FxIndexMap::with_capacity_and_hasher(64, BuildHasherDefault::<FxHasher>::default());
 
-        parents.insert(*start, (usize::MAX, Zero::zero()));
-        let seen = FxHashSet::default();
+        parents.insert(
+            *start,
+            Reached {
+                parent: NO_PARENT,
+                cost: origin,
+                key: origin.repr(),
+            },
+        );
+
+        let mut seen = Vec::with_capacity(64);
+        seen.push(false);
 
         DijkstraReachable {
             to_see,

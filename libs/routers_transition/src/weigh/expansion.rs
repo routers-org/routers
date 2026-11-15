@@ -82,7 +82,17 @@ where
         source: &Candidate<N::Entry>,
         target: &Candidate<N::Entry>,
     ) -> Option<Vec<Edge<N::Entry>>> {
-        let parents = self.predicate.query(self.ctx, source.edge.target);
+        // Searched at the reach the hop's boundary was weighed at.
+        let layers = &self.ctx.candidates;
+        let predicate = match (
+            layers.layer(source.location.layer),
+            layers.layer(target.location.layer),
+        ) {
+            (Some(from_layer), Some(to_layer)) => self.predicate.reaching(from_layer, to_layer),
+            _ => self.predicate,
+        };
+
+        let parents = predicate.query(self.ctx, source.edge.target);
         let nodes = parents.path(&source.edge.target, &target.edge.source)?;
 
         Some(

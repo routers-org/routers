@@ -519,3 +519,106 @@ fn shared_cache_is_reused_across_matches() {
     assert!(first.is_some(), "8km reach must bridge 5.5km");
     assert_eq!(first, second, "a warm cache changed the answer");
 }
+
+/// A straight west-bound road of `n` nodes, ~92 m apart.
+fn westbound_road(n: i64) -> MockNetwork {
+    let mut builder = MockNetworkBuilder::new();
+    for i in 0..n {
+        builder = builder.node(i + 1, point!(x: -118.15 - (i as f64) * 0.001, y: 34.15));
+    }
+    for i in 1..n {
+        builder = builder.edge(i, i + 1);
+    }
+    builder.build()
+}
+
+/// Observations ~2.8 km apart along [`westbound_road`]: far beyond the default
+/// 1 km reach.
+fn sparse_trip() -> LineString {
+    wkt! { LINESTRING(-118.1505 34.1503, -118.1805 34.1503, -118.2105 34.1503) }
+}
+
+/// A fixed reach cannot bridge observations further apart than itself...
+#[test]
+fn sparse_observations_break_a_fixed_reach() {
+    let net = westbound_road(80);
+
+    let result = net.r#match(sparse_trip(), MatchOptions::new());
+
+    assert!(result.is_err(), "a 1 km reach must not bridge a 2.8 km gap");
+}
+
+/// ...where an adaptive one widens to the gap, and only as far as its ceiling.
+#[test]
+fn an_adaptive_reach_bridges_sparse_observations() {
+    let net = westbound_road(80);
+    let adaptive = |ceiling: f64| {
+        Arc::new(PredicateCache::with_adaptive_reach(
+            Length::new::<meter>(1_000.0),
+            3.0,
+            Length::new::<meter>(ceiling),
+        ))
+    };
+
+    let routed = net
+        .r#match(
+            sparse_trip(),
+            MatchOptions::new().with_cache(adaptive(16_000.0)),
+        )
+        .expect("an adaptive reach bridges the gap");
+    assert_eq!(routed.discretized.elements.len(), 3);
+    assert!(
+        routed.interpolated.elements.len() > 60,
+        "the road between the observations is filled in"
+    );
+
+    let capped = net.r#match(
+        sparse_trip(),
+        MatchOptions::new().with_cache(adaptive(2_000.0)),
+    );
+    assert!(capped.is_err(), "the ceiling still bounds the search");
+}
+
+/// Dense observations never leave the base reach, so an adaptive cache
+/// matches them exactly as a fixed one does, at the same cost.
+#[test]
+fn an_adaptive_reach_leaves_dense_observations_alone() {
+    let net = westbound_road(80);
+    let dense: LineString = wkt! {
+        LINESTRING(-118.1505 34.1503, -118.1525 34.1503, -118.1545 34.1503, -118.1565 34.1503)
+    };
+
+    let fixed = Arc::new(PredicateCache::with_reach_distance(Length::new::<meter>(
+        1_000.0,
+    )));
+    let adaptive = Arc::new(PredicateCache::with_adaptive_reach(
+        Length::new::<meter>(1_000.0),
+        3.0,
+        Length::new::<meter>(16_000.0),
+    ));
+
+    let shape = |cache: &Arc<PredicateCache<MockNetwork>>| {
+        net.r#match(dense.clone(), MatchOptions::new().with_cache(cache.clone()))
+            .expect("match must succeed")
+            .interpolated
+            .elements
+            .iter()
+            .map(|element| (element.point.x, element.point.y))
+            .collect::<Vec<_>>()
+    };
+
+    assert_eq!(shape(&adaptive), shape(&fixed));
+    assert_eq!(adaptive.searches(), fixed.searches());
+}
+
+/// A reach of nothing would never widen to anything: refused outright,
+/// rather than left to double zero forever.
+#[test]
+#[should_panic(expected = "positive, finite reach")]
+fn an_adaptive_reach_needs_somewhere_to_start() {
+    let _ = PredicateCache::<MockNetwork>::with_adaptive_reach(
+        Length::new::<meter>(0.0),
+        3.0,
+        Length::new::<meter>(16_000.0),
+    );
+}

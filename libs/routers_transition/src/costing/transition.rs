@@ -4,6 +4,7 @@ use crate::costing::Strategy;
 use crate::map_path::MapPath;
 use crate::primitives::{ResolutionMethod, RoutingContext};
 use geo::{Distance, Haversine, Point};
+use routers_network::edge::Weight;
 use routers_network::{Entry, Network};
 
 pub trait TransitionStrategy<E>: for<'a> Strategy<TransitionContext<'a, E>> {}
@@ -83,12 +84,26 @@ where
     pub virtual_tails: VirtualTails,
 }
 
+#[derive(Clone, Copy, Debug)]
 pub struct TransitionLengths {
     /// The great circle distance between source and target
     pub straightline_distance: f64,
 
     /// The path of the optimal route between candidates
     pub route_length: f64,
+}
+
+/// What a transition strategy that does not walk the path is given of a
+/// routed hop: each value exactly what the [`TransitionContext`] of the same
+/// hop would have answered.
+#[derive(Clone, Copy, Debug)]
+pub struct HopSummary {
+    /// As [`TransitionContext::lengths`].
+    pub lengths: Option<TransitionLengths>,
+    /// As [`TransitionContext::angular_complexity`].
+    pub angular_complexity: f64,
+    /// The road-class weights of the edges the hop leaves and arrives on.
+    pub classes: (Weight, Weight),
 }
 
 impl TransitionLengths {
@@ -173,6 +188,39 @@ where
         })
     }
 
+    /// Builds the context from geometry the caller has already derived.
+    ///
+    /// The weighing pipeline costs every candidate pair of a boundary, and
+    /// most of what [`new`](Self::new) computes depends on only one of the
+    /// two candidates — so it is derived once per candidate and passed in
+    /// here, rather than once per pair. The result is field-for-field what
+    /// [`new`](Self::new) would have built.
+    pub(crate) fn from_parts(
+        candidates: &'a CandidateStore<E>,
+        (source, target): (&Candidate<E>, &Candidate<E>),
+        optimal_path: MapPath<E>,
+        map_path: &'a [E],
+        headings: Headings,
+        virtual_tails: VirtualTails,
+        method: ResolutionMethod,
+    ) -> Self {
+        Self {
+            optimal_path,
+            candidates,
+            requested_resolution_method: method,
+
+            source_position: source.position,
+            target_position: target.position,
+
+            source_candidate: source.location,
+            target_candidate: target.location,
+
+            map_path,
+            headings,
+            virtual_tails,
+        }
+    }
+
     /// Overrides the [resolution method](ResolutionMethod) used when costing
     /// the transition.
     pub fn with_resolution_method(mut self, method: ResolutionMethod) -> Self {
@@ -206,6 +254,14 @@ where
             self.source_position,
             self.target_position,
         )
+    }
+
+    /// The road-class weights of the edges the transition leaves and
+    /// arrives on.
+    pub(crate) fn classes(&self) -> (Weight, Weight) {
+        let (source, target) = self.candidates();
+
+        (source.edge.weight, target.edge.weight)
     }
 
     /// Calculates the total offset, of both source and target positions within the context,
