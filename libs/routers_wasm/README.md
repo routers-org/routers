@@ -97,22 +97,6 @@ The components build under the `wasm` cargo profile (`release` with one
 codegen unit), which makes the shipped bundle both smaller and faster than
 plain `--release`.
 
-### WASI 0.3
-
-The devShell also carries `wasm32-wasip3`, and the component builds for it
-unchanged:
-
-```sh
-just wasm_target=wasm32-wasip3 wasm-build
-just wasm_target=wasm32-wasip3 wasm-e2e-wasmtime
-```
-
-The package still ships `wasm32-wasip2`. Under Wasmtime the two perform
-alike, but a 0.3 component transpiled by jco needs JSPI
-(`WebAssembly.Suspending` — absent from Node 22), pulls in a larger JS shim,
-and currently runs an order of magnitude slower there. Revisit as jco's 0.3
-support matures.
-
 On release, CI runs the same pipeline: the optimised component is attached to
 the GitHub release, and `@routers-org/router` is published to npm at the crate's
 version (bump `routers_wasm` to publish).

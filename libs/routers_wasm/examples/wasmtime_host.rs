@@ -53,9 +53,7 @@ async fn main() -> wasmtime::Result<()> {
         .next()
         .unwrap_or_else(|| "libs/routers_wasm/dist/shards".to_string());
 
-    // The component's std imports are WASI 0.2 or 0.3, by the target it was
-    // built for (`wasm32-wasip2`/`wasm32-wasip3`). Offering both lets one host
-    // run either; 0.3 is why everything below is async.
+    // Link both WASI 0.2 and 0.3: 0.3 requires the async API.
     let mut config = Config::new();
     config.wasm_component_model_async(true);
     let engine = Engine::new(&config)?;
