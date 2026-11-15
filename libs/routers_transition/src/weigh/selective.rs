@@ -79,16 +79,14 @@ where
             return (0..to_layer.len() as u32).map(NodeId).collect();
         }
 
-        // Measure each target once; selection then compares plain floats
-        // rather than re-deriving two great-circle distances per comparison.
+        // Measure each target once.
         let mut nearest = to_layer
             .iter()
             .enumerate()
             .map(|(i, target)| (Haversine.distance(source.position, target.position), i))
             .collect::<Vec<_>>();
 
-        // Partial selection: only membership of the nearest `fanout`
-        // matters, never their order.
+        // Only membership of the nearest `fanout` matters, not their order.
         nearest.select_nth_unstable_by(self.fanout.saturating_sub(1), |a, b| a.0.total_cmp(&b.0));
         nearest.truncate(self.fanout);
 

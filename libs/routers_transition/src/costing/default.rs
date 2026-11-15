@@ -156,8 +156,7 @@ pub mod transition {
         }
     }
 
-    /// The transition cost of a hop of the given lengths and turning,
-    /// between edges of the given road classes.
+    /// The transition cost of a hop from its lengths, turning and road classes.
     #[inline]
     fn combine(
         lengths: &TransitionLengths,
