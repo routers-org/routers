@@ -2,6 +2,30 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.11] - 2026-11-16
+
+### 🚀 Features
+
+- *(transition)* Trace the phases of a match
+
+### ⚡ Performance
+
+- *(transition)* Cheaper searches and short trajectories
+- *(transition)* Weigh a boundary as a batch, from shared geometry
+- *(transition)* A summarised path's lengths need no candidate lookup
+
+### 🚜 Refactor
+
+- *(transition)* Cost a summarised hop through `calculate`
+
+### ⚙️ Miscellaneous Tasks
+
+- Trim comments
+- Trim comments
+- Trim comments
+
+
+
 ## [0.3.10] - 2026-11-10
 
 ### 🐛 Bug Fixes

@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.8.3] - 2026-11-16
+
+### 🚀 Features
+
+- *(transition)* Trace the phases of a match
+
+### ⚙️ Miscellaneous Tasks
+
+- Trim comments
+
+
+
 ## [0.8.2] - 2026-11-11
 
 ### ⚙️ Miscellaneous Tasks
