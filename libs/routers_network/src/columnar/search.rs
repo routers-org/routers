@@ -50,11 +50,16 @@ impl Cost {
     }
 
     /// The ordering key: mean road class, squared, times distance.
+    ///
+    /// The matcher takes this product in `f64` and casts it to `u32`. Every
+    /// product that fits a `u32` is exact in an `f64`, and the cast saturates
+    /// as this does, so the two agree to the bit.
     #[inline]
     fn key(self) -> u32 {
-        let class = self.class_sum.checked_div(self.edges).unwrap_or(0);
+        let class = u64::from(self.class_sum.checked_div(self.edges).unwrap_or(0));
+        let key = (class * class).saturating_mul(u64::from(self.distance_cm));
 
-        (f64::from(class).powi(2) * f64::from(self.distance_cm)) as u32
+        key.min(u64::from(u32::MAX)) as u32
     }
 }
 
@@ -68,10 +73,13 @@ struct Label {
 }
 
 /// A frontier entry, ordered by key alone: smallest first.
+///
+/// It names its label rather than carrying the label's cost. The first entry
+/// popped for a label is the one last pushed for it, since a label is only
+/// pushed again at a smaller key; so the label still holds that entry's cost.
 #[derive(Debug)]
 struct Open {
     key: u32,
-    cost: Cost,
     label: u32,
 }
 
@@ -93,6 +101,31 @@ impl Ord for Open {
     fn cmp(&self, other: &Self) -> Ordering {
         other.key.cmp(&self.key)
     }
+}
+
+/// The least distance, in centimetres, that is not within `reach`.
+///
+/// "Within" is the matcher's own comparison, of lengths. It holds for every
+/// distance below some point and none from it on, so that point is found
+/// once here rather than the comparison made at every node. A reach that
+/// compares with nothing (NaN) has nothing within it.
+fn bound(reach: Length) -> u64 {
+    let within = |distance_cm: u32| Length::new::<centimeter>(f64::from(distance_cm)) < reach;
+
+    if within(u32::MAX) {
+        return u64::from(u32::MAX) + 1;
+    }
+
+    let (mut low, mut high) = (0u32, u32::MAX);
+    while low < high {
+        let middle = low + (high - low) / 2;
+        if within(middle) {
+            low = middle + 1;
+        } else {
+            high = middle;
+        }
+    }
+    u64::from(low)
 }
 
 /// A reusable search workspace.
@@ -132,22 +165,18 @@ impl Search {
         self.settled.clear();
         self.discover(root, 0, Cost::default());
 
-        while let Some(Open { cost, label, .. }) = self.open.pop() {
+        let bound = bound(reach);
+
+        while let Some(Open { label, .. }) = self.open.pop() {
             if core::mem::replace(&mut self.seen[label as usize], true) {
                 continue;
             }
 
             let Label {
-                node,
-                parent,
-                cost: best,
-                ..
+                node, parent, cost, ..
             } = self.labels[label as usize];
 
-            // Written as the matcher writes it, so a reach that compares
-            // with nothing (NaN) ends the search here too.
-            let within = Length::new::<centimeter>(f64::from(best.distance_cm)) < reach;
-            if !within {
+            if u64::from(cost.distance_cm) >= bound {
                 break;
             }
 
@@ -222,7 +251,6 @@ impl Search {
 
                 self.open.push(Open {
                     key: total,
-                    cost: cost(total),
                     label: self.slot[next as usize],
                 });
             }
@@ -271,7 +299,7 @@ impl Search {
         let key = cost.key();
         let label = self.place(node, parent, cost, key);
 
-        self.open.push(Open { key, cost, label });
+        self.open.push(Open { key, label });
     }
 
     /// Offer `node` a route through `parent` at `cost`.
@@ -289,7 +317,7 @@ impl Search {
             known.parent = parent;
             known.cost = cost;
             known.key = key;
-            self.open.push(Open { key, cost, label });
+            self.open.push(Open { key, label });
         }
     }
 }
