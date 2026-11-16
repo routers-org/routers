@@ -7553,17 +7553,15 @@ dependencies = [
 
 [[package]]
 name = "routers_shard"
-version = "0.3.2"
+version = "0.4.0"
 dependencies = [
  "clap",
  "env_logger",
  "geo",
  "js-sys",
  "log",
- "petgraph 0.8.3",
  "postcard",
  "quote",
- "rayon",
  "routers_codec",
  "routers_network",
  "rustc-hash 2.1.3",

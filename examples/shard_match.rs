@@ -23,7 +23,7 @@ fn main() {
         "Sharded ingest: {} loaded shards, {} nodes, {} edges in {}ms",
         network.loaded.len(),
         network.num_nodes(),
-        network.graph.edge_count(),
+        network.num_edges(),
         started.elapsed().as_millis(),
     );
 

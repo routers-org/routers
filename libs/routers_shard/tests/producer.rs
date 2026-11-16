@@ -22,14 +22,10 @@ type Fingerprint = (
 
 /// Order-independent view of a shard's contents.
 fn fingerprint<S: routers_shard::ShardId>(net: &Net<S>) -> Fingerprint {
-    let nodes = net.hash.keys().copied().collect();
-    let edges = net
-        .graph
-        .all_edges()
-        .map(|(s, t, (w, _))| (s, t, *w))
-        .collect();
+    let nodes = net.nodes().map(|node| node.id).collect();
+    let edges = net.edges().map(|(s, t, (w, _))| (s, t, w)).collect();
     // Which metadata each edge id kept, not just whether it kept one.
-    let meta = net.meta.iter().map(|(k, m)| (*k, m.lane_count)).collect();
+    let meta = net.ways().map(|(k, m)| (k, m.lane_count)).collect();
     (nodes, edges, meta)
 }
 
@@ -76,14 +72,14 @@ fn assert_equivalent(source: &MemSource, precision: u8, padding: f64) {
             net.owned
         );
         assert_eq!(
-            net.index.len(),
-            reference.index.len(),
+            net.graph().index_sizes().0,
+            reference.graph().index_sizes().0,
             "{}: node index",
             net.owned
         );
         assert_eq!(
-            net.index_edge.len(),
-            reference.index_edge.len(),
+            net.graph().index_sizes().1,
+            reference.graph().index_sizes().1,
             "{}: edge index",
             net.owned
         );
@@ -162,13 +158,16 @@ fn without_indices_yields_identical_content_and_empty_indices() {
     for (a, b) in indexed.iter().zip(&bare) {
         assert_eq!(a.owned, b.owned);
         assert_eq!(fingerprint(a), fingerprint(b));
-        assert!(a.index.len() > 0);
-        assert_eq!(b.index.len(), 0);
-        assert_eq!(b.index_edge.len(), 0);
+        assert!(a.graph().index_sizes().0 > 0);
+        assert_eq!(b.graph().index_sizes().0, 0);
+        assert_eq!(b.graph().index_sizes().1, 0);
     }
     // A bare shard round-trips through the cache format to a fully indexed one.
     let bytes = bare[0].to_cache_bytes().expect("encode");
     let loaded: ShardedNetwork<OsmEntryId, OsmEdgeMetadata, routers_shard::Geohash> =
         ShardedNetwork::from_cached_bytes(&bytes).expect("decode");
-    assert_eq!(loaded.index.len(), indexed[0].index.len());
+    assert_eq!(
+        loaded.graph().index_sizes().0,
+        indexed[0].graph().index_sizes().0
+    );
 }
