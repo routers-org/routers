@@ -4,12 +4,12 @@ on:
     - cron: '0 0 * * 0'
 permissions:
   contents: read
-  issues: write 
 jobs:
   audit:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: rustsec/audit-check@v2.0.0
+      - uses: EmbarkStudios/cargo-deny-action@v2
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          command: check advisories
+          arguments: --workspace --all-features
