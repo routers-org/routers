@@ -18,8 +18,10 @@ mod cache;
 mod error;
 mod resolve;
 mod routing;
+pub(crate) mod tree;
 mod weight_and_distance;
 
+pub(crate) use cache::Geometry;
 pub use cache::{DEFAULT_REACH_DISTANCE, PredicateCache, SuccessorsCache};
 pub use error::{Disconnected, DisconnectedError, MatchError, Unanchored, UnanchoredError};
 pub use resolve::{Reachable, ResolutionMethod};

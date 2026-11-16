@@ -100,6 +100,7 @@
             cargo-codspeed
             cargo-insta
             cargo-nextest
+            perf
             git-cliff
 
             just

@@ -8,6 +8,7 @@
 mod entity;
 
 pub use entity::MapPath;
+pub(crate) use entity::{Joint, Segment, Station, Stride, Turn, Turns};
 
 #[cfg(test)]
 mod test;

@@ -75,18 +75,21 @@ where
         source: &Candidate<N::Entry>,
         to_layer: &[Candidate<N::Entry>],
     ) -> Vec<NodeId> {
-        let mut nearest = (0..to_layer.len()).collect::<Vec<_>>();
-        if nearest.len() > self.fanout {
-            let distance_to =
-                |i: &usize| Haversine.distance(source.position, to_layer[*i].position);
-            // Partial selection: only membership of the nearest `fanout`
-            // matters, never their order.
-            nearest.select_nth_unstable_by(self.fanout.saturating_sub(1), |a, b| {
-                distance_to(a).total_cmp(&distance_to(b))
-            });
-            nearest.truncate(self.fanout);
+        if to_layer.len() <= self.fanout {
+            return (0..to_layer.len() as u32).map(NodeId).collect();
         }
 
-        nearest.into_iter().map(|i| NodeId(i as u32)).collect()
+        // Measure each target once.
+        let mut nearest = to_layer
+            .iter()
+            .enumerate()
+            .map(|(i, target)| (Haversine.distance(source.position, target.position), i))
+            .collect::<Vec<_>>();
+
+        // Only membership of the nearest `fanout` matters, not their order.
+        nearest.select_nth_unstable_by(self.fanout.saturating_sub(1), |a, b| a.0.total_cmp(&b.0));
+        nearest.truncate(self.fanout);
+
+        nearest.into_iter().map(|(_, i)| NodeId(i as u32)).collect()
     }
 }

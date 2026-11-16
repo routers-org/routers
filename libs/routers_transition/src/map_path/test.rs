@@ -4,7 +4,7 @@ use approx::assert_relative_eq;
 use geo::wkt;
 use routers_network::Node;
 
-use crate::map_path::MapPath;
+use crate::map_path::{MapPath, Segment, Station, Stride, Turn, Turns};
 
 #[test]
 fn test_trip() {
@@ -222,4 +222,102 @@ fn analyse_cost3() {
 
     let complexity = trip.angular_complexity();
     assert_relative_eq!(complexity, 0.80, max_relative = 0.1);
+}
+
+/// A road that runs straight, bends, doubles back, and has two nodes under
+/// a metre apart.
+fn winding() -> Vec<geo::Point> {
+    [
+        (151.2001, -33.8701),
+        (151.2012, -33.8702),
+        (151.2023, -33.8704),
+        (151.202_300_5, -33.870_400_2),
+        (151.2031, -33.8716),
+        (151.2019, -33.8727),
+        (151.2020, -33.8715),
+        (151.2044, -33.8713),
+    ]
+    .into_iter()
+    .map(geo::Point::from)
+    .collect()
+}
+
+/// A station's distance must equal geo's Haversine distance to the bit.
+#[test]
+fn station_distance_is_haversine() {
+    use geo::{Distance, Haversine, Point};
+
+    let mut points = winding();
+    points.extend([
+        Point::new(0.0, 0.0),
+        Point::new(-118.2437, 34.0522),
+        Point::new(179.9, 89.9),
+        Point::new(-179.9, -89.9),
+        Point::new(12.5, -45.0),
+    ]);
+
+    for &from in &points {
+        for &to in &points {
+            assert_eq!(
+                Station::at(from).distance(&Station::at(to)).to_bits(),
+                Haversine.distance(from, to).to_bits(),
+                "{from:?} -> {to:?}"
+            );
+        }
+    }
+}
+
+/// Turns carried stride by stride must give the whole path's complexity.
+#[test]
+fn carried_turns_are_the_paths() {
+    let points = winding();
+    let (source, target) = (
+        geo::Point::new(151.1995, -33.8703),
+        geo::Point::new(151.2047, -33.8710),
+    );
+
+    let mut compared = 0;
+    for start in [None, Some(81.0)] {
+        for end in [None, Some(-12.5), Some(170.0)] {
+            for first in 0..points.len() - 1 {
+                for last in first + 1..points.len() {
+                    let path = &points[first..=last];
+
+                    let whole = MapPath::new(
+                        path.iter()
+                            .map(|&position| Node::new(position, OsmEntryId::null())),
+                    )
+                    .angular_complexity_with_headings(start, end, source, target);
+
+                    let lead = Segment::between(source, path[0]);
+                    let onto = start
+                        .zip(lead.heading())
+                        .map(|(edge, joint)| Turn::between(edge, joint));
+                    let mut turns = Turns::leaving(start, lead, onto);
+
+                    let mut heading = None;
+                    for pair in path.windows(2) {
+                        let segment = Segment::between(pair[0], pair[1]);
+                        turns = turns.along(Stride::after(heading, segment));
+                        heading = segment.heading().or(heading);
+                    }
+
+                    let trail = Segment::between(path[last - first], target);
+                    let off = trail
+                        .heading()
+                        .zip(end)
+                        .map(|(joint, edge)| Turn::between(joint, edge));
+
+                    assert_eq!(
+                        turns.arriving(trail, off, end).to_bits(),
+                        whole.to_bits(),
+                        "nodes {first}..={last}, headings {start:?} to {end:?}"
+                    );
+                    compared += 1;
+                }
+            }
+        }
+    }
+
+    assert!(compared > 100);
 }

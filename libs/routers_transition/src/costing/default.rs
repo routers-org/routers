@@ -133,6 +133,9 @@ pub mod transition {
         const ZETA: f64 = 1.;
         const BETA: f64 = 1.;
 
+        /// Only the path's length and turning are costed.
+        const WALKS_PATH: bool = false;
+
         #[inline]
         fn calculate(&self, context: TransitionContext<'a, E>) -> Option<Self::Cost> {
             const EPSILON: f64 = 1e-6;

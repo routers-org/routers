@@ -8,6 +8,9 @@
 //! Run: `cargo bench -p routers_transition`
 //! Compare against a saved baseline with criterion's `--save-baseline` / `--baseline`.
 
+// Linked for its global allocator: the services match under mimalloc.
+use routers_codec as _;
+
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use geo::{Coord, LineString, point};
 

@@ -14,6 +14,12 @@ pub trait Strategy<Ctx> {
     /// The beta (β) value in the decay function.
     const BETA: f64;
 
+    /// Whether this strategy reads the nodes of the routed path
+    /// ([`optimal_path`](TransitionContext::optimal_path),
+    /// [`map_path`](TransitionContext::map_path)). One that sets this `false`
+    /// may be handed a path holding only its length and turning.
+    const WALKS_PATH: bool = true;
+
     /// Returned values must be in the range `[0, 1]`, where `1` represents a
     /// perfect (free) choice and `0` the most expensive possible cost.
     fn calculate(&self, context: Ctx) -> Option<Self::Cost>;
@@ -34,7 +40,12 @@ pub trait Strategy<Ctx> {
             .map_or(0.0, |v| v.into())
             .clamp(EPSILON, 1.0);
 
-        let cost = (1.0 / v).powf(Self::BETA);
+        // `x.powf(1.0)` is exactly `x`; spares the default strategies a `pow`.
+        let cost = if Self::BETA == 1.0 {
+            1.0 / v
+        } else {
+            (1.0 / v).powf(Self::BETA)
+        };
         (PRECISION * Self::ZETA * cost) as u32
     }
 }

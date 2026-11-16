@@ -21,6 +21,10 @@ use routers_trellis::LayerId;
 
 use crate::candidate::Candidate;
 
+/// The longest input generated without the thread pool.
+#[cfg(feature = "parallel")]
+const SERIAL_POINTS: usize = 8;
+
 /// Produces the candidates anchoring each trajectory point.
 ///
 /// Candidate *identity* is positional and assigned by the
@@ -33,17 +37,19 @@ pub trait LayerGeneration<E: Entry>: Send + Sync {
 
     /// Generates all candidates, one set per input point, starting from `first_layer`.
     fn generate(&self, input: &[Point], first_layer: LayerId) -> Vec<Vec<Candidate<E>>> {
+        let layer = |(offset, origin): (usize, &Point)| {
+            self.candidates(origin, LayerId(first_layer.0 + offset as u32))
+        };
+
         cfg_if! {
             if #[cfg(feature = "parallel")] {
-                input.into_par_iter()
-                    .enumerate()
-                    .map(|(offset, origin)| self.candidates(origin, LayerId(first_layer.0 + offset as u32)))
-                    .collect()
+                if input.len() <= SERIAL_POINTS {
+                    input.iter().enumerate().map(layer).collect()
+                } else {
+                    input.into_par_iter().enumerate().map(layer).collect()
+                }
             } else {
-                input.iter()
-                    .enumerate()
-                    .map(|(offset, origin)| self.candidates(origin, LayerId(first_layer.0 + offset as u32)))
-                    .collect()
+                input.iter().enumerate().map(layer).collect()
             }
         }
     }

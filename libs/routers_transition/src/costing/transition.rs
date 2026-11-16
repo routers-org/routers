@@ -83,6 +83,7 @@ where
     pub virtual_tails: VirtualTails,
 }
 
+#[derive(Clone, Debug)]
 pub struct TransitionLengths {
     /// The great circle distance between source and target
     pub straightline_distance: f64,
@@ -173,6 +174,33 @@ where
         })
     }
 
+    /// Builds the context from geometry the caller has already derived.
+    pub(crate) fn from_parts(
+        candidates: &'a CandidateStore<E>,
+        (source, target): (&Candidate<E>, &Candidate<E>),
+        optimal_path: MapPath<E>,
+        map_path: &'a [E],
+        headings: Headings,
+        virtual_tails: VirtualTails,
+        method: ResolutionMethod,
+    ) -> Self {
+        Self {
+            optimal_path,
+            candidates,
+            requested_resolution_method: method,
+
+            source_position: source.position,
+            target_position: target.position,
+
+            source_candidate: source.location,
+            target_candidate: target.location,
+
+            map_path,
+            headings,
+            virtual_tails,
+        }
+    }
+
     /// Overrides the [resolution method](ResolutionMethod) used when costing
     /// the transition.
     pub fn with_resolution_method(mut self, method: ResolutionMethod) -> Self {
@@ -225,6 +253,18 @@ where
 
     /// Returns the [`TransitionLengths`] of the context.
     pub fn lengths(&self) -> Option<TransitionLengths> {
+        // A summarised path knows its span: no candidate need be looked up.
+        if let (Some(straightline_distance), ResolutionMethod::Standard) =
+            (self.optimal_path.span(), self.requested_resolution_method)
+        {
+            let offset = self.virtual_tails.source? + self.virtual_tails.target?;
+
+            return Some(TransitionLengths {
+                straightline_distance,
+                route_length: self.optimal_path.length() + offset,
+            });
+        }
+
         let (source, target) = self.candidates();
         let offset = self.total_offset(&source, &target)?;
 
