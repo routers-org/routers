@@ -66,9 +66,11 @@ pub mod emission {
 }
 
 pub mod transition {
-    use crate::costing::{HopSummary, Strategy, TransitionContext, TransitionLengths};
-    use routers_network::Entry;
-    use routers_network::edge::Weight;
+    use crate::{
+        candidate::Candidate,
+        costing::{Strategy, TransitionContext},
+    };
+    use routers_network::{Edge, Entry};
 
     /// Calculates the transition cost between two candidates.
     ///
@@ -136,45 +138,42 @@ pub mod transition {
 
         #[inline]
         fn calculate(&self, context: TransitionContext<'a, E>) -> Option<Self::Cost> {
+            const EPSILON: f64 = 1e-6;
+
             // Find the transition lengths (shortest path, trip length)
             let lengths = context.lengths()?;
 
-            Some(combine(
-                &lengths,
-                context.angular_complexity(),
-                context.classes(),
-            ))
+            // Value in range [0, 1] (1=Low Cost, 0=High Cost)
+            let deviance = lengths.deviance().clamp(EPSILON, 1.0);
+
+            // Value in range [0, 1] (1=Low Cost, 0=High Cost)
+            let turn_cost = context.angular_complexity().clamp(EPSILON, 1.0);
+
+            // Value in range [0, 1] (1=Low Cost, 0=High Cost)
+            let class_continuity = {
+                let (
+                    Candidate {
+                        edge:
+                            Edge {
+                                weight: src_weight, ..
+                            },
+                        ..
+                    },
+                    Candidate {
+                        edge:
+                            Edge {
+                                weight: tgt_weight, ..
+                            },
+                        ..
+                    },
+                ) = context.candidates();
+
+                src_weight as f64 / tgt_weight as f64
+            }
+            .clamp(EPSILON, 1.0);
+
+            Some((deviance * turn_cost * class_continuity).sqrt())
         }
-
-        #[inline]
-        fn summarised(&self, hop: &HopSummary) -> Option<Self::Cost> {
-            Some(combine(
-                hop.lengths.as_ref()?,
-                hop.angular_complexity,
-                hop.classes,
-            ))
-        }
-    }
-
-    /// The transition cost of a hop from its lengths, turning and road classes.
-    #[inline]
-    fn combine(
-        lengths: &TransitionLengths,
-        angular_complexity: f64,
-        (source, target): (Weight, Weight),
-    ) -> f64 {
-        const EPSILON: f64 = 1e-6;
-
-        // Value in range [0, 1] (1=Low Cost, 0=High Cost)
-        let deviance = lengths.deviance().clamp(EPSILON, 1.0);
-
-        // Value in range [0, 1] (1=Low Cost, 0=High Cost)
-        let turn_cost = angular_complexity.clamp(EPSILON, 1.0);
-
-        // Value in range [0, 1] (1=Low Cost, 0=High Cost)
-        let class_continuity = (source as f64 / target as f64).clamp(EPSILON, 1.0);
-
-        (deviance * turn_cost * class_continuity).sqrt()
     }
 }
 
