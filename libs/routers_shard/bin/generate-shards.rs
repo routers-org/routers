@@ -3,7 +3,6 @@
 #![allow(clippy::std_instead_of_core)]
 
 use clap::{Args as ClapArgs, Parser};
-use geo::Point;
 use log::{debug, error, info};
 use std::path::{Path, PathBuf};
 use web_time::{SystemTime, UNIX_EPOCH};
@@ -11,11 +10,11 @@ use web_time::{SystemTime, UNIX_EPOCH};
 extern crate alloc;
 use alloc::collections::BTreeMap;
 
+use rayon::prelude::*;
 use routers_codec::osm::{OsmEdgeMetadata, OsmEntryId, OsmNetwork};
-use routers_network::DataPlane;
 use routers_shard::{
-    Artifact, ArtifactError, GeohashStrategy, MANIFEST_FILENAME, Manifest, ShardSource,
-    ShardedNetwork, SourceEdge, sha256_hex, token_safe,
+    Artifact, ArtifactError, GeohashStrategy, MANIFEST_FILENAME, Manifest, ShardedNetwork,
+    sha256_hex_of, token_safe,
 };
 
 #[derive(Parser, Debug)]
@@ -105,60 +104,67 @@ fn main() {
     );
 
     let strategy = GeohashStrategy::with_precision(args.precision);
-    let source = OsmSource(&network);
 
-    // Indices are not serialised, so building them here would be wasted.
-    let mut partition = ShardedNetwork::<OsmEntryId, OsmEdgeMetadata, _>::partition(
-        &source,
+    // Cut straight from the network's columns: each shard is built on its
+    // own, so they are cut and written in parallel, and nothing is held but
+    // the network and the shards in flight. Spatial indices are not
+    // serialised, so none are built.
+    let mut carving = ShardedNetwork::<OsmEntryId, OsmEdgeMetadata, _>::carve(
+        network.graph(),
         &strategy,
         args.padding,
-    )
-    .without_indices();
-    let dealt = partition.len();
+    );
+    let dealt = carving.len();
     if let Some(prefix) = &args.only_prefix {
-        partition.retain(|id| id.to_string().starts_with(prefix));
+        carving.retain(|id| id.to_string().starts_with(prefix));
         info!(
             "dealt into {dealt} shards, keeping the {} under prefix {prefix:?}",
-            partition.len()
+            carving.len()
         );
     }
-    let total = partition.len();
+    let total = carving.len();
     info!("writing {total} shards to {out_dir:?}");
 
     let built_at = rfc3339_utc(now());
-    let mut built = Vec::with_capacity(total);
+    let written = (0..total)
+        .into_par_iter()
+        .map(|at| {
+            let net = carving.shard(at);
+            let name = format!("{}.shard.rt", net.owned);
+            debug!("[{} / {total}] {net:?}", at + 1);
+
+            let bytes = net.to_cache_bytes().map_err(|e| (name.clone(), e))?;
+            std::fs::write(out_dir.join(&name), &bytes)
+                .map_err(|e| (name.clone(), e.to_string()))?;
+
+            let artifact = Artifact {
+                file: name,
+                sha256: sha256_hex_of(&bytes),
+                bytes: bytes.len() as u64,
+                graph: args.graph_version.clone(),
+                precision: args.precision,
+                nodes: net.num_nodes() as u64,
+                edges: net.num_edges() as u64,
+                built_at: built_at.clone(),
+            };
+            Ok((net.owned.to_string(), artifact))
+        })
+        .collect::<Vec<Result<_, (String, String)>>>();
+
     let mut artifacts: BTreeMap<String, Artifact> = BTreeMap::new();
     let mut failed = Vec::new();
-    for (i, net) in partition.enumerate() {
-        let name = format!("{}.shard.rt", net.owned);
-        let cell = net.owned.to_string();
-        debug!("[{} / {total}] {net:?}", i + 1);
-        let path = out_dir.join(&name);
-        if let Err(e) = net.save_to_file(&path) {
-            error!("[{} / {total}] failed to save {name}: {e}", i + 1);
-            failed.push((name, e));
-            continue;
-        }
-        built.push(name.clone());
-        match artifact_metadata(&path) {
-            Ok((sha256, bytes)) => {
-                artifacts.insert(
-                    cell,
-                    Artifact {
-                        file: name,
-                        sha256,
-                        bytes,
-                        graph: args.graph_version.clone(),
-                        precision: args.precision,
-                        nodes: net.num_nodes() as u64,
-                        edges: net.num_edges() as u64,
-                        built_at: built_at.clone(),
-                    },
-                );
+    for shard in written {
+        match shard {
+            Ok((cell, artifact)) => {
+                artifacts.insert(cell, artifact);
             }
-            Err(e) => error!("[{} / {total}] failed to checksum {name}: {e}", i + 1),
+            Err((name, e)) => {
+                error!("failed to write {name}: {e}");
+                failed.push(name);
+            }
         }
     }
+    let built = artifacts.len();
 
     // This JSON document is the one contract shared by generator and runtime.
     let manifest_path = out_dir.join(MANIFEST_FILENAME);
@@ -177,9 +183,8 @@ fn main() {
     );
 
     info!(
-        "{} failed, {} shards built into {out_dir:?}",
-        failed.len(),
-        built.len()
+        "{} failed, {built} shards built into {out_dir:?}",
+        failed.len()
     );
 }
 
@@ -190,11 +195,6 @@ fn write_manifest_atomically(path: &Path, manifest: &Manifest) {
     let tmp = path.with_file_name(format!("{MANIFEST_FILENAME}.tmp.{}", std::process::id()));
     std::fs::write(&tmp, json).unwrap_or_else(|e| panic!("write {tmp:?}: {e}"));
     std::fs::rename(&tmp, path).unwrap_or_else(|e| panic!("rename {tmp:?} -> {path:?}: {e}"));
-}
-
-/// The shared SHA-256 and byte length of a bundle.
-fn artifact_metadata(path: &Path) -> std::io::Result<(String, u64)> {
-    Ok((sha256_hex(path)?, std::fs::metadata(path)?.len()))
 }
 
 /// The current wall-clock time, isolated so the `disallowed_methods` allow (the
@@ -233,22 +233,4 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
     let day = (doy - (153 * mp + 2) / 5 + 1) as u32; // [1, 31]
     let month = (if mp < 10 { mp + 3 } else { mp - 9 }) as u32; // [1, 12]
     (year + i64::from(month <= 2), month, day)
-}
-
-// Thin wrapper around the network to allow iterating over the values
-struct OsmSource<'a>(&'a OsmNetwork);
-
-impl<'a> ShardSource<OsmEntryId, OsmEdgeMetadata> for OsmSource<'a> {
-    fn nodes<'b>(&'b self) -> Box<dyn Iterator<Item = (OsmEntryId, Point)> + 'b> {
-        Box::new(self.0.nodes().map(|n| (n.id, n.position)))
-    }
-
-    fn edges<'b>(
-        &'b self,
-    ) -> Box<dyn Iterator<Item = SourceEdge<OsmEntryId, OsmEdgeMetadata>> + 'b> {
-        Box::new(self.0.edges().filter_map(|(from, to, data)| {
-            let meta = self.0.metadata(&data.1.index())?.clone();
-            Some((from, to, data, meta))
-        }))
-    }
 }

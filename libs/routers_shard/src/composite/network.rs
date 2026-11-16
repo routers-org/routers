@@ -42,8 +42,8 @@ where
         // Walk shards on each call rather than copying every metadata
         // entry into the composite — the latter would roughly double
         // memory use. At typical window sizes (≤ 9 shards) this is a
-        // handful of `HashMap::get` calls per lookup.
-        self.shards.iter().find_map(|s| s.meta.get(id))
+        // handful of lookups.
+        self.shards.iter().find_map(|s| s.metadata(id))
     }
 
     fn point(&self, id: &E) -> Option<Point> {
@@ -51,28 +51,28 @@ where
     }
 
     fn edges_outof<'a>(&'a self, id: E) -> Box<dyn Iterator<Item = GraphEdge<E>> + 'a> {
-        Box::new(
-            self.graph
-                .edges_directed(id, petgraph::Direction::Outgoing)
-                .map(|(s, t, &data)| (s, t, data)),
-        )
+        Box::new(self.topology().edges_outof(id))
     }
 
     fn edges_into<'a>(&'a self, id: E) -> Box<dyn Iterator<Item = GraphEdge<E>> + 'a> {
-        Box::new(
-            self.graph
-                .edges_directed(id, petgraph::Direction::Incoming)
-                .map(|(s, t, &data)| (s, t, data)),
-        )
+        Box::new(self.topology().edges_into(id))
     }
 
     fn fatten(&self, edge: &Edge<E>) -> Option<Edge<Node<E>>> {
-        Some(Edge {
-            source: *self.node(&edge.source)?,
-            target: *self.node(&edge.target)?,
-            id: DirectionAwareEdgeId::new(Node::new(Point::new(0., 0.), edge.id.index())),
-            weight: edge.weight,
-        })
+        self.topology().fatten(edge)
+    }
+
+    fn reach(&self, root: &E, reach: f64, runtime: &M::Runtime) -> Option<Vec<(E, E)>> {
+        let passable = self.passable.get(runtime, || {
+            let ways = self.topology().ways();
+
+            self.topology().passable(|way, direction| {
+                self.metadata(&ways[way])
+                    .is_some_and(|meta| meta.accessible(runtime, direction))
+            })
+        });
+
+        self.topology().reach(root, reach, &passable)
     }
 }
 
@@ -91,23 +91,23 @@ where
         Box::new(
             self.shards
                 .iter()
-                .flat_map(move |shard| shard.index_edge.search(bounds))
-                .filter_map(move |&(source, target)| {
-                    if !seen.insert((source, target)) {
+                .flat_map(move |shard| shard.edges_in_box(bounds))
+                .filter_map(move |found| {
+                    if !seen.insert((found.source.id, found.target.id)) {
                         return None;
                     }
 
-                    let source = *self.node(&source)?;
-                    let target = *self.node(&target)?;
-
-                    let &(weight, id) = self.graph.edge_weight(*source, *target)?;
+                    // Shards may each hold the edge: the composite's is the
+                    // one a route would take.
+                    let Edge { weight, id, .. } =
+                        self.topology().edge(&found.source.id, &found.target.id)?;
 
                     let node = Node::new(Point::new(0., 0.), id.index());
                     let id = DirectionAwareEdgeId::new(node).with_direction(id.direction());
 
                     Some(Edge {
-                        source,
-                        target,
+                        source: found.source,
+                        target: found.target,
                         id,
                         weight,
                     })
@@ -124,25 +124,17 @@ where
         Box::new(
             self.shards
                 .iter()
-                .flat_map(move |shard| shard.index.search(bounds))
-                .filter_map(|id| self.node(id))
+                .flat_map(move |shard| shard.nodes_in_box(bounds))
                 .filter(move |node| seen.insert(node.id)),
         )
     }
 
     fn node(&self, id: &E) -> Option<&Node<E>> {
-        self.shards.iter().find_map(|s| s.hash.get(id))
+        self.topology().node(id)
     }
 
     fn edge(&self, source: &E, target: &E) -> Option<Edge<E>> {
-        self.graph
-            .edge_weight(*source, *target)
-            .map(|&(weight, id)| Edge {
-                source: *source,
-                target: *target,
-                weight,
-                id,
-            })
+        self.topology().edge(source, target)
     }
 }
 
@@ -155,7 +147,7 @@ where
     fn nearest_node<'a>(&'a self, point: &Point) -> Option<&'a Node<E>> {
         self.shards
             .iter()
-            .filter_map(|s| s.index.nearest(point).and_then(|id| s.hash.get(id)))
+            .filter_map(|s| s.nearest_node(point))
             .min_by(|a, b| {
                 let d2 = |n: &Node<E>| {
                     (n.position.x() - point.x()).powi(2) + (n.position.y() - point.y()).powi(2)
@@ -172,14 +164,6 @@ where
     S: ShardId,
 {
     fn route_nodes(&self, start: E, finish: E) -> Option<(Weight, Vec<Node<E>>)> {
-        let (cost, path) = petgraph::algo::astar(
-            &self.graph,
-            start,
-            |n| n == finish,
-            |(_, _, w)| w.0,
-            |_| 0 as Weight,
-        )?;
-        let route = path.iter().filter_map(|v| self.node(v).copied()).collect();
-        Some((cost, route))
+        self.topology().route_nodes(start, finish)
     }
 }

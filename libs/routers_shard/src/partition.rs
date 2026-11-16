@@ -5,9 +5,9 @@ use log::debug;
 use rustc_hash::{FxHashMap, FxHashSet};
 use web_time::Instant;
 
-use routers_network::{Entry, Metadata, Node, RowIndex, network::EdgeData};
+use routers_network::{Entry, Metadata, Node, columnar::RawEdge, network::EdgeData};
 
-use crate::network::{GraphStructure, ShardSource, ShardedNetwork};
+use crate::network::{ShardSource, ShardedNetwork};
 use crate::selection::{Selection, SelectionMode};
 use crate::strategy::{ShardId, ShardingStrategy};
 
@@ -41,20 +41,20 @@ impl<E: Entry> Default for Bucket<E> {
 
 /// The padded selection of a cell and of each of its neighbours: the only
 /// shards a point in that cell can belong to.
-struct Neighbourhood<S: ShardId> {
+pub(crate) struct Neighbourhood<S: ShardId> {
     selections: Vec<Selection<S>>,
 }
 
 /// Resolves a point to the shards that admit it, memoising each cell's
 /// neighbourhood so the strategy's neighbour walk runs once per cell.
-struct Dealer<'a, St: ShardingStrategy> {
-    strategy: &'a St,
-    mode: SelectionMode,
-    neighbourhoods: FxHashMap<St::Id, Neighbourhood<St::Id>>,
+pub(crate) struct Dealer<'a, St: ShardingStrategy> {
+    pub(crate) strategy: &'a St,
+    pub(crate) mode: SelectionMode,
+    pub(crate) neighbourhoods: FxHashMap<St::Id, Neighbourhood<St::Id>>,
 }
 
 impl<St: ShardingStrategy> Dealer<'_, St> {
-    fn cells_of(&mut self, pos: Point, out: &mut Vec<St::Id>) -> St::Id {
+    pub(crate) fn cells_of(&mut self, pos: Point, out: &mut Vec<St::Id>) -> St::Id {
         let owner = self.strategy.locate(pos);
         let strategy = self.strategy;
         let mode = self.mode;
@@ -243,34 +243,40 @@ where
     }
 
     fn materialise(&self, owned: S, bucket: Bucket<E>) -> ShardedNetwork<E, M, S> {
-        let mut graph: GraphStructure<E> = GraphStructure::new();
-        let mut hash: FxHashMap<E, Node<E>> = FxHashMap::default();
+        let nodes = bucket
+            .nodes
+            .into_iter()
+            .map(|id| Node::new(self.positions[&id], id))
+            .collect();
 
-        for id in bucket.nodes {
-            let pos = self.positions[&id];
-            hash.insert(id, Node::new(pos, id));
-            graph.add_node(id);
-        }
+        let mut ways = Vec::new();
+        let edges = bucket
+            .edges
+            .into_iter()
+            .map(|(from, to, (weight, id), meta_index)| {
+                ways.push((id.index(), meta_index));
 
-        let mut meta: FxHashMap<E, M> = FxHashMap::default();
-        for (from, to, (weight, id), meta_index) in bucket.edges {
-            graph.add_edge(from, to, (weight, id));
-            meta.entry(id.index())
-                .or_insert_with(|| self.metas[meta_index as usize].clone());
-        }
+                RawEdge {
+                    source: from,
+                    target: to,
+                    class: weight,
+                    way: id,
+                }
+            })
+            .collect();
+
+        // Of the edges of one way, the first decides its metadata.
+        ways.sort_by_key(|&(id, _)| id);
+        ways.dedup_by_key(|&mut (id, _)| id);
+        let ways = ways
+            .into_iter()
+            .map(|(id, meta_index)| (id, self.metas[meta_index as usize].clone()))
+            .collect();
 
         let mut loaded = FxHashSet::default();
         loaded.insert(owned);
 
-        let mut net = ShardedNetwork {
-            graph,
-            hash,
-            meta,
-            index: RowIndex::default(),
-            index_edge: RowIndex::default(),
-            owned,
-            loaded,
-        };
+        let mut net = ShardedNetwork::from_parts(nodes, edges, ways, owned, loaded);
         if self.build_indices {
             net.rebuild_indices();
         }

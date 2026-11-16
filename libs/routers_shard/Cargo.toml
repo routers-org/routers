@@ -1,6 +1,6 @@
 [package]
 name = "routers_shard"
-version = "0.3.2"
+version = "0.4.0"
 edition = "2024"
 license = "GPL-3.0-or-later"
 description = "Sharding Primitives for Routers"
@@ -20,13 +20,12 @@ thiserror = { workspace = true, features = ["std"] }
 
 # Geography
 geo = { workspace = true }
-petgraph = { workspace = true }
 # S2 cell hierarchy, behind the `s2` feature (see below).
 s2 = { workspace = true, optional = true }
+rayon = { workspace = true, optional = true }
 
 # Utilities
 rustc-hash = { workspace = true }
-rayon = { workspace = true, optional = true }
 
 # CLI, for the `generate-shards` binary only (native).
 clap = { workspace = true, features = ["derive", "env"], optional = true }
@@ -63,7 +62,7 @@ osm = ["dep:routers_codec", "routers_codec/osm"]
 
 # Rebuild spatial indices across a rayon pool; off for single-threaded targets
 # (wasm), where the two trees build in sequence.
-parallel = ["dep:rayon", "routers_codec?/parallel"]
+parallel = ["routers_codec?/parallel", "routers_network/parallel"]
 
 # The `S2Strategy` partitioner. Pulls in the `s2` crate (and through it
 # `float_extras`, which binds the C maths library), so it is a feature the
@@ -75,7 +74,9 @@ s2 = ["dep:s2"]
 web = ["dep:wasm-bindgen", "dep:wasm-bindgen-futures", "dep:js-sys", "dep:web-sys"]
 
 # The `generate-shards` binary.
-cli = ["dep:clap", "dep:env_logger"]
+# `sha2/asm`: SHA-256 on the CPU's own instructions where the target has
+# them (aarch64 needs the feature; x86 uses them regardless).
+cli = ["dep:clap", "dep:env_logger", "dep:rayon", "sha2/asm"]
 
 [dev-dependencies]
 routers_codec = { path = "../routers_codec", version = "0.4.0", features = ["osm"] }

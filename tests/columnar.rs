@@ -1,15 +1,18 @@
 //! A columnar network's own search must answer exactly as the matcher's does.
 
+use std::sync::Arc;
+
 use geo::{Point, Rect};
 use routers::candidate::CandidateStore;
 use routers::primitives::{PredicateCache, RoutingContext};
 use routers::uom::si::f64::Length;
 use routers::uom::si::length::meter;
-use routers_codec::osm::{OsmEdgeMetadata, OsmNetwork};
+use routers_codec::osm::{OsmEdgeMetadata, OsmEntryId, OsmNetwork};
 use routers_fixtures::{DISTRICT_OF_COLUMBIA, fixture};
 use routers_network::edge::Weight;
 use routers_network::network::GraphEdge;
 use routers_network::{DataPlane, Discovery, Edge, Metadata, Network, Node, Route, Scan};
+use routers_shard::{GeohashStrategy, MultiShardNetwork, ShardSource, ShardedNetwork, SourceEdge};
 
 /// The same network with no search of its own, so the matcher runs its.
 #[derive(Debug)]
@@ -137,12 +140,95 @@ fn network() -> OsmNetwork {
     OsmNetwork::from_pbf(fixture!(DISTRICT_OF_COLUMBIA)).expect("pbf ingests")
 }
 
+struct OsmSource<'a>(&'a OsmNetwork);
+
+impl ShardSource<OsmEntryId, OsmEdgeMetadata> for OsmSource<'_> {
+    fn nodes<'b>(&'b self) -> Box<dyn Iterator<Item = (OsmEntryId, Point)> + 'b> {
+        Box::new(self.0.nodes().map(|n| (n.id, n.position)))
+    }
+
+    fn edges<'b>(
+        &'b self,
+    ) -> Box<dyn Iterator<Item = SourceEdge<OsmEntryId, OsmEdgeMetadata>> + 'b> {
+        Box::new(self.0.edges().filter_map(|(from, to, data)| {
+            let meta = self.0.metadata(&data.1.index())?.clone();
+            Some((from, to, data, meta))
+        }))
+    }
+}
+
 #[test]
 fn an_osm_network_searches_as_the_matcher_does() {
     let network = network();
     let roots = sample(network.nodes().map(|node| node.id).collect());
 
     searches_as_the_matcher_does(&network, &OsmEdgeMetadata::default_runtime(), &roots);
+}
+
+#[test]
+fn shards_search_as_the_matcher_does() {
+    let network = network();
+    let strategy = GeohashStrategy::with_precision(5);
+    let runtime = OsmEdgeMetadata::default_runtime();
+
+    let shards = ShardedNetwork::partition(&OsmSource(&network), &strategy, 250.0)
+        .map(Arc::new)
+        .collect::<Vec<_>>();
+    assert!(shards.len() > 1, "the fixture spans shards");
+
+    // One shard alone: routes stop at its padding.
+    let largest = shards
+        .iter()
+        .max_by_key(|shard| shard.num_nodes())
+        .expect("a shard");
+    let roots = sample(largest.nodes().map(|node| node.id).collect());
+    searches_as_the_matcher_does(&**largest, &runtime, &roots);
+
+    // All of them as one: routes cross from shard to shard.
+    let composite = MultiShardNetwork::new(shards);
+    assert_eq!(composite.num_nodes(), network.num_nodes());
+    assert_eq!(composite.num_edges(), network.num_edges());
+
+    let roots = sample(network.nodes().map(|node| node.id).collect());
+    searches_as_the_matcher_does(&composite, &runtime, &roots);
+
+    // ...and reach what the unsharded network does.
+    for &root in &roots {
+        let mut whole = network.reach(&root, 1_000.0, &runtime).expect("searches");
+        let mut joined = composite.reach(&root, 1_000.0, &runtime).expect("searches");
+        whole.sort_unstable();
+        joined.sort_unstable();
+
+        assert_eq!(whole, joined, "from {root:?}");
+    }
+}
+
+#[test]
+fn carving_cuts_the_shards_a_partition_deals() {
+    let network = network();
+    let strategy = GeohashStrategy::with_precision(5);
+
+    for padding in [0.0, 250.0, 2_000.0] {
+        let dealt = ShardedNetwork::partition(&OsmSource(&network), &strategy, padding)
+            .without_indices()
+            .collect::<Vec<_>>();
+        let carving = ShardedNetwork::carve(network.graph(), &strategy, padding);
+
+        assert_eq!(carving.len(), dealt.len());
+        assert!(dealt.len() > 1, "the fixture spans shards");
+
+        for (at, dealt) in dealt.iter().enumerate() {
+            let carved = carving.shard(at);
+
+            assert_eq!(carving.id(at), dealt.owned);
+            assert_eq!(
+                carved.to_cache_bytes().expect("encodes"),
+                dealt.to_cache_bytes().expect("encodes"),
+                "shard {} at {padding} m",
+                dealt.owned
+            );
+        }
+    }
 }
 
 #[test]
