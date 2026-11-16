@@ -7,12 +7,11 @@ use std::sync::{Mutex, PoisonError};
 use geo::{Point, Rect};
 use serde::de::DeserializeOwned;
 
-use super::{EdgeIx, NodeIx, RawEdge, Topology, blob, unblob};
+use super::index::{Level, Packed};
+use super::{EdgeIx, RawEdge, Topology, blob, unblob};
 use crate::edge::Weight;
 use crate::network::GraphEdge;
-use crate::{
-    DataPlane, Discovery, Edge, Entry, Metadata, Node, Route, RowIndex, Scan, envelope_of,
-};
+use crate::{DataPlane, Discovery, Edge, Entry, Metadata, Node, Route, Scan, envelope_of};
 
 /// Which edges each runtime seen so far may traverse.
 pub struct Masks<R>(Mutex<Vec<(R, Arc<[bool]>)>>);
@@ -56,8 +55,8 @@ pub struct Graph<E: Entry, M: Metadata> {
     /// Per way of the topology: its metadata.
     meta: Vec<M>,
 
-    node_index: RowIndex<NodeIx>,
-    edge_index: RowIndex<EdgeIx>,
+    node_index: Packed,
+    edge_index: Packed,
     passable: Masks<M::Runtime>,
 }
 
@@ -96,36 +95,27 @@ impl<E: Entry, M: Metadata> Graph<E, M> {
         Graph {
             topology,
             meta,
-            node_index: RowIndex::default(),
-            edge_index: RowIndex::default(),
+            node_index: Packed::default(),
+            edge_index: Packed::default(),
             passable: Masks::default(),
         }
     }
 
     /// Build the spatial indices that [`Discovery`] and [`Scan`] answer from.
+    ///
+    /// Nodes and edges are already in spatial order, so this is one pass
+    /// over each.
     pub fn index(&mut self) {
-        let topology = &self.topology;
+        let nodes = Level::around(self.topology.nodes().iter().map(|node| node.position));
+        let edges = nodes.spanning(self.topology.spans());
 
-        let index_nodes = || {
-            RowIndex::build((0..topology.num_nodes() as NodeIx).collect(), |&node| {
-                let at = topology.nodes()[node as usize].position;
-                (at, at)
-            })
-        };
-        let index_edges = || {
-            RowIndex::build((0..topology.num_edges() as EdgeIx).collect(), |&edge| {
-                let (source, target) = topology.endpoints(edge);
-                envelope_of(source.position, target.position)
-            })
-        };
+        self.node_index = Packed::over(nodes);
+        self.edge_index = Packed::over(edges);
+    }
 
-        #[cfg(feature = "parallel")]
-        let (node_index, edge_index) = rayon::join(index_nodes, index_edges);
-        #[cfg(not(feature = "parallel"))]
-        let (node_index, edge_index) = (index_nodes(), index_edges());
-
-        self.node_index = node_index;
-        self.edge_index = edge_index;
+    fn envelope(&self, edge: usize) -> (Point, Point) {
+        let (source, target) = self.topology.endpoints(edge as EdgeIx);
+        envelope_of(source.position, target.position)
     }
 
     /// [`index`](Self::index), by value.
@@ -232,8 +222,9 @@ impl<E: Entry, M: Metadata> Discovery for Graph<E, M> {
     ) -> Box<dyn Iterator<Item = Edge<Node<E>>> + Send + 'a> {
         Box::new(
             self.edge_index
-                .search(bounds)
-                .map(|&edge| self.topology.fat_edge(edge)),
+                .search(bounds, |edge| self.envelope(edge))
+                .into_iter()
+                .map(|edge| self.topology.fat_edge(edge)),
         )
     }
 
@@ -241,10 +232,13 @@ impl<E: Entry, M: Metadata> Discovery for Graph<E, M> {
         &'a self,
         bounds: Rect<f64>,
     ) -> Box<dyn Iterator<Item = &'a Node<E>> + Send + 'a> {
+        let nodes = self.topology.nodes();
+
         Box::new(
             self.node_index
-                .search(bounds)
-                .map(|&node| &self.topology.nodes()[node as usize]),
+                .search(bounds, |node| (nodes[node].position, nodes[node].position))
+                .into_iter()
+                .map(move |node| &nodes[node as usize]),
         )
     }
 
@@ -259,9 +253,11 @@ impl<E: Entry, M: Metadata> Discovery for Graph<E, M> {
 
 impl<E: Entry, M: Metadata> Scan for Graph<E, M> {
     fn nearest_node<'a>(&'a self, point: &Point) -> Option<&'a Node<E>> {
+        let nodes = self.topology.nodes();
+
         self.node_index
-            .nearest(point)
-            .map(|&node| &self.topology.nodes()[node as usize])
+            .nearest(point, |node| nodes[node].position)
+            .map(|node| &nodes[node as usize])
     }
 }
 

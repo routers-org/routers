@@ -1,4 +1,4 @@
-//! A routing graph held as flat columns: nodes in Z-order, edges in CSR, with
+//! A routing graph held as flat columns: nodes along a Hilbert curve, edges in CSR, with
 //! each edge's length and road class beside its target.
 //!
 //! [`Topology`] is the graph a search walks. [`Graph`] adds edge metadata and
@@ -6,6 +6,7 @@
 //! one and forwards to it with [`columnar_network!`](crate::columnar_network).
 
 mod graph;
+mod index;
 mod search;
 
 use alloc::sync::Arc;
@@ -13,8 +14,9 @@ use core::ops::Range;
 use std::sync::{Mutex, OnceLock, PoisonError};
 
 use geo::{Distance, Haversine, Point};
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxBuildHasher, FxHashMap};
 use serde::de::DeserializeOwned;
+use std::collections::hash_map::Entry as Slot;
 use uom::si::f64::Length;
 use uom::si::length::{centimeter, meter};
 
@@ -87,32 +89,33 @@ impl<E: Entry> Topology<E> {
     /// `edges` are in insertion order: a repeated `(source, target)` keeps its
     /// first position and takes its last data. An edge with an endpoint not
     /// among `nodes` is dropped.
-    pub fn assemble(mut nodes: Vec<Node<E>>, edges: Vec<RawEdge<E>>, ways: Vec<E>) -> Self {
-        sort_by_key(&mut nodes, |node| node.id);
-        nodes.dedup_by_key(|node| node.id);
-
-        let mut placed = map(&nodes, |node| (morton(node.position), *node));
+    pub fn assemble(nodes: Vec<Node<E>>, edges: Vec<RawEdge<E>>, ways: Vec<E>) -> Self {
+        let mut placed = map(&nodes, |node| (hilbert(node.position), *node));
+        drop(nodes);
         sort_by_key(&mut placed, |&(code, node)| (code, node.id));
 
-        // `nodes` is sorted by id: its inverse permutation onto the Z-order
-        // numbering turns an id into a node by binary search.
-        let ordered = placed.into_iter().map(|(_, node)| node).collect::<Vec<_>>();
-        let mut by_id = (0..ordered.len() as NodeIx).collect::<Vec<_>>();
-        sort_by_key(&mut by_id, |&node| ordered[node as usize].id);
-        let node_of = |id: E| {
-            let found = nodes.binary_search_by_key(&id, |node| node.id).ok()?;
-            Some(by_id[found])
-        };
+        // Of nodes given twice, one is kept.
+        let mut nodes = Vec::with_capacity(placed.len());
+        let mut node_of = FxHashMap::with_capacity_and_hasher(placed.len(), FxBuildHasher);
+        for (_, node) in placed {
+            if let Slot::Vacant(slot) = node_of.entry(node.id) {
+                slot.insert(nodes.len() as NodeIx);
+                nodes.push(node);
+            }
+        }
         let way_of = |id: E| ways.binary_search(&id).map_or(NO_WAY, |found| found as u32);
 
         let resolved = map(&edges, |edge| {
-            Some((node_of(edge.source)?, node_of(edge.target)?, *edge))
+            Some((
+                *node_of.get(&edge.source)?,
+                *node_of.get(&edge.target)?,
+                *edge,
+            ))
         })
         .into_iter()
         .flatten()
         .collect::<Vec<_>>();
         drop(edges);
-        let nodes = ordered;
 
         // Counting sort by source: stable, so each node's edges stay in
         // insertion order.
@@ -179,7 +182,7 @@ impl<E: Entry> Topology<E> {
             Length::new::<meter>(Haversine.distance(from, to)).get::<centimeter>() as u32
         });
 
-        Self::derive(nodes, csr, way, backward, ways, None)
+        Self::derive(nodes, csr, way, backward, ways, Some(node_of))
     }
 
     /// Several graphs as one. Where they share a node it appears once, and
@@ -191,15 +194,14 @@ impl<E: Entry> Topology<E> {
         let mut placed = parts
             .iter()
             .flat_map(|part| &part.nodes)
-            .map(|node| (morton(node.position), *node))
+            .map(|node| (hilbert(node.position), *node))
             .collect::<Vec<_>>();
         placed.sort_unstable_by_key(|&(code, node)| (code, node.id));
 
         let mut nodes = Vec::with_capacity(placed.len());
-        let mut node_of =
-            FxHashMap::with_capacity_and_hasher(placed.len(), rustc_hash::FxBuildHasher);
+        let mut node_of = FxHashMap::with_capacity_and_hasher(placed.len(), FxBuildHasher);
         for (_, node) in placed {
-            if let std::collections::hash_map::Entry::Vacant(slot) = node_of.entry(node.id) {
+            if let Slot::Vacant(slot) = node_of.entry(node.id) {
                 slot.insert(nodes.len() as NodeIx);
                 nodes.push(node);
             }
@@ -534,6 +536,14 @@ impl<E: Entry> Topology<E> {
         )
     }
 
+    /// The nodes each edge runs between, by number, in edge order.
+    pub(crate) fn spans(&self) -> impl Iterator<Item = (usize, usize)> + Clone + '_ {
+        self.sources
+            .iter()
+            .zip(&self.csr.targets)
+            .map(|(&source, &target)| (source as usize, target as usize))
+    }
+
     #[inline]
     pub fn class(&self, edge: EdgeIx) -> Weight {
         self.csr.class[edge as usize]
@@ -697,25 +707,39 @@ impl<E: Entry> Topology<E> {
     }
 }
 
-/// Interleave the bits of a quantised position (Z-order).
-fn morton(at: Point) -> u64 {
-    fn spread(value: u32) -> u64 {
-        let mut v = u64::from(value);
-        v = (v | (v << 16)) & 0x0000_FFFF_0000_FFFF;
-        v = (v | (v << 8)) & 0x00FF_00FF_00FF_00FF;
-        v = (v | (v << 4)) & 0x0F0F_0F0F_0F0F_0F0F;
-        v = (v | (v << 2)) & 0x3333_3333_3333_3333;
-        v = (v | (v << 1)) & 0x5555_5555_5555_5555;
-        v
-    }
-
+/// Where a position falls along a Hilbert curve over the globe: positions
+/// near on the map are near along the curve.
+fn hilbert(at: Point) -> u64 {
     if at.x().is_nan() || at.y().is_nan() {
         return u64::MAX;
     }
 
     let x = ((at.x() + 180.0) / 360.0 * f64::from(u32::MAX)) as u32;
     let y = ((at.y() + 90.0) / 180.0 * f64::from(u32::MAX)) as u32;
-    spread(x) | (spread(y) << 1)
+
+    along_curve(x, y)
+}
+
+/// Where cell `(x, y)` of a 2³² × 2³² grid falls along the Hilbert curve
+/// that fills it.
+fn along_curve(mut x: u32, mut y: u32) -> u64 {
+    let mut along = 0u64;
+
+    for bit in (0..u32::BITS).rev() {
+        let (right, up) = (x >> bit & 1, y >> bit & 1);
+        along |= u64::from((3 * right) ^ up) << (2 * bit);
+
+        // Turn the quadrant so the curve enters and leaves where the next
+        // one begins.
+        if up == 0 {
+            if right == 1 {
+                (x, y) = (!x, !y);
+            }
+            (x, y) = (y, x);
+        }
+    }
+
+    along
 }
 
 /// Sort by key, on the thread pool where there is one.
@@ -785,4 +809,23 @@ pub fn unblob<T: DeserializeOwned>(bytes: &mut &[u8]) -> Result<T, String> {
     let size = length(bytes)?;
 
     postcard::from_bytes(take(bytes, size)?).map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::along_curve;
+
+    #[test]
+    fn the_curve_moves_one_cell_at_a_time() {
+        // A 64 x 64 grid, as the top six bits of each axis.
+        let mut cells = (0..64u32)
+            .flat_map(|x| (0..64u32).map(move |y| (x, y)))
+            .collect::<Vec<_>>();
+        cells.sort_by_key(|&(x, y)| along_curve(x << 26, y << 26));
+
+        for pair in cells.windows(2) {
+            let ((ax, ay), (bx, by)) = (pair[0], pair[1]);
+            assert_eq!(ax.abs_diff(bx) + ay.abs_diff(by), 1, "{pair:?}");
+        }
+    }
 }
