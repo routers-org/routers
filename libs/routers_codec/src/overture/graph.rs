@@ -7,20 +7,13 @@
 //! `N: Network` accepts it.
 
 use core::fmt::Debug;
-use core::hash::BuildHasherDefault;
 
-use geo::{Point, Rect};
 use log::debug;
-use petgraph::prelude::DiGraphMap;
-use rustc_hash::{FxHashMap, FxHasher};
-use serde::{Deserialize, Serialize};
 use web_time::Instant;
 
-use routers_network::edge::Weight;
+use routers_network::columnar::{self, Graph};
 use routers_network::network::GraphEdge;
-use routers_network::{
-    DirectionAwareEdgeId, Discovery, Edge, Node, Route, RowIndex, Scan, envelope_of,
-};
+use routers_network::{Node, columnar_network};
 
 use crate::overture::element::{Connector, Segment};
 use crate::overture::id::OvertureEntryId;
@@ -34,31 +27,20 @@ use std::path::{Path, PathBuf};
 #[cfg(all(feature = "overture", not(target_arch = "wasm32")))]
 use crate::overture::error::OvertureError;
 
-/// The directed graph backing an [`OvertureNetwork`].
-pub type GraphStructure<E> =
-    DiGraphMap<E, (Weight, DirectionAwareEdgeId<E>), BuildHasherDefault<FxHasher>>;
-
 /// Magic header stapled at the start of every Overture `.rt` file.
 const SAVE_MAGIC: &[u8; 4] = b"OVMN";
 
 // Prevent files from being used across build revisions. Shares the crate-wide
 // format hash emitted by `build.rs`.
 include!(concat!(env!("OUT_DIR"), "/format_hash.rs"));
-const SAVE_VERSION: u64 = FORMAT_HASH;
+const SAVE_VERSION: u64 = FORMAT_HASH ^ columnar::FORMAT;
 
-#[derive(Serialize, Deserialize)]
+#[derive(Default)]
 pub struct OvertureNetwork {
-    pub graph: GraphStructure<OvertureEntryId>,
-    pub hash: FxHashMap<OvertureEntryId, Node<OvertureEntryId>>,
-    pub meta: FxHashMap<OvertureEntryId, OvertureEdgeMetadata>,
-
-    #[serde(skip)]
-    pub index: RowIndex<OvertureEntryId>,
-    /// Edge rows are fully-interned (`Node`-carrying) so `edges_in_box` needs
-    /// no hash lookups.
-    #[serde(skip)]
-    pub index_edge: RowIndex<Edge<Node<OvertureEntryId>>>,
+    pub(crate) graph: Graph<OvertureEntryId, OvertureEdgeMetadata>,
 }
+
+columnar_network!(impl[] OvertureNetwork => graph: Graph<OvertureEntryId, OvertureEdgeMetadata>);
 
 impl OvertureNetwork {
     /// Build a network directly from parsed connectors and segments. Pure and
@@ -89,12 +71,13 @@ impl OvertureNetwork {
         }
 
         let deserialise_start = Instant::now();
-        let mut net: Self =
-            postcard::from_bytes(&bytes[HEADER_LEN..]).map_err(|v| v.to_string())?;
+        let graph = Graph::decode(&mut &bytes[HEADER_LEN..])?;
 
         let deserialise = deserialise_start.elapsed();
         let rebuild_start = Instant::now();
-        net.rebuild_indices();
+        let net = OvertureNetwork {
+            graph: graph.indexed(),
+        };
 
         debug!(
             "OvertureNetwork::from_bytes: {} bytes, deserialised in {:?}, rebuilt indices in {:?}",
@@ -108,13 +91,11 @@ impl OvertureNetwork {
 
     /// Encode `self` into a `Vec<u8>` with the format header prepended.
     pub fn to_bytes(&self) -> Result<Vec<u8>, String> {
-        let payload: Vec<u8> =
-            postcard::to_allocvec(self).map_err(|e| format!("failed to serialise value: {e}"))?;
-        let mut out = Vec::with_capacity(SAVE_MAGIC.len() + 8 + payload.len());
+        let mut out = Vec::new();
 
         out.extend_from_slice(SAVE_MAGIC);
         out.extend_from_slice(&SAVE_VERSION.to_le_bytes());
-        out.extend_from_slice(&payload);
+        self.graph.encode(&mut out)?;
 
         Ok(out)
     }
@@ -178,176 +159,37 @@ impl OvertureNetwork {
         Ok(())
     }
 
-    /// Rebuilds the node and edge spatial indices from `hash` and `graph`.
-    /// Safe to call at any time; run after loading a serialised network.
-    pub fn rebuild_indices(&mut self) {
-        let nodes: Vec<OvertureEntryId> = self.hash.keys().copied().collect();
-        let edges: Vec<Edge<Node<OvertureEntryId>>> = self
-            .graph
-            .all_edges()
-            .filter_map(|(s, t, &(weight, id))| {
-                let source = *self.hash.get(&s)?;
-                let target = *self.hash.get(&t)?;
-                Some(Edge {
-                    source,
-                    target,
-                    id: DirectionAwareEdgeId::new(Node::new(Point::new(0., 0.), id.index()))
-                        .with_direction(id.direction()),
-                    weight,
-                })
-            })
-            .collect();
-
-        let hash = &self.hash;
-        let (node_index, edge_index) = rayon::join(
-            || {
-                RowIndex::build(nodes, |id| {
-                    let p = hash[id].position;
-                    (p, p)
-                })
-            },
-            || RowIndex::build(edges, |e| envelope_of(e.source.position, e.target.position)),
-        );
-        self.index = node_index;
-        self.index_edge = edge_index;
+    /// The columns the network is held as.
+    pub fn graph(&self) -> &Graph<OvertureEntryId, OvertureEdgeMetadata> {
+        &self.graph
     }
 
     pub fn num_nodes(&self) -> usize {
-        self.graph.node_count()
-    }
-}
-
-impl Default for OvertureNetwork {
-    fn default() -> Self {
-        Self {
-            graph: GraphStructure::new(),
-            hash: FxHashMap::default(),
-            meta: FxHashMap::default(),
-            index: RowIndex::default(),
-            index_edge: RowIndex::default(),
-        }
-    }
-}
-
-impl Discovery for OvertureNetwork {
-    fn edges_in_box<'a>(
-        &'a self,
-        bounds: Rect<f64>,
-    ) -> Box<dyn Iterator<Item = Edge<Node<OvertureEntryId>>> + Send + 'a> {
-        Box::new(self.index_edge.search(bounds).copied())
+        self.graph.num_nodes()
     }
 
-    fn nodes_in_box<'a>(
-        &'a self,
-        bounds: Rect<f64>,
-    ) -> Box<dyn Iterator<Item = &'a Node<OvertureEntryId>> + Send + 'a> {
-        Box::new(self.index.search(bounds).filter_map(|id| self.hash.get(id)))
+    pub fn num_edges(&self) -> usize {
+        self.graph.num_edges()
     }
 
-    fn node(&self, id: &OvertureEntryId) -> Option<&Node<OvertureEntryId>> {
-        self.hash.get(id)
+    /// Every node of the network.
+    pub fn nodes(&self) -> impl Iterator<Item = &Node<OvertureEntryId>> {
+        self.graph.nodes()
     }
 
-    fn edge(
-        &self,
-        &source: &OvertureEntryId,
-        &target: &OvertureEntryId,
-    ) -> Option<Edge<OvertureEntryId>> {
-        self.graph
-            .edge_weight(source, target)
-            .map(|&(weight, id)| Edge {
-                source,
-                target,
-                weight,
-                id,
-            })
+    /// Every directed edge of the network, grouped by the node it leaves.
+    pub fn edges(&self) -> impl Iterator<Item = GraphEdge<OvertureEntryId>> + '_ {
+        self.graph.edges()
     }
-}
 
-impl Scan for OvertureNetwork {
-    fn nearest_node<'a>(&'a self, point: &Point) -> Option<&'a Node<OvertureEntryId>> {
-        self.index.nearest(point).and_then(|id| self.hash.get(id))
-    }
-}
-
-impl Route for OvertureNetwork {
-    fn route_nodes(
-        &self,
-        start_node: OvertureEntryId,
-        finish_node: OvertureEntryId,
-    ) -> Option<(Weight, Vec<Node<OvertureEntryId>>)> {
-        let (score, path) = petgraph::algo::astar(
-            &self.graph,
-            start_node,
-            |finish| finish == finish_node,
-            |(_, _, w)| w.0,
-            |_| 0 as Weight,
-        )?;
-
-        let route = path
-            .iter()
-            .filter_map(|v| self.hash.get(v).copied())
-            .collect();
-
-        Some((score, route))
+    /// Every segment of the network with its metadata.
+    pub fn segments(&self) -> impl Iterator<Item = (OvertureEntryId, &OvertureEdgeMetadata)> {
+        self.graph.ways()
     }
 }
 
 impl Debug for OvertureNetwork {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_str("overture maps : network")
-    }
-}
-
-impl routers_network::DataPlane for OvertureNetwork {
-    type Entry = OvertureEntryId;
-    type Runtime = <OvertureEdgeMetadata as routers_network::Metadata>::Runtime;
-    type Meta = OvertureEdgeMetadata;
-
-    fn metadata(&self, id: &OvertureEntryId) -> Option<&OvertureEdgeMetadata> {
-        self.meta.get(id)
-    }
-
-    fn point(&self, id: &OvertureEntryId) -> Option<Point> {
-        self.hash.get(id).map(|v| v.position)
-    }
-
-    fn edges_into<'a>(
-        &'a self,
-        id: OvertureEntryId,
-    ) -> Box<dyn Iterator<Item = GraphEdge<OvertureEntryId>> + 'a> {
-        Box::new(
-            self.graph
-                .edges_directed(id, petgraph::Direction::Incoming)
-                .map(|(src, dst, &data)| (src, dst, data)),
-        )
-    }
-
-    fn edges_outof<'a>(
-        &'a self,
-        id: OvertureEntryId,
-    ) -> Box<dyn Iterator<Item = GraphEdge<OvertureEntryId>> + 'a> {
-        Box::new(
-            self.graph
-                .edges_directed(id, petgraph::Direction::Outgoing)
-                .map(|(src, dst, &data)| (src, dst, data)),
-        )
-    }
-
-    fn fatten(
-        &self,
-        Edge {
-            source,
-            target,
-            weight,
-            id,
-        }: &Edge<OvertureEntryId>,
-    ) -> Option<Edge<Node<OvertureEntryId>>> {
-        Some(Edge {
-            source: *self.hash.get(source)?,
-            target: *self.hash.get(target)?,
-            id: DirectionAwareEdgeId::new(Node::new(Point::new(0., 0.), id.index())),
-            weight: *weight,
-        })
     }
 }

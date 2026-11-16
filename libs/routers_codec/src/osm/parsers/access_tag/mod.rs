@@ -13,7 +13,9 @@ impl Access for Tags<'_> {
         Vec::<AccessTag>::parse(self)
             .unwrap_or_default()
             .into_iter()
-            .sorted_by_key(|v| v.access)
+            // Tags come out of a hash map in no fixed order: break ties, so
+            // that the same way is the same bytes from one run to the next.
+            .sorted_by_key(|v| (v.access, v.restriction.to_string()))
             .collect::<Vec<_>>()
     }
 }

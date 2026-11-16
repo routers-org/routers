@@ -1,5 +1,6 @@
 extern crate alloc;
 
+pub mod columnar;
 pub mod primitive;
 pub mod traits;
 

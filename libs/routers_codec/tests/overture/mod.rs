@@ -53,11 +53,7 @@ fn builds_routable_network() {
     let net = sydney();
 
     assert!(net.num_nodes() > 2_000, "graph nodes: {}", net.num_nodes());
-    assert!(
-        net.graph.edge_count() > 4_000,
-        "graph edges: {}",
-        net.graph.edge_count()
-    );
+    assert!(net.num_edges() > 4_000, "graph edges: {}", net.num_edges());
 
     // Two points from the SYDNEY_TRIP fixture, well inside the bbox.
     let start = point! { x: 151.194792, y: -33.88538 };
@@ -84,6 +80,6 @@ fn round_trips_real_network_through_bytes() {
     let restored = OvertureNetwork::from_bytes(&bytes).expect("deserialise");
 
     assert_eq!(restored.num_nodes(), net.num_nodes());
-    assert_eq!(restored.graph.edge_count(), net.graph.edge_count());
-    assert_eq!(restored.meta.len(), net.meta.len());
+    assert_eq!(restored.num_edges(), net.num_edges());
+    assert_eq!(restored.segments().count(), net.segments().count());
 }

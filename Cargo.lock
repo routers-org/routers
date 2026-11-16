@@ -7404,7 +7404,7 @@ dependencies = [
 
 [[package]]
 name = "routers_codec"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "arrow",
  "bitflags 2.13.2",
@@ -7420,8 +7420,6 @@ dependencies = [
  "mimalloc",
  "osmpbf",
  "parquet",
- "petgraph 0.8.3",
- "postcard",
  "rayon",
  "regex",
  "routers_fixtures",
@@ -7460,9 +7458,12 @@ dependencies = [
  "geo",
  "geo-index",
  "petgraph 0.8.3",
+ "postcard",
+ "rayon",
  "rustc-hash 2.1.3",
  "serde",
  "tracing",
+ "uom",
 ]
 
 [[package]]

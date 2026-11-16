@@ -6,7 +6,7 @@
 //! `reader::tests` (behind the `overture` feature).
 
 use geo::{LineString, line_string, point};
-use routers_network::{Direction, Discovery, Metadata, Route};
+use routers_network::{DataPlane, Direction, Discovery, Metadata, Route};
 
 use crate::overture::element::{Connector, Segment, SegmentConnector};
 use crate::overture::graph::OvertureNetwork;
@@ -183,7 +183,7 @@ fn bidirectional_segment_splits_into_edge_chain() {
 
     assert_eq!(net.num_nodes(), 3);
     // Two undirected links → four directed edges.
-    assert_eq!(net.graph.edge_count(), 4);
+    assert_eq!(net.num_edges(), 4);
     assert!(net.edge(&id(1), &id(2)).is_some());
     assert!(net.edge(&id(2), &id(1)).is_some());
     assert!(net.edge(&id(2), &id(3)).is_some());
@@ -221,7 +221,7 @@ fn oneway_segment_only_emits_one_direction() {
     // Forward (1→2) is denied; only backward (2→1) survives.
     assert!(net.edge(&id(1), &id(2)).is_none());
     assert!(net.edge(&id(2), &id(1)).is_some());
-    assert_eq!(net.graph.edge_count(), 1);
+    assert_eq!(net.num_edges(), 1);
 }
 
 #[test]
@@ -305,12 +305,11 @@ fn interior_geometry_becomes_shape_nodes() {
 
     // Two connectors plus one synthetic shape node; two hops each way.
     assert_eq!(net.num_nodes(), 3);
-    assert_eq!(net.graph.edge_count(), 4);
+    assert_eq!(net.num_edges(), 4);
     assert!(net.edge(&id(1), &id(2)).is_none(), "no corner-cut chord");
 
     let synthetic = net
-        .hash
-        .values()
+        .nodes()
         .find(|n| n.id != id(1) && n.id != id(2))
         .expect("synthetic shape node present");
     assert_eq!(synthetic.position, point! { x: 0.5, y: 0.2 });
@@ -330,8 +329,8 @@ fn non_navigable_segments_are_dropped() {
     );
     let net = OvertureNetwork::from_elements(connectors, vec![footway]);
 
-    assert_eq!(net.graph.edge_count(), 0);
-    assert!(net.meta.get(&id(100)).is_none());
+    assert_eq!(net.num_edges(), 0);
+    assert!(net.metadata(&id(100)).is_none());
 }
 
 #[test]
@@ -349,7 +348,10 @@ fn dangling_connector_reference_is_pruned() {
     // position (routing consumers rely on this invariant).
     assert!(net.edge(&id(1), &id(9)).is_none());
     assert!(net.edge(&id(1), &id(2)).is_some());
-    assert!(net.graph.nodes().all(|n| net.hash.contains_key(&n)));
+    assert!(
+        net.edges()
+            .all(|(s, t, _)| net.node(&s).is_some() && net.node(&t).is_some())
+    );
 }
 
 #[test]
@@ -362,7 +364,7 @@ fn metadata_is_keyed_by_segment_id() {
     )];
     let net = OvertureNetwork::from_elements(connectors, segments);
 
-    let meta = net.meta.get(&id(100)).expect("segment metadata present");
+    let meta = net.metadata(&id(100)).expect("segment metadata present");
     assert_eq!(meta.road_class, Some(RoadClass::Primary));
     assert!(meta.lane_count.is_none(), "overture has no lane data");
 }
@@ -411,8 +413,8 @@ fn round_trips_through_bytes() {
     let restored = OvertureNetwork::from_bytes(&bytes).expect("deserialise");
 
     assert_eq!(restored.num_nodes(), net.num_nodes());
-    assert_eq!(restored.graph.edge_count(), net.graph.edge_count());
-    assert!(restored.meta.get(&id(100)).is_some());
+    assert_eq!(restored.num_edges(), net.num_edges());
+    assert!(restored.metadata(&id(100)).is_some());
 }
 
 #[test]

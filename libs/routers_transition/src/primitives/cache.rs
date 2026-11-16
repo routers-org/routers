@@ -654,6 +654,14 @@ mod predicate {
 
             let reach = self.0.metadata.reach;
 
+            // A network that can run this search over its own storage does.
+            if let Some(settled) = ctx.map.reach(&key, reach.get::<meter>(), ctx.runtime) {
+                let mut predicates =
+                    Predicates::with_capacity_and_hasher(settled.len(), FxBuildHasher);
+                predicates.extend(settled);
+                return predicates;
+            }
+
             let reached = Dijkstra
                 .reach(&key, move |node| {
                     ArcIter::new(self.0.metadata.successors.query(ctx, *node))

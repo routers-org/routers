@@ -7,11 +7,12 @@
 //! IO), so it is unit-testable with hand-built elements.
 
 use geo::Point;
+use routers_network::columnar::{Graph, RawEdge};
 use routers_network::{DirectionAwareEdgeId, Metadata, Node};
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::overture::element::{Connector, Segment};
-use crate::overture::graph::{GraphStructure, OvertureNetwork};
+use crate::overture::graph::OvertureNetwork;
 use crate::overture::id::OvertureEntryId;
 use crate::overture::meta::OvertureEdgeMetadata;
 use crate::overture::parsers::Heading;
@@ -37,8 +38,8 @@ pub fn build(connectors: Vec<Connector>, segments: Vec<Segment>) -> OvertureNetw
         .unwrap_or(-1)
         + 1;
 
-    let mut graph = GraphStructure::new();
-    let mut meta: FxHashMap<OvertureEntryId, OvertureEdgeMetadata> = FxHashMap::default();
+    let mut edges = Vec::new();
+    let mut ways: Vec<(OvertureEntryId, OvertureEdgeMetadata)> = Vec::new();
 
     for segment in &segments {
         if !segment.navigable() {
@@ -50,7 +51,7 @@ pub fn build(connectors: Vec<Connector>, segments: Vec<Segment>) -> OvertureNetw
         let backward = segment.open(Heading::Backward);
         let direction_aware = DirectionAwareEdgeId::new(segment.id);
 
-        meta.insert(segment.id, OvertureEdgeMetadata::pick(segment));
+        ways.push((segment.id, OvertureEdgeMetadata::pick(segment)));
 
         for pair in segment.connectors.windows(2) {
             if let [a, b] = pair {
@@ -72,11 +73,18 @@ pub fn build(connectors: Vec<Connector>, segments: Vec<Segment>) -> OvertureNetw
 
                 for hop in chain.windows(2) {
                     if let [s, t] = hop {
+                        let edge = |source, target, way| RawEdge {
+                            source,
+                            target,
+                            class: weight,
+                            way,
+                        };
+
                         if forward {
-                            graph.add_edge(*s, *t, (weight, direction_aware.forward()));
+                            edges.push(edge(*s, *t, direction_aware.forward()));
                         }
                         if backward {
-                            graph.add_edge(*t, *s, (weight, direction_aware.backward()));
+                            edges.push(edge(*t, *s, direction_aware.backward()));
                         }
                     }
                 }
@@ -85,21 +93,20 @@ pub fn build(connectors: Vec<Connector>, segments: Vec<Segment>) -> OvertureNetw
     }
 
     // Keep only nodes that made it into the graph; isolated connectors would
-    // otherwise bloat the hash and spatial index.
-    let mut pruned: FxHashMap<OvertureEntryId, Node<OvertureEntryId>> = FxHashMap::default();
-    for (id, node) in hash {
-        if graph.contains_node(id) {
-            pruned.insert(id, node);
-        }
-    }
+    // otherwise bloat the node column and spatial index.
+    let touched = edges
+        .iter()
+        .flat_map(|edge| [edge.source, edge.target])
+        .collect::<FxHashSet<_>>();
+    let nodes = hash
+        .into_values()
+        .filter(|node| touched.contains(&node.id))
+        .collect();
 
-    let mut network = OvertureNetwork {
-        graph,
-        hash: pruned,
-        meta,
-        index: Default::default(),
-        index_edge: Default::default(),
-    };
-    network.rebuild_indices();
-    network
+    // A segment given twice keeps its last metadata.
+    ways.reverse();
+
+    OvertureNetwork {
+        graph: Graph::assemble(nodes, edges, ways).indexed(),
+    }
 }

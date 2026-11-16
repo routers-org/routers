@@ -14,7 +14,7 @@ use arrow::datatypes::{DataType, Field, FieldRef, Schema};
 use arrow::record_batch::RecordBatch;
 use geo::point;
 use parquet::arrow::ArrowWriter;
-use routers_network::{Route, Scan};
+use routers_network::{Discovery, Route, Scan};
 use serde::Serialize;
 use serde_arrow::schema::{SchemaLike, TracingOptions};
 
@@ -396,14 +396,14 @@ fn builds_network_from_geoparquet() {
 
     assert_eq!(net.num_nodes(), 3);
     // c1↔c2 and c2↔c3 → four directed edges.
-    assert_eq!(net.graph.edge_count(), 4);
+    assert_eq!(net.num_edges(), 4);
 
     // The chain is routable end to end.
     let route = net.route_points(&point! { x: 0.0, y: 0.0 }, &point! { x: 2.0, y: 0.0 });
     assert!(route.is_some(), "route across the segment chain");
 
     // The 50 km/h max speed survived parquet → serde_arrow → domain.
-    let has_speed = net.meta.values().any(|m| {
+    let has_speed = net.segments().map(|(_, m)| m).any(|m| {
         m.speed_limits
             .iter()
             .any(|s| s.max_speed.map(|v| v.in_kmh()) == Some(50))
@@ -472,16 +472,24 @@ fn conditional_denials_do_not_close_roads() {
 
     // Every navigable street stays open in both directions: the over-height
     // (s300) and peak-hour (s400) denials only hold conditionally.
-    for (source, target, _) in net.graph.all_edges() {
+    for (source, target, _) in net.edges() {
         assert!(
-            net.graph.contains_edge(target, source),
+            net.edge(&target, &source).is_some(),
             "conditional denial must not close a direction"
         );
     }
 
     // The unknown-class segment contributes no edges or metadata.
-    let classes: Vec<_> = net.meta.values().filter_map(|m| m.road_class).collect();
-    assert_eq!(net.meta.len(), classes.len(), "every graph segment classed");
+    let classes: Vec<_> = net
+        .segments()
+        .map(|(_, m)| m)
+        .filter_map(|m| m.road_class)
+        .collect();
+    assert_eq!(
+        net.segments().count(),
+        classes.len(),
+        "every graph segment classed"
+    );
 
     let _ = fs::remove_dir_all(&dir);
 }

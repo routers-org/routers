@@ -12,6 +12,7 @@ extern crate alloc;
 use alloc::collections::BTreeMap;
 
 use routers_codec::osm::{OsmEdgeMetadata, OsmEntryId, OsmNetwork};
+use routers_network::DataPlane;
 use routers_shard::{
     Artifact, ArtifactError, GeohashStrategy, MANIFEST_FILENAME, Manifest, ShardSource,
     ShardedNetwork, SourceEdge, sha256_hex, token_safe,
@@ -99,8 +100,8 @@ fn main() {
 
     debug!(
         "file contained {} nodes, {} edges",
-        network.hash.len(),
-        network.graph.edge_count()
+        network.num_nodes(),
+        network.num_edges()
     );
 
     let strategy = GeohashStrategy::with_precision(args.precision);
@@ -239,15 +240,15 @@ struct OsmSource<'a>(&'a OsmNetwork);
 
 impl<'a> ShardSource<OsmEntryId, OsmEdgeMetadata> for OsmSource<'a> {
     fn nodes<'b>(&'b self) -> Box<dyn Iterator<Item = (OsmEntryId, Point)> + 'b> {
-        Box::new(self.0.hash.values().map(|n| (n.id, n.position)))
+        Box::new(self.0.nodes().map(|n| (n.id, n.position)))
     }
 
     fn edges<'b>(
         &'b self,
     ) -> Box<dyn Iterator<Item = SourceEdge<OsmEntryId, OsmEdgeMetadata>> + 'b> {
-        Box::new(self.0.graph.all_edges().filter_map(|(from, to, data)| {
-            let meta = self.0.meta.get(&data.1.index())?.clone();
-            Some((from, to, *data, meta))
+        Box::new(self.0.edges().filter_map(|(from, to, data)| {
+            let meta = self.0.metadata(&data.1.index())?.clone();
+            Some((from, to, data, meta))
         }))
     }
 }

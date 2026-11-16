@@ -1,23 +1,23 @@
-use petgraph::prelude::DiGraphMap;
-use routers_network::edge::Weight;
-use routers_network::network::GraphEdge;
-use routers_network::{
-    DirectionAwareEdgeId, Discovery, Edge, Node, Route, RowIndex, Scan, envelope_of,
-};
-
-use log::debug;
-use rustc_hash::{FxHashMap, FxHasher};
-use serde::{Deserialize, Serialize};
+//! The OSM routing network: a columnar [`Graph`] built from a `.osm.pbf`.
 
 use core::fmt::Debug;
-use core::hash::BuildHasherDefault;
-use geo::{Point, Rect};
+
+use log::debug;
+use routers_network::columnar::{self, Graph};
+use routers_network::network::GraphEdge;
+use routers_network::{Metadata, Node, columnar_network};
 use web_time::Instant;
 
 #[cfg(not(target_arch = "wasm32"))]
+use geo::Point;
+#[cfg(not(target_arch = "wasm32"))]
 use log::info;
 #[cfg(not(target_arch = "wasm32"))]
-use routers_network::Metadata;
+use rayon::prelude::*;
+#[cfg(not(target_arch = "wasm32"))]
+use routers_network::columnar::RawEdge;
+#[cfg(not(target_arch = "wasm32"))]
+use routers_network::{Direction, DirectionAwareEdgeId};
 #[cfg(not(target_arch = "wasm32"))]
 use std::io::Write;
 #[cfg(not(target_arch = "wasm32"))]
@@ -27,34 +27,29 @@ use std::path::{Path, PathBuf};
 use crate::osm::element::ProcessedElement;
 use crate::osm::*;
 
-pub type GraphStructure<E> =
-    DiGraphMap<E, (Weight, DirectionAwareEdgeId<E>), BuildHasherDefault<FxHasher>>;
-
 /// Magic header stapled at the start of every `.rt` file.
 const SAVE_MAGIC: &[u8; 4] = b"OSMN";
 
 // Prevent files from being used across build revisions
 include!(concat!(env!("OUT_DIR"), "/format_hash.rs"));
-const SAVE_VERSION: u64 = FORMAT_HASH;
+const SAVE_VERSION: u64 = FORMAT_HASH ^ columnar::FORMAT;
 
-#[derive(Serialize, Deserialize)]
+#[derive(Default)]
 pub struct OsmNetwork {
-    pub graph: GraphStructure<OsmEntryId>,
-    pub hash: FxHashMap<OsmEntryId, Node<OsmEntryId>>,
-    pub meta: FxHashMap<OsmEntryId, OsmEdgeMetadata>,
+    graph: Graph<OsmEntryId, OsmEdgeMetadata>,
+}
 
-    #[serde(skip)]
-    pub index: RowIndex<OsmEntryId>,
-    /// Edge rows are fully-interned (`Node`-carrying) so that `edges_in_box`
-    /// results require no hash lookups.
-    #[serde(skip)]
-    pub index_edge: RowIndex<Edge<Node<OsmEntryId>>>,
+columnar_network!(impl[] OsmNetwork => graph: Graph<OsmEntryId, OsmEdgeMetadata>);
+
+impl Debug for OsmNetwork {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("open street maps : network")
+    }
 }
 
 impl OsmNetwork {
-    /// Decode a previously-encoded `OsmNetwork` from a byte slice and
-    /// rebuild its spatial indices. Filesystem-free; suitable for WASM
-    /// targets where bytes arrive via `fetch()` or similar.
+    /// Decode an encoded `OsmNetwork` from bytes. Its spatial indices are
+    /// built on the first query that needs them.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, String> {
         const HEADER_LEN: usize = SAVE_MAGIC.len() + 8;
 
@@ -74,34 +69,26 @@ impl OsmNetwork {
             ));
         }
 
-        let deserialise_start = Instant::now();
-        let mut net: Self =
-            postcard::from_bytes(&bytes[HEADER_LEN..]).map_err(|v| v.to_string())?;
-
-        let deserialise = deserialise_start.elapsed();
-        let rebuild_start = Instant::now();
-        net.rebuild_indices();
+        let started = Instant::now();
+        let graph = Graph::decode(&mut &bytes[HEADER_LEN..])?;
 
         debug!(
-            "OsmNetwork::from_bytes: {} bytes, deserialised in {:?}, rebuilt indices in {:?}",
+            "OsmNetwork::from_bytes: {} bytes, deserialised in {:?}",
             bytes.len(),
-            deserialise,
-            rebuild_start.elapsed()
+            started.elapsed()
         );
 
-        Ok(net)
+        Ok(OsmNetwork { graph })
     }
 
     /// Encode `self` into a `Vec<u8>` with the format header prepended.
     /// Counterpart to [`from_bytes`](Self::from_bytes); filesystem-free.
     pub fn to_bytes(&self) -> Result<Vec<u8>, String> {
-        let payload: Vec<u8> =
-            postcard::to_allocvec(self).map_err(|e| format!("failed to serialise value: {e}"))?;
-        let mut out = Vec::with_capacity(SAVE_MAGIC.len() + 8 + payload.len());
+        let mut out = Vec::new();
 
         out.extend_from_slice(SAVE_MAGIC);
         out.extend_from_slice(&SAVE_VERSION.to_le_bytes());
-        out.extend_from_slice(&payload);
+        self.graph.encode(&mut out)?;
 
         Ok(out)
     }
@@ -139,49 +126,6 @@ impl OsmNetwork {
         Self::from_bytes(&bytes).map_err(|e| format!("cache file `{}`: {e}", filename.display()))
     }
 
-    /// Rebuilds the node and edge spatial indices from `hash` and `graph`.
-    /// Used after loading a serialised `OsmNetwork` (indices are skipped on
-    /// the wire) and is safe to call at any time.
-    pub fn rebuild_indices(&mut self) {
-        // The two indices are independent — parallelise the build so
-        // cache-hit cost is dominated by whichever tree is larger rather
-        // than their sum.
-        let nodes: Vec<OsmEntryId> = self.hash.keys().copied().collect();
-        let edges: Vec<Edge<Node<OsmEntryId>>> = self
-            .graph
-            .all_edges()
-            .filter_map(|(s, t, &(weight, id))| {
-                let source = *self.hash.get(&s)?;
-                let target = *self.hash.get(&t)?;
-                Some(Edge {
-                    source,
-                    target,
-                    id: DirectionAwareEdgeId::new(Node::new(Point::new(0., 0.), id.index()))
-                        .with_direction(id.direction()),
-                    weight,
-                })
-            })
-            .collect();
-
-        let hash = &self.hash;
-        let build_nodes = || {
-            RowIndex::build(nodes, |id| {
-                let p = hash[id].position;
-                (p, p)
-            })
-        };
-        let build_edges =
-            || RowIndex::build(edges, |e| envelope_of(e.source.position, e.target.position));
-
-        #[cfg(feature = "parallel")]
-        let (node_index, edge_index) = rayon::join(build_nodes, build_edges);
-        #[cfg(not(feature = "parallel"))]
-        let (node_index, edge_index) = (build_nodes(), build_edges());
-
-        self.index = node_index;
-        self.index_edge = edge_index;
-    }
-
     /// Persist this network to disk. Thin wrapper around
     /// [`to_bytes`](Self::to_bytes); not available on WASM.
     #[cfg(not(target_arch = "wasm32"))]
@@ -202,248 +146,152 @@ impl OsmNetwork {
     /// IO, multithreaded parsing and rayon; not available on WASM.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn from_pbf(filename: &PathBuf) -> Result<Self, Box<dyn core::error::Error>> {
-        let mut start_time = Instant::now();
-        let fixed_start_time = Instant::now();
+        let started = Instant::now();
 
         let reader =
             ProcessedElementIterator::new(filename.clone()).map_err(|err| format!("{err:?}"))?;
 
-        debug!("Iterator warming took: {:?}", start_time.elapsed());
-        start_time = Instant::now();
-
         info!("Ingesting...");
 
-        let (nodes, edges, metadata): (
+        type Parts = (
             Vec<Node<OsmEntryId>>,
-            Vec<Edge<OsmEntryId>>,
+            Vec<RawEdge<OsmEntryId>>,
             Vec<(OsmEntryId, OsmEdgeMetadata)>,
-        ) = reader.par_red(
-            |mut trees: (
-                Vec<Node<OsmEntryId>>,
-                Vec<Edge<OsmEntryId>>,
-                Vec<(OsmEntryId, OsmEdgeMetadata)>,
-            ),
-             element: ProcessedElement| {
+        );
+
+        let (nodes, edges, ways): Parts = reader.par_red(
+            |mut parts: Parts, element: ProcessedElement| {
                 match element {
                     ProcessedElement::Way(way) => {
                         let metadata = OsmEdgeMetadata::pick(way.tags());
-                        // If way is not traversable (/ is not road)
-                        if metadata.road_class.is_none() {
-                            return trees;
-                        }
 
-                        // Get the weight from the weight table
-                        let weight = metadata.road_class.unwrap().weighting();
+                        let Some(class) = metadata.road_class.map(|class| class.weighting()) else {
+                            return parts;
+                        };
 
                         let bidirectional = !way.tags().unidirectional();
-                        trees.2.push((way.id(), metadata));
+                        let along = |direction| {
+                            DirectionAwareEdgeId::new(way.id()).with_direction(direction)
+                        };
+                        parts.2.push((way.id(), metadata));
 
-                        // Update with all adjacent nodes
-                        way.refs().windows(2).for_each(|edge| {
-                            if let [a, b] = edge {
-                                let direction_aware = DirectionAwareEdgeId::new(way.id());
+                        for pair in way.refs().windows(2) {
+                            let [a, b] = pair else { continue };
 
-                                let w = (weight, direction_aware.forward());
-                                trees.1.push(Edge::from((a.id, b.id, &w)));
-
-                                // If way is bidi, add opposite edge with a DirAw backward.
-                                if bidirectional {
-                                    let w = (weight, direction_aware.backward());
-                                    trees.1.push(Edge::from((b.id, a.id, &w)));
-                                }
-                            } else {
-                                debug!("Edge windowing produced odd-sized entry: {edge:?}");
+                            parts.1.push(RawEdge {
+                                source: a.id,
+                                target: b.id,
+                                class,
+                                way: along(Direction::Outgoing),
+                            });
+                            if bidirectional {
+                                parts.1.push(RawEdge {
+                                    source: b.id,
+                                    target: a.id,
+                                    class,
+                                    way: along(Direction::Incoming),
+                                });
                             }
-                        });
+                        }
                     }
-                    ProcessedElement::Node(node) => {
-                        // Add the node to the graph
-                        trees.0.push(node);
-                    }
+                    ProcessedElement::Node(node) => parts.0.push(node),
                     _ => {}
                 }
 
-                trees
+                parts
             },
-            |mut a_tree, b_tree| {
-                a_tree.0.extend(b_tree.0);
-                a_tree.1.extend(b_tree.1);
-                a_tree.2.extend(b_tree.2);
-                a_tree
+            |mut a, b| {
+                a.0.extend(b.0);
+                a.1.extend(b.1);
+                a.2.extend(b.2);
+                a
             },
             || (Vec::new(), Vec::new(), Vec::new()),
         );
 
-        let mut graph = GraphStructure::new();
-        for edge in &edges {
-            graph.add_edge(edge.source, edge.target, (edge.weight, edge.id));
-        }
+        debug!("Parsing took: {:?}", started.elapsed());
 
-        debug!("Graphical ingestion took: {:?}", start_time.elapsed());
-        start_time = Instant::now();
-
-        let meta = metadata.into_iter().collect::<FxHashMap<_, _>>();
-
-        let mut hash = FxHashMap::default();
-        for node in nodes.iter().filter(|node| graph.contains_node(node.id)) {
-            hash.insert(node.id, *node);
-        }
-
-        debug!("HashMap creation took: {:?}", start_time.elapsed());
-        start_time = Instant::now();
-
-        let mut network = OsmNetwork {
-            graph,
-            hash,
-            meta,
-            index: RowIndex::default(),
-            index_edge: RowIndex::default(),
+        let total = nodes.len();
+        let nodes = endpoints(nodes, &edges);
+        let network = OsmNetwork {
+            graph: Graph::assemble(nodes, edges, ways),
         };
-        network.rebuild_indices();
-        debug!("index build took: {:?}", start_time.elapsed());
 
         info!(
             "Finished. Ingested {:?} nodes from {:?} nodes total in {}ms",
-            network.index.len(),
-            nodes.len(),
-            fixed_start_time.elapsed().as_millis()
+            network.num_nodes(),
+            total,
+            started.elapsed().as_millis()
         );
 
         Ok(network)
     }
 
+    /// The columns the network is held as.
+    pub fn graph(&self) -> &Graph<OsmEntryId, OsmEdgeMetadata> {
+        &self.graph
+    }
+
     pub fn num_nodes(&self) -> usize {
-        self.graph.node_count()
+        self.graph.num_nodes()
+    }
+
+    pub fn num_edges(&self) -> usize {
+        self.graph.num_edges()
+    }
+
+    /// Every node of the network.
+    pub fn nodes(&self) -> impl Iterator<Item = &Node<OsmEntryId>> {
+        self.graph.nodes()
+    }
+
+    /// Every directed edge of the network, grouped by the node it leaves.
+    pub fn edges(&self) -> impl Iterator<Item = GraphEdge<OsmEntryId>> + '_ {
+        self.graph.edges()
     }
 }
 
-impl Default for OsmNetwork {
-    fn default() -> Self {
-        Self {
-            graph: GraphStructure::new(),
-            hash: FxHashMap::default(),
-            meta: FxHashMap::default(),
-            index: RowIndex::default(),
-            index_edge: RowIndex::default(),
-        }
-    }
-}
+/// The nodes that `edges` run between, each with its position among `nodes`.
+/// The PBF also carries nodes no road touches.
+#[cfg(not(target_arch = "wasm32"))]
+fn endpoints(
+    mut nodes: Vec<Node<OsmEntryId>>,
+    edges: &[RawEdge<OsmEntryId>],
+) -> Vec<Node<OsmEntryId>> {
+    use core::sync::atomic::{AtomicBool, Ordering};
 
-impl Discovery for OsmNetwork {
-    fn edges_in_box<'a>(
-        &'a self,
-        bounds: Rect<f64>,
-    ) -> Box<dyn Iterator<Item = Edge<Node<OsmEntryId>>> + Send + 'a> {
-        Box::new(self.index_edge.search(bounds).copied())
-    }
+    nodes.par_sort_unstable_by_key(|node| node.id);
+    nodes.dedup_by_key(|node| node.id);
 
-    fn nodes_in_box<'a>(
-        &'a self,
-        bounds: Rect<f64>,
-    ) -> Box<dyn Iterator<Item = &'a Node<OsmEntryId>> + Send + 'a> {
-        Box::new(self.index.search(bounds).filter_map(|id| self.hash.get(id)))
-    }
-
-    fn node(&self, id: &OsmEntryId) -> Option<&Node<OsmEntryId>> {
-        self.hash.get(id)
-    }
-
-    fn edge(&self, &source: &OsmEntryId, &target: &OsmEntryId) -> Option<Edge<OsmEntryId>> {
-        self.graph
-            .edge_weight(source, target)
-            .map(|&(weight, id)| Edge {
-                source,
-                target,
-                weight,
-                id,
-            })
-    }
-}
-
-impl Scan for OsmNetwork {
-    fn nearest_node<'a>(&'a self, point: &Point) -> Option<&'a Node<OsmEntryId>> {
-        self.index.nearest(point).and_then(|id| self.hash.get(id))
-    }
-}
-
-impl Route for OsmNetwork {
-    fn route_nodes(
-        &self,
-        start_node: OsmEntryId,
-        finish_node: OsmEntryId,
-    ) -> Option<(Weight, Vec<Node<OsmEntryId>>)> {
-        let (score, path) = petgraph::algo::astar(
-            &self.graph,
-            start_node,
-            |finish| finish == finish_node,
-            |(_, _, w)| w.0,
-            |_| 0 as Weight,
-        )?;
-
-        let route = path
-            .iter()
-            .filter_map(|v| self.hash.get(v).copied())
-            .collect();
-
-        Some((score, route))
-    }
-}
-
-impl Debug for OsmNetwork {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.write_str("open street maps : network")
-    }
-}
-
-impl routers_network::DataPlane for OsmNetwork {
-    type Entry = OsmEntryId;
-    type Runtime = <OsmEdgeMetadata as routers_network::Metadata>::Runtime;
-    type Meta = OsmEdgeMetadata;
-
-    fn metadata(&self, id: &OsmEntryId) -> Option<&OsmEdgeMetadata> {
-        self.meta.get(id)
-    }
-
-    fn point(&self, id: &OsmEntryId) -> Option<Point> {
-        self.hash.get(id).map(|v| v.position)
-    }
-
-    fn edges_into<'a>(
-        &'a self,
-        id: OsmEntryId,
-    ) -> Box<dyn Iterator<Item = GraphEdge<OsmEntryId>> + 'a> {
-        Box::new(
-            self.graph
-                .edges_directed(id, petgraph::Direction::Incoming)
-                .map(|(src, dst, &data)| (src, dst, data)),
-        )
-    }
-
-    fn edges_outof<'a>(
-        &'a self,
-        id: OsmEntryId,
-    ) -> Box<dyn Iterator<Item = GraphEdge<OsmEntryId>> + 'a> {
-        Box::new(
-            self.graph
-                .edges_directed(id, petgraph::Direction::Outgoing)
-                .map(|(src, dst, &data)| (src, dst, data)),
-        )
-    }
-
-    fn fatten(
-        &self,
-        Edge {
-            source,
-            target,
-            weight,
-            id,
-        }: &Edge<OsmEntryId>,
-    ) -> Option<Edge<Node<OsmEntryId>>> {
-        Some(Edge {
-            source: *self.hash.get(source)?,
-            target: *self.hash.get(target)?,
-            id: DirectionAwareEdgeId::new(Node::new(Point::new(0., 0.), id.index())),
-            weight: *weight,
+    // Mark the nodes an edge touches where they stand, rather than gathering
+    // every endpoint of every edge to sort: a flag a node, not two ids an
+    // edge.
+    let touched = (0..nodes.len())
+        .map(|_| AtomicBool::new(false))
+        .collect::<Vec<_>>();
+    let mut absent = edges
+        .par_iter()
+        .flat_map_iter(|edge| [edge.source, edge.target])
+        .filter(|id| match nodes.binary_search_by_key(id, |node| node.id) {
+            Ok(found) => {
+                touched[found].store(true, Ordering::Relaxed);
+                false
+            }
+            Err(_) => true,
         })
-    }
+        .collect::<Vec<_>>();
+    absent.par_sort_unstable();
+    absent.dedup();
+
+    let mut touched = touched.into_iter().map(AtomicBool::into_inner);
+    nodes.retain(|_| touched.next().unwrap_or(false));
+
+    // An endpoint the file has no node for still takes its place, nowhere.
+    nodes.extend(
+        absent
+            .into_iter()
+            .map(|id| Node::new(Point::new(f64::NAN, f64::NAN), id)),
+    );
+    nodes.shrink_to_fit();
+    nodes
 }

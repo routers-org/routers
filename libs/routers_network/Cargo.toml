@@ -11,7 +11,10 @@ geo-index = { workspace = true }
 serde = { workspace = true, features = ["std"] }
 tracing = { workspace = true, features = ["std"], optional = true }
 
-rustc-hash = { workspace = true, optional = true }
+rustc-hash = { workspace = true }
+postcard = { workspace = true }
+uom = { workspace = true }
+rayon = { workspace = true, optional = true }
 petgraph = { workspace = true, optional = true }
 
 [dev-dependencies]
@@ -21,7 +24,9 @@ fixtures = []
 tracing = ["dep:tracing"]
 # Exposes `routers_network::mock` (MockNetwork/MockNetworkBuilder) as reusable
 # test-support for downstream crates (e.g. routers_transition integration tests).
-testing = ["dep:rustc-hash", "dep:petgraph"]
+testing = ["dep:petgraph"]
+# rayon for laying a graph out and indexing it; off = single-threaded (e.g. wasm32).
+parallel = ["dep:rayon"]
 
 [lints]
 workspace = true
