@@ -253,14 +253,23 @@ where
 
     /// Returns the [`TransitionLengths`] of the context.
     pub fn lengths(&self) -> Option<TransitionLengths> {
+        // A summarised path knows its span: no candidate need be looked up.
+        if let (Some(straightline_distance), ResolutionMethod::Standard) =
+            (self.optimal_path.span(), self.requested_resolution_method)
+        {
+            let offset = self.virtual_tails.source? + self.virtual_tails.target?;
+
+            return Some(TransitionLengths {
+                straightline_distance,
+                route_length: self.optimal_path.length() + offset,
+            });
+        }
+
         let (source, target) = self.candidates();
         let offset = self.total_offset(&source, &target)?;
 
         let route_length = self.optimal_path.length() + offset;
-        let straightline_distance = self
-            .optimal_path
-            .span()
-            .unwrap_or_else(|| Haversine.distance(source.position, target.position));
+        let straightline_distance = Haversine.distance(source.position, target.position);
 
         Some(TransitionLengths {
             straightline_distance,
