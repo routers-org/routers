@@ -922,7 +922,7 @@ fn length(bytes: &mut &[u8]) -> Result<usize, String> {
     Ok(u64::from_le_bytes(take(bytes, 8)?.try_into().expect("8 bytes")) as usize)
 }
 
-/// Read a column [written](write) at the head of `bytes`.
+/// Read a column [written](write()) at the head of `bytes`.
 fn read<T, const N: usize>(
     bytes: &mut &[u8],
     value: impl Fn([u8; N]) -> T,
