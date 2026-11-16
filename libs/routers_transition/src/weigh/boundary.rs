@@ -14,8 +14,8 @@ use rustc_hash::FxHashMap;
 use crate::{
     candidate::Candidate,
     costing::{
-        Costing, CostingStrategies, EmissionStrategy, Headings, HopSummary, Strategy,
-        TransitionContext, TransitionLengths, TransitionStrategy, VirtualTails,
+        Costing, CostingStrategies, EmissionStrategy, Headings, Strategy, TransitionContext,
+        TransitionStrategy, VirtualTails,
     },
     map_path::{Joint, MapPath, Segment, Station, Turn, Turns},
     primitives::{
@@ -227,15 +227,15 @@ where
         }
     }
 
-    /// The hop to `leaf` as its summary, when the source's turns were
+    /// The path to `leaf` as its totals, when the source's turns were
     /// [carried](Self::depart) there and `arriving` can close them.
     fn summary(
         &self,
         tree: &Tree<N::Entry>,
         leaf: u32,
-        (source, departing): (&Candidate<N::Entry>, &Anchor),
-        (target, arriving): (&Candidate<N::Entry>, &Anchor),
-    ) -> Option<HopSummary> {
+        departing: &Anchor,
+        arriving: &Anchor,
+    ) -> Option<MapPath<N::Entry>> {
         if tree.is_root(leaf) {
             return None;
         }
@@ -243,20 +243,11 @@ where
         let turns = self.scratch.turns.get(self.scratch.span.step(leaf)?)?;
         let joint = arriving.joint?;
 
-        // As `TransitionContext::lengths`.
-        let lengths = departing
-            .tail()
-            .zip(arriving.tail())
-            .map(|(leaving, entering)| TransitionLengths {
-                straightline_distance: departing.station.distance(&arriving.station),
-                route_length: tree.link(leaf).length + (leaving + entering),
-            });
-
-        Some(HopSummary {
-            lengths,
-            angular_complexity: turns.arriving(joint.segment, joint.turn, arriving.heading),
-            classes: (source.edge.weight, target.edge.weight),
-        })
+        Some(MapPath::summarised(
+            tree.link(leaf).length,
+            turns.arriving(joint.segment, joint.turn, arriving.heading),
+            departing.station.distance(&arriving.station),
+        ))
     }
 
     /// [`Weigher::hop`], from shared geometry.
@@ -283,13 +274,10 @@ where
                 Leaf::Unplaced => return self.fallback(source, target),
             };
 
-            // A strategy that does not walk the path is costed from the summary.
-            if let Some(hop) = self.summary(tree, leaf, (source, departing), (target, arriving)) {
-                let cost = self.costing.transition.summarised_cost(&hop);
-                return Some(cost.min(MAX_WEIGHT));
-            }
-
-            let path = {
+            // A strategy that does not walk the path is given its totals.
+            let path = if let Some(path) = self.summary(tree, leaf, departing, arriving) {
+                path
+            } else {
                 let Scratch { links, nodes, .. } = &mut *self.scratch;
                 tree.path(leaf, links);
 
@@ -702,27 +690,5 @@ mod tests {
             let weights = trellis.layer(boundary).expect("boundary is resolved");
             assert!(weights.iter().all(|&weight| weight == 7), "{boundary:?}");
         }
-    }
-
-    /// A strategy that opts out of the path without implementing `summarised`.
-    struct Silent;
-
-    impl<'a, E: Entry> Strategy<TransitionContext<'a, E>> for Silent {
-        type Cost = f64;
-
-        const ZETA: f64 = 1.;
-        const BETA: f64 = 1.;
-        const WALKS_PATH: bool = false;
-
-        fn calculate(&self, context: TransitionContext<'a, E>) -> Option<f64> {
-            DefaultTransitionCost.calculate(context)
-        }
-    }
-
-    /// ...which must panic.
-    #[test]
-    #[should_panic(expected = "must implement `Strategy::summarised`")]
-    fn opting_out_of_the_path_needs_a_summary() {
-        costs_hop_by_hop(&AllCompute::default(), Silent);
     }
 }
