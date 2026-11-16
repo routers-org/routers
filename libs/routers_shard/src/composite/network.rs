@@ -51,28 +51,28 @@ where
     }
 
     fn edges_outof<'a>(&'a self, id: E) -> Box<dyn Iterator<Item = GraphEdge<E>> + 'a> {
-        Box::new(self.topology.edges_outof(id))
+        Box::new(self.topology().edges_outof(id))
     }
 
     fn edges_into<'a>(&'a self, id: E) -> Box<dyn Iterator<Item = GraphEdge<E>> + 'a> {
-        Box::new(self.topology.edges_into(id))
+        Box::new(self.topology().edges_into(id))
     }
 
     fn fatten(&self, edge: &Edge<E>) -> Option<Edge<Node<E>>> {
-        self.topology.fatten(edge)
+        self.topology().fatten(edge)
     }
 
     fn reach(&self, root: &E, reach: f64, runtime: &M::Runtime) -> Option<Vec<(E, E)>> {
         let passable = self.passable.get(runtime, || {
-            let ways = self.topology.ways();
+            let ways = self.topology().ways();
 
-            self.topology.passable(|way, direction| {
+            self.topology().passable(|way, direction| {
                 self.metadata(&ways[way])
                     .is_some_and(|meta| meta.accessible(runtime, direction))
             })
         });
 
-        self.topology.reach(root, reach, &passable)
+        self.topology().reach(root, reach, &passable)
     }
 }
 
@@ -100,7 +100,7 @@ where
                     // Shards may each hold the edge: the composite's is the
                     // one a route would take.
                     let Edge { weight, id, .. } =
-                        self.topology.edge(&found.source.id, &found.target.id)?;
+                        self.topology().edge(&found.source.id, &found.target.id)?;
 
                     let node = Node::new(Point::new(0., 0.), id.index());
                     let id = DirectionAwareEdgeId::new(node).with_direction(id.direction());
@@ -130,11 +130,11 @@ where
     }
 
     fn node(&self, id: &E) -> Option<&Node<E>> {
-        self.topology.node(id)
+        self.topology().node(id)
     }
 
     fn edge(&self, source: &E, target: &E) -> Option<Edge<E>> {
-        self.topology.edge(source, target)
+        self.topology().edge(source, target)
     }
 }
 
@@ -164,6 +164,6 @@ where
     S: ShardId,
 {
     fn route_nodes(&self, start: E, finish: E) -> Option<(Weight, Vec<Node<E>>)> {
-        self.topology.route_nodes(start, finish)
+        self.topology().route_nodes(start, finish)
     }
 }

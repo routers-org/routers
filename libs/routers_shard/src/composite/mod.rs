@@ -7,6 +7,7 @@
 mod network;
 
 use alloc::sync::Arc;
+use std::sync::OnceLock;
 
 use routers_network::columnar::{Masks, Topology};
 use routers_network::{Entry, Metadata};
@@ -21,9 +22,11 @@ where
     S: ShardId,
 {
     shards: Vec<Arc<ShardedNetwork<E, M, S>>>,
-    /// The shards' graphs as one, which a route may cross freely. Metadata
-    /// and spatial indices stay with the shards.
-    topology: Topology<E>,
+    /// The shards' graphs as one, which a route may cross freely; merged the
+    /// first time it is needed, so a set of shards that is replaced before
+    /// it is used costs nothing. Metadata and spatial indices stay with the
+    /// shards.
+    topology: OnceLock<Topology<E>>,
     passable: Masks<M::Runtime>,
 }
 
@@ -34,16 +37,23 @@ where
     S: ShardId,
 {
     pub fn new(shards: Vec<Arc<ShardedNetwork<E, M, S>>>) -> Self {
-        let topologies = shards
-            .iter()
-            .map(|shard| shard.graph().topology())
-            .collect::<Vec<_>>();
-
         Self {
-            topology: Topology::merge(&topologies),
+            topology: OnceLock::new(),
             passable: Masks::default(),
             shards,
         }
+    }
+
+    fn topology(&self) -> &Topology<E> {
+        self.topology.get_or_init(|| {
+            let topologies = self
+                .shards
+                .iter()
+                .map(|shard| shard.graph().topology())
+                .collect::<Vec<_>>();
+
+            Topology::merge(&topologies)
+        })
     }
 
     /// Number of shards composed into this network.
@@ -52,10 +62,10 @@ where
     }
 
     pub fn num_nodes(&self) -> usize {
-        self.topology.num_nodes()
+        self.topology().num_nodes()
     }
 
     pub fn num_edges(&self) -> usize {
-        self.topology.num_edges()
+        self.topology().num_edges()
     }
 }
