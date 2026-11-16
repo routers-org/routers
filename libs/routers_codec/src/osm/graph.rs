@@ -48,7 +48,8 @@ impl Debug for OsmNetwork {
 }
 
 impl OsmNetwork {
-    /// Decode an encoded `OsmNetwork` from bytes and rebuild its indices.
+    /// Decode an encoded `OsmNetwork` from bytes. Its spatial indices are
+    /// built on the first query that needs them.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, String> {
         const HEADER_LEN: usize = SAVE_MAGIC.len() + 8;
 
@@ -71,14 +72,10 @@ impl OsmNetwork {
         let started = Instant::now();
         let graph = Graph::decode(&mut &bytes[HEADER_LEN..])?;
 
-        let deserialise = started.elapsed();
-        let graph = graph.indexed();
-
         debug!(
-            "OsmNetwork::from_bytes: {} bytes, deserialised in {:?}, built indices in {:?}",
+            "OsmNetwork::from_bytes: {} bytes, deserialised in {:?}",
             bytes.len(),
-            deserialise,
-            started.elapsed() - deserialise
+            started.elapsed()
         );
 
         Ok(OsmNetwork { graph })
@@ -217,7 +214,7 @@ impl OsmNetwork {
         let total = nodes.len();
         let nodes = endpoints(nodes, &edges);
         let network = OsmNetwork {
-            graph: Graph::assemble(nodes, edges, ways).indexed(),
+            graph: Graph::assemble(nodes, edges, ways),
         };
 
         info!(
@@ -261,26 +258,40 @@ fn endpoints(
     mut nodes: Vec<Node<OsmEntryId>>,
     edges: &[RawEdge<OsmEntryId>],
 ) -> Vec<Node<OsmEntryId>> {
-    let mut endpoints = edges
-        .par_iter()
-        .flat_map_iter(|edge| [edge.source, edge.target])
-        .collect::<Vec<_>>();
-    endpoints.par_sort_unstable();
-    endpoints.dedup();
+    use core::sync::atomic::{AtomicBool, Ordering};
 
     nodes.par_sort_unstable_by_key(|node| node.id);
     nodes.dedup_by_key(|node| node.id);
 
-    endpoints
+    // Mark the nodes an edge touches where they stand, rather than gathering
+    // every endpoint of every edge to sort: a flag a node, not two ids an
+    // edge.
+    let touched = (0..nodes.len())
+        .map(|_| AtomicBool::new(false))
+        .collect::<Vec<_>>();
+    let mut absent = edges
         .par_iter()
-        .map(|&id| {
-            let at = nodes
-                .binary_search_by_key(&id, |node| node.id)
-                .map_or(Point::new(f64::NAN, f64::NAN), |found| {
-                    nodes[found].position
-                });
-
-            Node::new(at, id)
+        .flat_map_iter(|edge| [edge.source, edge.target])
+        .filter(|id| match nodes.binary_search_by_key(id, |node| node.id) {
+            Ok(found) => {
+                touched[found].store(true, Ordering::Relaxed);
+                false
+            }
+            Err(_) => true,
         })
-        .collect()
+        .collect::<Vec<_>>();
+    absent.par_sort_unstable();
+    absent.dedup();
+
+    let mut touched = touched.into_iter().map(AtomicBool::into_inner);
+    nodes.retain(|_| touched.next().unwrap_or(false));
+
+    // An endpoint the file has no node for still takes its place, nowhere.
+    nodes.extend(
+        absent
+            .into_iter()
+            .map(|id| Node::new(Point::new(f64::NAN, f64::NAN), id)),
+    );
+    nodes.shrink_to_fit();
+    nodes
 }

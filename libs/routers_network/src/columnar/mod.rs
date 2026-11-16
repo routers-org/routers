@@ -45,6 +45,16 @@ const NO_WAY: u32 = u32::MAX;
 /// in, so that a change here invalidates it.
 pub const FORMAT: u64 = 1;
 
+/// An edge on its way into the columns: its ends and way by number.
+#[derive(Clone, Copy)]
+struct Laid {
+    source: NodeIx,
+    target: NodeIx,
+    class: Weight,
+    way: u32,
+    against: bool,
+}
+
 /// One directed edge, before it is laid out.
 #[derive(Clone, Copy, Debug)]
 pub struct RawEdge<E: Entry> {
@@ -109,23 +119,24 @@ impl<E: Entry> Topology<E> {
         }
         let way_of = |id: E| ways.binary_search(&id).map_or(NO_WAY, |found| found as u32);
 
-        let resolved = map(&edges, |edge| {
-            Some((
-                *node_of.get(&edge.source)?,
-                *node_of.get(&edge.target)?,
-                *edge,
-            ))
-        })
-        .into_iter()
-        .flatten()
-        .collect::<Vec<_>>();
+        // Each edge by number rather than by id: a third the size, and the
+        // edges as given can be let go before the columns are built.
+        let resolved = keep(&edges, |edge| {
+            Some(Laid {
+                source: *node_of.get(&edge.source)?,
+                target: *node_of.get(&edge.target)?,
+                class: edge.class,
+                way: way_of(edge.way.index()),
+                against: edge.way.direction() == Direction::Incoming,
+            })
+        });
         drop(edges);
 
         // Counting sort by source: stable, so each node's edges stay in
         // insertion order.
         let mut offsets = vec![0u32; nodes.len() + 1];
-        for &(source, _, _) in &resolved {
-            offsets[source as usize + 1] += 1;
+        for edge in &resolved {
+            offsets[edge.source as usize + 1] += 1;
         }
         for node in 0..nodes.len() {
             offsets[node + 1] += offsets[node];
@@ -133,8 +144,8 @@ impl<E: Entry> Topology<E> {
 
         let mut cursor = offsets.clone();
         let mut slots = vec![u32::MAX; resolved.len()];
-        for (index, &(source, _, _)) in resolved.iter().enumerate() {
-            let slot = &mut cursor[source as usize];
+        for (index, edge) in resolved.iter().enumerate() {
+            let slot = &mut cursor[edge.source as usize];
             slots[*slot as usize] = index as u32;
             *slot += 1;
         }
@@ -154,21 +165,22 @@ impl<E: Entry> Topology<E> {
             let start = csr.targets.len();
 
             for &slot in &slots[offsets[node] as usize..offsets[node + 1] as usize] {
-                let (_, target, edge) = resolved[slot as usize];
-                let against = edge.way.direction() == Direction::Incoming;
+                let edge = resolved[slot as usize];
 
-                let repeat = csr.targets[start..].iter().position(|&seen| seen == target);
+                let repeat = csr.targets[start..]
+                    .iter()
+                    .position(|&seen| seen == edge.target);
                 match repeat {
                     Some(first) => {
                         csr.class[start + first] = edge.class;
-                        way[start + first] = way_of(edge.way.index());
-                        backward[start + first] = against;
+                        way[start + first] = edge.way;
+                        backward[start + first] = edge.against;
                     }
                     None => {
-                        csr.targets.push(target);
+                        csr.targets.push(edge.target);
                         csr.class.push(edge.class);
-                        way.push(way_of(edge.way.index()));
-                        backward.push(against);
+                        way.push(edge.way);
+                        backward.push(edge.against);
                     }
                 }
             }
@@ -880,6 +892,18 @@ fn map<T: Sync, U: Send>(items: &[T], with: impl Fn(&T) -> U + Sync + Send) -> V
     }
     #[cfg(not(feature = "parallel"))]
     items.iter().map(with).collect()
+}
+
+/// Map in order and keep what comes of it, on the thread pool where there is
+/// one.
+fn keep<T: Sync, U: Send>(items: &[T], with: impl Fn(&T) -> Option<U> + Sync + Send) -> Vec<U> {
+    #[cfg(feature = "parallel")]
+    {
+        use rayon::prelude::*;
+        items.par_iter().filter_map(with).collect()
+    }
+    #[cfg(not(feature = "parallel"))]
+    items.iter().filter_map(with).collect()
 }
 
 /// Append a column: its length, then each value's little-endian bytes.

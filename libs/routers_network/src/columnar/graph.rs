@@ -2,7 +2,7 @@
 
 use alloc::sync::Arc;
 use core::fmt::Debug;
-use std::sync::{Mutex, PoisonError};
+use std::sync::{Mutex, OnceLock, PoisonError};
 
 use geo::{Point, Rect};
 use serde::de::DeserializeOwned;
@@ -55,8 +55,10 @@ pub struct Graph<E: Entry, M: Metadata> {
     /// Per way of the topology: its metadata.
     meta: Vec<M>,
 
-    node_index: Packed,
-    edge_index: Packed,
+    // Built by `index`, or else the first time a spatial query is made: a
+    // network that is only carved up or written out never builds them.
+    node_index: OnceLock<Packed>,
+    edge_index: OnceLock<Packed>,
     passable: Masks<M::Runtime>,
 }
 
@@ -95,22 +97,33 @@ impl<E: Entry, M: Metadata> Graph<E, M> {
         Graph {
             topology,
             meta,
-            node_index: Packed::default(),
-            edge_index: Packed::default(),
+            node_index: OnceLock::new(),
+            edge_index: OnceLock::new(),
             passable: Masks::default(),
         }
     }
 
-    /// Build the spatial indices that [`Discovery`] and [`Scan`] answer from.
+    /// Build the spatial indices that [`Discovery`] and [`Scan`] answer from
+    /// now, rather than on the first query that needs them.
     ///
     /// Nodes and edges are already in spatial order, so this is one pass
     /// over each.
     pub fn index(&mut self) {
-        let nodes = Level::around(self.topology.nodes().iter().map(|node| node.position));
-        let edges = nodes.spanning(self.topology.spans());
+        self.node_index();
+        self.edge_index();
+    }
 
-        self.node_index = Packed::over(nodes);
-        self.edge_index = Packed::over(edges);
+    fn boxes(&self) -> Level {
+        Level::around(self.topology.nodes().iter().map(|node| node.position))
+    }
+
+    fn node_index(&self) -> &Packed {
+        self.node_index.get_or_init(|| Packed::over(self.boxes()))
+    }
+
+    fn edge_index(&self) -> &Packed {
+        self.edge_index
+            .get_or_init(|| Packed::over(self.boxes().spanning(self.topology.spans())))
     }
 
     fn envelope(&self, edge: usize) -> (Point, Point) {
@@ -124,9 +137,11 @@ impl<E: Entry, M: Metadata> Graph<E, M> {
         self
     }
 
-    /// Rows in the node and edge spatial indices.
+    /// Rows in the node and edge spatial indices, as far as they are built.
     pub fn index_sizes(&self) -> (usize, usize) {
-        (self.node_index.len(), self.edge_index.len())
+        let rows = |index: &OnceLock<Packed>| index.get().map_or(0, Packed::len);
+
+        (rows(&self.node_index), rows(&self.edge_index))
     }
 
     /// Append the network to `out`. The spatial indices are not encoded.
@@ -233,7 +248,7 @@ impl<E: Entry, M: Metadata> Discovery for Graph<E, M> {
         bounds: Rect<f64>,
     ) -> Box<dyn Iterator<Item = Edge<Node<E>>> + Send + 'a> {
         Box::new(
-            self.edge_index
+            self.edge_index()
                 .search(bounds, |edge| self.envelope(edge))
                 .into_iter()
                 .map(|edge| self.topology.fat_edge(edge)),
@@ -247,7 +262,7 @@ impl<E: Entry, M: Metadata> Discovery for Graph<E, M> {
         let nodes = self.topology.nodes();
 
         Box::new(
-            self.node_index
+            self.node_index()
                 .search(bounds, |node| (nodes[node].position, nodes[node].position))
                 .into_iter()
                 .map(move |node| &nodes[node as usize]),
@@ -267,7 +282,7 @@ impl<E: Entry, M: Metadata> Scan for Graph<E, M> {
     fn nearest_node<'a>(&'a self, point: &Point) -> Option<&'a Node<E>> {
         let nodes = self.topology.nodes();
 
-        self.node_index
+        self.node_index()
             .nearest(point, |node| nodes[node].position)
             .map(|node| &nodes[node as usize])
     }
