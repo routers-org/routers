@@ -65,11 +65,12 @@ pub struct Topology<E: Entry> {
     backward: Vec<bool>,
     ways: Vec<E>,
 
-    // Derived from the columns above.
-    node_of: FxHashMap<E, NodeIx>,
-    way_of: FxHashMap<E, u32>,
+    // Derived from the columns above, each the first time it is needed: a
+    // graph that is only carved up or written out needs none of them.
+    node_of: OnceLock<FxHashMap<E, NodeIx>>,
+    way_of: OnceLock<FxHashMap<E, u32>>,
     /// Per edge: the node it leaves.
-    sources: Vec<NodeIx>,
+    sources: OnceLock<Vec<NodeIx>>,
     /// In-edges per node, built the first time they are asked for.
     incoming: OnceLock<Vec<Vec<EdgeIx>>>,
     /// Per node: where it falls along the curve nodes are ordered by. Worked
@@ -247,7 +248,7 @@ impl<E: Entry> Topology<E> {
         // edges stay in insertion order.
         let mut offsets = vec![0u32; nodes.len() + 1];
         for (part, (local, _)) in parts.iter().zip(&renumbered) {
-            for &source in &part.sources {
+            for &source in part.sources() {
                 offsets[local[source as usize] as usize + 1] += 1;
             }
         }
@@ -260,7 +261,7 @@ impl<E: Entry> Topology<E> {
         let mut sorted = vec![(0 as NodeIx, 0 as Weight, 0u32, NO_WAY, false); total];
         for (part, (local, local_ways)) in parts.iter().zip(&renumbered) {
             for edge in 0..part.num_edges() {
-                let slot = &mut cursor[local[part.sources[edge] as usize] as usize];
+                let slot = &mut cursor[local[part.sources()[edge] as usize] as usize];
                 let way = part.way[edge];
 
                 sorted[*slot as usize] = (
@@ -315,7 +316,7 @@ impl<E: Entry> Topology<E> {
         Self::derive(nodes, csr, way, backward, ways, Some(node_of))
     }
 
-    /// Derive the lookups over the columns.
+    /// A graph over columns, with the node lookup where it is already known.
     fn derive(
         nodes: Vec<Node<E>>,
         csr: Csr,
@@ -324,39 +325,142 @@ impl<E: Entry> Topology<E> {
         ways: Vec<E>,
         node_of: Option<FxHashMap<E, NodeIx>>,
     ) -> Self {
-        let node_of = node_of.unwrap_or_else(|| {
-            nodes
-                .iter()
-                .enumerate()
-                .map(|(node, entry)| (entry.id, node as NodeIx))
-                .collect()
-        });
-        let way_of = ways
-            .iter()
-            .enumerate()
-            .map(|(way, &id)| (id, way as u32))
-            .collect();
-
-        let mut sources = vec![0 as NodeIx; csr.targets.len()];
-        for node in 0..nodes.len() as NodeIx {
-            for edge in csr.out_edges(node) {
-                sources[edge as usize] = node;
-            }
-        }
-
         Topology {
             nodes,
             csr,
             way,
             backward,
             ways,
-            node_of,
-            way_of,
-            sources,
+            node_of: node_of.map_or_else(OnceLock::new, OnceLock::from),
+            way_of: OnceLock::new(),
+            sources: OnceLock::new(),
             incoming: OnceLock::new(),
             curve: OnceLock::new(),
             searches: Mutex::new(Vec::new()),
         }
+    }
+
+    fn node_of(&self) -> &FxHashMap<E, NodeIx> {
+        self.node_of.get_or_init(|| {
+            self.nodes
+                .iter()
+                .enumerate()
+                .map(|(node, entry)| (entry.id, node as NodeIx))
+                .collect()
+        })
+    }
+
+    fn way_of(&self) -> &FxHashMap<E, u32> {
+        self.way_of.get_or_init(|| {
+            self.ways
+                .iter()
+                .enumerate()
+                .map(|(way, &id)| (id, way as u32))
+                .collect()
+        })
+    }
+
+    fn sources(&self) -> &[NodeIx] {
+        self.sources.get_or_init(|| {
+            let mut sources = vec![0 as NodeIx; self.csr.targets.len()];
+            for node in 0..self.nodes.len() as NodeIx {
+                for edge in self.csr.out_edges(node) {
+                    sources[edge as usize] = node;
+                }
+            }
+            sources
+        })
+    }
+
+    /// The part of this graph over `nodes`, which must be ascending. A node
+    /// keeps its out-edges where `leaving` says so, and the target of every
+    /// edge kept must itself be among `nodes`.
+    ///
+    /// Nothing is laid out or measured again: the part is in the order this
+    /// graph is in, with the lengths it has. Also answers, for each way of
+    /// the part, that way's place among this graph's.
+    pub fn carve(&self, nodes: &[NodeIx], leaving: &[bool]) -> (Self, Vec<u32>) {
+        debug_assert!(nodes.is_sorted());
+        debug_assert_eq!(nodes.len(), leaving.len());
+
+        let local = nodes
+            .iter()
+            .enumerate()
+            .map(|(local, &node)| (node, local as NodeIx))
+            .collect::<FxHashMap<_, _>>();
+
+        let kept = || {
+            nodes
+                .iter()
+                .zip(leaving)
+                .map(|(&node, &leaves)| if leaves { self.out_edges(node) } else { 0..0 })
+        };
+        let edges = kept().map(|run| run.len()).sum();
+
+        let mut used = kept()
+            .flatten()
+            .map(|edge| self.way[edge as usize])
+            .filter(|&way| way != NO_WAY)
+            .collect::<Vec<_>>();
+        used.sort_unstable();
+        used.dedup();
+        let renamed = used
+            .iter()
+            .enumerate()
+            .map(|(local, &way)| (way, local as u32))
+            .collect::<FxHashMap<_, _>>();
+
+        let mut csr = Csr {
+            offsets: Vec::with_capacity(nodes.len() + 1),
+            targets: Vec::with_capacity(edges),
+            class: Vec::with_capacity(edges),
+            length_cm: Vec::with_capacity(edges),
+        };
+        let mut way = Vec::with_capacity(edges);
+        let mut backward = Vec::with_capacity(edges);
+        csr.offsets.push(0);
+
+        for run in kept() {
+            let run = run.start as usize..run.end as usize;
+
+            csr.targets.extend(
+                self.csr.targets[run.clone()]
+                    .iter()
+                    .map(|target| local[target]),
+            );
+            csr.class.extend_from_slice(&self.csr.class[run.clone()]);
+            csr.length_cm
+                .extend_from_slice(&self.csr.length_cm[run.clone()]);
+            way.extend(
+                self.way[run.clone()]
+                    .iter()
+                    .map(|way| renamed.get(way).copied().unwrap_or(NO_WAY)),
+            );
+            backward.extend_from_slice(&self.backward[run]);
+
+            csr.offsets.push(csr.targets.len() as u32);
+        }
+
+        let part = Self::derive(
+            nodes
+                .iter()
+                .map(|&node| self.nodes[node as usize])
+                .collect(),
+            csr,
+            way,
+            backward,
+            used.iter().map(|&way| self.ways[way as usize]).collect(),
+            None,
+        );
+
+        (part, used)
+    }
+
+    /// The nodes that the out-edges of `node` reach, in edge order.
+    #[inline]
+    pub fn targets(&self, node: NodeIx) -> &[NodeIx] {
+        let run = self.out_edges(node);
+        &self.csr.targets[run.start as usize..run.end as usize]
     }
 
     /// Check that the columns describe a graph.
@@ -413,7 +517,7 @@ impl<E: Entry> Topology<E> {
             .csr
             .targets
             .iter()
-            .zip(&self.sources)
+            .zip(self.sources())
             .map(|(&target, &source)| target.wrapping_sub(source) as i32)
             .collect::<Vec<_>>();
         let backward = self
@@ -524,12 +628,14 @@ impl<E: Entry> Topology<E> {
     }
 
     pub fn node(&self, id: &E) -> Option<&Node<E>> {
-        self.node_of.get(id).map(|&node| &self.nodes[node as usize])
+        self.node_of()
+            .get(id)
+            .map(|&node| &self.nodes[node as usize])
     }
 
     /// Where `way` sits among [`ways`](Self::ways).
     pub fn way_index(&self, way: &E) -> Option<usize> {
-        self.way_of.get(way).map(|&way| way as usize)
+        self.way_of().get(way).map(|&way| way as usize)
     }
 
     /// The out-edges of `node`, in the order they were inserted.
@@ -542,14 +648,14 @@ impl<E: Entry> Topology<E> {
     #[inline]
     pub fn endpoints(&self, edge: EdgeIx) -> (&Node<E>, &Node<E>) {
         (
-            &self.nodes[self.sources[edge as usize] as usize],
+            &self.nodes[self.sources()[edge as usize] as usize],
             &self.nodes[self.csr.targets[edge as usize] as usize],
         )
     }
 
     /// The nodes each edge runs between, by number, in edge order.
     pub(crate) fn spans(&self) -> impl Iterator<Item = (usize, usize)> + Clone + '_ {
-        self.sources
+        self.sources()
             .iter()
             .zip(&self.csr.targets)
             .map(|(&source, &target)| (source as usize, target as usize))
@@ -584,7 +690,7 @@ impl<E: Entry> Topology<E> {
     }
 
     pub fn edges_outof(&self, id: E) -> impl Iterator<Item = GraphEdge<E>> + '_ {
-        let edges = self.node_of.get(&id).map(|&node| self.out_edges(node));
+        let edges = self.node_of().get(&id).map(|&node| self.out_edges(node));
 
         edges
             .into_iter()
@@ -600,7 +706,10 @@ impl<E: Entry> Topology<E> {
             }
             incoming
         });
-        let edges = self.node_of.get(&id).map(|&node| &incoming[node as usize]);
+        let edges = self
+            .node_of()
+            .get(&id)
+            .map(|&node| &incoming[node as usize]);
 
         edges
             .into_iter()
@@ -609,7 +718,7 @@ impl<E: Entry> Topology<E> {
     }
 
     pub fn edge(&self, source: &E, target: &E) -> Option<Edge<E>> {
-        let (from, to) = (*self.node_of.get(source)?, *self.node_of.get(target)?);
+        let (from, to) = (*self.node_of().get(source)?, *self.node_of().get(target)?);
         let edge = self
             .out_edges(from)
             .find(|&edge| self.csr.targets[edge as usize] == to)?;
@@ -668,7 +777,7 @@ impl<E: Entry> Topology<E> {
     /// The matcher's bounded reachability search from `root` over the
     /// `passable` edges; see [`DataPlane::reach`](crate::DataPlane::reach).
     pub fn reach(&self, root: &E, reach: f64, passable: &[bool]) -> Option<Vec<(E, E)>> {
-        let root = *self.node_of.get(root)?;
+        let root = *self.node_of().get(root)?;
         let nodes = &self.nodes;
 
         Some(self.searching(|search| {
@@ -688,7 +797,7 @@ impl<E: Entry> Topology<E> {
 
     /// The least-cost route between two nodes by summed road class.
     pub fn route_nodes(&self, start: E, finish: E) -> Option<(Weight, Vec<Node<E>>)> {
-        let (from, to) = (*self.node_of.get(&start)?, *self.node_of.get(&finish)?);
+        let (from, to) = (*self.node_of().get(&start)?, *self.node_of().get(&finish)?);
         let (cost, path) = self.searching(|search| search.route(&self.csr, from, to))?;
 
         Some((
