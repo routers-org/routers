@@ -321,6 +321,13 @@ pub fn sha256_hex(path: impl AsRef<Path>) -> std::io::Result<String> {
     Ok(hex_lower(&hasher.finalize()))
 }
 
+/// The lowercase SHA-256 digest of `bytes`: what [`sha256_hex`] answers for a
+/// file holding them.
+#[must_use]
+pub fn sha256_hex_of(bytes: &[u8]) -> String {
+    hex_lower(&Sha256::digest(bytes))
+}
+
 /// Whether a value is safe as a NATS subject token.
 #[must_use]
 pub fn token_safe(value: &str) -> bool {

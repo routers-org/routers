@@ -22,6 +22,7 @@ thiserror = { workspace = true, features = ["std"] }
 geo = { workspace = true }
 # S2 cell hierarchy, behind the `s2` feature (see below).
 s2 = { workspace = true, optional = true }
+rayon = { workspace = true, optional = true }
 
 # Utilities
 rustc-hash = { workspace = true }
@@ -73,7 +74,7 @@ s2 = ["dep:s2"]
 web = ["dep:wasm-bindgen", "dep:wasm-bindgen-futures", "dep:js-sys", "dep:web-sys"]
 
 # The `generate-shards` binary.
-cli = ["dep:clap", "dep:env_logger"]
+cli = ["dep:clap", "dep:env_logger", "dep:rayon"]
 
 [dev-dependencies]
 routers_codec = { path = "../routers_codec", version = "0.4.0", features = ["osm"] }

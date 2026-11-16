@@ -18,6 +18,7 @@
 extern crate alloc;
 
 pub mod artifact;
+pub mod carve;
 pub mod composite;
 pub mod loader;
 pub mod network;
@@ -27,8 +28,9 @@ pub mod strategy;
 
 pub use artifact::{
     Artifact, ArtifactError, MANIFEST_FILENAME, MANIFEST_VERSION, Manifest, VerifiedArtifact,
-    sha256_hex, token_safe,
+    sha256_hex, sha256_hex_of, token_safe,
 };
+pub use carve::Carving;
 pub use composite::MultiShardNetwork;
 pub use loader::{Fetcher, LoadError, ShardCache, ShardLoader, ShardMoveDelta, ShardWindow};
 pub use network::{ShardSource, ShardedNetwork, SourceEdge};

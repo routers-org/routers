@@ -41,20 +41,20 @@ impl<E: Entry> Default for Bucket<E> {
 
 /// The padded selection of a cell and of each of its neighbours: the only
 /// shards a point in that cell can belong to.
-struct Neighbourhood<S: ShardId> {
+pub(crate) struct Neighbourhood<S: ShardId> {
     selections: Vec<Selection<S>>,
 }
 
 /// Resolves a point to the shards that admit it, memoising each cell's
 /// neighbourhood so the strategy's neighbour walk runs once per cell.
-struct Dealer<'a, St: ShardingStrategy> {
-    strategy: &'a St,
-    mode: SelectionMode,
-    neighbourhoods: FxHashMap<St::Id, Neighbourhood<St::Id>>,
+pub(crate) struct Dealer<'a, St: ShardingStrategy> {
+    pub(crate) strategy: &'a St,
+    pub(crate) mode: SelectionMode,
+    pub(crate) neighbourhoods: FxHashMap<St::Id, Neighbourhood<St::Id>>,
 }
 
 impl<St: ShardingStrategy> Dealer<'_, St> {
-    fn cells_of(&mut self, pos: Point, out: &mut Vec<St::Id>) -> St::Id {
+    pub(crate) fn cells_of(&mut self, pos: Point, out: &mut Vec<St::Id>) -> St::Id {
         let owner = self.strategy.locate(pos);
         let strategy = self.strategy;
         let mode = self.mode;

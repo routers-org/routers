@@ -7562,6 +7562,7 @@ dependencies = [
  "log",
  "postcard",
  "quote",
+ "rayon",
  "routers_codec",
  "routers_network",
  "rustc-hash 2.1.3",

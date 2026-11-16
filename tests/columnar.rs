@@ -204,6 +204,34 @@ fn shards_search_as_the_matcher_does() {
 }
 
 #[test]
+fn carving_cuts_the_shards_a_partition_deals() {
+    let network = network();
+    let strategy = GeohashStrategy::with_precision(5);
+
+    for padding in [0.0, 250.0, 2_000.0] {
+        let dealt = ShardedNetwork::partition(&OsmSource(&network), &strategy, padding)
+            .without_indices()
+            .collect::<Vec<_>>();
+        let carving = ShardedNetwork::carve(network.graph(), &strategy, padding);
+
+        assert_eq!(carving.len(), dealt.len());
+        assert!(dealt.len() > 1, "the fixture spans shards");
+
+        for (at, dealt) in dealt.iter().enumerate() {
+            let carved = carving.shard(at);
+
+            assert_eq!(carving.id(at), dealt.owned);
+            assert_eq!(
+                carved.to_cache_bytes().expect("encodes"),
+                dealt.to_cache_bytes().expect("encodes"),
+                "shard {} at {padding} m",
+                dealt.owned
+            );
+        }
+    }
+}
+
+#[test]
 fn the_network_survives_the_disk() {
     let network = network();
     let bytes = network.to_bytes().expect("serialises");

@@ -114,6 +114,15 @@ where
         &self.graph
     }
 
+    /// A shard over a graph already cut to it.
+    pub(crate) fn over(graph: Graph<E, M>, owned: S, loaded: FxHashSet<S>) -> Self {
+        Self {
+            graph,
+            owned,
+            loaded,
+        }
+    }
+
     /// A shard over parts already filtered to it, without spatial indices.
     pub(crate) fn from_parts(
         nodes: Vec<Node<E>>,
