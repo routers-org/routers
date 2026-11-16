@@ -72,6 +72,9 @@ pub struct Topology<E: Entry> {
     sources: Vec<NodeIx>,
     /// In-edges per node, built the first time they are asked for.
     incoming: OnceLock<Vec<Vec<EdgeIx>>>,
+    /// Per node: where it falls along the curve nodes are ordered by. Worked
+    /// out the first time the graph is merged with another.
+    curve: OnceLock<Vec<u64>>,
     /// Idle search workspaces, one per thread that has searched.
     searches: Mutex<Vec<Search>>,
 }
@@ -191,12 +194,19 @@ impl<E: Entry> Topology<E> {
     /// Equal to [assembling](Self::assemble) their nodes and edges together,
     /// but for graphs already laid out: nothing is measured again.
     pub fn merge(parts: &[&Topology<E>]) -> Self {
-        let mut placed = parts
-            .iter()
-            .flat_map(|part| &part.nodes)
-            .map(|node| (hilbert(node.position), *node))
-            .collect::<Vec<_>>();
-        placed.sort_unstable_by_key(|&(code, node)| (code, node.id));
+        let mut placed = Vec::with_capacity(parts.iter().map(|part| part.num_nodes()).sum());
+        for part in parts {
+            let curve = part.curve.get_or_init(|| {
+                part.nodes
+                    .iter()
+                    .map(|node| hilbert(node.position))
+                    .collect()
+            });
+
+            placed.extend(curve.iter().copied().zip(part.nodes.iter().copied()));
+        }
+        // Each part is already in this order: a stable sort merges the runs.
+        placed.sort_by_key(|&(code, node)| (code, node.id));
 
         let mut nodes = Vec::with_capacity(placed.len());
         let mut node_of = FxHashMap::with_capacity_and_hasher(placed.len(), FxBuildHasher);
@@ -344,6 +354,7 @@ impl<E: Entry> Topology<E> {
             way_of,
             sources,
             incoming: OnceLock::new(),
+            curve: OnceLock::new(),
             searches: Mutex::new(Vec::new()),
         }
     }
@@ -730,7 +741,8 @@ fn along_curve(mut x: u32, mut y: u32) -> u64 {
         along |= u64::from((3 * right) ^ up) << (2 * bit);
 
         // Turn the quadrant so the curve enters and leaves where the next
-        // one begins.
+        // one begins. Branches, not masks: neighbours share their leading
+        // bits, so these predict well, and measured faster.
         if up == 0 {
             if right == 1 {
                 (x, y) = (!x, !y);
