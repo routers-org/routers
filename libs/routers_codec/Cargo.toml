@@ -19,14 +19,11 @@ schema = { workspace = true }
 
 # GeoRust
 geo = { workspace = true, features = ["serde"] }
-petgraph = { workspace = true, features = ["serde"] }
 
 serde = { workspace = true, features = ["std"] }
 rayon = { workspace = true }
 log = { workspace = true }
-postcard = { workspace = true }
 rustc-hash = "2.1.1"
-uom = { workspace = true }
 
 # Tracing
 tracing = { workspace = true, features = ["std"], optional = true }
@@ -87,7 +84,7 @@ osm = ["dep:flate2", "dep:bytes", "dep:buffa"]
 mimalloc = ["dep:mimalloc"]
 
 # rayon for the index rebuild; off = single-threaded (e.g. wasm32). PBF ingest always uses rayon.
-parallel = []
+parallel = ["routers_network/parallel"]
 
 # Tracing (For Debugging & Logging)
 tracing = ["dep:tracing"]

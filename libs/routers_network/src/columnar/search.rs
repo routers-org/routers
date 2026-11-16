@@ -1,4 +1,4 @@
-//! Searches over an [`OsmNetwork`](super::OsmNetwork)'s columns.
+//! Searches over a graph's columns.
 
 use alloc::collections::BinaryHeap;
 use core::cmp::Ordering;
@@ -6,10 +6,30 @@ use core::cmp::Ordering;
 use uom::si::f64::Length;
 use uom::si::length::centimeter;
 
-use super::graph::{Columns, NodeIx};
+use super::{EdgeIx, NodeIx};
+use crate::edge::Weight;
 
 /// "No such node", where a [`NodeIx`] is optional.
 pub(super) const NO_NODE: NodeIx = NodeIx::MAX;
+
+/// What a search reads of a graph.
+#[derive(Debug, Default)]
+pub(super) struct Csr {
+    /// Node `n`'s out-edges are `offsets[n]..offsets[n + 1]`.
+    pub(super) offsets: Vec<u32>,
+    pub(super) targets: Vec<NodeIx>,
+    /// Per edge: its road-class weight.
+    pub(super) class: Vec<Weight>,
+    /// Per edge: its Haversine length in whole centimetres.
+    pub(super) length_cm: Vec<u32>,
+}
+
+impl Csr {
+    #[inline]
+    pub(super) fn out_edges(&self, node: NodeIx) -> core::ops::Range<EdgeIx> {
+        self.offsets[node as usize]..self.offsets[node as usize + 1]
+    }
+}
 
 /// A path cost as the matcher accumulates it.
 #[derive(Clone, Copy, Debug, Default)]
@@ -103,7 +123,7 @@ impl Search {
     /// root's parent is [`NO_NODE`].
     pub(super) fn reach(
         &mut self,
-        graph: &Columns,
+        graph: &Csr,
         passable: &[bool],
         root: NodeIx,
         reach: Length,
@@ -156,7 +176,7 @@ impl Search {
     /// cost and its nodes. Stops once `to` is settled.
     pub(super) fn route(
         &mut self,
-        graph: &Columns,
+        graph: &Csr,
         from: NodeIx,
         to: NodeIx,
     ) -> Option<(u32, Vec<NodeIx>)> {
