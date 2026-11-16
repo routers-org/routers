@@ -152,6 +152,18 @@ impl<E: Entry, M: Metadata> Graph<E, M> {
         Ok(Self::over(topology, meta))
     }
 
+    /// The part of this network over `nodes`, without spatial indices; see
+    /// [`Topology::carve`].
+    pub fn carve(&self, nodes: &[super::NodeIx], leaving: &[bool]) -> Self {
+        let (topology, ways) = self.topology.carve(nodes, leaving);
+        let meta = ways
+            .iter()
+            .map(|&way| self.meta[way as usize].clone())
+            .collect();
+
+        Self::over(topology, meta)
+    }
+
     pub fn topology(&self) -> &Topology<E> {
         &self.topology
     }

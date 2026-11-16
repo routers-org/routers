@@ -230,6 +230,11 @@ impl OsmNetwork {
         Ok(network)
     }
 
+    /// The columns the network is held as.
+    pub fn graph(&self) -> &Graph<OsmEntryId, OsmEdgeMetadata> {
+        &self.graph
+    }
+
     pub fn num_nodes(&self) -> usize {
         self.graph.num_nodes()
     }
