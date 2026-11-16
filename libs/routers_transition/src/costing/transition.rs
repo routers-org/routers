@@ -4,7 +4,6 @@ use crate::costing::Strategy;
 use crate::map_path::MapPath;
 use crate::primitives::{ResolutionMethod, RoutingContext};
 use geo::{Distance, Haversine, Point};
-use routers_network::edge::Weight;
 use routers_network::{Entry, Network};
 
 pub trait TransitionStrategy<E>: for<'a> Strategy<TransitionContext<'a, E>> {}
@@ -91,18 +90,6 @@ pub struct TransitionLengths {
 
     /// The path of the optimal route between candidates
     pub route_length: f64,
-}
-
-/// A routed hop, as given to a transition strategy that does not walk the
-/// path.
-#[derive(Clone, Debug)]
-pub struct HopSummary {
-    /// As [`TransitionContext::lengths`].
-    pub lengths: Option<TransitionLengths>,
-    /// As [`TransitionContext::angular_complexity`].
-    pub angular_complexity: f64,
-    /// The road-class weights of the edges the hop leaves and arrives on.
-    pub classes: (Weight, Weight),
 }
 
 impl TransitionLengths {
@@ -249,13 +236,6 @@ where
         )
     }
 
-    /// The road-class weights of the edges left and arrived on.
-    pub(crate) fn classes(&self) -> (Weight, Weight) {
-        let (source, target) = self.candidates();
-
-        (source.edge.weight, target.edge.weight)
-    }
-
     /// Calculates the total offset, of both source and target positions within the context,
     /// considering the resolution method requested.
     pub fn total_offset(&self, source: &Candidate<E>, target: &Candidate<E>) -> Option<f64> {
@@ -273,6 +253,18 @@ where
 
     /// Returns the [`TransitionLengths`] of the context.
     pub fn lengths(&self) -> Option<TransitionLengths> {
+        // A summarised path knows its span: no candidate need be looked up.
+        if let (Some(straightline_distance), ResolutionMethod::Standard) =
+            (self.optimal_path.span(), self.requested_resolution_method)
+        {
+            let offset = self.virtual_tails.source? + self.virtual_tails.target?;
+
+            return Some(TransitionLengths {
+                straightline_distance,
+                route_length: self.optimal_path.length() + offset,
+            });
+        }
+
         let (source, target) = self.candidates();
         let offset = self.total_offset(&source, &target)?;
 

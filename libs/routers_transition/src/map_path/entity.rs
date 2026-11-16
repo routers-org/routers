@@ -149,6 +149,17 @@ where
     /// Precomputed joints onto the first node and off the last.
     lead: Option<Joint>,
     trail: Option<Joint>,
+
+    /// Set for a path held as its totals rather than its nodes.
+    summary: Option<Summary>,
+}
+
+/// The totals of a path: see [`MapPath::summarised`].
+#[derive(Clone, Copy, Debug)]
+struct Summary {
+    length: f64,
+    complexity: f64,
+    span: f64,
 }
 
 impl<E> From<Vec<Node<E>>> for MapPath<E>
@@ -161,6 +172,7 @@ where
             strides: None,
             lead: None,
             trail: None,
+            summary: None,
         }
     }
 }
@@ -189,7 +201,28 @@ where
             strides: Some((strides, length)),
             lead,
             trail,
+            summary: None,
         }
+    }
+
+    /// A path held as its totals, with no nodes: its `length`, its angular
+    /// `complexity` between the candidates it joins, and the straight-line
+    /// `span` between them.
+    pub(crate) fn summarised(length: f64, complexity: f64, span: f64) -> Self {
+        MapPath {
+            summary: Some(Summary {
+                length,
+                complexity,
+                span,
+            }),
+            ..MapPath::from(Vec::new())
+        }
+    }
+
+    /// The straight-line distance between the candidates the path joins,
+    /// where it is [held](Self::summarised).
+    pub(crate) fn span(&self) -> Option<f64> {
+        self.summary.map(|summary| summary.span)
     }
 
     /// Converts a trip into a [`LineString`].
@@ -397,6 +430,10 @@ where
         source: Point,
         target: Point,
     ) -> f64 {
+        if let Some(summary) = self.summary {
+            return summary.complexity;
+        }
+
         match (self.nodes.first(), self.nodes.last()) {
             (Some(first), Some(last)) => {
                 let (lead, onto) = match self.lead {
@@ -459,6 +496,10 @@ where
     /// Returns the length of the trip in meters, calculated
     /// by the cumulative distance between each entry in the trip.
     pub fn length(&self) -> f64 {
+        if let Some(summary) = self.summary {
+            return summary.length;
+        }
+
         if let Some((_, length)) = self.strides {
             return length;
         }
