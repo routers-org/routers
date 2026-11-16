@@ -74,7 +74,9 @@ s2 = ["dep:s2"]
 web = ["dep:wasm-bindgen", "dep:wasm-bindgen-futures", "dep:js-sys", "dep:web-sys"]
 
 # The `generate-shards` binary.
-cli = ["dep:clap", "dep:env_logger", "dep:rayon"]
+# `sha2/asm`: SHA-256 on the CPU's own instructions where the target has
+# them (aarch64 needs the feature; x86 uses them regardless).
+cli = ["dep:clap", "dep:env_logger", "dep:rayon", "sha2/asm"]
 
 [dev-dependencies]
 routers_codec = { path = "../routers_codec", version = "0.4.0", features = ["osm"] }
