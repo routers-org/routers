@@ -2,6 +2,24 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.1] - 2026-11-16
+
+### 🚀 Features
+
+- *(wasm)* Build and run the components for wasm32-wasip3
+
+### ⚡ Performance
+
+- *(wasm)* Keep the reachability cache between matches
+- Reachability Cache in WASM ([#344](https://github.com/routers-org/routers/pull/344))
+
+### ⚙️ Miscellaneous Tasks
+
+- *(wasm)* Drop the WASI 0.3 README section and trim comments
+- Trim comments
+
+
+
 ## [0.3.0] - 2026-11-11
 
 ### 🚀 Features

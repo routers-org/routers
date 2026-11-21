@@ -2,6 +2,54 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.7.0] - 2026-11-16
+
+### 🚀 Features
+
+- *(tz)* [**breaking**] Return every zone where timezone polygons overlap
+- *(wasm)* Build and run the components for wasm32-wasip3
+- *(transition)* Trace the phases of a match
+- Better Tracing and Examples ([#343](https://github.com/routers-org/routers/pull/343))
+
+### 💼 Other
+
+- Move to Rust 1.100
+- *(wasm)* Build the components under a `wasm` profile
+
+### 🐛 Bug Fixes
+
+- *(tz)* Partition the globe into disjoint s2 cells
+- *(tz)* Build the rtree index from disjoint lng/lat boxes
+
+### ⚡ Performance
+
+- *(tz)* Store s2cell zone indices as runs
+- *(transition)* Cheaper searches and short trajectories
+- *(transition)* Weigh a boundary as a batch, from shared geometry
+- *(wasm)* Keep the reachability cache between matches
+- *(transition)* A summarised path's lengths need no candidate lookup
+- Reachability Cache in WASM ([#344](https://github.com/routers-org/routers/pull/344))
+
+### 🚜 Refactor
+
+- *(transition)* Cost a summarised hop through `calculate`
+
+### ⚙️ Miscellaneous Tasks
+
+- *(wasm)* Drop the WASI 0.3 README section and trim comments
+- Trim comments; drop the README note
+- Trim comments
+- Trim comments
+- Trim comments
+- Trim comments
+
+### 🧪 Testing
+
+- *(tz)* Check the partition and every backend against more places
+- *(tz)* Check the rtree backend and run it in CI
+
+
+
 ## [0.6.0] - 2026-11-11
 
 ### 🚀 Features
